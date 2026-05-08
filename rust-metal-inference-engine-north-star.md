@@ -15,21 +15,33 @@ Current commits:
 - `7fe9d9c` - Rust workspace scaffold with north-star crate layout and mise tasks.
 - `9dae41e` - Rust-owned OpenAI runtime/server skeleton with deterministic native backend.
 - `3630acd` - Native Hugging Face model planning and immutable manifest identity.
+- `1f6488e` - Qwen3.6 config parsing for hybrid Gated DeltaNet plus MoE topology.
+- `52c78bc` - Safetensors fixture loading and direct Metal smoke compute.
+- `ccab198` - Official Qwen3.6 tokenizer artifact fixture and tokenizer wrapper.
+- `becf073` - Official Qwen3.6 safetensors index validation.
+- `c5f147c` - Native model store pull with staged snapshot promotion.
+- `199bf83` - Resumable download and artifact-size verification.
+- `e255017` - Ignore generated local model stores.
+- `e79e855` - Separate MLX 4-bit profile from native BF16 safetensors profile.
+- `3d46d5a` - Header-only safetensors inspection for multi-GB shards.
+- `c65c892` - Idempotent verified snapshot reuse and native BF16 default profile.
 
 Current verified state:
 
-- `mise run test` passes for the workspace.
-- `mise exec -- cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B --revision main --profile qwen36-mlx-4bit` resolves `main` to commit `995ad96eacd98c81ed38be0c5b274b04031597b0` and plans 71,926,864,255 bytes of selected artifacts without Python.
+- `mise run fmt-check`, `mise run test`, and `mise run clippy` pass for the workspace.
+- `mise exec -- cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B --revision main` resolves `main` to commit `995ad96eacd98c81ed38be0c5b274b04031597b0` under profile `qwen36-safetensors-bf16` and plans 71,926,864,255 bytes of selected artifacts without Python.
 - Official Qwen3.6 config/template fixtures are stored under `fixtures/qwen36/`.
 - `llm-models` parses the official Qwen3.6 hybrid Gated DeltaNet plus MoE topology: 40 layers, 30 linear-attention layers, 10 full-attention layers, 256 experts, 8 routed experts per token, 262,144 native context.
 - `llm-tokenizer` renders the Qwen no-thinking assistant prefix as `<think>\n\n</think>\n\n`, matching the official template behavior.
 - `llm-engine model pull Qwen/Qwen3.6-35B-A3B --metadata-only --model-home .llm-models` downloads 13 non-weight artifacts through native Rust HTTP, writes a manifest, and promotes snapshot `995ad96eacd98c81ed38be0c5b274b04031597b0` with manifest digest `99e9dbff8de1b239063b12421f276c0b5f67c206844471360a8c69d9a502b825`.
+- `llm-engine model pull Qwen/Qwen3.6-35B-A3B --revision main --model-home .llm-models-full` verifies the full existing 39-file BF16 snapshot through the Rust pull path, rewrites the native manifest, and reports manifest digest `e99b85a85a4a7b2fbd971f8a0be12ea32e35a9a83a9aca075b771273f3be652e`.
+- `llm-engine model inspect-safetensors .llm-models-full/.../model-00001-of-00026.safetensors --tensor model.language_model.embed_tokens.weight` reads the 3,996,199,712-byte shard header without loading payload bytes and validates the embedding tensor as BF16 `[248320, 2048]` over file byte range `2848..1017121568`.
 
 Known incomplete items:
 
 - No real tensor inference yet; `llm-backend` currently has a deterministic Rust backend for protocol/runtime tests.
-- Full weight download is not yet complete; metadata-only pull is verified.
-- Safetensors metadata and F32 tensor loading are implemented; full Qwen BF16/MoE tensor materialization is not complete.
+- Full weight download is complete and verified by file size; full Qwen BF16/MoE tensor materialization is not complete.
+- Safetensors metadata, F32 tensor loading, and header-only BF16 shard inspection are implemented; mmap-backed tensor slicing is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - No Qwen forward pass, KV cache, recurrent Gated DeltaNet state, or sampling over real logits yet.
 
