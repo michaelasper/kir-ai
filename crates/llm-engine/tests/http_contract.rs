@@ -187,6 +187,36 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
 }
 
 #[tokio::test]
+async fn completions_endpoint_returns_openai_text_completion_shape() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "hello",
+                        "max_tokens": 8,
+                        "stop": " backend"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["object"], "text_completion");
+    assert_eq!(body["model"], "local-qwen36");
+    assert_eq!(body["choices"][0]["text"], "hello from rust native");
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+}
+
+#[tokio::test]
 async fn backend_execution_errors_are_not_reported_as_missing_model() {
     let response = build_router_with_backend(Box::new(FailingBackend))
         .oneshot(

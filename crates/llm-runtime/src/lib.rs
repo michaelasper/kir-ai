@@ -2,8 +2,8 @@ use chrono::Utc;
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
-    ChatRole, ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
-    ValidateRequest,
+    ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, ResponseFormat, ToolCall,
+    ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage, ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
@@ -26,6 +26,54 @@ where
 
     pub fn model_id(&self) -> &str {
         self.backend.model_id()
+    }
+
+    pub async fn completion(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, RuntimeError> {
+        request.validate()?;
+        if request.stream {
+            return Err(ApiError::unsupported_capability(
+                "streaming text completions are not implemented yet",
+            )
+            .into());
+        }
+        let output = self
+            .backend
+            .generate(BackendRequest {
+                model: request.model.clone(),
+                prompt: request.prompt,
+                max_tokens: request.max_tokens.unwrap_or(4096),
+            })
+            .await?;
+        let mut text = output.text;
+        let stopped = apply_stop_sequences(&mut text, &request.stop);
+        let no_progress = classify_no_progress(&text, output.completion_tokens, false);
+        if let Some(class) = no_progress {
+            return Err(RuntimeError::NoProgress(class));
+        }
+        let usage = Usage {
+            prompt_tokens: output.prompt_tokens,
+            completion_tokens: output.completion_tokens,
+            total_tokens: output.prompt_tokens + output.completion_tokens,
+        };
+        Ok(CompletionResponse {
+            id: format!("cmpl-{}", Uuid::now_v7()),
+            object: "text_completion".to_owned(),
+            created: Utc::now().timestamp(),
+            model: request.model,
+            choices: vec![CompletionChoice {
+                text,
+                index: 0,
+                finish_reason: Some(if stopped {
+                    llm_api::FinishReason::Stop
+                } else {
+                    output.finish_reason
+                }),
+            }],
+            usage,
+        })
     }
 
     pub async fn chat(

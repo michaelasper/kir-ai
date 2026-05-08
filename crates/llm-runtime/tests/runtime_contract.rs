@@ -1,5 +1,6 @@
 use llm_api::{
-    ChatCompletionRequest, ChatMessage, FinishReason, ResponseFormat, ToolChoice, ToolDefinition,
+    ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
+    ToolChoice, ToolDefinition,
 };
 use llm_backend::DeterministicBackend;
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
@@ -26,6 +27,27 @@ async fn runtime_returns_non_streaming_chat_completion() {
         Some("hello from rust")
     );
     assert_eq!(response.usage.total_tokens, 5);
+}
+
+#[tokio::test]
+async fn runtime_returns_text_completion() {
+    let backend = DeterministicBackend::new("local-qwen36", "hello from completion END ignored");
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .completion(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            max_tokens: Some(8),
+            stop: vec![" END".to_owned()],
+            stream: false,
+        })
+        .await
+        .expect("completion succeeds");
+
+    assert_eq!(response.object, "text_completion");
+    assert_eq!(response.choices[0].text, "hello from completion");
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+    assert_eq!(response.usage.total_tokens, 7);
 }
 
 #[tokio::test]

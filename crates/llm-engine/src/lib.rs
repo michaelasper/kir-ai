@@ -10,7 +10,7 @@ use axum::{
     routing::get,
 };
 use futures::stream;
-use llm_api::{ChatCompletionRequest, FinishReason, ModelCard, ModelList};
+use llm_api::{ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList};
 use llm_backend::{
     BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
     SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
@@ -44,6 +44,7 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
             "/v1/chat/completions",
             axum::routing::post(chat_completions),
         )
+        .route("/v1/completions", axum::routing::post(completions))
         .with_state(AppState {
             runtime: Arc::new(runtime),
         })
@@ -239,6 +240,14 @@ async fn chat_completions(
         return Ok(Sse::new(stream::iter(events)).into_response());
     }
     let response = state.runtime.chat(request).await?;
+    Ok(Json(response).into_response())
+}
+
+async fn completions(
+    State(state): State<AppState>,
+    Json(request): Json<CompletionRequest>,
+) -> Result<Response, EngineError> {
+    let response = state.runtime.completion(request).await?;
     Ok(Json(response).into_response())
 }
 

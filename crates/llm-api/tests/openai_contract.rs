@@ -1,7 +1,7 @@
 use llm_api::{
     ChatCompletionDelta, ChatCompletionRequest, ChatCompletionStreamChoice,
-    ChatCompletionStreamResponse, ChatMessage, ChatRole, FinishReason, ResponseFormat, ToolChoice,
-    ValidateRequest,
+    ChatCompletionStreamResponse, ChatMessage, ChatRole, CompletionRequest, CompletionResponse,
+    FinishReason, ResponseFormat, ToolChoice, ValidateRequest,
 };
 use serde_json::json;
 
@@ -118,6 +118,51 @@ fn chat_completion_stop_accepts_string_or_array() {
     let multiple: ChatCompletionRequest = serde_json::from_value(json!({
         "model": "local-qwen36",
         "messages": [{"role": "user", "content": "hello"}],
+        "stop": ["END", "<|im_end|>"]
+    }))
+    .expect("array stop parses");
+    assert_eq!(multiple.stop, vec!["END", "<|im_end|>"]);
+}
+
+#[test]
+fn text_completion_response_serializes_openai_shape() {
+    let response = CompletionResponse {
+        id: "cmpl-test".to_owned(),
+        object: "text_completion".to_owned(),
+        created: 1,
+        model: "local-qwen36".to_owned(),
+        choices: vec![llm_api::CompletionChoice {
+            text: "hello".to_owned(),
+            index: 0,
+            finish_reason: Some(FinishReason::Stop),
+        }],
+        usage: llm_api::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+        },
+    };
+
+    let value = serde_json::to_value(response).expect("response serializes");
+
+    assert_eq!(value["object"], "text_completion");
+    assert_eq!(value["choices"][0]["text"], "hello");
+    assert_eq!(value["choices"][0]["finish_reason"], "stop");
+}
+
+#[test]
+fn completion_stop_accepts_string_or_array() {
+    let single: CompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "prompt": "hello",
+        "stop": "END"
+    }))
+    .expect("single stop parses");
+    assert_eq!(single.stop, vec!["END"]);
+
+    let multiple: CompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "prompt": "hello",
         "stop": ["END", "<|im_end|>"]
     }))
     .expect("array stop parses");
