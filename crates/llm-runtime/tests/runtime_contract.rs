@@ -94,6 +94,27 @@ async fn json_object_response_format_accepts_object_content() {
 }
 
 #[tokio::test]
+async fn runtime_truncates_content_at_stop_sequence() {
+    let backend = DeterministicBackend::new("local-qwen36", "hello END trailing");
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stop: vec![" END".to_owned()],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("hello")
+    );
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
 async fn json_object_response_format_rejects_text_content() {
     let backend = DeterministicBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);

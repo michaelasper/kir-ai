@@ -104,3 +104,22 @@ fn chat_completion_stream_chunk_serializes_as_openai_delta() {
 fn auto_tool_choice_is_distinct_from_none() {
     assert_ne!(ToolChoice::Auto, ToolChoice::None);
 }
+
+#[test]
+fn chat_completion_stop_accepts_string_or_array() {
+    let single: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stop": "END"
+    }))
+    .expect("single stop parses");
+    assert_eq!(single.stop, vec!["END"]);
+
+    let multiple: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stop": ["END", "<|im_end|>"]
+    }))
+    .expect("array stop parses");
+    assert_eq!(multiple.stop, vec!["END", "<|im_end|>"]);
+}

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -227,6 +227,12 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_stop_sequences",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub stop: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,6 +243,12 @@ pub struct CompletionRequest {
     pub stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_stop_sequences",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub stop: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -334,6 +346,11 @@ impl ValidateRequest for ChatCompletionRequest {
                 )));
             }
         }
+        if self.stop.iter().any(String::is_empty) {
+            return Err(ApiError::invalid_request(
+                "stop sequences must not be empty",
+            ));
+        }
         Ok(())
     }
 }
@@ -345,6 +362,11 @@ impl ValidateRequest for CompletionRequest {
         }
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
+        }
+        if self.stop.iter().any(String::is_empty) {
+            return Err(ApiError::invalid_request(
+                "stop sequences must not be empty",
+            ));
         }
         Ok(())
     }
@@ -413,4 +435,25 @@ impl ApiError {
 
 fn empty_object() -> Value {
     serde_json::json!({})
+}
+
+fn deserialize_stop_sequences<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::String(stop)) => Ok(vec![stop]),
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::String(stop) => Ok(stop),
+                _ => Err(D::Error::custom("stop array must contain only strings")),
+            })
+            .collect(),
+        Some(_) => Err(D::Error::custom(
+            "stop must be a string or array of strings",
+        )),
+    }
 }

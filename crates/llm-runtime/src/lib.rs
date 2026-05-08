@@ -123,7 +123,8 @@ where
                 max_tokens: request.max_tokens.unwrap_or(4096),
             })
             .await?;
-        let parsed = QwenParser.parse_complete(&output.text)?;
+        let mut parsed = QwenParser.parse_complete(&output.text)?;
+        let stopped = apply_stop_sequences(&mut parsed.content, &request.stop);
         validate_tool_call_arguments(&parsed)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
             validate_json_object_response(&parsed)?;
@@ -140,10 +141,12 @@ where
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
         }
-        let finish_reason = if parsed.tool_calls.is_empty() {
-            output.finish_reason
-        } else {
+        let finish_reason = if !parsed.tool_calls.is_empty() {
             llm_api::FinishReason::ToolCalls
+        } else if stopped {
+            llm_api::FinishReason::Stop
+        } else {
+            output.finish_reason
         };
         let usage = Usage {
             prompt_tokens: output.prompt_tokens,
@@ -206,6 +209,18 @@ fn tool_call_delta(index: usize, tool_call: &ToolCall) -> Result<ToolCallDelta, 
             arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
         }),
     })
+}
+
+fn apply_stop_sequences(content: &mut String, stop: &[String]) -> bool {
+    let Some(stop_at) = stop
+        .iter()
+        .filter_map(|sequence| content.find(sequence))
+        .min()
+    else {
+        return false;
+    };
+    content.truncate(stop_at);
+    true
 }
 
 fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
