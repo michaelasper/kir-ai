@@ -526,18 +526,14 @@ impl ModelStore {
     pub fn snapshot_path(&self, plan: &DownloadPlan) -> PathBuf {
         self.repo_root(&plan.repo_id)
             .join("snapshots")
-            .join(if plan.metadata_only {
-                format!("{}.metadata-only", plan.resolved_commit)
-            } else {
-                plan.resolved_commit.clone()
-            })
+            .join(snapshot_dir_name(plan))
     }
 
     pub async fn create_staging_dir(&self, plan: &DownloadPlan) -> Result<PathBuf, HubError> {
         let staging = self
             .repo_root(&plan.repo_id)
             .join("staging")
-            .join(format!("{}.partial", plan.resolved_commit));
+            .join(format!("{}.partial", snapshot_dir_name(plan)));
         tokio::fs::create_dir_all(&staging)
             .await
             .map_err(HubError::io)?;
@@ -965,6 +961,36 @@ impl HubError {
             code: "model_revision_unresolved",
             message: message.into(),
         }
+    }
+}
+
+fn snapshot_dir_name(plan: &DownloadPlan) -> String {
+    let mut name = format!(
+        "{}.{}",
+        plan.resolved_commit,
+        safe_path_component(&plan.profile.name)
+    );
+    if plan.metadata_only {
+        name.push_str(".metadata-only");
+    }
+    name
+}
+
+fn safe_path_component(value: &str) -> String {
+    let component = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if component.is_empty() {
+        "profile".to_owned()
+    } else {
+        component
     }
 }
 

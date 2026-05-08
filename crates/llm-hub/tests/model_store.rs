@@ -262,3 +262,31 @@ fn metadata_only_snapshot_path_does_not_collide_with_full_snapshot() {
         store.snapshot_path(&full.metadata_only())
     );
 }
+
+#[test]
+fn full_snapshot_paths_do_not_collide_across_profiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let repo = HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id");
+    let files = vec![HubFile::new("config.json", 2, Some("\"cfg\""))];
+    let mlx = build_download_plan(
+        repo.clone(),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        files.clone(),
+        &[],
+    )
+    .expect("mlx plan builds");
+    let native = build_download_plan(
+        repo,
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        files,
+        &[],
+    )
+    .expect("native plan builds");
+
+    assert_ne!(store.snapshot_path(&mlx), store.snapshot_path(&native));
+}
