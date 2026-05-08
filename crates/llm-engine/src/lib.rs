@@ -469,6 +469,15 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 .or_else(|_| Self::cpu().qwen_rms_norm_f32(input, weight, eps)),
         }
     }
+
+    fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().softmax_f32(scores),
+            Self::Metal(device) => device
+                .softmax_f32(scores)
+                .or_else(|_| Self::cpu().softmax_f32(scores)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -10,6 +10,7 @@ pub struct MetalDevice {
     device: Device,
     vector_add: Arc<MetalKernel>,
     qwen_rms_norm: Arc<MetalKernel>,
+    softmax_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
@@ -54,6 +55,7 @@ impl MetalDevice {
             .map_err(MetalError::Compile)?;
         let vector_add = Self::kernel(&device, &library, "vector_add")?;
         let qwen_rms_norm = Self::kernel(&device, &library, "qwen_rms_norm")?;
+        let softmax_f32 = Self::kernel(&device, &library, "softmax_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
@@ -63,6 +65,7 @@ impl MetalDevice {
             device,
             vector_add,
             qwen_rms_norm,
+            softmax_f32,
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
@@ -226,6 +229,67 @@ impl MetalDevice {
         let values = unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
             std::slice::from_raw_parts(ptr, input.len()).to_vec()
+        };
+        Ok(values)
+    }
+
+    pub fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MetalError> {
+        if scores.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some((index, _)) = scores
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(MetalError::InvalidShape(format!(
+                "softmax input contains non-finite value at index {index}"
+            )));
+        }
+        let len_u32 = u32::try_from(scores.len()).map_err(|err| {
+            MetalError::InvalidShape(format!("softmax input length does not fit u32: {err}"))
+        })?;
+        let byte_len = std::mem::size_of_val(scores) as u64;
+        let scores_buffer = self.device.new_buffer_with_data(
+            scores.as_ptr().cast::<c_void>(),
+            byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.softmax_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.softmax_f32.pipeline);
+        encoder.set_buffer(0, Some(&scores_buffer), 0);
+        encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&len_u32) as u64,
+            (&len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // with the same byte length as the input scores.
+        let values = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, scores.len()).to_vec()
         };
         Ok(values)
     }
@@ -791,6 +855,28 @@ kernel void qwen_rms_norm(
     }
     float inv_rms = rsqrt((sum / float(len)) + eps);
     output[id] = input[id] * inv_rms * (weight[id] + 1.0);
+}
+
+kernel void softmax_f32(
+    device const float* scores [[buffer(0)]],
+    constant uint& len [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id != 0 || len == 0) {
+        return;
+    }
+    float max_score = scores[0];
+    for (uint index = 1; index < len; index++) {
+        max_score = max(max_score, scores[index]);
+    }
+    float denominator = 0.0;
+    for (uint index = 0; index < len; index++) {
+        denominator += exp(scores[index] - max_score);
+    }
+    for (uint index = 0; index < len; index++) {
+        output[index] = exp(scores[index] - max_score) / denominator;
+    }
 }
 
 kernel void matvec_f32(

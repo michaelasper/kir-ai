@@ -594,6 +594,10 @@ pub trait QwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         qwen_rms_norm_f32(input, weight, eps)
     }
+
+    fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
+        softmax_f32(scores)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1731,7 +1735,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
                 * scale;
             scores.push(score);
         }
-        let weights = softmax_f32(&scores)?;
+        let weights = matvec.softmax_f32(&scores)?;
         for (source_idx, weight) in weights.into_iter().enumerate() {
             let value_token = cache
                 .value(source_idx)
@@ -1888,7 +1892,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
                     * scale;
                 scores.push(score);
             }
-            let weights = softmax_f32(&scores)?;
+            let weights = matvec.softmax_f32(&scores)?;
             for (source_idx, weight) in weights.into_iter().enumerate() {
                 let value_token = cache
                     .as_deref()

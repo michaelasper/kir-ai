@@ -32,6 +32,31 @@ fn metal_qwen_rms_norm_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_softmax_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let scores = [1.0, 2.0, -1.0, 0.5];
+    let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exponentials = scores
+        .iter()
+        .map(|score| (score - max).exp())
+        .collect::<Vec<_>>();
+    let denominator = exponentials.iter().sum::<f32>();
+    let expected = exponentials
+        .iter()
+        .map(|value| value / denominator)
+        .collect::<Vec<_>>();
+
+    let output = device.softmax_f32(&scores).expect("metal softmax succeeds");
+
+    assert_close(&output, &expected, 1e-6);
+    assert_close(&[output.iter().sum::<f32>()], &[1.0], 1e-6);
+}
+
+#[test]
 fn metal_matvec_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

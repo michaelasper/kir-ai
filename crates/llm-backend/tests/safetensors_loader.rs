@@ -938,6 +938,49 @@ fn qwen_full_attention_normalization_uses_configured_matvec_backend() {
 }
 
 #[test]
+fn qwen_full_attention_softmax_uses_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-full-attn-custom-softmax");
+    write_tiny_full_attention_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+    let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("expected cache shape");
+    let expected_output = qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("full cached sequence");
+    let prefill = hidden_states[..2].to_vec();
+    let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+        &store, &spec, 0, &prefill, &mut cache, &matvec,
+    )
+    .expect("recording full cached sequence");
+    let after_prefill_softmax_calls = matvec.softmax_calls.get();
+    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states[2],
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording full attention step");
+
+    assert_close(&output[0], &expected_output[0], 1e-6);
+    assert_close(&output[1], &expected_output[1], 1e-6);
+    assert_close(&decoded, &expected_output[2], 1e-6);
+    assert_eq!(after_prefill_softmax_calls, 2);
+    assert_eq!(matvec.softmax_calls.get(), 3);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_linear_attention_first_token_requires_delta_parameters() {
     let root = temp_snapshot_dir("qwen-linear-delta-required");
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -1684,6 +1727,7 @@ struct RecordingMatvecBackend {
     top_k_bf16_calls: Cell<usize>,
     dense_f32_calls: Cell<usize>,
     rms_norm_calls: Cell<usize>,
+    softmax_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -1750,6 +1794,11 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         self.rms_norm_calls.set(self.rms_norm_calls.get() + 1);
         qwen_rms_norm_f32(input, weight, eps)
+    }
+
+    fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
+        self.softmax_calls.set(self.softmax_calls.get() + 1);
+        CpuQwenMatvecBackend.softmax_f32(scores)
     }
 }
 
