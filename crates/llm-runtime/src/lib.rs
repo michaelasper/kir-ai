@@ -7,10 +7,10 @@ use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
     ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, CompletionStreamResponse,
-    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
-    ValidateRequest,
+    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, ToolDefinition,
+    Usage, ValidateRequest,
 };
-use llm_backend::BackendModelMetadata;
+use llm_backend::{BackendCacheContext, BackendModelMetadata};
 use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
@@ -109,6 +109,7 @@ where
                 required_tool_choice: None,
                 json_object_mode: false,
                 conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
             },
             cancellation.clone(),
         );
@@ -182,6 +183,7 @@ where
         }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
+        let cache_context = qwen_chatml_cache_context(&request.tools)?;
         let prompt = render_qwen_chatml(
             &request.messages,
             &request.tools,
@@ -207,6 +209,7 @@ where
                     Some(ResponseFormat::JsonObject)
                 ),
                 conversation_mode: true,
+                cache_context,
             },
             cancellation.clone(),
         );
@@ -243,6 +246,7 @@ where
         cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
         request.validate()?;
+        let cache_context = qwen_chatml_cache_context(&request.tools)?;
         let prompt = render_qwen_chatml(
             &request.messages,
             &request.tools,
@@ -270,6 +274,7 @@ where
                         Some(ResponseFormat::JsonObject)
                     ),
                     conversation_mode: true,
+                    cache_context,
                 },
                 cancellation,
             )
@@ -337,6 +342,7 @@ where
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,
+                    cache_context: BackendCacheContext::raw_prompt(),
                 },
                 cancellation,
             )
@@ -986,6 +992,17 @@ fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<Backe
         }
         Some(ToolChoice::Auto | ToolChoice::None) | None => None,
     }
+}
+
+fn qwen_chatml_cache_context(
+    tools: &[ToolDefinition],
+) -> Result<BackendCacheContext, RuntimeError> {
+    let tool_schema = if tools.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(tools)?)
+    };
+    Ok(BackendCacheContext::qwen_chatml(tool_schema))
 }
 
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

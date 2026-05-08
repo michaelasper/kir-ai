@@ -15,11 +15,11 @@ use llm_api::{
     CompletionStreamResponse, FinishReason, ModelCard, ModelList, Usage, ValidateRequest,
 };
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    CpuQwenMatvecBackend, DeterministicBackend, LayerKvCache, LinearAttentionCache, MathError,
-    ModelBackend, QwenKvCacheTensor, QwenLayerCache, QwenMatvecBackend, SafeTensorShardStore,
-    SamplingConfig, TensorLoadError, TopKLogit, TopKWeight,
-    qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
+    BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, CpuQwenMatvecBackend, DeterministicBackend, LayerKvCache,
+    LinearAttentionCache, MathError, ModelBackend, QwenKvCacheTensor, QwenLayerCache,
+    QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
+    TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
     qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
     qwen_prefill_sequence_with_cache_with_matvec,
 };
@@ -317,6 +317,7 @@ pub struct NativeQwenBackend {
     max_prefill_tokens: usize,
     top_k: usize,
     chunk_rows: usize,
+    prefix_cache: Arc<NativeQwenPrefixCache>,
 }
 
 #[derive(Clone)]
@@ -326,6 +327,332 @@ enum NativeQwenMatvecBackend {
 }
 
 const DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
+
+#[derive(Debug)]
+struct NativeQwenPrefixCache {
+    max_bytes: u64,
+    inner: Mutex<NativeQwenPrefixCacheInner>,
+}
+
+#[derive(Debug, Default)]
+struct NativeQwenPrefixCacheInner {
+    entries: HashMap<NativeQwenPrefixCacheKey, NativeQwenPrefixCacheEntry>,
+    used_bytes: u64,
+    next_access: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeQwenPrefixCacheNamespace {
+    model_id: String,
+    backend: String,
+    family: Option<String>,
+    loader: Option<String>,
+    quantization: Option<String>,
+    repo_id: Option<String>,
+    resolved_commit: Option<String>,
+    profile: Option<String>,
+    manifest_digest: Option<String>,
+    prompt_template: String,
+    tool_schema: Option<String>,
+    request_mode: String,
+    sampling: String,
+    cache_layout_version: u32,
+    cache_tokens: usize,
+    max_prefill_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeQwenPrefixCacheKey {
+    namespace: NativeQwenPrefixCacheNamespace,
+    tokens: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeQwenPrefixCacheEntry {
+    hidden: Vec<f32>,
+    caches: Vec<QwenLayerCache>,
+    byte_len: u64,
+    last_used: u64,
+}
+
+#[derive(Debug)]
+struct NativeQwenPrefixCacheHit {
+    token_count: usize,
+    hidden: Vec<f32>,
+    caches: Vec<QwenLayerCache>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeQwenPrefixCacheCounters {
+    hits: u64,
+    misses: u64,
+    stores: u64,
+    evictions: u64,
+    rejected: u64,
+    reused_tokens: u64,
+    bytes_stored: u64,
+    bytes_evicted: u64,
+    resident_bytes: u64,
+    resident_entries: u64,
+}
+
+#[derive(Debug, Default)]
+struct NativeQwenPrefixCacheMetrics {
+    counters: Mutex<NativeQwenPrefixCacheCounters>,
+}
+
+impl NativeQwenPrefixCache {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            inner: Mutex::new(NativeQwenPrefixCacheInner::default()),
+        }
+    }
+
+    fn lookup(
+        &self,
+        namespace: &NativeQwenPrefixCacheNamespace,
+        tokens: &[usize],
+    ) -> Option<NativeQwenPrefixCacheHit> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("native Qwen prefix cache lock is not poisoned");
+        let mut best_key = None;
+        let mut best_len = 0;
+        for key in inner.entries.keys() {
+            if key.namespace == *namespace
+                && key.tokens.len() > best_len
+                && tokens.starts_with(&key.tokens)
+            {
+                best_len = key.tokens.len();
+                best_key = Some(key.clone());
+            }
+        }
+        let Some(best_key) = best_key else {
+            native_qwen_prefix_cache_metrics().record_miss();
+            return None;
+        };
+        let access = inner.next_access();
+        let entry = inner
+            .entries
+            .get_mut(&best_key)
+            .expect("best prefix key came from cache entries");
+        entry.last_used = access;
+        native_qwen_prefix_cache_metrics().record_hit(best_len as u64);
+        Some(NativeQwenPrefixCacheHit {
+            token_count: best_len,
+            hidden: entry.hidden.clone(),
+            caches: entry.caches.clone(),
+        })
+    }
+
+    fn store(
+        &self,
+        namespace: NativeQwenPrefixCacheNamespace,
+        tokens: &[usize],
+        hidden: &[f32],
+        caches: &[QwenLayerCache],
+    ) {
+        if tokens.is_empty() {
+            return;
+        }
+        let byte_len = native_qwen_prefix_entry_bytes(hidden, caches);
+        if byte_len > self.max_bytes {
+            native_qwen_prefix_cache_metrics().record_rejected();
+            return;
+        }
+        let key = NativeQwenPrefixCacheKey {
+            namespace,
+            tokens: tokens.to_vec(),
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("native Qwen prefix cache lock is not poisoned");
+        if let Some(existing) = inner.entries.remove(&key) {
+            inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
+        }
+        while inner.used_bytes.saturating_add(byte_len) > self.max_bytes {
+            let Some(lru_key) = inner
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            let Some(evicted) = inner.entries.remove(&lru_key) else {
+                break;
+            };
+            inner.used_bytes = inner.used_bytes.saturating_sub(evicted.byte_len);
+            native_qwen_prefix_cache_metrics().record_eviction(evicted.byte_len);
+        }
+        let access = inner.next_access();
+        inner.entries.insert(
+            key,
+            NativeQwenPrefixCacheEntry {
+                hidden: hidden.to_vec(),
+                caches: caches.to_vec(),
+                byte_len,
+                last_used: access,
+            },
+        );
+        inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
+        native_qwen_prefix_cache_metrics().record_store(byte_len);
+        native_qwen_prefix_cache_metrics()
+            .record_residency(inner.used_bytes, inner.entries.len() as u64);
+    }
+}
+
+impl NativeQwenPrefixCacheInner {
+    fn next_access(&mut self) -> u64 {
+        let access = self.next_access;
+        self.next_access = self.next_access.saturating_add(1);
+        access
+    }
+}
+
+impl NativeQwenPrefixCacheMetrics {
+    fn record_hit(&self, tokens: u64) {
+        self.update(|counters| {
+            counters.hits += 1;
+            counters.reused_tokens += tokens;
+        });
+    }
+
+    fn record_miss(&self) {
+        self.update(|counters| counters.misses += 1);
+    }
+
+    fn record_store(&self, byte_len: u64) {
+        self.update(|counters| {
+            counters.stores += 1;
+            counters.bytes_stored += byte_len;
+        });
+    }
+
+    fn record_eviction(&self, byte_len: u64) {
+        self.update(|counters| {
+            counters.evictions += 1;
+            counters.bytes_evicted += byte_len;
+        });
+    }
+
+    fn record_rejected(&self) {
+        self.update(|counters| counters.rejected += 1);
+    }
+
+    fn record_residency(&self, bytes: u64, entries: u64) {
+        self.update(|counters| {
+            counters.resident_bytes = bytes;
+            counters.resident_entries = entries;
+        });
+    }
+
+    fn snapshot(&self) -> Value {
+        let counters = *self
+            .counters
+            .lock()
+            .expect("native Qwen prefix cache metrics lock is not poisoned");
+        json!({
+            "hits": counters.hits,
+            "misses": counters.misses,
+            "stores": counters.stores,
+            "evictions": counters.evictions,
+            "rejected": counters.rejected,
+            "reused_tokens": counters.reused_tokens,
+            "bytes_stored": counters.bytes_stored,
+            "bytes_evicted": counters.bytes_evicted,
+            "resident_bytes": counters.resident_bytes,
+            "resident_entries": counters.resident_entries,
+        })
+    }
+
+    fn update(&self, update: impl FnOnce(&mut NativeQwenPrefixCacheCounters)) {
+        let mut counters = self
+            .counters
+            .lock()
+            .expect("native Qwen prefix cache metrics lock is not poisoned");
+        update(&mut counters);
+    }
+}
+
+fn native_qwen_prefix_cache_metrics() -> &'static NativeQwenPrefixCacheMetrics {
+    static METRICS: OnceLock<NativeQwenPrefixCacheMetrics> = OnceLock::new();
+    METRICS.get_or_init(NativeQwenPrefixCacheMetrics::default)
+}
+
+fn native_qwen_prefix_entry_bytes(hidden: &[f32], caches: &[QwenLayerCache]) -> u64 {
+    let hidden_bytes = std::mem::size_of_val(hidden) as u64;
+    caches.iter().fold(hidden_bytes, |total, cache| {
+        total.saturating_add(match cache {
+            QwenLayerCache::Full(cache) => {
+                ((cache.key_storage().len() + cache.value_storage().len())
+                    * std::mem::size_of::<f32>()) as u64
+            }
+            QwenLayerCache::Linear(cache) => {
+                ((cache.conv_window().len() + cache.recurrent_state().len())
+                    * std::mem::size_of::<f32>()) as u64
+            }
+        })
+    })
+}
+
+fn native_qwen_prefix_namespace(
+    backend: &NativeQwenBackend,
+    request: &BackendRequest,
+    cache_tokens: usize,
+) -> NativeQwenPrefixCacheNamespace {
+    NativeQwenPrefixCacheNamespace {
+        model_id: backend.model_id.clone(),
+        backend: backend.metadata.backend.clone(),
+        family: backend.metadata.family.clone(),
+        loader: backend.metadata.loader.clone(),
+        quantization: backend.metadata.quantization.clone(),
+        repo_id: backend.metadata.repo_id.clone(),
+        resolved_commit: backend.metadata.resolved_commit.clone(),
+        profile: backend.metadata.profile.clone(),
+        manifest_digest: backend.metadata.manifest_digest.clone(),
+        prompt_template: backend_request_cache_prompt_template(request),
+        tool_schema: request.cache_context.tool_schema.clone(),
+        request_mode: native_qwen_prefix_request_mode(request),
+        sampling: native_qwen_prefix_sampling_key(request.sampling),
+        cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
+        cache_tokens,
+        max_prefill_tokens: backend.max_prefill_tokens,
+    }
+}
+
+fn native_qwen_prefix_request_mode(request: &BackendRequest) -> String {
+    format!(
+        "conversation={},json_object={},required_tool={:?}",
+        request.conversation_mode, request.json_object_mode, request.required_tool_choice
+    )
+}
+
+fn backend_request_cache_prompt_template(request: &BackendRequest) -> String {
+    if request.cache_context.prompt_template.is_empty() {
+        BackendCacheContext::raw_prompt().prompt_template
+    } else {
+        request.cache_context.prompt_template.clone()
+    }
+}
+
+fn native_qwen_prefix_sampling_key(sampling: SamplingConfig) -> String {
+    match sampling {
+        SamplingConfig::Greedy => "greedy".to_owned(),
+        SamplingConfig::TopP { temperature, top_p } => {
+            format!(
+                "top_p:{:08x}:{:08x}",
+                temperature.to_bits(),
+                top_p.to_bits()
+            )
+        }
+    }
+}
 
 struct NativeQwenMetalState {
     device: llm_metal::MetalDevice,
@@ -2076,6 +2403,9 @@ impl NativeQwenBackend {
             max_prefill_tokens: 32,
             top_k: 16,
             chunk_rows: 2048,
+            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
+                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+            )),
         })
     }
 
@@ -2126,7 +2456,8 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode = self.start_decode_session(&context_tokens, requested, &cancellation)?;
+        let mut decode =
+            self.start_decode_session(&context_tokens, requested, &request, &cancellation)?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -2203,14 +2534,14 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode = match self.start_decode_session(&context_tokens, requested, &cancellation)
-        {
-            Ok(decode) => decode,
-            Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
-                return Err(BackendError::Cancelled);
-            }
-            Err(err) => return Err(err),
-        };
+        let mut decode =
+            match self.start_decode_session(&context_tokens, requested, &request, &cancellation) {
+                Ok(decode) => decode,
+                Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
+                    return Err(BackendError::Cancelled);
+                }
+                Err(err) => return Err(err),
+            };
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -2285,6 +2616,7 @@ impl NativeQwenBackend {
         &self,
         context_tokens: &[usize],
         max_new_tokens: u32,
+        request: &BackendRequest,
         cancellation: &CancellationToken,
     ) -> Result<NativeQwenDecodeSession, BackendError> {
         if cancellation.is_cancelled() {
@@ -2292,20 +2624,48 @@ impl NativeQwenBackend {
         }
         let cache_tokens =
             native_qwen_cache_token_capacity(self.max_prefill_tokens, max_new_tokens);
-        let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let namespace = native_qwen_prefix_namespace(self, request, cache_tokens);
+        let layer_count = self.spec.num_hidden_layers as usize;
+        let mut cached_prefix_len = 0_usize;
+        let (mut hidden, mut caches) =
+            if let Some(hit) = self.prefix_cache.lookup(&namespace, context_tokens) {
+                if hit.caches.len() != layer_count {
+                    return Err(BackendError::Other(format!(
+                        "native Qwen prefix cache entry had {} layers, expected {layer_count}",
+                        hit.caches.len()
+                    )));
+                }
+                cached_prefix_len = hit.token_count;
+                (Some(hit.hidden), hit.caches)
+            } else {
+                (
+                    None,
+                    qwen_layer_caches_for_spec(&self.spec, cache_tokens)
+                        .map_err(|err| BackendError::Other(err.to_string()))?,
+                )
+            };
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let hidden = native_qwen_prefill_context_with_cache(
-            &self.store,
-            &self.spec,
-            context_tokens,
-            &mut caches,
-            &self.matvec,
-            self.max_prefill_tokens,
-            cancellation,
-        )?;
+        if cached_prefix_len < context_tokens.len() {
+            hidden = Some(native_qwen_prefill_context_with_cache(
+                &self.store,
+                &self.spec,
+                &context_tokens[cached_prefix_len..],
+                &mut caches,
+                &self.matvec,
+                self.max_prefill_tokens,
+                cancellation,
+            )?);
+        }
+        let hidden = hidden.ok_or_else(|| {
+            BackendError::Other("Qwen prefill returned no hidden states".to_owned())
+        })?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.prefix_cache
+            .store(namespace, context_tokens, &hidden, &caches);
         Ok(NativeQwenDecodeSession {
             hidden,
             caches,
@@ -3000,6 +3360,7 @@ async fn admin_metrics(
         "process_rss_bytes": process_rss_bytes(),
         "tokens_per_second": metrics.tokens_per_second(),
         "native_qwen_metal": native_qwen_metal_metrics().snapshot(),
+        "native_qwen_prefix_cache": native_qwen_prefix_cache_metrics().snapshot(),
         "request_latency_ms": {
             "count": request_latency.count(),
             "min": request_latency.min_ms(),
@@ -3838,6 +4199,91 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
+        let cache = NativeQwenPrefixCache::new(10_000);
+        let namespace = native_qwen_test_prefix_namespace("base");
+        let mut layer_cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        layer_cache
+            .append(&[1.0, 2.0], &[3.0, 4.0])
+            .expect("token fits");
+        let original_cache_id = layer_cache.id();
+        let caches = vec![QwenLayerCache::Full(layer_cache)];
+
+        cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches);
+
+        let hit = cache
+            .lookup(&namespace, &[1, 2, 3])
+            .expect("compatible longer prompt reuses stored prefix");
+        assert_eq!(hit.token_count, 2);
+        assert_eq!(hit.hidden, vec![0.25, 0.75]);
+        match &hit.caches[0] {
+            QwenLayerCache::Full(cache) => {
+                assert_ne!(cache.id(), original_cache_id);
+                assert_eq!(cache.token_count(), 1);
+            }
+            QwenLayerCache::Linear(_) => panic!("expected full-attention cache"),
+        }
+
+        let incompatible_namespace = NativeQwenPrefixCacheNamespace {
+            tool_schema: Some("different-tool-schema".to_owned()),
+            ..namespace.clone()
+        };
+        assert!(
+            cache.lookup(&incompatible_namespace, &[1, 2]).is_none(),
+            "tool schema changes must not reuse prefix state"
+        );
+    }
+
+    #[test]
+    fn native_qwen_prefix_cache_evicts_lru_entries_to_fit_budget() {
+        let cache = NativeQwenPrefixCache::new(40);
+        let namespace = native_qwen_test_prefix_namespace("eviction");
+        let hidden = vec![1.0; 8];
+
+        cache.store(namespace.clone(), &[1], &hidden, &[]);
+        cache.store(namespace.clone(), &[2], &hidden, &[]);
+
+        assert!(
+            cache.lookup(&namespace, &[1]).is_none(),
+            "oldest entry should be evicted"
+        );
+        assert!(
+            cache.lookup(&namespace, &[2]).is_some(),
+            "newest entry should remain resident"
+        );
+        let inner = cache
+            .inner
+            .lock()
+            .expect("native Qwen prefix cache lock is not poisoned");
+        assert_eq!(inner.entries.len(), 1);
+        assert_eq!(inner.used_bytes, 32);
+    }
+
+    #[test]
+    fn native_qwen_prefix_cache_metrics_expose_hits_misses_and_evictions() {
+        let metrics = NativeQwenPrefixCacheMetrics::default();
+
+        metrics.record_hit(3);
+        metrics.record_miss();
+        metrics.record_store(32);
+        metrics.record_eviction(16);
+        metrics.record_rejected();
+        metrics.record_residency(32, 1);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["hits"], 1);
+        assert_eq!(snapshot["misses"], 1);
+        assert_eq!(snapshot["stores"], 1);
+        assert_eq!(snapshot["evictions"], 1);
+        assert_eq!(snapshot["rejected"], 1);
+        assert_eq!(snapshot["reused_tokens"], 3);
+        assert_eq!(snapshot["bytes_stored"], 32);
+        assert_eq!(snapshot["bytes_evicted"], 16);
+        assert_eq!(snapshot["resident_bytes"], 32);
+        assert_eq!(snapshot["resident_entries"], 1);
+    }
+
+    #[test]
     fn bf16_matrix_buffer_cache_evicts_lru_entries_to_fit_budget() {
         let mut cache = Bf16MatrixBufferCache::new(10);
         let first = Bf16MatrixCacheKey {
@@ -4175,15 +4621,91 @@ mod tests {
             max_prefill_tokens: 1,
             top_k: 2,
             chunk_rows: 64,
+            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
+                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+            )),
         };
 
         let decode = backend
-            .start_decode_session(&[0, 1, 0], 8, &CancellationToken::new())
+            .start_decode_session(
+                &[0, 1, 0],
+                8,
+                &native_qwen_test_request("local-qwen36"),
+                &CancellationToken::new(),
+            )
             .expect("decode session starts");
 
         match &decode.caches[0] {
             QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
             QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
+        let snapshot = temp_snapshot_dir("shared-prefix-prefill");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        write_tiny_linear_decoder_snapshot(&snapshot);
+        let backend = NativeQwenBackend {
+            model_id: "local-qwen36".to_owned(),
+            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
+            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
+                .expect("tokenizer loads"),
+            spec: tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
+            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
+            matvec: NativeQwenMatvecBackend::Cpu,
+            max_new_tokens: 8,
+            max_prefill_tokens: 1,
+            top_k: 2,
+            chunk_rows: 64,
+            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
+                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+            )),
+        };
+        let request = native_qwen_test_request("local-qwen36");
+        let before_hits = native_prefix_metric_counter("hits");
+
+        let first = backend
+            .start_decode_session(&[0, 1], 8, &request, &CancellationToken::new())
+            .expect("first decode session starts");
+        drop(first);
+        let second = backend
+            .start_decode_session(&[0, 1, 0], 8, &request, &CancellationToken::new())
+            .expect("second decode session starts");
+
+        assert!(
+            native_prefix_metric_counter("hits") > before_hits,
+            "second request should hit the shared prefix cache"
+        );
+        match &second.caches[0] {
+            QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+            QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        }
+
+        let mut expected_caches =
+            qwen_layer_caches_for_spec(&backend.spec, native_qwen_cache_token_capacity(1, 8))
+                .expect("expected caches allocate");
+        let expected_hidden = native_qwen_prefill_context_with_cache(
+            &backend.store,
+            &backend.spec,
+            &[0, 1, 0],
+            &mut expected_caches,
+            &NativeQwenMatvecBackend::Cpu,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("fresh prefill succeeds");
+        assert_close_vec(second.hidden(), &expected_hidden);
+        match (&second.caches[0], &expected_caches[0]) {
+            (QwenLayerCache::Linear(actual), QwenLayerCache::Linear(expected)) => {
+                assert_eq!(actual.token_count(), expected.token_count());
+                assert_eq!(actual.conv_window(), expected.conv_window());
+                assert_eq!(actual.recurrent_state(), expected.recurrent_state());
+            }
+            _ => panic!("expected linear attention caches"),
         }
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -4337,6 +4859,7 @@ mod tests {
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,
+                    cache_context: BackendCacheContext::default(),
                 },
                 cancellation,
             )
@@ -4374,6 +4897,7 @@ mod tests {
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,
+                    cache_context: BackendCacheContext::default(),
                 },
                 tx,
                 cancellation,
@@ -4419,7 +4943,12 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
 
-        match backend.start_decode_session(&[0], 1, &cancellation) {
+        match backend.start_decode_session(
+            &[0],
+            1,
+            &native_qwen_test_request("local-qwen36"),
+            &cancellation,
+        ) {
             Err(BackendError::Cancelled) => {}
             Err(err) => panic!("expected cancellation before prefill, got {err}"),
             Ok(_) => panic!("pre-cancelled decode startup should fail before prefill"),
@@ -4501,6 +5030,9 @@ mod tests {
             max_prefill_tokens: 1,
             top_k: 2,
             chunk_rows: 64,
+            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
+                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+            )),
         };
 
         let candidate = backend
@@ -4809,6 +5341,56 @@ mod tests {
             max_position_embeddings: 32,
             vocab_size: 2,
             layer_kinds: vec![kind],
+        }
+    }
+
+    fn native_qwen_test_request(model: &str) -> BackendRequest {
+        BackendRequest {
+            model: model.to_owned(),
+            prompt: "test".to_owned(),
+            max_tokens: Some(1),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::default(),
+        }
+    }
+
+    fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamespace {
+        NativeQwenPrefixCacheNamespace {
+            model_id: format!("model-{label}"),
+            backend: "native-qwen".to_owned(),
+            family: Some("qwen".to_owned()),
+            loader: Some("safetensors".to_owned()),
+            quantization: Some("bf16".to_owned()),
+            repo_id: Some("local/test".to_owned()),
+            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            profile: Some("qwen-test".to_owned()),
+            manifest_digest: Some(format!("digest-{label}")),
+            prompt_template: "qwen-chatml/v1".to_owned(),
+            tool_schema: Some("tool-schema-v1".to_owned()),
+            request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
+            sampling: "greedy".to_owned(),
+            cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
+            cache_tokens: 8,
+            max_prefill_tokens: 8,
+        }
+    }
+
+    fn native_prefix_metric_counter(name: &str) -> u64 {
+        native_qwen_prefix_cache_metrics().snapshot()[name]
+            .as_u64()
+            .unwrap_or_else(|| panic!("prefix metric `{name}` is an unsigned integer"))
+    }
+
+    fn assert_close_vec(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "value {index} differed: actual={actual}, expected={expected}"
+            );
         }
     }
 

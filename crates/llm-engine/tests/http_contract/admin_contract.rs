@@ -474,6 +474,26 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         body["native_qwen_metal"]["linear_attention_cache"]["resident_bytes"].is_number(),
         "native Qwen Metal linear cache residency is exposed"
     );
+    assert!(
+        body["native_qwen_prefix_cache"].is_object(),
+        "native Qwen shared prefix cache metrics are exposed"
+    );
+    assert!(
+        body["native_qwen_prefix_cache"]["hits"].is_number(),
+        "native Qwen prefix cache hits are exposed"
+    );
+    assert!(
+        body["native_qwen_prefix_cache"]["misses"].is_number(),
+        "native Qwen prefix cache misses are exposed"
+    );
+    assert!(
+        body["native_qwen_prefix_cache"]["evictions"].is_number(),
+        "native Qwen prefix cache evictions are exposed"
+    );
+    assert!(
+        body["native_qwen_prefix_cache"]["resident_bytes"].is_number(),
+        "native Qwen prefix cache residency is exposed"
+    );
 }
 
 #[tokio::test]

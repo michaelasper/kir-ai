@@ -58,7 +58,7 @@ impl KvCacheBudget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct LayerKvCache {
     id: u64,
     revision: u64,
@@ -69,6 +69,22 @@ pub struct LayerKvCache {
     tokens_seen: usize,
     keys: Vec<f32>,
     values: Vec<f32>,
+}
+
+impl Clone for LayerKvCache {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_cache_id(),
+            revision: self.revision,
+            max_tokens: self.max_tokens,
+            key_value_heads: self.key_value_heads,
+            head_dim: self.head_dim,
+            token_count: self.token_count,
+            tokens_seen: self.tokens_seen,
+            keys: self.keys.clone(),
+            values: self.values.clone(),
+        }
+    }
 }
 
 impl LayerKvCache {
@@ -243,7 +259,7 @@ impl LayerKvCache {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct LinearAttentionCache {
     id: u64,
     revision: u64,
@@ -255,6 +271,23 @@ pub struct LinearAttentionCache {
     token_count: usize,
     conv_window: Vec<f32>,
     recurrent_state: Vec<f32>,
+}
+
+impl Clone for LinearAttentionCache {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_cache_id(),
+            revision: self.revision,
+            conv_kernel_size: self.conv_kernel_size,
+            conv_dim: self.conv_dim,
+            num_value_heads: self.num_value_heads,
+            key_head_dim: self.key_head_dim,
+            value_head_dim: self.value_head_dim,
+            token_count: self.token_count,
+            conv_window: self.conv_window.clone(),
+            recurrent_state: self.recurrent_state.clone(),
+        }
+    }
 }
 
 impl LinearAttentionCache {
@@ -512,6 +545,20 @@ mod tests {
     }
 
     #[test]
+    fn layer_kv_cache_clone_preserves_state_with_fresh_identity() {
+        let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape is valid");
+        cache.append(&[1.0, 2.0], &[3.0, 4.0]).expect("token fits");
+
+        let clone = cache.clone();
+
+        assert_ne!(clone.id(), cache.id());
+        assert_eq!(clone.revision(), cache.revision());
+        assert_eq!(clone.token_count(), cache.token_count());
+        assert_eq!(clone.keys(), cache.keys());
+        assert_eq!(clone.values(), cache.values());
+    }
+
+    #[test]
     fn layer_kv_cache_rejects_shape_mismatch_and_capacity_overflow() {
         let mut cache = LayerKvCache::new(1, 1, 2).expect("cache shape is valid");
 
@@ -620,6 +667,25 @@ mod tests {
         assert_eq!(cache.conv_window(), &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(cache.recurrent_state(), &[0.0, 0.0, 0.0, 0.0]);
         assert!(cache.revision() > initial_revision);
+    }
+
+    #[test]
+    fn linear_attention_cache_clone_preserves_state_with_fresh_identity() {
+        let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
+        cache
+            .push_conv_input(&[1.0, 2.0, 3.0])
+            .expect("conv input fits");
+        cache
+            .replace_recurrent_state(&[0.5, 1.5, 2.5, 3.5])
+            .expect("state shape fits");
+
+        let clone = cache.clone();
+
+        assert_ne!(clone.id(), cache.id());
+        assert_eq!(clone.revision(), cache.revision());
+        assert_eq!(clone.token_count(), cache.token_count());
+        assert_eq!(clone.conv_window(), cache.conv_window());
+        assert_eq!(clone.recurrent_state(), cache.recurrent_state());
     }
 
     #[test]

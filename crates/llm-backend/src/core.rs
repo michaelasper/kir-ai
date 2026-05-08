@@ -31,6 +31,35 @@ pub struct BackendRequest {
     pub required_tool_choice: Option<BackendToolChoice>,
     pub json_object_mode: bool,
     pub conversation_mode: bool,
+    pub cache_context: BackendCacheContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BackendCacheContext {
+    pub prompt_template: String,
+    pub tool_schema: Option<String>,
+}
+
+impl BackendCacheContext {
+    pub fn raw_prompt() -> Self {
+        Self {
+            prompt_template: "raw-prompt/v1".to_owned(),
+            tool_schema: None,
+        }
+    }
+
+    pub fn qwen_chatml(tool_schema: Option<String>) -> Self {
+        Self {
+            prompt_template: "qwen-chatml/v1".to_owned(),
+            tool_schema,
+        }
+    }
+}
+
+impl Default for BackendCacheContext {
+    fn default() -> Self {
+        Self::raw_prompt()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5253,6 +5282,7 @@ mod tests {
             required_tool_choice: None,
             json_object_mode: false,
             conversation_mode: false,
+            cache_context: BackendCacheContext::default(),
         }
     }
 }
