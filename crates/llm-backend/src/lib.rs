@@ -323,6 +323,8 @@ pub enum BackendError {
     },
     #[error("unsupported backend request: {0}")]
     UnsupportedRequest(String),
+    #[error("backend generation cancelled")]
+    Cancelled,
     #[error("backend error: {0}")]
     Other(String),
 }

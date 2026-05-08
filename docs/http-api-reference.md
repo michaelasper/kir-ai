@@ -1,7 +1,8 @@
 # HTTP API Reference
 
 `llm-engine` exposes a small OpenAI-compatible HTTP surface plus admin endpoints
-for model status, metrics, snapshot verification, planning, and pulls.
+for model status, metrics, snapshot verification, planning, pulls, and active
+request cancellation.
 
 Base URL in examples:
 
@@ -21,6 +22,7 @@ http://127.0.0.1:3000
 | `POST` | `/admin/models/{alias}/verify` | Verify the served snapshot from its manifest. |
 | `POST` | `/admin/models/{alias}/plan` | Build a download plan for the served model alias. |
 | `POST` | `/admin/models/{alias}/pull` | Pull and promote a snapshot into the configured model store. |
+| `POST` | `/admin/requests/{request_id}/cancel` | Cancel an active chat or completion request. |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions. |
 | `POST` | `/v1/completions` | OpenAI-compatible legacy text completions. |
 
@@ -116,6 +118,23 @@ configured model profile and hub endpoint. This does not mutate the model store.
 Downloads, verifies, and promotes a snapshot through the configured model store.
 This is a mutating admin operation and should be exposed only behind the admin
 Bearer token.
+
+## `POST /admin/requests/{request_id}/cancel`
+
+Cancels an active chat or text-completion request by request ID. Clients may set
+`x-request-id` or `x-llm-request-id` on `/v1/chat/completions` and
+`/v1/completions`; otherwise the server assigns an `x-request-id` response
+header. Active cancellation returns:
+
+```json
+{
+  "object": "admin.request_cancellation",
+  "request_id": "cancel-me",
+  "status": "cancelled"
+}
+```
+
+Unknown or already-finished request IDs return `404` with `request_not_found`.
 
 ## `POST /v1/chat/completions`
 
@@ -359,6 +378,9 @@ Known codes:
 | `unsupported_capability` | `400` | `request_validation` | `false` |
 | `model_not_found` | `404` | `model_resolution` | `false` |
 | `backend_execution_failed` | `500` | `decode` | `true` |
+| `cancelled` | `408` | `decode` | `false` |
+| `request_not_found` | `404` | `cancellation` | `false` |
+| `request_id_conflict` | `409` | `request_validation` | `false` |
 | `chat_template_failed` | `422` | `prompt_rendering` | `false` |
 | `malformed_tool_call` | `422` | `response_parsing` | `false` |
 | `json_validation_failed` | `422` | `response_validation` | `false` |

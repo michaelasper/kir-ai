@@ -401,6 +401,141 @@ async fn concurrent_generation_returns_model_overloaded() {
 }
 
 #[tokio::test]
+async fn admin_cancel_request_cancels_active_chat_generation() {
+    let entered = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+        entered: entered.clone(),
+        cancelled: cancelled.clone(),
+    }));
+    let request_id = "cancel-me";
+    let first = tokio::spawn(
+        app.clone()
+            .oneshot(chat_request_body_with_id("long running", request_id)),
+    );
+    entered.notified().await;
+
+    let cancel_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/requests/{request_id}/cancel"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cancel response");
+
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    let cancel_body = body_json(cancel_response.into_body()).await;
+    assert_eq!(cancel_body["request_id"], request_id);
+    assert_eq!(cancel_body["status"], "cancelled");
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend receives cancellation");
+
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::REQUEST_TIMEOUT);
+    let body = body_json(first.into_body()).await;
+    assert_eq!(body["error"]["code"], "cancelled");
+    assert_eq!(body["error"]["phase"], "decode");
+}
+
+#[tokio::test]
+async fn admin_cancel_request_cancels_active_text_completion() {
+    let entered = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+        entered: entered.clone(),
+        cancelled: cancelled.clone(),
+    }));
+    let request_id = "cancel-completion";
+    let first = tokio::spawn(
+        app.clone()
+            .oneshot(completion_request_body_with_id("long running", request_id)),
+    );
+    entered.notified().await;
+
+    let cancel_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/requests/{request_id}/cancel"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cancel response");
+
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend receives cancellation");
+
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::REQUEST_TIMEOUT);
+    let body = body_json(first.into_body()).await;
+    assert_eq!(body["error"]["code"], "cancelled");
+}
+
+#[tokio::test]
+async fn admin_cancel_request_reports_unknown_request_id() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/requests/not-active/cancel")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cancel response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "request_not_found");
+    assert_eq!(body["error"]["phase"], "cancellation");
+}
+
+#[tokio::test]
+async fn duplicate_active_request_id_fails_closed() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = build_router_with_backend_and_options(
+        Box::new(BlockingBackend {
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        EngineOptions {
+            concurrency_limit: 2,
+            ..EngineOptions::default()
+        },
+    );
+    let first = tokio::spawn(
+        app.clone()
+            .oneshot(chat_request_body_with_id("first", "same-id")),
+    );
+    entered.notified().await;
+
+    let second = app
+        .clone()
+        .oneshot(chat_request_body_with_id("second", "same-id"))
+        .await
+        .expect("second response");
+
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let body = body_json(second.into_body()).await;
+    assert_eq!(body["error"]["code"], "request_id_conflict");
+    assert_eq!(body["error"]["phase"], "request_validation");
+
+    release.notify_waiters();
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn chat_completions_returns_openai_shape() {
     let response = build_router()
         .oneshot(
@@ -1643,6 +1778,35 @@ impl ModelBackend for BlockingBackend {
     }
 }
 
+struct AdminCancellableBackend {
+    entered: Arc<Notify>,
+    cancelled: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for AdminCancellableBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        self.entered.notify_waiters();
+        cancellation.cancelled().await;
+        self.cancelled.notify_waiters();
+        Err(BackendError::Cancelled)
+    }
+}
+
 struct DelayedStreamBackend {
     release: Arc<Semaphore>,
 }
@@ -1943,6 +2107,38 @@ fn chat_request_body(content: &str) -> Request<Body> {
             json!({
                 "model": "local-qwen36",
                 "messages": [{"role": "user", "content": content}]
+            })
+            .to_string(),
+        ))
+        .expect("request builds")
+}
+
+fn chat_request_body_with_id(content: &str, request_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("x-request-id", request_id)
+        .body(Body::from(
+            json!({
+                "model": "local-qwen36",
+                "messages": [{"role": "user", "content": content}]
+            })
+            .to_string(),
+        ))
+        .expect("request builds")
+}
+
+fn completion_request_body_with_id(prompt: &str, request_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/completions")
+        .header("content-type", "application/json")
+        .header("x-request-id", request_id)
+        .body(Body::from(
+            json!({
+                "model": "local-qwen36",
+                "prompt": prompt
             })
             .to_string(),
         ))

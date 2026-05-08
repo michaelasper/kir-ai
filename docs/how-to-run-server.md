@@ -142,8 +142,15 @@ curl -s http://127.0.0.1:3000/admin/models/local-qwen36 | jq
 
 `GET /admin/models` and `GET /admin/models/{alias}` are read-only status
 endpoints. The `/admin/*` surface also includes metrics, snapshot verification,
-download planning, and snapshot pulls; `/admin/models/{alias}/pull` mutates the
-configured model store.
+download planning, snapshot pulls, and active request cancellation;
+`/admin/models/{alias}/pull` mutates the configured model store.
+
+To make a request cancellable by a known ID, send `x-request-id` on the
+inference call, then cancel it through the admin surface:
+
+```sh
+curl -X POST http://127.0.0.1:3000/admin/requests/my-request-id/cancel
+```
 
 Use `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN` to require
 `Authorization: Bearer <token>` on admin routes. The server refuses non-loopback

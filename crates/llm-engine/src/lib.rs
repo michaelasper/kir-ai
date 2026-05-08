@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -37,6 +37,7 @@ use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{
@@ -55,11 +56,29 @@ struct AppState {
     runtime: Arc<EngineRuntime>,
     metrics: Arc<Mutex<ServerMetrics>>,
     model_permits: Arc<Semaphore>,
+    active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    next_request_id: Arc<AtomicU64>,
     admin_token: Option<Arc<str>>,
     model_home: PathBuf,
     hub_client: HubClient,
     hf_token: Option<Arc<str>>,
     stream_stall_timeout: Option<Duration>,
+}
+
+#[derive(Debug)]
+struct ActiveRequest {
+    id: String,
+    cancellation: CancellationToken,
+    active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
+}
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        self.active_requests
+            .lock()
+            .expect("active request lock is not poisoned")
+            .remove(&self.id);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +140,10 @@ pub fn build_router_with_backend_and_options(
         .route("/admin/models/{alias}/verify", post(admin_model_verify))
         .route("/admin/models/{alias}/plan", post(admin_model_plan))
         .route("/admin/models/{alias}/pull", post(admin_model_pull))
+        .route(
+            "/admin/requests/{request_id}/cancel",
+            post(admin_cancel_request),
+        )
         .route("/admin/metrics", get(admin_metrics))
         .route(
             "/v1/chat/completions",
@@ -131,6 +154,8 @@ pub fn build_router_with_backend_and_options(
             runtime: Arc::new(runtime),
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
             model_permits: Arc::new(Semaphore::new(options.concurrency_limit.max(1))),
+            active_requests: Arc::new(Mutex::new(HashMap::new())),
+            next_request_id: Arc::new(AtomicU64::new(1)),
             admin_token: options.admin_token.map(Arc::from),
             model_home: options.model_home.unwrap_or_else(default_model_home),
             hub_client: options
@@ -229,9 +254,7 @@ impl NativeQwenBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Other(
-                "native Qwen generation cancelled".to_owned(),
-            ));
+            return Err(BackendError::Cancelled);
         }
         if request.model != self.model_id {
             return Err(BackendError::ModelNotFound {
@@ -240,9 +263,7 @@ impl NativeQwenBackend {
             });
         }
         if cancellation.is_cancelled() {
-            return Err(BackendError::Other(
-                "native Qwen generation cancelled".to_owned(),
-            ));
+            return Err(BackendError::Cancelled);
         }
         let prompt_tokens = self
             .tokenizer
@@ -266,22 +287,16 @@ impl NativeQwenBackend {
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
         let mut decode = self.start_decode_session(&context_tokens, requested)?;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Other(
-                "native Qwen generation cancelled".to_owned(),
-            ));
+            return Err(BackendError::Cancelled);
         }
 
         for step_idx in 0..requested {
             if cancellation.is_cancelled() {
-                return Err(BackendError::Other(
-                    "native Qwen generation cancelled".to_owned(),
-                ));
+                return Err(BackendError::Cancelled);
             }
             let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
             if cancellation.is_cancelled() {
-                return Err(BackendError::Other(
-                    "native Qwen generation cancelled".to_owned(),
-                ));
+                return Err(BackendError::Cancelled);
             }
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
@@ -865,8 +880,30 @@ async fn admin_metrics(
     })))
 }
 
+async fn admin_cancel_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(request_id): AxumPath<String>,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
+    let cancellation = state
+        .active_requests
+        .lock()
+        .expect("active request lock is not poisoned")
+        .get(&request_id)
+        .cloned()
+        .ok_or_else(|| EngineError::RequestNotFound(request_id.clone()))?;
+    cancellation.cancel();
+    Ok(Json(json!({
+        "object": "admin.request_cancellation",
+        "request_id": request_id,
+        "status": "cancelled"
+    })))
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     request: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
@@ -874,8 +911,14 @@ async fn chat_completions(
     let streamed = request.stream;
     if request.stream {
         let permit = acquire_model_permit(&state)?;
+        let active_request = register_active_request(&state, &headers)?;
+        let request_id = active_request.id.clone();
         if chat_stream_requires_buffering(&request) {
-            let response = match state.runtime.chat_stream_buffered(request).await {
+            let response = match state
+                .runtime
+                .chat_stream_buffered_with_cancel(request, active_request.cancellation.clone())
+                .await
+            {
                 Ok(response) => response,
                 Err(err) => {
                     record_failure_metrics(&state);
@@ -884,6 +927,7 @@ async fn chat_completions(
             };
             let events = async_stream::stream! {
                 let _permit = permit;
+                let _active_request = active_request;
                 let mut events = response.into_events();
                 loop {
                     match next_stream_event(&mut events, state.stream_stall_timeout).await {
@@ -912,13 +956,20 @@ async fn chat_completions(
                     }
                 }
             };
-            return Ok(Sse::new(events)
+            let mut response = Sse::new(events)
                 .keep_alive(engine_sse_keep_alive())
-                .into_response());
+                .into_response();
+            insert_request_id_header(&mut response, &request_id);
+            return Ok(response);
         }
         let events = async_stream::stream! {
             let _permit = permit;
-            match state.runtime.chat_stream(request).await {
+            let _active_request = active_request;
+            match state
+                .runtime
+                .chat_stream_with_cancel(request, _active_request.cancellation.clone())
+                .await
+            {
                 Ok(response) => {
                     let mut events = response.into_events();
                     loop {
@@ -956,24 +1007,36 @@ async fn chat_completions(
                 }
             }
         };
-        return Ok(Sse::new(events)
+        let mut response = Sse::new(events)
             .keep_alive(engine_sse_keep_alive())
-            .into_response());
+            .into_response();
+        insert_request_id_header(&mut response, &request_id);
+        return Ok(response);
     }
     let _permit = acquire_model_permit(&state)?;
-    let response = match state.runtime.chat(request).await {
+    let active_request = register_active_request(&state, &headers)?;
+    let request_id = active_request.id.clone();
+    let response = match state
+        .runtime
+        .chat_with_cancel(request, active_request.cancellation.clone())
+        .await
+    {
         Ok(response) => response,
         Err(err) => {
             record_failure_metrics(&state);
             return Err(err.into());
         }
     };
+    drop(active_request);
     record_success_metrics(&state, &response.usage, streamed);
-    Ok(Json(response).into_response())
+    let mut response = Json(response).into_response();
+    insert_request_id_header(&mut response, &request_id);
+    Ok(response)
 }
 
 async fn completions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     request: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
@@ -981,9 +1044,16 @@ async fn completions(
     let streamed = request.stream;
     if request.stream {
         let permit = acquire_model_permit(&state)?;
+        let active_request = register_active_request(&state, &headers)?;
+        let request_id = active_request.id.clone();
         let events = async_stream::stream! {
             let _permit = permit;
-            match state.runtime.completion_stream(request).await {
+            let _active_request = active_request;
+            match state
+                .runtime
+                .completion_stream_with_cancel(request, _active_request.cancellation.clone())
+                .await
+            {
                 Ok(response) => {
                     let mut events = response.into_events();
                     loop {
@@ -1021,20 +1091,31 @@ async fn completions(
                 }
             }
         };
-        return Ok(Sse::new(events)
+        let mut response = Sse::new(events)
             .keep_alive(engine_sse_keep_alive())
-            .into_response());
+            .into_response();
+        insert_request_id_header(&mut response, &request_id);
+        return Ok(response);
     }
     let _permit = acquire_model_permit(&state)?;
-    let response = match state.runtime.completion(request).await {
+    let active_request = register_active_request(&state, &headers)?;
+    let request_id = active_request.id.clone();
+    let response = match state
+        .runtime
+        .completion_with_cancel(request, active_request.cancellation.clone())
+        .await
+    {
         Ok(response) => response,
         Err(err) => {
             record_failure_metrics(&state);
             return Err(err.into());
         }
     };
+    drop(active_request);
     record_success_metrics(&state, &response.usage, streamed);
-    Ok(Json(response).into_response())
+    let mut response = Json(response).into_response();
+    insert_request_id_header(&mut response, &request_id);
+    Ok(response)
 }
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
@@ -1136,6 +1217,66 @@ fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, Engine
             record_failure_metrics(state);
             EngineError::Overloaded("model is busy; retry the request later".to_owned())
         })
+}
+
+fn register_active_request(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<ActiveRequest, EngineError> {
+    let id = match request_id_from_headers(state, headers) {
+        Ok(id) => id,
+        Err(err) => {
+            record_failure_metrics(state);
+            return Err(err);
+        }
+    };
+    let cancellation = CancellationToken::new();
+    let mut active_requests = state
+        .active_requests
+        .lock()
+        .expect("active request lock is not poisoned");
+    if active_requests.contains_key(&id) {
+        record_failure_metrics(state);
+        return Err(EngineError::RequestConflict(id));
+    }
+    active_requests.insert(id.clone(), cancellation.clone());
+    drop(active_requests);
+    Ok(ActiveRequest {
+        id,
+        cancellation,
+        active_requests: state.active_requests.clone(),
+    })
+}
+
+fn request_id_from_headers(state: &AppState, headers: &HeaderMap) -> Result<String, EngineError> {
+    let Some(value) = headers
+        .get("x-request-id")
+        .or_else(|| headers.get("x-llm-request-id"))
+    else {
+        let next = state.next_request_id.fetch_add(1, Ordering::Relaxed);
+        return Ok(format!("req-{next}"));
+    };
+    let request_id = value
+        .to_str()
+        .map_err(|_| EngineError::InvalidRequestId("request id must be visible ASCII".to_owned()))?
+        .trim();
+    if request_id.is_empty() {
+        return Err(EngineError::InvalidRequestId(
+            "request id must not be empty".to_owned(),
+        ));
+    }
+    if request_id.len() > 128 {
+        return Err(EngineError::InvalidRequestId(
+            "request id must be at most 128 bytes".to_owned(),
+        ));
+    }
+    Ok(request_id.to_owned())
+}
+
+fn insert_request_id_header(response: &mut Response, request_id: &str) {
+    let value = HeaderValue::from_str(request_id)
+        .expect("registered request id came from a valid header value or generated ASCII");
+    response.headers_mut().insert("x-request-id", value);
 }
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), EngineError> {
@@ -1357,6 +1498,9 @@ enum EngineError {
     Runtime(RuntimeError),
     ModelStore(HubError),
     Overloaded(String),
+    RequestNotFound(String),
+    RequestConflict(String),
+    InvalidRequestId(String),
     UnauthorizedAdmin,
 }
 
@@ -1389,6 +1533,9 @@ impl IntoResponse for EngineError {
                         "request_validation",
                         false,
                     ),
+                    RuntimeError::Backend(BackendError::Cancelled) => {
+                        (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false)
+                    }
                     RuntimeError::Backend(BackendError::Other(_)) => (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "backend_execution_failed",
@@ -1444,6 +1591,27 @@ impl IntoResponse for EngineError {
                 "model_overloaded",
                 "scheduler",
                 true,
+                message,
+            ),
+            Self::RequestNotFound(request_id) => (
+                StatusCode::NOT_FOUND,
+                "request_not_found",
+                "cancellation",
+                false,
+                format!("request `{request_id}` is not active"),
+            ),
+            Self::RequestConflict(request_id) => (
+                StatusCode::CONFLICT,
+                "request_id_conflict",
+                "request_validation",
+                false,
+                format!("request id `{request_id}` is already active"),
+            ),
+            Self::InvalidRequestId(message) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "request_validation",
+                false,
                 message,
             ),
             Self::UnauthorizedAdmin => (

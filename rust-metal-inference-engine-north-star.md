@@ -212,6 +212,7 @@ Current verified state:
 - Failed model pulls now clean their unique staging directory before returning the original download or integrity error.
 - Existing snapshot verification now reuses a matching manifest instead of rewriting timestamp-only metadata, keeping no-op manifest digests stable.
 - Public docs now describe supported temperature/top-p sampling controls and the full admin endpoint surface, including mutating model-store operations and admin Bearer-token expectations.
+- `POST /admin/requests/{request_id}/cancel` can cancel active chat and text-completion requests registered with `x-request-id`/`x-llm-request-id` or a generated request ID. Cancelled backend requests return stable `cancelled` error metadata.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
@@ -235,7 +236,7 @@ Known incomplete items:
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 f32/raw-bit reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
 - Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, row-major BF16-weight matvec, batched BF16-weight matvec, and `f32` argmax/top-k logits selection are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
-- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
+- Admin status, metrics, served snapshot verification, model plan/pull, and active request cancellation HTTP endpoints exist. Non-streaming and streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 
 The first-class model families are:
 

@@ -45,6 +45,15 @@ where
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, RuntimeError> {
+        self.completion_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    pub async fn completion_with_cancel(
+        &self,
+        request: CompletionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<CompletionResponse, RuntimeError> {
         request.validate()?;
         if request.stream {
             return Err(ApiError::unsupported_capability(
@@ -52,7 +61,7 @@ where
             )
             .into());
         }
-        let completion = self.complete_text(request).await?;
+        let completion = self.complete_text(request, cancellation).await?;
         Ok(CompletionResponse {
             id: completion.id,
             object: "text_completion".to_owned(),
@@ -71,6 +80,15 @@ where
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
+        self.completion_stream_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    pub async fn completion_stream_with_cancel(
+        &self,
+        request: CompletionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<CompletionStream<'_>, RuntimeError> {
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
         let stop = request.stop.clone();
@@ -79,7 +97,6 @@ where
             created: Utc::now().timestamp(),
             model: request.model.clone(),
         };
-        let cancellation = CancellationToken::new();
         let backend_stream = self.backend.generate_stream_with_cancel(
             BackendRequest {
                 model: request.model,
@@ -105,13 +122,22 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RuntimeError> {
+        self.chat_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    pub async fn chat_with_cancel(
+        &self,
+        request: ChatCompletionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionResponse, RuntimeError> {
         if request.stream {
             return Err(ApiError::unsupported_capability(
                 "streaming chat requests must use Runtime::chat_stream",
             )
             .into());
         }
-        let completion = self.complete_chat(request).await?;
+        let completion = self.complete_chat(request, cancellation).await?;
         let message = ChatMessage {
             role: ChatRole::Assistant,
             content: (!completion.parsed.content.is_empty()).then_some(completion.parsed.content),
@@ -137,8 +163,19 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
+        self.chat_stream_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    pub async fn chat_stream_with_cancel(
+        &self,
+        request: ChatCompletionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
         if chat_stream_requires_buffering(&request) {
-            return self.chat_stream_buffered(request).await;
+            return self
+                .chat_stream_buffered_with_cancel(request, cancellation)
+                .await;
         }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
@@ -155,7 +192,6 @@ where
             created: Utc::now().timestamp(),
             model: request.model.clone(),
         };
-        let cancellation = CancellationToken::new();
         let backend_stream = self.backend.generate_stream_with_cancel(
             BackendRequest {
                 model: request.model.clone(),
@@ -184,14 +220,24 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
+        self.chat_stream_buffered_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    pub async fn chat_stream_buffered_with_cancel(
+        &self,
+        request: ChatCompletionRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
         let include_usage = request.stream_options.include_usage;
-        let completion = self.complete_chat(request).await?;
+        let completion = self.complete_chat(request, cancellation).await?;
         buffered_chat_stream(completion, include_usage)
     }
 
     async fn complete_chat(
         &self,
         request: ChatCompletionRequest,
+        cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
         request.validate()?;
         let prompt = render_qwen_chatml(
@@ -203,7 +249,6 @@ where
             },
         )?;
         let required_tool_choice = required_backend_tool_choice(&request);
-        let cancellation = CancellationToken::new();
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
@@ -271,9 +316,9 @@ where
     async fn complete_text(
         &self,
         request: CompletionRequest,
+        cancellation: CancellationToken,
     ) -> Result<RuntimeCompletion, RuntimeError> {
         request.validate()?;
-        let cancellation = CancellationToken::new();
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
