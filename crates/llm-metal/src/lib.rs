@@ -13,12 +13,26 @@ pub struct MetalDevice {
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
+    argmax_f32: Arc<MetalKernel>,
+    top_k_f32: Arc<MetalKernel>,
 }
 
 #[derive(Debug)]
 struct MetalKernel {
     pipeline: ComputePipelineState,
     queue: CommandQueue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArgmaxResult {
+    pub index: usize,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopKResult {
+    pub index: usize,
+    pub value: f32,
 }
 
 impl MetalDevice {
@@ -43,6 +57,8 @@ impl MetalDevice {
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
+        let argmax_f32 = Self::kernel(&device, &library, "argmax_f32")?;
+        let top_k_f32 = Self::kernel(&device, &library, "top_k_f32")?;
         Ok(Self {
             device,
             vector_add,
@@ -50,6 +66,8 @@ impl MetalDevice {
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
+            argmax_f32,
+            top_k_f32,
         })
     }
 
@@ -523,7 +541,224 @@ impl MetalDevice {
         };
         Ok(values)
     }
+
+    pub fn argmax_f32(&self, logits: &[f32]) -> Result<ArgmaxResult, MetalError> {
+        if logits.is_empty() {
+            return Err(MetalError::InvalidShape(
+                "argmax input must not be empty".to_owned(),
+            ));
+        }
+        if let Some((index, _)) = logits.iter().enumerate().find(|(_, value)| value.is_nan()) {
+            return Err(MetalError::InvalidShape(format!(
+                "argmax input contains NaN at index {index}"
+            )));
+        }
+        let len_u32 = u32::try_from(logits.len()).map_err(|err| {
+            MetalError::InvalidShape(format!("argmax input length does not fit u32: {err}"))
+        })?;
+        let chunk_size = 256_u32;
+        let chunk_count = logits.len().div_ceil(chunk_size as usize);
+        let chunk_count_u32 = u32::try_from(chunk_count).map_err(|err| {
+            MetalError::InvalidShape(format!("argmax chunk count does not fit u32: {err}"))
+        })?;
+        let logits_byte_len = std::mem::size_of_val(logits) as u64;
+        let chunk_indices_byte_len = (chunk_count * std::mem::size_of::<u32>()) as u64;
+        let chunk_values_byte_len = (chunk_count * std::mem::size_of::<f32>()) as u64;
+        let logits_buffer = self.device.new_buffer_with_data(
+            logits.as_ptr().cast::<c_void>(),
+            logits_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let chunk_indices_buffer = self.device.new_buffer(
+            chunk_indices_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let chunk_values_buffer = self
+            .device
+            .new_buffer(chunk_values_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.argmax_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.argmax_f32.pipeline);
+        encoder.set_buffer(0, Some(&logits_buffer), 0);
+        encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&len_u32) as u64,
+            (&len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&chunk_size) as u64,
+            (&chunk_size as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(3, Some(&chunk_indices_buffer), 0);
+        encoder.set_buffer(4, Some(&chunk_values_buffer), 0);
+        let threads = MTLSize {
+            width: chunk_count_u32 as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .argmax_f32
+            .pipeline
+            .thread_execution_width()
+            .min(chunk_count_u32 as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: both output buffers are StorageModeShared buffers sized for
+        // exactly chunk_count values. The command buffer has completed.
+        let (chunk_indices, chunk_values) = unsafe {
+            let indices_ptr = chunk_indices_buffer.contents().cast::<u32>();
+            let values_ptr = chunk_values_buffer.contents().cast::<f32>();
+            (
+                std::slice::from_raw_parts(indices_ptr, chunk_count),
+                std::slice::from_raw_parts(values_ptr, chunk_count),
+            )
+        };
+        let mut best = ArgmaxResult {
+            index: chunk_indices[0] as usize,
+            value: chunk_values[0],
+        };
+        for (&index, &value) in chunk_indices.iter().zip(chunk_values).skip(1) {
+            let index = index as usize;
+            if value > best.value || (value == best.value && index < best.index) {
+                best = ArgmaxResult { index, value };
+            }
+        }
+        Ok(best)
+    }
+
+    pub fn top_k_f32(&self, logits: &[f32], k: usize) -> Result<Vec<TopKResult>, MetalError> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        if logits.is_empty() {
+            return Err(MetalError::InvalidShape(
+                "top-k input must not be empty".to_owned(),
+            ));
+        }
+        if k > MAX_METAL_TOP_K {
+            return Err(MetalError::InvalidShape(format!(
+                "top-k count {k} exceeds maximum {MAX_METAL_TOP_K}"
+            )));
+        }
+        if let Some((index, _)) = logits.iter().enumerate().find(|(_, value)| value.is_nan()) {
+            return Err(MetalError::InvalidShape(format!(
+                "top-k input contains NaN at index {index}"
+            )));
+        }
+        let final_k = k.min(logits.len());
+        let len_u32 = u32::try_from(logits.len()).map_err(|err| {
+            MetalError::InvalidShape(format!("top-k input length does not fit u32: {err}"))
+        })?;
+        let k_u32 = u32::try_from(k).map_err(|err| {
+            MetalError::InvalidShape(format!("top-k count does not fit u32: {err}"))
+        })?;
+        let chunk_size = 256_u32;
+        let chunk_count = logits.len().div_ceil(chunk_size as usize);
+        let chunk_count_u32 = u32::try_from(chunk_count).map_err(|err| {
+            MetalError::InvalidShape(format!("top-k chunk count does not fit u32: {err}"))
+        })?;
+        let candidate_count = chunk_count
+            .checked_mul(k)
+            .ok_or_else(|| MetalError::InvalidShape("top-k output shape overflows".to_owned()))?;
+        let logits_byte_len = std::mem::size_of_val(logits) as u64;
+        let indices_byte_len = (candidate_count * std::mem::size_of::<u32>()) as u64;
+        let values_byte_len = (candidate_count * std::mem::size_of::<f32>()) as u64;
+        let logits_buffer = self.device.new_buffer_with_data(
+            logits.as_ptr().cast::<c_void>(),
+            logits_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let indices_buffer = self
+            .device
+            .new_buffer(indices_byte_len, MTLResourceOptions::StorageModeShared);
+        let values_buffer = self
+            .device
+            .new_buffer(values_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.top_k_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.top_k_f32.pipeline);
+        encoder.set_buffer(0, Some(&logits_buffer), 0);
+        encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&len_u32) as u64,
+            (&len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&chunk_size) as u64,
+            (&chunk_size as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&k_u32) as u64,
+            (&k_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(4, Some(&indices_buffer), 0);
+        encoder.set_buffer(5, Some(&values_buffer), 0);
+        let threads = MTLSize {
+            width: chunk_count_u32 as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .top_k_f32
+            .pipeline
+            .thread_execution_width()
+            .min(chunk_count_u32 as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: both output buffers are StorageModeShared buffers sized for
+        // exactly candidate_count values. The command buffer has completed.
+        let mut candidates = unsafe {
+            let indices_ptr = indices_buffer.contents().cast::<u32>();
+            let values_ptr = values_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(indices_ptr, candidate_count)
+                .iter()
+                .copied()
+                .zip(
+                    std::slice::from_raw_parts(values_ptr, candidate_count)
+                        .iter()
+                        .copied(),
+                )
+                .filter_map(|(index, value)| {
+                    (index != u32::MAX).then_some(TopKResult {
+                        index: index as usize,
+                        value,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        candidates.sort_by(|left, right| {
+            right
+                .value
+                .total_cmp(&left.value)
+                .then_with(|| left.index.cmp(&right.index))
+        });
+        candidates.truncate(final_k);
+        Ok(candidates)
+    }
 }
+
+const MAX_METAL_TOP_K: usize = 64;
 
 const METAL_SOURCE: &str = r#"
 #include <metal_stdlib>
@@ -621,6 +856,88 @@ kernel void batched_matvec_bf16_f32(
         sum += weight * vectors[vector_offset + col];
     }
     output[(vector_index * rows) + row] = sum;
+}
+
+kernel void argmax_f32(
+    device const float* logits [[buffer(0)]],
+    constant uint& len [[buffer(1)]],
+    constant uint& chunk_size [[buffer(2)]],
+    device uint* chunk_indices [[buffer(3)]],
+    device float* chunk_values [[buffer(4)]],
+    uint chunk [[thread_position_in_grid]]
+) {
+    uint start = chunk * chunk_size;
+    if (start >= len) {
+        return;
+    }
+    uint end = min(start + chunk_size, len);
+    uint best_index = start;
+    float best_value = logits[start];
+    for (uint index = start + 1; index < end; index++) {
+        float value = logits[index];
+        if (value > best_value || (value == best_value && index < best_index)) {
+            best_value = value;
+            best_index = index;
+        }
+    }
+    chunk_indices[chunk] = best_index;
+    chunk_values[chunk] = best_value;
+}
+
+constant uint MAX_TOP_K = 64;
+constant uint INVALID_TOP_K_INDEX = 0xffffffff;
+constant float NEGATIVE_MAX_FLOAT = -3.4028234663852886e38f;
+
+kernel void top_k_f32(
+    device const float* logits [[buffer(0)]],
+    constant uint& len [[buffer(1)]],
+    constant uint& chunk_size [[buffer(2)]],
+    constant uint& top_k [[buffer(3)]],
+    device uint* output_indices [[buffer(4)]],
+    device float* output_values [[buffer(5)]],
+    uint chunk [[thread_position_in_grid]]
+) {
+    uint output_offset = chunk * top_k;
+    for (uint rank = 0; rank < top_k; rank++) {
+        output_indices[output_offset + rank] = INVALID_TOP_K_INDEX;
+        output_values[output_offset + rank] = NEGATIVE_MAX_FLOAT;
+    }
+
+    uint start = chunk * chunk_size;
+    if (start >= len || top_k == 0 || top_k > MAX_TOP_K) {
+        return;
+    }
+    uint end = min(start + chunk_size, len);
+    uint best_indices[MAX_TOP_K];
+    float best_values[MAX_TOP_K];
+    for (uint rank = 0; rank < top_k; rank++) {
+        best_indices[rank] = INVALID_TOP_K_INDEX;
+        best_values[rank] = NEGATIVE_MAX_FLOAT;
+    }
+
+    for (uint index = start; index < end; index++) {
+        float value = logits[index];
+        for (uint rank = 0; rank < top_k; rank++) {
+            uint current_index = best_indices[rank];
+            float current_value = best_values[rank];
+            if (current_index == INVALID_TOP_K_INDEX ||
+                value > current_value ||
+                (value == current_value && index < current_index)) {
+                for (uint shift = top_k - 1; shift > rank; shift--) {
+                    best_indices[shift] = best_indices[shift - 1];
+                    best_values[shift] = best_values[shift - 1];
+                }
+                best_indices[rank] = index;
+                best_values[rank] = value;
+                break;
+            }
+        }
+    }
+
+    for (uint rank = 0; rank < top_k; rank++) {
+        output_indices[output_offset + rank] = best_indices[rank];
+        output_values[output_offset + rank] = best_values[rank];
+    }
 }
 "#;
 

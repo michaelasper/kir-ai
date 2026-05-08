@@ -124,6 +124,7 @@ Current commits:
 - `86f64ff` - Metal includes a row-major BF16-weight matvec kernel.
 - `60d5328` - Safetensors exposes raw BF16 tensor ranges for acceleration paths.
 - `a316fbb` - Metal includes a batched BF16-weight matvec kernel.
+- `53e7fcd` - Open GitHub issues #35 through #40 are addressed and documented.
 
 Current verified state:
 
@@ -205,6 +206,7 @@ Current verified state:
 - `llm-metal` now includes a row-major `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - `llm-metal` now includes a row-major BF16-weight to `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - `llm-metal` now includes a batched row-major BF16-weight to `f32` matvec Metal kernel with input-major output coverage against the CPU reference.
+- `llm-metal` now includes chunked `f32` argmax and top-k logits kernels with stable lower-index tie handling and smoke coverage across chunk boundaries.
 - Unbuffered chat streams now withhold Qwen `<tool_call>` marker spans from content deltas and validate the complete assistant message before returning terminal stream events.
 - Failed model pulls now clean their unique staging directory before returning the original download or integrity error.
 - Existing snapshot verification now reuses a matching manifest instead of rewriting timestamp-only metadata, keeping no-op manifest digests stable.
@@ -230,7 +232,7 @@ Known incomplete items:
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 f32/raw-bit reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
-- Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, row-major BF16-weight matvec, and batched BF16-weight matvec are implemented; the remaining Qwen kernels are not complete.
+- Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, row-major BF16-weight matvec, batched BF16-weight matvec, and `f32` argmax/top-k logits selection are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 

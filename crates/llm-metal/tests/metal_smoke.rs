@@ -78,6 +78,48 @@ fn metal_batched_matvec_bf16_f32_matches_cpu_reference() {
     assert_close(&output, &[14.0, 32.0, 10.0, 28.0], 1e-6);
 }
 
+#[test]
+fn metal_argmax_f32_matches_cpu_reference_with_stable_ties() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let mut logits = vec![-1.0; 600];
+    logits[42] = 4.5;
+    logits[311] = 4.5;
+    logits[599] = 3.25;
+
+    let output = device.argmax_f32(&logits).expect("metal argmax succeeds");
+
+    assert_eq!(output.index, 42);
+    assert_eq!(output.value, 4.5);
+}
+
+#[test]
+fn metal_top_k_f32_matches_cpu_reference_with_stable_ties() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let mut logits = vec![-10.0; 700];
+    logits[7] = 9.0;
+    logits[288] = 12.0;
+    logits[499] = 12.0;
+    logits[612] = 5.0;
+
+    let output = device.top_k_f32(&logits, 3).expect("metal top-k succeeds");
+
+    assert_eq!(output.len(), 3);
+    assert_eq!(output[0].index, 288);
+    assert_eq!(output[0].value, 12.0);
+    assert_eq!(output[1].index, 499);
+    assert_eq!(output[1].value, 12.0);
+    assert_eq!(output[2].index, 7);
+    assert_eq!(output[2].value, 9.0);
+}
+
 fn f32_to_bf16_bits(value: f32) -> u16 {
     (value.to_bits() >> 16) as u16
 }
