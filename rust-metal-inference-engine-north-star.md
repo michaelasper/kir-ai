@@ -177,6 +177,7 @@ Current verified state:
 - Text-only chat SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, while still reserving buffered fail-closed paths for tool-call and JSON-object validation.
 - OpenAI temperature/top_p controls now validate as native sampling inputs, flow through `BackendRequest` as `SamplingConfig`, and drive native Qwen top-p selection from full lm-head logits with a Rust RNG draw. Backends that do not implement non-greedy sampling fail closed.
 - `llm-engine serve` no longer silently starts the deterministic protocol backend when no snapshot is provided. Production serving requires `--snapshot <path>`, while the deterministic backend is explicitly gated behind `--deterministic-test-backend`.
+- `llm-metal` now includes a Qwen-centered RMSNorm Metal kernel with smoke coverage against the CPU reference, in addition to the direct vector-add compute smoke.
 
 Known incomplete items:
 
@@ -186,7 +187,7 @@ Known incomplete items:
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, and a reusable layer KV storage primitive, but native Qwen multi-token decode is not wired to read/write it yet.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill and a reusable recurrent/convolution cache primitive, but native Qwen decode is not wired to update it incrementally yet.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
-- Direct Metal smoke compute is implemented; Qwen kernels are not complete.
+- Direct Metal smoke compute and a Qwen RMSNorm kernel are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 
