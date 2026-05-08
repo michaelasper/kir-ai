@@ -224,6 +224,33 @@ async fn required_tool_choice_rejects_text_fallback() {
 }
 
 #[tokio::test]
+async fn deterministic_backend_returns_tool_call_for_required_tool_choice() {
+    let backend =
+        DeterministicBackend::new("local-qwen36", "plain text").with_required_tool_protocol();
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("required tool choice succeeds in deterministic protocol mode");
+
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(FinishReason::ToolCalls)
+    );
+    assert_eq!(response.choices[0].message.tool_calls.len(), 1);
+    assert_eq!(
+        response.choices[0].message.tool_calls[0].function.name,
+        "lookup"
+    );
+}
+
+#[tokio::test]
 async fn json_object_response_format_accepts_object_content() {
     let backend = DeterministicBackend::new("local-qwen36", r#"{"answer":"rust"}"#);
     let runtime = Runtime::new(backend);

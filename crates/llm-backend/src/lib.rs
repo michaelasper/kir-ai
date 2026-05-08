@@ -20,6 +20,7 @@ pub struct BackendRequest {
     pub model: String,
     pub prompt: String,
     pub max_tokens: Option<u32>,
+    pub required_tool_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +95,7 @@ where
 pub struct DeterministicBackend {
     model_id: String,
     text: String,
+    required_tool_protocol: bool,
 }
 
 impl DeterministicBackend {
@@ -101,7 +103,13 @@ impl DeterministicBackend {
         Self {
             model_id: model_id.into(),
             text: text.into(),
+            required_tool_protocol: false,
         }
+    }
+
+    pub fn with_required_tool_protocol(mut self) -> Self {
+        self.required_tool_protocol = true;
+        self
     }
 }
 
@@ -122,11 +130,30 @@ impl ModelBackend for DeterministicBackend {
                 available: self.model_id.clone(),
             });
         }
+        let (text, finish_reason) = if self.required_tool_protocol
+            && let Some(name) = request.required_tool_choice
+        {
+            (
+                serde_json::json!({
+                    "name": name,
+                    "arguments": {},
+                })
+                .to_string(),
+                FinishReason::ToolCalls,
+            )
+        } else {
+            (self.text.clone(), FinishReason::Stop)
+        };
+        let text = if matches!(finish_reason, FinishReason::ToolCalls) {
+            format!("<tool_call>{text}</tool_call>")
+        } else {
+            text
+        };
         Ok(BackendOutput {
-            text: self.text.clone(),
+            completion_tokens: count_tokens(&text),
+            text,
             prompt_tokens: count_tokens(&request.prompt),
-            completion_tokens: count_tokens(&self.text),
-            finish_reason: FinishReason::Stop,
+            finish_reason,
         })
     }
 }

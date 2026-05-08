@@ -427,6 +427,40 @@ async fn chat_completions_rejects_required_tool_choice_without_tools() {
 }
 
 #[tokio::test]
+async fn chat_completions_returns_required_tool_call_in_protocol_mode() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "lookup rust"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {"name": "lookup", "parameters": {}}
+                        }],
+                        "tool_choice": "required"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_unsupported_penalties() {
     let response = build_router()
         .oneshot(

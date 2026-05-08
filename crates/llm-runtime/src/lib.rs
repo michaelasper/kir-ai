@@ -178,12 +178,14 @@ where
                 add_generation_prompt: true,
             },
         )?;
+        let required_tool_choice = required_backend_tool_choice(&request);
         let output = self
             .backend
             .generate(BackendRequest {
                 model: request.model.clone(),
                 prompt,
                 max_tokens: request.effective_max_tokens(),
+                required_tool_choice,
             })
             .await?;
         let mut raw_text = output.text;
@@ -239,6 +241,7 @@ where
                 model: request.model.clone(),
                 prompt: request.prompt,
                 max_tokens: request.max_tokens,
+                required_tool_choice: None,
             })
             .await?;
         let mut text = output.text;
@@ -430,6 +433,14 @@ fn validate_tool_calls_against_request(
         }
     }
     Ok(())
+}
+
+fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<String> {
+    match &request.tool_choice {
+        Some(ToolChoice::Required) => request.tools.first().map(|tool| tool.function.name.clone()),
+        Some(ToolChoice::Function { name }) => Some(name.clone()),
+        Some(ToolChoice::Auto | ToolChoice::None) | None => None,
+    }
 }
 
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

@@ -56,10 +56,13 @@ async fn main() -> anyhow::Result<()> {
                 build_router_with_backend_and_options(Box::new(backend), options)
             } else {
                 build_router_with_backend_and_options(
-                    Box::new(llm_backend::DeterministicBackend::new(
-                        "local-qwen36",
-                        "hello from rust native backend",
-                    )),
+                    Box::new(
+                        llm_backend::DeterministicBackend::new(
+                            "local-qwen36",
+                            "hello from rust native backend",
+                        )
+                        .with_required_tool_protocol(),
+                    ),
                     options,
                 )
             };
