@@ -85,6 +85,7 @@ Current commits:
 - `913e25b` - Added model-level concurrency backpressure with structured retryable 429 overload errors.
 - `e3ef5d4` - `tool_choice: required` now fails request validation when no tools are declared.
 - `562b3dd` - Chat stop sequences are applied to raw backend output before tool-call parsing.
+- `33b3954` - Admin endpoints support configured Bearer authentication and non-loopback serving requires an admin token.
 
 Current verified state:
 
@@ -134,6 +135,7 @@ Current verified state:
 - The HTTP engine state now uses a model-level semaphore. The default serve path allows one concurrent generation, `--max-concurrent-requests` can raise that limit, and requests received while all permits are busy return a stable retryable `model_overloaded` error with HTTP 429.
 - Chat request validation rejects `tool_choice: "required"` when the request has no declared tools, returning `invalid_request` before any prompt rendering or backend generation.
 - Chat stop sequences now truncate raw model output before Qwen tool-call parsing. Tool calls after the earliest stop marker are suppressed, and the response finish reason remains `stop`.
+- `/admin/*` routes can be protected with `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN`; configured deployments require `Authorization: Bearer <token>` and return `admin_auth_required` otherwise. `serve --addr` refuses non-loopback binds unless an admin token is configured.
 
 Known incomplete items:
 
