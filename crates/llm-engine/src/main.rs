@@ -1,5 +1,7 @@
-use llm_backend::qwen_layer0_linear_attention_projections;
 use llm_backend::{SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm};
+use llm_backend::{
+    qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
+};
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
@@ -151,10 +153,28 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 spec.hidden_size as usize,
                 spec.rms_norm_eps,
             )?;
-            let layer0_projections = if args.iter().any(|arg| arg == "--layer0-projections") {
-                let projections =
-                    qwen_layer0_linear_attention_projections(&store, &probe.normalized)?;
+            let run_layer0_projections = args.iter().any(|arg| arg == "--layer0-projections")
+                || args.iter().any(|arg| arg == "--layer0-attention");
+            let projections = if run_layer0_projections {
+                Some(qwen_layer0_linear_attention_projections(
+                    &store,
+                    &probe.normalized,
+                )?)
+            } else {
+                None
+            };
+            let layer0_attention = if args.iter().any(|arg| arg == "--layer0-attention") {
+                let projections = projections.as_ref().expect("projections are computed");
+                let output = qwen_layer0_linear_attention_first_token(&store, &spec, projections)?;
                 Some(serde_json::json!({
+                    "output_len": output.len(),
+                    "output_prefix": output.iter().copied().take(limit).collect::<Vec<_>>()
+                }))
+            } else {
+                None
+            };
+            let layer0_projections = projections.as_ref().map(|projections| {
+                serde_json::json!({
                     "qkv_len": projections.qkv.len(),
                     "z_len": projections.z.len(),
                     "b_len": projections.b.len(),
@@ -163,10 +183,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "z_prefix": projections.z.iter().copied().take(limit).collect::<Vec<_>>(),
                     "b_prefix": projections.b.iter().copied().take(limit).collect::<Vec<_>>(),
                     "a_prefix": projections.a.iter().copied().take(limit).collect::<Vec<_>>()
-                }))
-            } else {
-                None
-            };
+                })
+            });
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -177,7 +195,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "embedding_prefix": probe.embedding.iter().copied().take(limit).collect::<Vec<_>>(),
                     "normalized_prefix": probe.normalized.iter().copied().take(limit).collect::<Vec<_>>(),
                     "values_read": probe.normalized.len(),
-                    "layer0_projections": layer0_projections
+                    "layer0_projections": layer0_projections,
+                    "layer0_attention": layer0_attention
                 }))?
             );
         }

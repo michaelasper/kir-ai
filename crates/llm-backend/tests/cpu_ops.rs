@@ -1,3 +1,4 @@
+use llm_backend::{QwenLinearAttentionDims, qwen_linear_attention_first_token_from_parts};
 use llm_backend::{matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32};
 
 #[test]
@@ -44,6 +45,32 @@ fn silu_matches_reference_values() {
         &[0.0, 1.761594, -0.23840584],
         1e-6,
     );
+}
+
+#[test]
+fn qwen_linear_attention_first_token_matches_simplified_reference() {
+    let dims = QwenLinearAttentionDims {
+        hidden_size: 1,
+        num_key_heads: 1,
+        num_value_heads: 1,
+        key_head_dim: 1,
+        value_head_dim: 1,
+        conv_kernel_size: 1,
+        rms_norm_eps: 0.0,
+    };
+
+    let output = qwen_linear_attention_first_token_from_parts(
+        &dims,
+        &[1.0, 1.0, 4.0],
+        &[1.0],
+        &[0.0],
+        &[1.0, 1.0, 1.0],
+        &[1.0],
+        &[2.0],
+    )
+    .expect("linear attention output");
+
+    assert_close(&output, &[1.4621172], 1e-6);
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {

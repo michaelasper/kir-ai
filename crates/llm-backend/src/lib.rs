@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use llm_api::FinishReason;
-use llm_models::SafetensorsIndex;
+use llm_models::{QwenModelSpec, SafetensorsIndex};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
     collections::BTreeMap,
@@ -178,6 +178,12 @@ pub const QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_b.weight";
 pub const QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_a.weight";
+pub const QWEN_LAYER0_LINEAR_CONV1D_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.conv1d.weight";
+pub const QWEN_LAYER0_LINEAR_NORM_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.norm.weight";
+pub const QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.out_proj.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
@@ -192,6 +198,52 @@ pub struct QwenLinearAttentionProjectionProbe {
     pub z: Vec<f32>,
     pub b: Vec<f32>,
     pub a: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QwenLinearAttentionDims {
+    pub hidden_size: usize,
+    pub num_key_heads: usize,
+    pub num_value_heads: usize,
+    pub key_head_dim: usize,
+    pub value_head_dim: usize,
+    pub conv_kernel_size: usize,
+    pub rms_norm_eps: f32,
+}
+
+impl QwenLinearAttentionDims {
+    pub fn from_spec(spec: &QwenModelSpec) -> Self {
+        Self {
+            hidden_size: spec.hidden_size as usize,
+            num_key_heads: spec.linear_num_key_heads as usize,
+            num_value_heads: spec.linear_num_value_heads as usize,
+            key_head_dim: spec.linear_key_head_dim as usize,
+            value_head_dim: spec.linear_value_head_dim as usize,
+            conv_kernel_size: spec.linear_conv_kernel_dim as usize,
+            rms_norm_eps: spec.rms_norm_eps,
+        }
+    }
+
+    fn key_dim(&self) -> Result<usize, MathError> {
+        self.num_key_heads
+            .checked_mul(self.key_head_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen key dimension overflow".to_owned()))
+    }
+
+    fn value_dim(&self) -> Result<usize, MathError> {
+        self.num_value_heads
+            .checked_mul(self.value_head_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen value dimension overflow".to_owned()))
+    }
+
+    fn conv_dim(&self) -> Result<usize, MathError> {
+        let key_dim = self.key_dim()?;
+        let value_dim = self.value_dim()?;
+        key_dim
+            .checked_mul(2)
+            .and_then(|key_parts| key_parts.checked_add(value_dim))
+            .ok_or_else(|| MathError::InvalidShape("Qwen conv dimension overflow".to_owned()))
+    }
 }
 
 pub fn qwen_embedding_and_layer0_norm(
@@ -218,6 +270,115 @@ pub fn qwen_embedding_and_layer0_norm(
     })
 }
 
+pub fn qwen_linear_attention_first_token_from_parts(
+    dims: &QwenLinearAttentionDims,
+    qkv: &[f32],
+    z: &[f32],
+    b: &[f32],
+    conv1d_weight: &[f32],
+    norm_weight: &[f32],
+    out_proj_weight: &[f32],
+) -> Result<Vec<f32>, MathError> {
+    if dims.num_key_heads == 0
+        || dims.num_value_heads == 0
+        || dims.key_head_dim == 0
+        || dims.value_head_dim == 0
+        || dims.conv_kernel_size == 0
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen linear attention dimensions must be non-zero".to_owned(),
+        ));
+    }
+    if !dims.num_value_heads.is_multiple_of(dims.num_key_heads) {
+        return Err(MathError::InvalidShape(
+            "Qwen value heads must be divisible by key heads".to_owned(),
+        ));
+    }
+    let key_dim = dims.key_dim()?;
+    let value_dim = dims.value_dim()?;
+    let conv_dim = dims.conv_dim()?;
+    require_len("qkv projection", qkv.len(), conv_dim)?;
+    require_len("z projection", z.len(), value_dim)?;
+    require_len("b projection", b.len(), dims.num_value_heads)?;
+    require_len("norm weight", norm_weight.len(), dims.value_head_dim)?;
+    require_len(
+        "conv1d weight",
+        conv1d_weight.len(),
+        conv_dim
+            .checked_mul(dims.conv_kernel_size)
+            .ok_or_else(|| MathError::InvalidShape("conv1d weight shape overflow".to_owned()))?,
+    )?;
+    require_len(
+        "out projection weight",
+        out_proj_weight.len(),
+        dims.hidden_size
+            .checked_mul(value_dim)
+            .ok_or_else(|| MathError::InvalidShape("out projection shape overflow".to_owned()))?,
+    )?;
+
+    let mut mixed_qkv = vec![0.0; conv_dim];
+    for channel in 0..conv_dim {
+        let kernel_last = channel * dims.conv_kernel_size + (dims.conv_kernel_size - 1);
+        mixed_qkv[channel] = silu_f32(qkv[channel] * conv1d_weight[kernel_last]);
+    }
+
+    let query = &mixed_qkv[..key_dim];
+    let key = &mixed_qkv[key_dim..key_dim * 2];
+    let value = &mixed_qkv[key_dim * 2..];
+    let repeat = dims.num_value_heads / dims.num_key_heads;
+    let scale = (dims.key_head_dim as f32).sqrt().recip();
+    let mut gated = vec![0.0; value_dim];
+
+    for (value_head, beta_logit) in b.iter().enumerate().take(dims.num_value_heads) {
+        let key_head = value_head / repeat;
+        let key_start = key_head * dims.key_head_dim;
+        let value_start = value_head * dims.value_head_dim;
+        let query_head = l2_normalize_f32(&query[key_start..key_start + dims.key_head_dim], 1e-6)?;
+        let key_head_values =
+            l2_normalize_f32(&key[key_start..key_start + dims.key_head_dim], 1e-6)?;
+        let attention_score = query_head
+            .iter()
+            .zip(&key_head_values)
+            .map(|(query, key)| query * key)
+            .sum::<f32>()
+            * scale;
+        let beta = sigmoid_f32(*beta_logit);
+        let mut core_head = Vec::with_capacity(dims.value_head_dim);
+        for offset in 0..dims.value_head_dim {
+            core_head.push(attention_score * value[value_start + offset] * beta);
+        }
+        let normalized = rms_norm_f32(&core_head, norm_weight, dims.rms_norm_eps)?;
+        for offset in 0..dims.value_head_dim {
+            gated[value_start + offset] = normalized[offset] * silu_f32(z[value_start + offset]);
+        }
+    }
+
+    matvec_row_major_f32(&gated, out_proj_weight, dims.hidden_size, value_dim)
+}
+
+pub fn qwen_layer0_linear_attention_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    projections: &QwenLinearAttentionProjectionProbe,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let dims = QwenLinearAttentionDims::from_spec(spec);
+    let conv1d_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_CONV1D_WEIGHT)?;
+    let norm_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_NORM_WEIGHT)?;
+    let out_proj_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT)?;
+    qwen_linear_attention_first_token_from_parts(
+        &dims,
+        &projections.qkv,
+        &projections.z,
+        &projections.b,
+        &conv1d_weight,
+        &norm_weight,
+        &out_proj_weight,
+    )
+    .map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen layer0 linear attention failed: {err}"))
+    })
+}
+
 pub fn qwen_layer0_linear_attention_projections(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
@@ -229,6 +390,35 @@ pub fn qwen_layer0_linear_attention_projections(
         b: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT, hidden_states)?,
         a: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT, hidden_states)?,
     })
+}
+
+fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(MathError::InvalidShape(format!(
+            "{name} length {actual} does not match expected {expected}"
+        )))
+    }
+}
+
+fn sigmoid_f32(value: f32) -> f32 {
+    1.0 / (1.0 + (-value).exp())
+}
+
+fn l2_normalize_f32(input: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if eps < 0.0 {
+        return Err(MathError::InvalidShape(
+            "l2 norm epsilon must be non-negative".to_owned(),
+        ));
+    }
+    let inv_norm = (input.iter().map(|value| value * value).sum::<f32>() + eps)
+        .sqrt()
+        .recip();
+    Ok(input.iter().map(|value| value * inv_norm).collect())
 }
 
 #[derive(Debug, Error)]
@@ -612,6 +802,15 @@ impl SafeTensorShardStore {
     ) -> Result<Vec<f32>, TensorLoadError> {
         self.open_tensor_file(tensor)?
             .bf16_tensor_f32_range(tensor, element_offset, element_count)
+    }
+
+    pub fn bf16_tensor_f32(&self, tensor: &str) -> Result<Vec<f32>, TensorLoadError> {
+        let metadata = self.tensor_metadata(tensor)?;
+        let element_count = metadata.shape.iter().try_fold(1_usize, |acc, dim| {
+            acc.checked_mul(*dim)
+                .ok_or_else(|| TensorLoadError::integrity("tensor shape overflows usize"))
+        })?;
+        self.bf16_tensor_f32_range(tensor, 0, element_count)
     }
 
     pub fn bf16_matvec_row_major_f32(

@@ -12,6 +12,7 @@ fn parses_official_qwen36_config_as_hybrid_deltanet_moe() {
     assert_eq!(spec.hidden_size, 2048);
     assert_eq!(spec.rms_norm_eps, 1e-6);
     assert!(!spec.tie_word_embeddings);
+    assert_eq!(spec.linear_conv_kernel_dim, 4);
     assert_eq!(spec.num_hidden_layers, 40);
     assert_eq!(spec.num_experts, 256);
     assert_eq!(spec.num_experts_per_tok, 8);
