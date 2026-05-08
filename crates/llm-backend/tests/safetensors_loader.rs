@@ -126,6 +126,11 @@ fn reads_bf16_ranges_from_file() {
         vec![3.0, 4.0, 5.0]
     );
     assert_eq!(
+        file.bf16_tensor_bits_range("embed.weight", 2, 3)
+            .expect("raw bf16 range"),
+        vec![bf16_bits(3.0), bf16_bits(4.0), bf16_bits(5.0)]
+    );
+    assert_eq!(
         file.bf16_row_f32("embed.weight", 1).expect("row"),
         vec![4.0, 5.0, 6.0]
     );
@@ -172,6 +177,12 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
     assert_eq!(
         store.bf16_row_f32("embed.weight", 1).expect("row"),
         vec![4.0, 5.0, 6.0]
+    );
+    assert_eq!(
+        store
+            .bf16_tensor_bits_range("embed.weight", 3, 2)
+            .expect("raw bf16 range"),
+        vec![bf16_bits(4.0), bf16_bits(5.0)]
     );
     assert_eq!(store.cached_shard_count(), 1);
     assert_eq!(
@@ -1636,9 +1647,13 @@ fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> 
 fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(values.len() * 2);
     for value in values {
-        data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+        data.extend_from_slice(&bf16_bits(*value).to_le_bytes());
     }
     tiny_safetensors(name, "BF16", shape, &data)
+}
+
+fn bf16_bits(value: f32) -> u16 {
+    (value.to_bits() >> 16) as u16
 }
 
 fn tiny_safetensors(name: &str, dtype: &str, shape: &[usize], data: &[u8]) -> Vec<u8> {

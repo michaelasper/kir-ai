@@ -3084,6 +3084,32 @@ impl SafeTensorFile {
         bf16_bytes_to_f32(&bytes)
     }
 
+    pub fn bf16_tensor_bits_range(
+        &self,
+        name: &str,
+        element_offset: usize,
+        element_count: usize,
+    ) -> Result<Vec<u16>, TensorLoadError> {
+        let metadata = self.header.tensor_metadata(name)?;
+        if metadata.dtype != "BF16" {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{name}` has dtype {}, expected BF16",
+                metadata.dtype
+            )));
+        }
+        let byte_offset = u64_from_usize(
+            element_offset
+                .checked_mul(2)
+                .ok_or_else(|| TensorLoadError::integrity("BF16 element offset overflow"))?,
+            "BF16 byte offset does not fit in u64",
+        )?;
+        let byte_len = element_count
+            .checked_mul(2)
+            .ok_or_else(|| TensorLoadError::integrity("BF16 element count overflow"))?;
+        let bytes = self.tensor_bytes_range(name, byte_offset, byte_len)?;
+        bf16_bytes_to_bits(&bytes)
+    }
+
     pub fn bf16_row_f32(&self, name: &str, row: usize) -> Result<Vec<f32>, TensorLoadError> {
         let metadata = self.header.tensor_metadata(name)?;
         if metadata.shape.len() != 2 {
@@ -3183,6 +3209,16 @@ impl SafeTensorShardStore {
     ) -> Result<Vec<f32>, TensorLoadError> {
         self.open_tensor_file(tensor)?
             .bf16_tensor_f32_range(tensor, element_offset, element_count)
+    }
+
+    pub fn bf16_tensor_bits_range(
+        &self,
+        tensor: &str,
+        element_offset: usize,
+        element_count: usize,
+    ) -> Result<Vec<u16>, TensorLoadError> {
+        self.open_tensor_file(tensor)?
+            .bf16_tensor_bits_range(tensor, element_offset, element_count)
     }
 
     pub fn bf16_tensor_f32(&self, tensor: &str) -> Result<Vec<f32>, TensorLoadError> {
@@ -3438,6 +3474,18 @@ fn bf16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, TensorLoadError> {
     Ok(bytes
         .chunks_exact(2)
         .map(|chunk| bf16_bits_to_f32(u16::from_le_bytes(chunk.try_into().expect("BF16 chunk"))))
+        .collect())
+}
+
+fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(TensorLoadError::integrity(
+            "BF16 byte length must be divisible by 2",
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes(chunk.try_into().expect("BF16 chunk")))
         .collect())
 }
 

@@ -121,6 +121,7 @@ Current commits:
 - `1d111cb` - Qwen token decode can step typed per-layer caches after cached prefill.
 - `7449bb6` - Native Qwen generation reuses typed layer caches for bounded multi-token decode.
 - `2e7c802` - Metal includes a row-major `f32` matvec kernel.
+- `86f64ff` - Metal includes a row-major BF16-weight matvec kernel.
 
 Current verified state:
 
@@ -186,6 +187,7 @@ Current verified state:
 - SSE streaming responses now use Axum keep-alive frames with an `llm-engine-heartbeat` marker. HTTP contract coverage holds the backend before its first content chunk and verifies a heartbeat reaches the client before generation is released.
 - Streaming handlers now enforce a configurable backend-output stall timeout, defaulting to 300 seconds through `EngineOptions`. If the runtime stream does not produce the next backend event before the timeout, the SSE body emits a retryable `stream_stalled` error event followed by `[DONE]`, records failure metrics, and releases the model permit.
 - Safetensors shards can now be materialized through a read-only mmap cache. The shard store exposes per-tensor materialization, counts materialized cached shards, and serves validated tensor byte ranges from the mmap once populated.
+- Safetensors BF16 tensor ranges can now be read either as expanded `f32` values or as raw little-endian BF16 bit words, giving acceleration paths a lossless weight representation without re-reading shard bytes.
 - Streaming backend requests now carry a cancellation token. Dropping an HTTP SSE body cancels the runtime/backend stream, and the native Qwen stream path checks cancellation before and after bounded blocking decode steps.
 - `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
 - `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
@@ -220,7 +222,7 @@ Known incomplete items:
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
-- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
+- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 f32/raw-bit reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
 - Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, and row-major BF16-weight matvec are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
