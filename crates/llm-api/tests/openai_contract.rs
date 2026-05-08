@@ -130,6 +130,7 @@ fn chat_completion_stream_chunk_serializes_as_openai_delta() {
             },
             finish_reason: None,
         }],
+        usage: None,
     };
 
     let value = serde_json::to_value(chunk).expect("chunk serializes");
@@ -202,6 +203,7 @@ fn text_completion_stream_response_serializes_without_usage() {
             index: 0,
             finish_reason: None,
         }],
+        usage: None,
     };
 
     let value = serde_json::to_value(response).expect("response serializes");
@@ -209,6 +211,32 @@ fn text_completion_stream_response_serializes_without_usage() {
     assert_eq!(value["object"], "text_completion");
     assert_eq!(value["choices"][0]["text"], "hello");
     assert!(value.get("usage").is_none());
+}
+
+#[test]
+fn chat_stream_options_include_usage_parses() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": true,
+        "stream_options": {"include_usage": true}
+    }))
+    .expect("stream options parse");
+
+    assert!(request.stream_options.include_usage);
+}
+
+#[test]
+fn completion_stream_options_include_usage_parses() {
+    let request: CompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "prompt": "hello",
+        "stream": true,
+        "stream_options": {"include_usage": true}
+    }))
+    .expect("stream options parse");
+
+    assert!(request.stream_options.include_usage);
 }
 
 #[test]

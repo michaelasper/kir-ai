@@ -117,6 +117,38 @@ async fn chat_completions_streams_openai_sse_chunks() {
 }
 
 #[tokio::test]
+async fn chat_completions_streams_usage_when_requested() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true,
+                        "stream_options": {"include_usage": true}
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"choices\":[],\"usage\":{\"prompt_tokens\""));
+    assert!(body.contains("\"total_tokens\""));
+    assert!(
+        body.find("\"choices\":[],\"usage\"").expect("usage chunk")
+            < body.find("data: [DONE]").expect("done")
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_streams_tool_call_deltas() {
     let response = build_router_with_backend(Box::new(StaticBackend {
         text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#.to_owned(),
@@ -257,6 +289,38 @@ async fn completions_endpoint_streams_openai_sse_chunks() {
     assert!(body.contains("\"text\":\"hello from rust native\""));
     assert!(body.contains("\"finish_reason\":\"stop\""));
     assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
+async fn completions_endpoint_streams_usage_when_requested() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "hello",
+                        "stream": true,
+                        "stream_options": {"include_usage": true}
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"choices\":[],\"usage\":{\"prompt_tokens\""));
+    assert!(body.contains("\"total_tokens\""));
+    assert!(
+        body.find("\"choices\":[],\"usage\"").expect("usage chunk")
+            < body.find("data: [DONE]").expect("done")
+    );
 }
 
 #[tokio::test]

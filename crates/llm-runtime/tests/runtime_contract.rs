@@ -40,6 +40,7 @@ async fn runtime_returns_text_completion() {
             max_tokens: Some(8),
             stop: vec![" END".to_owned()],
             stream: false,
+            stream_options: llm_api::StreamOptions::default(),
         })
         .await
         .expect("completion succeeds");
@@ -61,6 +62,7 @@ async fn runtime_returns_streaming_text_completion_chunks() {
             max_tokens: Some(8),
             stop: vec![" END".to_owned()],
             stream: true,
+            stream_options: llm_api::StreamOptions::default(),
         })
         .await
         .expect("completion stream succeeds");
@@ -73,6 +75,28 @@ async fn runtime_returns_streaming_text_completion_chunks() {
         stream.chunks[1].choices[0].finish_reason,
         Some(FinishReason::Stop)
     );
+}
+
+#[tokio::test]
+async fn runtime_appends_text_completion_stream_usage_when_requested() {
+    let backend = DeterministicBackend::new("local-qwen36", "hello");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            stream: true,
+            stream_options: llm_api::StreamOptions {
+                include_usage: true,
+            },
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("completion stream succeeds");
+
+    let usage_chunk = stream.chunks.last().expect("usage chunk");
+    assert!(usage_chunk.choices.is_empty());
+    assert_eq!(usage_chunk.usage.as_ref().expect("usage").total_tokens, 3);
 }
 
 #[tokio::test]
@@ -252,6 +276,28 @@ async fn runtime_returns_text_stream_chunks() {
         stream.chunks[2].choices[0].finish_reason,
         Some(FinishReason::Stop)
     );
+}
+
+#[tokio::test]
+async fn runtime_appends_chat_stream_usage_when_requested() {
+    let backend = DeterministicBackend::new("local-qwen36", "hello");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            stream_options: llm_api::StreamOptions {
+                include_usage: true,
+            },
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming text succeeds");
+
+    let usage_chunk = stream.chunks.last().expect("usage chunk");
+    assert!(usage_chunk.choices.is_empty());
+    assert_eq!(usage_chunk.usage.as_ref().expect("usage").total_tokens, 3);
 }
 
 #[tokio::test]

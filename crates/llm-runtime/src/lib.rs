@@ -59,17 +59,20 @@ where
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionStream, RuntimeError> {
+        let include_usage = request.stream_options.include_usage;
         let completion = self.complete_text(request).await?;
-        Ok(CompletionStream {
-            chunks: vec![
-                completion_stream_chunk(&completion, completion.text.clone(), None),
-                completion_stream_chunk(
-                    &completion,
-                    String::new(),
-                    Some(completion.finish_reason.clone()),
-                ),
-            ],
-        })
+        let mut chunks = vec![
+            completion_stream_chunk(&completion, completion.text.clone(), None),
+            completion_stream_chunk(
+                &completion,
+                String::new(),
+                Some(completion.finish_reason.clone()),
+            ),
+        ];
+        if include_usage {
+            chunks.push(completion_stream_usage_chunk(&completion));
+        }
+        Ok(CompletionStream { chunks })
     }
 
     pub async fn chat(
@@ -108,6 +111,7 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionStream, RuntimeError> {
+        let include_usage = request.stream_options.include_usage;
         let completion = self.complete_chat(request).await?;
         let mut chunks = Vec::new();
         chunks.push(stream_chunk(
@@ -143,6 +147,9 @@ where
             ChatCompletionDelta::default(),
             Some(completion.finish_reason.clone()),
         ));
+        if include_usage {
+            chunks.push(stream_usage_chunk(&completion));
+        }
         Ok(ChatCompletionStream { chunks })
     }
 
@@ -291,6 +298,18 @@ fn stream_chunk(
             delta,
             finish_reason,
         }],
+        usage: None,
+    }
+}
+
+fn stream_usage_chunk(completion: &RuntimeChatCompletion) -> ChatCompletionStreamResponse {
+    ChatCompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "chat.completion.chunk".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: Vec::new(),
+        usage: Some(completion.usage.clone()),
     }
 }
 
@@ -309,6 +328,18 @@ fn completion_stream_chunk(
             index: 0,
             finish_reason,
         }],
+        usage: None,
+    }
+}
+
+fn completion_stream_usage_chunk(completion: &RuntimeCompletion) -> CompletionStreamResponse {
+    CompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "text_completion".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: Vec::new(),
+        usage: Some(completion.usage.clone()),
     }
 }
 

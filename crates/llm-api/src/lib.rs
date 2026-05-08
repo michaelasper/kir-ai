@@ -221,6 +221,8 @@ pub struct ChatCompletionRequest {
     pub response_format: Option<ResponseFormat>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default, skip_serializing_if = "StreamOptions::is_default")]
+    pub stream_options: StreamOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,12 +237,14 @@ pub struct ChatCompletionRequest {
     pub stop: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
     pub prompt: String,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default, skip_serializing_if = "StreamOptions::is_default")]
+    pub stream_options: StreamOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(
@@ -268,6 +272,8 @@ pub struct CompletionStreamResponse {
     pub created: i64,
     pub model: String,
     pub choices: Vec<CompletionChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,6 +309,8 @@ pub struct ChatCompletionStreamResponse {
     pub created: i64,
     pub model: String,
     pub choices: Vec<ChatCompletionStreamChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -339,6 +347,18 @@ pub struct ToolCallFunctionDelta {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamOptions {
+    #[serde(default)]
+    pub include_usage: bool,
+}
+
+impl StreamOptions {
+    pub fn is_default(&self) -> bool {
+        !self.include_usage
+    }
 }
 
 pub trait ValidateRequest {
