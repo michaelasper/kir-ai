@@ -88,6 +88,52 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        "inspect" => {
+            let snapshot_path = args.get(1).ok_or_else(|| {
+                anyhow::anyhow!("usage: llm-engine model inspect <snapshot-path>")
+            })?;
+            let snapshot = ModelStore::inspect_snapshot(snapshot_path).await?;
+            let total_bytes = snapshot
+                .manifest
+                .files
+                .iter()
+                .map(|file| file.size)
+                .sum::<u64>();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "snapshot_path": snapshot.path,
+                    "repo_id": snapshot.manifest.repo_id,
+                    "requested_revision": snapshot.manifest.requested_revision,
+                    "resolved_commit": snapshot.manifest.resolved_commit,
+                    "profile": snapshot.manifest.profile,
+                    "family": snapshot.manifest.family,
+                    "loader": snapshot.manifest.loader,
+                    "quantization": snapshot.manifest.quantization,
+                    "manifest_digest": snapshot.manifest_digest,
+                    "files": snapshot.manifest.files.len(),
+                    "total_bytes": total_bytes,
+                }))?
+            );
+        }
+        "verify" => {
+            let snapshot_path = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model verify <snapshot-path>"))?;
+            let verification = ModelStore::verify_snapshot(snapshot_path).await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "ok",
+                    "snapshot_path": verification.snapshot.path,
+                    "repo_id": verification.snapshot.manifest.repo_id,
+                    "resolved_commit": verification.snapshot.manifest.resolved_commit,
+                    "manifest_digest": verification.snapshot.manifest_digest,
+                    "verified_files": verification.verified_files,
+                    "verified_bytes": verification.verified_bytes,
+                }))?
+            );
+        }
         "inspect-safetensors" => {
             let path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")

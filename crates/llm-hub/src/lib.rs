@@ -650,6 +650,52 @@ impl ModelStore {
         Ok(snapshots)
     }
 
+    pub async fn inspect_snapshot(
+        snapshot: impl AsRef<Path>,
+    ) -> Result<PromotedSnapshot, HubError> {
+        read_promoted_snapshot(snapshot.as_ref().to_path_buf()).await
+    }
+
+    pub async fn verify_snapshot(
+        snapshot: impl AsRef<Path>,
+    ) -> Result<SnapshotVerification, HubError> {
+        let snapshot = Self::inspect_snapshot(snapshot).await?;
+        let mut verified_files = 0_u64;
+        let mut verified_bytes = 0_u64;
+        for file in &snapshot.manifest.files {
+            validate_artifact_path(&file.path)?;
+            let path = snapshot.path.join(&file.path);
+            let metadata = tokio::fs::metadata(&path).await.map_err(|err| {
+                HubError::integrity_failed(format!(
+                    "snapshot file `{}` is missing or unreadable: {err}",
+                    path.display()
+                ))
+            })?;
+            if !metadata.is_file() {
+                return Err(HubError::integrity_failed(format!(
+                    "snapshot path `{}` is not a file",
+                    path.display()
+                )));
+            }
+            if metadata.len() != file.size {
+                return Err(HubError::integrity_failed(format!(
+                    "snapshot file `{}` has size {}, expected {}",
+                    path.display(),
+                    metadata.len(),
+                    file.size
+                )));
+            }
+            verify_file_sha256(&path, file.sha256.as_deref()).await?;
+            verified_files += 1;
+            verified_bytes += file.size;
+        }
+        Ok(SnapshotVerification {
+            snapshot,
+            verified_files,
+            verified_bytes,
+        })
+    }
+
     async fn verify_snapshot_files(
         &self,
         plan: &DownloadPlan,
@@ -713,6 +759,35 @@ pub struct PromotedSnapshot {
     pub path: PathBuf,
     pub manifest: SnapshotManifest,
     pub manifest_digest: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotVerification {
+    pub snapshot: PromotedSnapshot,
+    pub verified_files: u64,
+    pub verified_bytes: u64,
+}
+
+async fn read_promoted_snapshot(path: PathBuf) -> Result<PromotedSnapshot, HubError> {
+    let manifest_path = path.join("llm-engine-manifest.json");
+    let bytes = tokio::fs::read(&manifest_path).await.map_err(|err| {
+        HubError::integrity_failed(format!(
+            "snapshot manifest `{}` is missing or unreadable: {err}",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest = serde_json::from_slice::<SnapshotManifest>(&bytes).map_err(|err| {
+        HubError::integrity_failed(format!(
+            "invalid snapshot manifest `{}`: {err}",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest_digest = manifest.digest();
+    Ok(PromotedSnapshot {
+        path,
+        manifest,
+        manifest_digest,
+    })
 }
 
 pub fn build_download_plan(

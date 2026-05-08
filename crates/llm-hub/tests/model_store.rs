@@ -104,6 +104,110 @@ async fn lists_promoted_snapshots_from_model_store() {
 }
 
 #[tokio::test]
+async fn inspects_promoted_snapshot_from_manifest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+
+    let snapshot = ModelStore::inspect_snapshot(&snapshot_path)
+        .await
+        .expect("snapshot inspects");
+
+    assert_eq!(snapshot.path, snapshot_path);
+    assert_eq!(snapshot.manifest.repo_id, "Qwen/Qwen3.6-35B-A3B");
+    assert_eq!(snapshot.manifest.files.len(), 1);
+    assert_eq!(snapshot.manifest_digest.len(), 64);
+}
+
+#[tokio::test]
+async fn verifies_promoted_snapshot_from_manifest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+
+    let verification = ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .expect("snapshot verifies from manifest");
+
+    assert_eq!(verification.snapshot.path, snapshot_path);
+    assert_eq!(verification.verified_files, 1);
+    assert_eq!(verification.verified_bytes, 2);
+}
+
+#[tokio::test]
+async fn rejects_corrupt_promoted_snapshot_from_manifest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+    tokio::fs::write(snapshot_path.join("config.json"), "wrong")
+        .await
+        .expect("corrupt config");
+
+    let err = ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .expect_err("size mismatch fails");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+}
+
+#[tokio::test]
 async fn rejects_existing_snapshot_with_wrong_sha256_digest() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
