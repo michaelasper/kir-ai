@@ -1038,6 +1038,7 @@ name = "llm-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "llm-api",
  "llm-backend",

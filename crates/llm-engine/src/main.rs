@@ -6,7 +6,7 @@ use llm_backend::{
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
-use llm_engine::build_router;
+use llm_engine::{NativeQwenBackend, build_router, build_router_with_backend};
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -20,10 +20,25 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "serve".to_owned());
     match command.as_str() {
         "serve" => {
-            let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+            let serve_args = std::env::args().skip(2).collect::<Vec<_>>();
+            let addr = flag_value(&serve_args, "--addr")
+                .unwrap_or("127.0.0.1:3000")
+                .parse::<SocketAddr>()?;
+            let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
+                let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");
+                let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
+                    .map(str::parse::<u32>)
+                    .transpose()?
+                    .unwrap_or(1);
+                let backend = NativeQwenBackend::open(model_id, snapshot_path)?
+                    .with_max_new_tokens(max_new_tokens);
+                build_router_with_backend(Box::new(backend))
+            } else {
+                build_router()
+            };
             let listener = tokio::net::TcpListener::bind(addr).await?;
             tracing::info!(%addr, "llm-engine listening");
-            axum::serve(listener, build_router()).await?;
+            axum::serve(listener, router).await?;
         }
         "model" => run_model_command(std::env::args().skip(2).collect()).await?,
         other => anyhow::bail!("unknown command `{other}`"),

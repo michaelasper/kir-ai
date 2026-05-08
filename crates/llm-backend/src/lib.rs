@@ -35,6 +35,20 @@ pub trait ModelBackend: Send + Sync + 'static {
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
 }
 
+#[async_trait]
+impl<T> ModelBackend for Box<T>
+where
+    T: ModelBackend + ?Sized,
+{
+    fn model_id(&self) -> &str {
+        (**self).model_id()
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        (**self).generate(request).await
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeterministicBackend {
     model_id: String,
