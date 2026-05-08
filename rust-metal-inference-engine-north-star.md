@@ -162,6 +162,8 @@ Current commits:
 - `d74fcec` - Native Qwen linear-attention recurrent state updates route through a Metal kernel with CPU fallback.
 - `c269d67` - Native Qwen linear-attention recurrent state decay routes through the recurrent-update executor hook.
 - `4e2607b` - Native Qwen full-attention cache key/value row gathering routes through a Metal head-row selection kernel with CPU fallback.
+- `d27a0a4` - Metal command-buffer execution status is checked before reading outputs, fixing GitHub issue #49.
+- `e8b2bad` - Native Qwen Metal CPU fallbacks are logged, metered, and exposed through admin metrics, fixing GitHub issue #50.
 
 Current verified state:
 
@@ -234,6 +236,7 @@ Current verified state:
 - Native Qwen decode-session startup now accepts the request cancellation token and checks it before cache allocation, before embedding/prefill work, and between each prefill layer. Streaming generation treats cancellation during startup as a clean stop instead of emitting a backend error.
 - GitHub issues #45 through #47 have local fixes: native greedy decoding keeps whitespace-only top logits, snapshot verification rejects symlinked manifest artifacts before hashing, and invalid hub endpoints return configuration errors instead of panicking during router construction.
 - GitHub issue #48 has a local docs/config fix: protocol-mode serve examples and `mise run run` use `--deterministic-test-backend`, and the docs state that no-snapshot implicit serving was intentionally removed.
+- GitHub issues #49 and #50 have local fixes: Metal command-buffer status failures now surface as `MetalError::Execution` before shared-buffer reads, and native Qwen Metal fallbacks emit de-duplicated tracing plus per-kernel attempt/success/fallback counters under `GET /admin/metrics`.
 - `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
 - `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.
@@ -270,6 +273,7 @@ Current verified state:
 - `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from the configured model home.
 - `GET /admin/metrics` now reports cumulative artifact verification failures from failed admin snapshot verification.
 - `GET /admin/metrics` now reports process resident memory as `process_rss_bytes` on macOS and Linux.
+- `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, and CPU fallback counters under `native_qwen_metal`.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
