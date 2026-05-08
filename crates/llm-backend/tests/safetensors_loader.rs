@@ -737,6 +737,7 @@ fn qwen_moe_forward_accumulation_uses_configured_backend() {
 
     assert_close(&output, &expected, 1e-6);
     assert_eq!(matvec.range_bf16_calls.get(), 3);
+    assert_eq!(matvec.single_bf16_calls.get(), 4);
     assert_eq!(matvec.weighted_sum_calls.get(), 2);
     std::fs::remove_dir_all(root).ok();
 }

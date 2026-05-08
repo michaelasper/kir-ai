@@ -3638,29 +3638,44 @@ pub fn qwen_layer_moe_forward_with_matvec(
             TensorLoadError::integrity(format!("Qwen selected expert accumulation failed: {err}"))
         })?;
 
-    let shared_gate = store.bf16_tensor_f32(&qwen_mlp_tensor(
-        layer_idx,
-        "shared_expert.gate_proj.weight",
-    ))?;
-    let shared_up =
-        store.bf16_tensor_f32(&qwen_mlp_tensor(layer_idx, "shared_expert.up_proj.weight"))?;
-    let shared_down = store.bf16_tensor_f32(&qwen_mlp_tensor(
-        layer_idx,
-        "shared_expert.down_proj.weight",
-    ))?;
-    let shared_output = swiglu_mlp_f32_with_matvec(
-        hidden_states,
-        &shared_gate,
-        &shared_up,
-        &shared_down,
-        dims.shared_expert_intermediate_size,
-        matvec,
-    )
-    .map_err(|err| TensorLoadError::integrity(format!("Qwen shared expert MLP failed: {err}")))?;
-    let shared_expert_gate =
-        store.bf16_tensor_f32(&qwen_mlp_tensor(layer_idx, "shared_expert_gate.weight"))?;
     let shared_gate = matvec
-        .matvec_row_major_f32(hidden_states, &shared_expert_gate, 1, dims.hidden_size)
+        .bf16_matvec_row_major_f32(
+            store,
+            &qwen_mlp_tensor(layer_idx, "shared_expert.gate_proj.weight"),
+            hidden_states,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
+        })?;
+    let shared_up = matvec
+        .bf16_matvec_row_major_f32(
+            store,
+            &qwen_mlp_tensor(layer_idx, "shared_expert.up_proj.weight"),
+            hidden_states,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert up failed: {err}"))
+        })?;
+    let shared_activated = shared_gate
+        .iter()
+        .zip(shared_up)
+        .map(|(gate, up)| silu_f32(*gate) * up)
+        .collect::<Vec<_>>();
+    let shared_output = matvec
+        .bf16_matvec_row_major_f32(
+            store,
+            &qwen_mlp_tensor(layer_idx, "shared_expert.down_proj.weight"),
+            &shared_activated,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert down failed: {err}"))
+        })?;
+    let shared_gate = matvec
+        .bf16_matvec_row_major_f32(
+            store,
+            &qwen_mlp_tensor(layer_idx, "shared_expert_gate.weight"),
+            hidden_states,
+        )
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
         })?
