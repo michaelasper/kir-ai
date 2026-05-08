@@ -14,6 +14,8 @@ use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::net::SocketAddr;
 
+mod bench;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -109,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(%addr, "llm-engine listening");
             axum::serve(listener, router).await?;
         }
+        "bench" => bench::run_bench_command(std::env::args().skip(2).collect()).await?,
         "model" => run_model_command(std::env::args().skip(2).collect()).await?,
         other => anyhow::bail!("unknown command `{other}`"),
     }

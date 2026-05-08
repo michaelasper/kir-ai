@@ -187,6 +187,9 @@ Current commits:
 Current verified state:
 
 - `mise run fmt-check`, `mise run test`, and `mise run clippy` pass for the workspace.
+- `llm-engine bench qwen-long-context` is the native long-context promotion harness. `mise run bench-qwen-long-context-plan` prints the full dry-run plan, `mise run bench-qwen-135k` runs the release-blocking 135K Qwen gate, and `mise run bench-qwen-200k` runs the non-blocking 200K frontier characterization pass. Runtime tasks require `LLM_BENCH_ENDPOINT` and `LLM_BENCH_SNAPSHOT`; `LLM_BENCH_MODEL`, `LLM_BENCH_BASELINE`, and `LLM_BENCH_OUTPUT` are optional.
+- The 135K promotion profile is release-blocking and covers five scenarios: plain recall, JSON-object recall, required tool-call recall, streamed required tool-call recall, and multi-turn lifecycle recall. Each run generates a Qwen-tokenizer-sized prompt from the supplied snapshot, records the snapshot manifest digest and artifact identity, records OS/architecture/CPU and cache namespace policy, validates the OpenAI response contract, and emits pass/fail JSON.
+- The 200K profile uses the same scenarios and trace schema but is classified as frontier characterization, so failures are recorded without making the profile release-blocking. When `--baseline <trace.json>` is supplied, each case compares current status, latency, and tokens/sec against the frozen trace only when hardware and model class match.
 - `mise exec -- cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B --revision main` resolves `main` to commit `995ad96eacd98c81ed38be0c5b274b04031597b0` under profile `qwen36-safetensors-bf16` and plans 71,926,864,255 bytes of selected artifacts without Python.
 - Official Qwen3.6 config/template fixtures are stored under `fixtures/qwen36/`.
 - `llm-models` parses the official Qwen3.6 hybrid Gated DeltaNet plus MoE topology: 40 layers, 30 linear-attention layers, 10 full-attention layers, 256 experts, 8 routed experts per token, 262,144 native context.

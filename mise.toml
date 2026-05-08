@@ -24,3 +24,23 @@ depends = ["fmt-check", "test", "clippy"]
 [tasks.run]
 description = "Run the llm-engine server"
 run = "cargo run -p llm-engine -- serve --deterministic-test-backend"
+
+[tasks.bench-qwen-long-context-plan]
+description = "Print the Qwen 135K/200K long-context benchmark plan without running inference"
+run = "cargo run -p llm-engine -- bench qwen-long-context --dry-run --profile all --model \"${LLM_BENCH_MODEL:-local-qwen36}\" ${LLM_BENCH_SNAPSHOT:+--snapshot \"$LLM_BENCH_SNAPSHOT\"} ${LLM_BENCH_BASELINE:+--baseline \"$LLM_BENCH_BASELINE\"} ${LLM_BENCH_OUTPUT:+--output \"$LLM_BENCH_OUTPUT\"}"
+
+[tasks.bench-qwen-135k]
+description = "Run the release-blocking 135K Qwen long-context promotion gate"
+run = """
+test -n "$LLM_BENCH_ENDPOINT" || (echo "LLM_BENCH_ENDPOINT is required" >&2; exit 2)
+test -n "$LLM_BENCH_SNAPSHOT" || (echo "LLM_BENCH_SNAPSHOT is required" >&2; exit 2)
+cargo run -p llm-engine -- bench qwen-long-context --profile 135k --endpoint "$LLM_BENCH_ENDPOINT" --model "${LLM_BENCH_MODEL:-local-qwen36}" --snapshot "$LLM_BENCH_SNAPSHOT" --output "${LLM_BENCH_OUTPUT:-.llm-bench/traces/qwen-135k.json}" ${LLM_BENCH_BASELINE:+--baseline "$LLM_BENCH_BASELINE"}
+"""
+
+[tasks.bench-qwen-200k]
+description = "Run the non-blocking 200K Qwen frontier characterization pass"
+run = """
+test -n "$LLM_BENCH_ENDPOINT" || (echo "LLM_BENCH_ENDPOINT is required" >&2; exit 2)
+test -n "$LLM_BENCH_SNAPSHOT" || (echo "LLM_BENCH_SNAPSHOT is required" >&2; exit 2)
+cargo run -p llm-engine -- bench qwen-long-context --profile 200k --endpoint "$LLM_BENCH_ENDPOINT" --model "${LLM_BENCH_MODEL:-local-qwen36}" --snapshot "$LLM_BENCH_SNAPSHOT" --output "${LLM_BENCH_OUTPUT:-.llm-bench/traces/qwen-200k.json}" ${LLM_BENCH_BASELINE:+--baseline "$LLM_BENCH_BASELINE"}
+"""

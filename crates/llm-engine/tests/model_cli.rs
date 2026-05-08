@@ -4,6 +4,88 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[test]
+fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp.path().join("snapshot");
+    let baseline = temp.path().join("baseline.json");
+    let trace = temp.path().join("trace.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-long-context",
+            "--dry-run",
+            "--profile",
+            "all",
+            "--model",
+            "local-qwen36",
+            "--snapshot",
+        ])
+        .arg(&snapshot)
+        .args(["--baseline"])
+        .arg(&baseline)
+        .args(["--output"])
+        .arg(&trace)
+        .output()
+        .expect("run qwen long-context bench dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    let trace_value: Value =
+        serde_json::from_slice(&std::fs::read(&trace).expect("trace output file"))
+            .expect("trace JSON output");
+    assert_eq!(trace_value["gate"], "qwen-long-context");
+    assert_eq!(value["gate"], "qwen-long-context");
+    assert_eq!(value["status"], "dry_run");
+    assert_eq!(value["model"]["id"], "local-qwen36");
+    assert_eq!(
+        value["model"]["snapshot_path"],
+        snapshot.display().to_string()
+    );
+    assert_eq!(value["baseline"]["path"], baseline.display().to_string());
+    assert_eq!(value["trace_output_path"], trace.display().to_string());
+    assert_eq!(value["hardware"]["os"], std::env::consts::OS);
+    assert_eq!(value["hardware"]["arch"], std::env::consts::ARCH);
+    assert_eq!(value["cache_policy"]["cache_layout"], "shared-prefix-v1");
+
+    let profiles = value["profiles"].as_array().expect("profiles array");
+    assert_eq!(profiles.len(), 2, "profiles: {profiles:?}");
+    let promotion = profiles
+        .iter()
+        .find(|profile| profile["name"] == "qwen-135k-promotion")
+        .expect("135K promotion profile");
+    assert_eq!(promotion["target_tokens"], 135_000);
+    assert_eq!(promotion["release_blocking"], true);
+    let frontier = profiles
+        .iter()
+        .find(|profile| profile["name"] == "qwen-200k-characterization")
+        .expect("200K characterization profile");
+    assert_eq!(frontier["target_tokens"], 200_000);
+    assert_eq!(frontier["release_blocking"], false);
+
+    let case_names = promotion["cases"]
+        .as_array()
+        .expect("promotion cases")
+        .iter()
+        .map(|case| case["name"].as_str().expect("case name"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        case_names,
+        [
+            "plain-recall",
+            "json-object-recall",
+            "required-tool-recall",
+            "streamed-required-tool-recall",
+            "multi-turn-lifecycle"
+        ]
+    );
+}
+
+#[test]
 fn serve_help_prints_without_backend_validation() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args(["serve", "--help"])
