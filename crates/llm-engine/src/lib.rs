@@ -19,8 +19,8 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    DeterministicBackend, ModelBackend, SafeTensorShardStore, SamplingConfig, TopKLogit,
-    qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
+    DeterministicBackend, ModelBackend, SafeTensorShardStore, SamplingConfig, qwen_final_norm,
+    qwen_lm_head_logits, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -410,12 +410,12 @@ impl NativeQwenBackend {
             self.spec.rms_norm_eps,
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
-        let top_logits = qwen_lm_head_top_k(&self.store, &final_norm, self.top_k, self.chunk_rows)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-
         if !sampling.is_greedy() {
-            let item = sample_top_logit_with_draw(&top_logits, sampling, native_sampling_draw())?;
-            let token_id = u32::try_from(item.index).map_err(|err| {
+            let logits = qwen_lm_head_logits(&self.store, &final_norm, self.chunk_rows)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            let sampled_token_id =
+                sample_token_id_with_draw(&logits, sampling, native_sampling_draw())?;
+            let token_id = u32::try_from(sampled_token_id).map_err(|err| {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?;
             let text = self
@@ -423,10 +423,13 @@ impl NativeQwenBackend {
                 .decode(&[token_id], false)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
             return Ok(NativeQwenCandidate {
-                token_id: item.index,
+                token_id: sampled_token_id,
                 text,
             });
         }
+
+        let top_logits = qwen_lm_head_top_k(&self.store, &final_norm, self.top_k, self.chunk_rows)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
 
         let mut fallback = None;
         for item in top_logits {
@@ -477,27 +480,23 @@ struct NativeQwenCandidate {
     text: String,
 }
 
-fn sample_top_logit_with_draw(
-    top_logits: &[TopKLogit],
+fn sample_token_id_with_draw(
+    logits: &[f32],
     sampling: SamplingConfig,
     draw: f32,
-) -> Result<TopKLogit, BackendError> {
-    if top_logits.is_empty() {
+) -> Result<usize, BackendError> {
+    if logits.is_empty() {
         return Err(BackendError::Other(
             "Qwen lm head returned no logits".to_owned(),
         ));
     }
     match sampling {
-        SamplingConfig::Greedy => Ok(top_logits[0]),
-        SamplingConfig::TopP { temperature, top_p } => {
-            let logits = top_logits.iter().map(|item| item.logit).collect::<Vec<_>>();
-            let sampled_index = TopPSampler { temperature, top_p }
-                .sample(&logits, draw)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-            top_logits.get(sampled_index).copied().ok_or_else(|| {
-                BackendError::Other("Qwen sampler returned an out-of-range index".to_owned())
-            })
-        }
+        SamplingConfig::Greedy => llm_sampler::GreedySampler
+            .sample(logits)
+            .map_err(|err| BackendError::Other(err.to_string())),
+        SamplingConfig::TopP { temperature, top_p } => TopPSampler { temperature, top_p }
+            .sample(logits, draw)
+            .map_err(|err| BackendError::Other(err.to_string())),
     }
 }
 
@@ -1245,22 +1244,9 @@ mod tests {
     }
 
     #[test]
-    fn native_top_p_sampling_selects_candidate_from_draw() {
-        let selected = sample_top_logit_with_draw(
-            &[
-                TopKLogit {
-                    index: 10,
-                    logit: 2.0,
-                },
-                TopKLogit {
-                    index: 20,
-                    logit: 1.0,
-                },
-                TopKLogit {
-                    index: 30,
-                    logit: 0.0,
-                },
-            ],
+    fn native_top_p_sampling_selects_full_vocab_token_from_draw() {
+        let token_id = sample_token_id_with_draw(
+            &[2.0, 1.0, 0.0],
             SamplingConfig::TopP {
                 temperature: 1.0,
                 top_p: 0.9,
@@ -1269,7 +1255,7 @@ mod tests {
         )
         .expect("sampling succeeds");
 
-        assert_eq!(selected.index, 20);
+        assert_eq!(token_id, 1);
     }
 
     fn copy_fixture(name: &str, destination: impl AsRef<Path>) {

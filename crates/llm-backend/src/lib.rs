@@ -1916,6 +1916,14 @@ pub fn qwen_lm_head_top_k(
     store.bf16_matvec_top_k_rows_f32(QWEN_LM_HEAD_WEIGHT, hidden_states, top_k, chunk_rows)
 }
 
+pub fn qwen_lm_head_logits(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    chunk_rows: usize,
+) -> Result<Vec<f32>, TensorLoadError> {
+    store.bf16_matvec_rows_f32(QWEN_LM_HEAD_WEIGHT, hidden_states, chunk_rows)
+}
+
 fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathError> {
     if actual == expected {
         Ok(())
@@ -2502,6 +2510,15 @@ impl SafeTensorShardStore {
         tensor: &str,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
+        self.bf16_matvec_rows_f32(tensor, input, BF16_MATVEC_CHUNK_ROWS)
+    }
+
+    pub fn bf16_matvec_rows_f32(
+        &self,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+    ) -> Result<Vec<f32>, TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
         let metadata = file.tensor_metadata(tensor)?;
         if metadata.shape.len() != 2 {
@@ -2518,9 +2535,14 @@ impl SafeTensorShardStore {
                 input.len()
             )));
         }
+        if chunk_rows == 0 {
+            return Err(TensorLoadError::integrity(
+                "chunk_rows must be greater than zero",
+            ));
+        }
         let mut output = Vec::with_capacity(rows);
-        for row_start in (0..rows).step_by(BF16_MATVEC_CHUNK_ROWS) {
-            let rows_in_chunk = BF16_MATVEC_CHUNK_ROWS.min(rows - row_start);
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
             let element_offset = row_start
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("matvec offset overflow"))?;

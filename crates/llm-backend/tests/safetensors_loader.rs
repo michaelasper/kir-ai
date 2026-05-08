@@ -4,7 +4,7 @@ use llm_backend::{
     qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_full_attention_first_token,
     qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_top_k,
+    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_top_k,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 
@@ -820,10 +820,12 @@ fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
 
     let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0).expect("final norm");
     let top = qwen_lm_head_top_k(&store, &normalized, 1, 1).expect("lm head");
+    let logits = qwen_lm_head_logits(&store, &normalized, 1).expect("lm head logits");
 
     assert_close(&normalized, &[0.84852815, 2.2627418], 1e-6);
     assert_eq!(top[0].index, 1);
     assert_close(&[top[0].logit], &[2.2627418], 1e-6);
+    assert_close(&logits, &[0.84852815, 2.2627418], 1e-6);
     std::fs::remove_dir_all(root).ok();
 }
 
