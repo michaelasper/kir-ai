@@ -145,6 +145,7 @@ Current commits:
 - `a80cd60` - Admin metrics report process RSS bytes on macOS and Linux.
 - `3e50842` - Streaming runtime errors include stable error metadata.
 - `1822a58` - Backend cancellation support is an explicit trait requirement.
+- `6a898ad` - Hub repo IDs are validated as safe two-component paths, and Hub request paths encode revisions.
 
 Current verified state:
 
@@ -233,6 +234,7 @@ Current verified state:
 - Failed model pulls now clean their unique staging directory before returning the original download or integrity error.
 - Existing snapshot verification now reuses a matching manifest instead of rewriting timestamp-only metadata, keeping no-op manifest digests stable.
 - Public docs now describe supported temperature/top-p sampling controls and the full admin endpoint surface, including mutating model-store operations and admin Bearer-token expectations.
+- Hub model IDs are now constrained to exactly two safe path components, and Hub API request paths are built with encoded URL path segments so revisions containing `/` cannot alter route structure.
 - `POST /admin/requests/{request_id}/cancel` can cancel active chat and text-completion requests registered with `x-request-id`/`x-llm-request-id` or a generated request ID. Cancelled backend requests return stable `cancelled` error metadata.
 - `GET /admin/metrics` now reports current active request count and cumulative admin-triggered cancellation count alongside request and token counters.
 - `GET /admin/metrics` now also reports explicit queue depth and cumulative no-progress failure count.
