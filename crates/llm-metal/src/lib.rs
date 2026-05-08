@@ -1,15 +1,50 @@
-use metal::{CompileOptions, Device, MTLResourceOptions, MTLSize};
+use metal::{
+    CommandQueue, CompileOptions, ComputePipelineState, Device, MTLResourceOptions, MTLSize,
+};
 use std::ffi::c_void;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct MetalDevice {
     device: Device,
+    vector_add: Arc<MetalKernel>,
+}
+
+#[derive(Debug)]
+struct MetalKernel {
+    pipeline: ComputePipelineState,
+    queue: CommandQueue,
 }
 
 impl MetalDevice {
     pub fn system_default() -> Option<Self> {
-        Device::system_default().map(|device| Self { device })
+        Self::system_default_result().ok().flatten()
+    }
+
+    pub fn system_default_result() -> Result<Option<Self>, MetalError> {
+        Device::system_default().map(Self::new).transpose()
+    }
+
+    pub fn vector_add_thread_execution_width(&self) -> u64 {
+        self.vector_add.pipeline.thread_execution_width()
+    }
+
+    fn new(device: Device) -> Result<Self, MetalError> {
+        let library = device
+            .new_library_with_source(VECTOR_ADD_SOURCE, &CompileOptions::new())
+            .map_err(MetalError::Compile)?;
+        let function = library
+            .get_function("vector_add", None)
+            .map_err(MetalError::Compile)?;
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&function)
+            .map_err(|err| MetalError::Pipeline(format!("{err:?}")))?;
+        let queue = device.new_command_queue();
+        Ok(Self {
+            device,
+            vector_add: Arc::new(MetalKernel { pipeline, queue }),
+        })
     }
 
     pub fn add_f32(&self, left: &[f32], right: &[f32]) -> Result<Vec<f32>, MetalError> {
@@ -22,18 +57,6 @@ impl MetalDevice {
             return Ok(Vec::new());
         }
 
-        let library = self
-            .device
-            .new_library_with_source(VECTOR_ADD_SOURCE, &CompileOptions::new())
-            .map_err(MetalError::Compile)?;
-        let function = library
-            .get_function("vector_add", None)
-            .map_err(MetalError::Compile)?;
-        let pipeline = self
-            .device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|err| MetalError::Pipeline(format!("{err:?}")))?;
-        let queue = self.device.new_command_queue();
         let byte_len = std::mem::size_of_val(left) as u64;
         let left_buffer = self.device.new_buffer_with_data(
             left.as_ptr().cast::<c_void>(),
@@ -49,9 +72,9 @@ impl MetalDevice {
             .device
             .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
 
-        let command_buffer = queue.new_command_buffer();
+        let command_buffer = self.vector_add.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&pipeline);
+        encoder.set_compute_pipeline_state(&self.vector_add.pipeline);
         encoder.set_buffer(0, Some(&left_buffer), 0);
         encoder.set_buffer(1, Some(&right_buffer), 0);
         encoder.set_buffer(2, Some(&output_buffer), 0);
@@ -60,7 +83,11 @@ impl MetalDevice {
             height: 1,
             depth: 1,
         };
-        let group_width = pipeline.thread_execution_width().min(left.len() as u64);
+        let group_width = self
+            .vector_add
+            .pipeline
+            .thread_execution_width()
+            .min(left.len() as u64);
         let threads_per_group = MTLSize {
             width: group_width,
             height: 1,
