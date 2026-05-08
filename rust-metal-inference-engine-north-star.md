@@ -90,6 +90,7 @@ Current commits:
 - `12d8cdf` - Deterministic protocol mode now emits structured tool calls for required tool-choice requests.
 - `ded78eb` - Safetensors index shard paths are validated and shard opens are confined to the snapshot root.
 - `66f1dd2` - Deterministic protocol mode now emits valid JSON objects for `response_format: json_object`.
+- `d6bdd00` - Native Qwen snapshots can be opened for serving without an engine manifest.
 
 Current verified state:
 
@@ -144,6 +145,7 @@ Current verified state:
 - The default deterministic/protocol backend now threads required tool choice to the backend and emits a valid `<tool_call>` block for declared tools; optional tools still allow text fallback.
 - Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
 - The default deterministic/protocol backend now returns valid JSON object content when `response_format.type` is `json_object`, while fixed-text backends still fail response validation if they emit invalid JSON.
+- `NativeQwenBackend::open` treats `llm-engine-manifest.json` as optional for serving. Missing manifests now yield base native metadata with `snapshot_path`, while present manifests still populate artifact identity and digest fields.
 
 Known incomplete items:
 
