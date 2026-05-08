@@ -594,6 +594,15 @@ pub struct QwenFullAttentionSequenceParts<'a> {
     pub o_proj_weight: &'a [f32],
 }
 
+pub struct QwenFullAttentionStepParts<'a> {
+    pub q_proj: &'a [f32],
+    pub k_proj: &'a [f32],
+    pub v_proj: &'a [f32],
+    pub q_norm_weight: &'a [f32],
+    pub k_norm_weight: &'a [f32],
+    pub o_proj_weight: &'a [f32],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QwenFullAttentionSequenceConfig {
     pub rms_norm_eps: f32,
@@ -1147,6 +1156,22 @@ fn require_linear_attention_cache_shape(
     Ok(())
 }
 
+fn require_full_attention_cache_shape(
+    dims: &QwenFullAttentionDims,
+    cache: &LayerKvCache,
+) -> Result<(), MathError> {
+    if cache.key_value_heads() != dims.num_key_value_heads || cache.head_dim() != dims.head_dim {
+        return Err(MathError::InvalidShape(format!(
+            "Qwen full attention cache shape does not match dims: cache key_value_heads={}, head_dim={}; dims key_value_heads={}, head_dim={}",
+            cache.key_value_heads(),
+            cache.head_dim(),
+            dims.num_key_value_heads,
+            dims.head_dim
+        )));
+    }
+    Ok(())
+}
+
 pub fn qwen_full_attention_first_token_from_parts(
     dims: &QwenFullAttentionDims,
     q_proj: &[f32],
@@ -1219,6 +1244,143 @@ pub fn qwen_full_attention_sequence_with_cache_from_parts(
         ));
     }
     qwen_full_attention_sequence_from_parts_impl(dims, parts, config, Some(cache))
+}
+
+pub fn qwen_full_attention_step_with_cache_from_parts(
+    dims: &QwenFullAttentionDims,
+    parts: &QwenFullAttentionStepParts<'_>,
+    config: QwenFullAttentionSequenceConfig,
+    cache: &mut LayerKvCache,
+) -> Result<Vec<f32>, MathError> {
+    if dims.num_attention_heads == 0
+        || dims.num_key_value_heads == 0
+        || dims.head_dim == 0
+        || dims.hidden_size == 0
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen full attention dimensions must be non-zero".to_owned(),
+        ));
+    }
+    if !dims
+        .num_attention_heads
+        .is_multiple_of(dims.num_key_value_heads)
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen attention heads must be divisible by key/value heads".to_owned(),
+        ));
+    }
+    if config.rope_theta <= 0.0 || config.partial_rotary_factor < 0.0 {
+        return Err(MathError::InvalidShape(
+            "Qwen RoPE parameters must be positive".to_owned(),
+        ));
+    }
+    require_full_attention_cache_shape(dims, cache)?;
+    let attention_dim = dims.attention_dim()?;
+    let key_value_dim = dims.key_value_dim()?;
+    require_len("q projection", parts.q_proj.len(), attention_dim * 2)?;
+    require_len("k projection", parts.k_proj.len(), key_value_dim)?;
+    require_len("v projection", parts.v_proj.len(), key_value_dim)?;
+    require_len("q norm weight", parts.q_norm_weight.len(), dims.head_dim)?;
+    require_len("k norm weight", parts.k_norm_weight.len(), dims.head_dim)?;
+    require_len(
+        "o projection weight",
+        parts.o_proj_weight.len(),
+        dims.hidden_size
+            .checked_mul(attention_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen o projection overflow".to_owned()))?,
+    )?;
+    let rotary_dim = ((dims.head_dim as f32) * config.partial_rotary_factor).round() as usize;
+    if rotary_dim > dims.head_dim || !rotary_dim.is_multiple_of(2) {
+        return Err(MathError::InvalidShape(format!(
+            "Qwen rotary dimension {rotary_dim} must be even and <= head dim {}",
+            dims.head_dim
+        )));
+    }
+
+    let position = cache.token_count();
+    let mut query = vec![0.0; attention_dim];
+    let mut gate = vec![0.0; attention_dim];
+    for head in 0..dims.num_attention_heads {
+        let projected_head_start = head * dims.head_dim * 2;
+        let q_start = head * dims.head_dim;
+        let normalized = qwen_rms_norm_f32(
+            &parts.q_proj[projected_head_start..projected_head_start + dims.head_dim],
+            parts.q_norm_weight,
+            config.rms_norm_eps,
+        )?;
+        query[q_start..q_start + dims.head_dim].copy_from_slice(&normalized);
+        gate[q_start..q_start + dims.head_dim].copy_from_slice(
+            &parts.q_proj
+                [projected_head_start + dims.head_dim..projected_head_start + dims.head_dim * 2],
+        );
+        apply_rope_to_head(
+            &mut query[q_start..q_start + dims.head_dim],
+            position,
+            rotary_dim,
+            config.rope_theta,
+        );
+    }
+
+    let mut key = vec![0.0; key_value_dim];
+    for head in 0..dims.num_key_value_heads {
+        let head_start = head * dims.head_dim;
+        let normalized = qwen_rms_norm_f32(
+            &parts.k_proj[head_start..head_start + dims.head_dim],
+            parts.k_norm_weight,
+            config.rms_norm_eps,
+        )?;
+        key[head_start..head_start + dims.head_dim].copy_from_slice(&normalized);
+        apply_rope_to_head(
+            &mut key[head_start..head_start + dims.head_dim],
+            position,
+            rotary_dim,
+            config.rope_theta,
+        );
+    }
+    cache
+        .append(&key, parts.v_proj)
+        .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
+
+    let groups = dims.num_attention_heads / dims.num_key_value_heads;
+    let scale = (dims.head_dim as f32).sqrt().recip();
+    let mut attended = vec![0.0; attention_dim];
+    for head in 0..dims.num_attention_heads {
+        let kv_head = head / groups;
+        let q_start = head * dims.head_dim;
+        let kv_start = kv_head * dims.head_dim;
+        let mut scores = Vec::with_capacity(cache.token_count());
+        for source_idx in 0..cache.token_count() {
+            let key_token = cache
+                .key(source_idx)
+                .ok_or_else(|| MathError::InvalidShape("KV cache key missing".to_owned()))?;
+            let score = query[q_start..q_start + dims.head_dim]
+                .iter()
+                .zip(&key_token[kv_start..kv_start + dims.head_dim])
+                .map(|(query, key)| query * key)
+                .sum::<f32>()
+                * scale;
+            scores.push(score);
+        }
+        let weights = softmax_f32(&scores)?;
+        for (source_idx, weight) in weights.into_iter().enumerate() {
+            let value_token = cache
+                .value(source_idx)
+                .ok_or_else(|| MathError::InvalidShape("KV cache value missing".to_owned()))?;
+            for offset in 0..dims.head_dim {
+                attended[q_start + offset] += weight * value_token[kv_start + offset];
+            }
+        }
+        for offset in 0..dims.head_dim {
+            attended[q_start + offset] *= sigmoid_f32(gate[q_start + offset]);
+        }
+    }
+
+    matvec_row_major_f32(
+        &attended,
+        parts.o_proj_weight,
+        dims.hidden_size,
+        attention_dim,
+    )
 }
 
 fn qwen_full_attention_sequence_from_parts_impl(
