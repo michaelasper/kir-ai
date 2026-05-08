@@ -508,6 +508,35 @@ async fn chat_completions_rejects_parallel_tool_calls() {
 }
 
 #[tokio::test]
+async fn chat_completions_accepts_text_content_parts() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "hello"},
+                                {"type": "text", "text": " world"}
+                            ]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_chatml_control_token_in_message_content() {
     let response = build_router()
         .oneshot(

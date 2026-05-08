@@ -15,7 +15,11 @@ pub enum ChatRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_message_content",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -636,6 +640,45 @@ where
             .collect(),
         Some(_) => Err(D::Error::custom(
             "stop must be a string or array of strings",
+        )),
+    }
+}
+
+fn deserialize_message_content<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::String(text) => Ok(Some(text)),
+        Value::Array(parts) => {
+            let mut text = String::new();
+            for part in parts {
+                let object = part.as_object().ok_or_else(|| {
+                    D::Error::custom("message content parts must be JSON objects")
+                })?;
+                let part_type = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("message content part type is required"))?;
+                if part_type != "text" {
+                    return Err(D::Error::custom(format!(
+                        "unsupported message content part type `{part_type}`"
+                    )));
+                }
+                let part_text = object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("text message content part requires text"))?;
+                text.push_str(part_text);
+            }
+            Ok(Some(text))
+        }
+        _ => Err(D::Error::custom(
+            "message content must be a string, null, or an array of text parts",
         )),
     }
 }
