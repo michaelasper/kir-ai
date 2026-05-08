@@ -775,32 +775,18 @@ impl ModelStore {
         snapshot: impl AsRef<Path>,
     ) -> Result<SnapshotVerification, HubError> {
         let snapshot = Self::inspect_snapshot(snapshot).await?;
+        let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path).await?;
         let mut verified_files = 0_u64;
         let mut verified_bytes = 0_u64;
         for file in &snapshot.manifest.files {
-            validate_artifact_path(&file.path)?;
-            let path = snapshot.path.join(&file.path);
-            let metadata = tokio::fs::metadata(&path).await.map_err(|err| {
-                HubError::integrity_failed(format!(
-                    "snapshot file `{}` is missing or unreadable: {err}",
-                    path.display()
-                ))
-            })?;
-            if !metadata.is_file() {
-                return Err(HubError::integrity_failed(format!(
-                    "snapshot path `{}` is not a file",
-                    path.display()
-                )));
-            }
-            if metadata.len() != file.size {
-                return Err(HubError::integrity_failed(format!(
-                    "snapshot file `{}` has size {}, expected {}",
-                    path.display(),
-                    metadata.len(),
-                    file.size
-                )));
-            }
-            verify_file_sha256(&path, file.sha256.as_deref()).await?;
+            verify_snapshot_file(
+                &snapshot.path,
+                &canonical_snapshot_root,
+                &file.path,
+                file.size,
+                file.sha256.as_deref(),
+            )
+            .await?;
             verified_files += 1;
             verified_bytes += file.size;
         }
@@ -816,29 +802,16 @@ impl ModelStore {
         plan: &DownloadPlan,
         snapshot: &Path,
     ) -> Result<(), HubError> {
+        let canonical_snapshot_root = canonicalize_snapshot_root(snapshot).await?;
         for file in &plan.files_to_download {
-            let path = snapshot.join(&file.path);
-            let metadata = tokio::fs::metadata(&path).await.map_err(|err| {
-                HubError::integrity_failed(format!(
-                    "snapshot file `{}` is missing or unreadable: {err}",
-                    path.display()
-                ))
-            })?;
-            if !metadata.is_file() {
-                return Err(HubError::integrity_failed(format!(
-                    "snapshot path `{}` is not a file",
-                    path.display()
-                )));
-            }
-            if metadata.len() != file.size {
-                return Err(HubError::integrity_failed(format!(
-                    "snapshot file `{}` has size {}, expected {}",
-                    path.display(),
-                    metadata.len(),
-                    file.size
-                )));
-            }
-            verify_file_sha256(&path, file.sha256.as_deref()).await?;
+            verify_snapshot_file(
+                snapshot,
+                &canonical_snapshot_root,
+                &file.path,
+                file.size,
+                file.sha256.as_deref(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1125,6 +1098,66 @@ fn validate_artifact_path(path: &str) -> Result<(), HubError> {
         )));
     }
     Ok(())
+}
+
+async fn canonicalize_snapshot_root(snapshot: &Path) -> Result<PathBuf, HubError> {
+    tokio::fs::canonicalize(snapshot).await.map_err(|err| {
+        HubError::integrity_failed(format!(
+            "snapshot root `{}` is missing or unreadable: {err}",
+            snapshot.display()
+        ))
+    })
+}
+
+async fn verify_snapshot_file(
+    snapshot_root: &Path,
+    canonical_snapshot_root: &Path,
+    relative_path: &str,
+    expected_size: u64,
+    expected_sha256: Option<&str>,
+) -> Result<(), HubError> {
+    validate_artifact_path(relative_path)?;
+    let path = snapshot_root.join(relative_path);
+    let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|err| {
+        HubError::integrity_failed(format!(
+            "snapshot file `{}` is missing or unreadable: {err}",
+            path.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot path `{}` is a symlink",
+            path.display()
+        )));
+    }
+    let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|err| {
+        HubError::integrity_failed(format!(
+            "snapshot file `{}` is missing or unreadable: {err}",
+            path.display()
+        ))
+    })?;
+    if !canonical_path.starts_with(canonical_snapshot_root) {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot file `{}` resolves outside snapshot root `{}`",
+            path.display(),
+            snapshot_root.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot path `{}` is not a file",
+            path.display()
+        )));
+    }
+    if metadata.len() != expected_size {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot file `{}` has size {}, expected {}",
+            path.display(),
+            metadata.len(),
+            expected_size
+        )));
+    }
+    verify_file_sha256(&canonical_path, expected_sha256).await
 }
 
 async fn verify_file_sha256(path: &Path, expected_sha256: Option<&str>) -> Result<(), HubError> {

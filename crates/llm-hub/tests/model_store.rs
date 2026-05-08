@@ -1,4 +1,6 @@
-use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
+use llm_hub::{
+    HubFile, HubRepoId, ModelProfile, ModelStore, SnapshotManifest, build_download_plan,
+};
 
 #[tokio::test]
 async fn promotes_staged_snapshot_with_manifest() {
@@ -313,6 +315,80 @@ async fn rejects_corrupt_promoted_snapshot_from_manifest() {
         .expect_err("size mismatch fails");
 
     assert_eq!(err.code(), "model_integrity_failed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rejects_promoted_snapshot_manifest_symlinked_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, None)],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    let outside = temp.path().join("outside-config.json");
+    tokio::fs::write(&outside, "{}")
+        .await
+        .expect("outside config");
+    std::os::unix::fs::symlink(&outside, snapshot_path.join("config.json"))
+        .expect("symlink config");
+    let manifest = SnapshotManifest::from_plan(&plan, snapshot_path.display().to_string());
+    tokio::fs::write(
+        snapshot_path.join("llm-engine-manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .await
+    .expect("manifest");
+
+    let err = ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .expect_err("manifest symlink fails");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(err.to_string().contains("symlink"), "err: {err}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rejects_existing_snapshot_with_nested_symlinked_artifact() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("nested/config.json", 2, None)],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(snapshot_path.join("nested"))
+        .await
+        .expect("nested snapshot dir");
+    let outside = temp.path().join("outside-nested-config.json");
+    tokio::fs::write(&outside, "{}")
+        .await
+        .expect("outside nested config");
+    std::os::unix::fs::symlink(&outside, snapshot_path.join("nested/config.json"))
+        .expect("nested symlink config");
+
+    let err = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect_err("nested symlink fails");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(err.to_string().contains("symlink"), "err: {err}");
 }
 
 #[tokio::test]

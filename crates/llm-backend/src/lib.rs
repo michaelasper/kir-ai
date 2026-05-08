@@ -937,6 +937,24 @@ pub fn qwen_layer_input_norm(
     hidden_size: usize,
     rms_norm_eps: f32,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_input_norm_with_matvec(
+        store,
+        layer_idx,
+        hidden_states,
+        hidden_size,
+        rms_norm_eps,
+        &CpuQwenMatvecBackend,
+    )
+}
+
+pub fn qwen_layer_input_norm_with_matvec(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
     if hidden_states.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
             "Qwen layer input hidden length {} must match hidden size {hidden_size}",
@@ -948,9 +966,11 @@ pub fn qwen_layer_input_norm(
         0,
         hidden_size,
     )?;
-    qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
-        TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
-    })
+    matvec
+        .qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps)
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
+        })
 }
 
 fn qwen_layer_input_norm_sequence(
@@ -959,6 +979,7 @@ fn qwen_layer_input_norm_sequence(
     hidden_states: &[Vec<f32>],
     hidden_size: usize,
     rms_norm_eps: f32,
+    matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let norm_weight = store.bf16_tensor_f32_range(
         &qwen_layer_tensor(layer_idx, "input_layernorm.weight"),
@@ -974,9 +995,11 @@ fn qwen_layer_input_norm_sequence(
                     hidden.len()
                 )));
             }
-            qwen_rms_norm_f32(hidden, &norm_weight, rms_norm_eps).map_err(|err| {
-                TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
-            })
+            matvec
+                .qwen_rms_norm_f32(hidden, &norm_weight, rms_norm_eps)
+                .map_err(|err| {
+                    TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
+                })
         })
         .collect()
 }
@@ -2417,6 +2440,26 @@ pub fn qwen_layer_post_attention_norm(
     hidden_size: usize,
     rms_norm_eps: f32,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_post_attention_norm_with_matvec(
+        store,
+        layer_idx,
+        residual,
+        attention_output,
+        hidden_size,
+        rms_norm_eps,
+        &CpuQwenMatvecBackend,
+    )
+}
+
+pub fn qwen_layer_post_attention_norm_with_matvec(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    residual: &[f32],
+    attention_output: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
     if residual.len() != hidden_size || attention_output.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
             "Qwen post-attention residual lengths {}, {} must match hidden size {hidden_size}",
@@ -2434,9 +2477,11 @@ pub fn qwen_layer_post_attention_norm(
         0,
         hidden_size,
     )?;
-    qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
-        TensorLoadError::integrity(format!("Qwen layer0 post-attention RMSNorm failed: {err}"))
-    })
+    matvec
+        .qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps)
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen layer post-attention RMSNorm failed: {err}"))
+        })
 }
 
 fn qwen_layer_post_attention_norm_sequence(
@@ -2446,6 +2491,7 @@ fn qwen_layer_post_attention_norm_sequence(
     attention_output: &[Vec<f32>],
     hidden_size: usize,
     rms_norm_eps: f32,
+    matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     if residual.len() != attention_output.len() {
         return Err(TensorLoadError::integrity(
@@ -2473,11 +2519,13 @@ fn qwen_layer_post_attention_norm_sequence(
                 .zip(attention)
                 .map(|(residual, attention)| residual + attention)
                 .collect::<Vec<_>>();
-            qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
-                TensorLoadError::integrity(format!(
-                    "Qwen post-attention RMSNorm sequence failed: {err}"
-                ))
-            })
+            matvec
+                .qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps)
+                .map_err(|err| {
+                    TensorLoadError::integrity(format!(
+                        "Qwen post-attention RMSNorm sequence failed: {err}"
+                    ))
+                })
         })
         .collect()
 }
@@ -2527,12 +2575,13 @@ pub fn qwen_linear_decoder_layer_first_token_with_matvec(
         }
     }
     let hidden_size = spec.hidden_size as usize;
-    let input_norm = qwen_layer_input_norm(
+    let input_norm = qwen_layer_input_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let projections =
         qwen_layer_linear_attention_projections_with_matvec(store, layer_idx, &input_norm, matvec)?;
@@ -2543,13 +2592,14 @@ pub fn qwen_linear_decoder_layer_first_token_with_matvec(
         &projections,
         matvec,
     )?;
-    let post_attention = qwen_layer_post_attention_norm(
+    let post_attention = qwen_layer_post_attention_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         &attention_output,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let router = qwen_layer_moe_router_with_matvec(
         store,
@@ -2610,12 +2660,13 @@ pub fn qwen_full_decoder_layer_first_token_with_matvec(
         }
     }
     let hidden_size = spec.hidden_size as usize;
-    let input_norm = qwen_layer_input_norm(
+    let input_norm = qwen_layer_input_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let attention_output = qwen_layer_full_attention_first_token_with_matvec(
         store,
@@ -2624,13 +2675,14 @@ pub fn qwen_full_decoder_layer_first_token_with_matvec(
         &input_norm,
         matvec,
     )?;
-    let post_attention = qwen_layer_post_attention_norm(
+    let post_attention = qwen_layer_post_attention_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         &attention_output,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let router = qwen_layer_moe_router_with_matvec(
         store,
@@ -2768,12 +2820,13 @@ pub fn qwen_decoder_layer_step_with_cache_with_matvec(
     matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
-    let input_norm = qwen_layer_input_norm(
+    let input_norm = qwen_layer_input_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let attention_output = match spec.layer_kinds.get(layer_idx) {
         Some(AttentionKind::LinearAttention) => match cache {
@@ -2814,13 +2867,14 @@ pub fn qwen_decoder_layer_step_with_cache_with_matvec(
             )));
         }
     };
-    let post_attention = qwen_layer_post_attention_norm(
+    let post_attention = qwen_layer_post_attention_norm_with_matvec(
         store,
         layer_idx,
         hidden_states,
         &attention_output,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let router = qwen_layer_moe_router_with_matvec(
         store,
@@ -2860,6 +2914,7 @@ fn qwen_decoder_layer_sequence_impl(
         hidden_states,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let attention_output = match spec.layer_kinds.get(layer_idx) {
         Some(AttentionKind::LinearAttention) => match cache {
@@ -2925,6 +2980,7 @@ fn qwen_decoder_layer_sequence_impl(
         &attention_output,
         hidden_size,
         spec.rms_norm_eps,
+        matvec,
     )?;
     let moe_dims = QwenMoeDims::from_spec(spec);
     hidden_states

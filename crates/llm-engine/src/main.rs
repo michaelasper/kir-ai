@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
                 )?
                 .with_max_new_tokens(max_new_tokens)
                 .with_max_prefill_tokens(max_prefill_tokens);
-                build_router_with_backend_and_options(Box::new(backend), options)
+                build_router_with_backend_and_options(Box::new(backend), options)?
             } else if has_flag(&serve_args, "--deterministic-test-backend") {
                 build_router_with_backend_and_options(
                     Box::new(
@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
                         .with_conversation_protocol(),
                     ),
                     options,
-                )
+                )?
             } else {
                 anyhow::bail!(
                     "llm-engine serve requires --snapshot <path> for native Qwen serving; use --deterministic-test-backend only for protocol tests"

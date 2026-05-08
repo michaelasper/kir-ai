@@ -127,14 +127,21 @@ pub fn build_router_with_backend_and_concurrency(
             ..EngineOptions::default()
         },
     )
+    .expect("default engine options are valid")
 }
 
 pub fn build_router_with_backend_and_options(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
-) -> Router {
+) -> Result<Router, EngineConfigError> {
+    let hub_client = options
+        .hub_endpoint
+        .as_deref()
+        .map(parse_hub_client)
+        .transpose()?
+        .unwrap_or_default();
     let runtime = Runtime::new(backend);
-    Router::new()
+    Ok(Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/admin/models", get(admin_models))
@@ -160,15 +167,37 @@ pub fn build_router_with_backend_and_options(
             next_request_id: Arc::new(AtomicU64::new(1)),
             admin_token: options.admin_token.map(Arc::from),
             model_home: options.model_home.unwrap_or_else(default_model_home),
-            hub_client: options
-                .hub_endpoint
-                .map(|endpoint| {
-                    HubClient::new(url::Url::parse(&endpoint).expect("hub endpoint URL parses"))
-                })
-                .unwrap_or_default(),
+            hub_client,
             hf_token: options.hf_token.map(Arc::from),
             stream_stall_timeout: options.stream_stall_timeout,
-        })
+        }))
+}
+
+#[derive(Debug)]
+pub struct EngineConfigError {
+    message: String,
+}
+
+impl EngineConfigError {
+    fn invalid_hub_endpoint(endpoint: &str, source: url::ParseError) -> Self {
+        Self {
+            message: format!("invalid hub endpoint `{endpoint}`: {source}"),
+        }
+    }
+}
+
+impl std::fmt::Display for EngineConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for EngineConfigError {}
+
+fn parse_hub_client(endpoint: &str) -> Result<HubClient, EngineConfigError> {
+    let endpoint = url::Url::parse(endpoint)
+        .map_err(|err| EngineConfigError::invalid_hub_endpoint(endpoint, err))?;
+    Ok(HubClient::new(endpoint))
 }
 
 fn default_backend() -> DeterministicBackend {
@@ -753,16 +782,11 @@ impl NativeQwenBackend {
             .map_err(|err| BackendError::Other(err.to_string()))?;
             let sampled_token_id =
                 sample_token_id_with_draw(&logits, sampling, native_sampling_draw())?;
-            let token_id = u32::try_from(sampled_token_id).map_err(|err| {
+            u32::try_from(sampled_token_id).map_err(|err| {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?;
-            let text = self
-                .tokenizer
-                .decode(&[token_id], false)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
             return Ok(NativeQwenCandidate {
                 token_id: sampled_token_id,
-                text,
             });
         }
 
@@ -775,27 +799,15 @@ impl NativeQwenBackend {
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
 
-        let mut fallback = None;
-        for item in top_logits {
-            let token_id = u32::try_from(item.index).map_err(|err| {
-                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
-            })?;
-            let text = self
-                .tokenizer
-                .decode(&[token_id], false)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-            let candidate = NativeQwenCandidate {
-                token_id: item.index,
-                text,
-            };
-            if fallback.is_none() {
-                fallback = Some(candidate.clone());
-            }
-            if !candidate.text.trim().is_empty() {
-                return Ok(candidate);
-            }
-        }
-        fallback.ok_or_else(|| BackendError::Other("Qwen lm head returned no logits".to_owned()))
+        let item = top_logits
+            .into_iter()
+            .next()
+            .ok_or_else(|| BackendError::Other("Qwen lm head returned no logits".to_owned()))?;
+        u32::try_from(item.index)
+            .map_err(|err| BackendError::Other(format!("Qwen token id does not fit u32: {err}")))?;
+        Ok(NativeQwenCandidate {
+            token_id: item.index,
+        })
     }
 }
 
@@ -848,7 +860,6 @@ fn resolve_native_max_tokens(
 #[derive(Debug, Clone)]
 struct NativeQwenCandidate {
     token_id: usize,
-    text: String,
 }
 
 fn sample_token_id_with_draw(
@@ -2057,6 +2068,95 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
+        let snapshot = temp_snapshot_dir("greedy-whitespace");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+
+        let norm_shape = [1_usize];
+        let norm = [1.0_f32];
+        let lm_head_shape = [221_usize, 1_usize];
+        let mut lm_head = vec![0.0_f32; 221];
+        lm_head[32] = 1.0;
+        lm_head[220] = 2.0;
+        let safetensors = tiny_multi_safetensors_bf16(&[
+            (
+                "model.language_model.norm.weight",
+                &norm_shape,
+                norm.as_slice(),
+            ),
+            ("lm_head.weight", &lm_head_shape, lm_head.as_slice()),
+        ]);
+        std::fs::write(snapshot.join("model.safetensors"), &safetensors)
+            .expect("write greedy fixture shard");
+        std::fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": safetensors.len() },
+                "weight_map": {
+                    "model.language_model.norm.weight": "model.safetensors",
+                    "lm_head.weight": "model.safetensors"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write greedy fixture index");
+
+        let backend = NativeQwenBackend {
+            model_id: "local-qwen36".to_owned(),
+            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
+            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
+                .expect("tokenizer loads"),
+            spec: QwenModelSpec {
+                family: llm_models::ModelFamily::Qwen,
+                architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+                model_type: "qwen3_5_moe".to_owned(),
+                text_model_type: "qwen3_5_moe_text".to_owned(),
+                hidden_size: 1,
+                rms_norm_eps: 0.0,
+                tie_word_embeddings: false,
+                rope_theta: 1_000_000.0,
+                partial_rotary_factor: 1.0,
+                num_hidden_layers: 0,
+                num_attention_heads: 1,
+                num_key_value_heads: 1,
+                head_dim: 1,
+                linear_num_key_heads: 1,
+                linear_num_value_heads: 1,
+                linear_key_head_dim: 1,
+                linear_value_head_dim: 1,
+                linear_conv_kernel_dim: 1,
+                num_experts: 1,
+                num_experts_per_tok: 1,
+                moe_intermediate_size: 1,
+                shared_expert_intermediate_size: 1,
+                max_position_embeddings: 1,
+                vocab_size: 221,
+                layer_kinds: Vec::new(),
+            },
+            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
+            matvec: NativeQwenMatvecBackend::Cpu,
+            max_new_tokens: 1,
+            max_prefill_tokens: 1,
+            top_k: 2,
+            chunk_rows: 64,
+        };
+
+        let candidate = backend
+            .next_token_from_hidden(&[1.0], SamplingConfig::Greedy)
+            .expect("greedy candidate");
+
+        assert_eq!(candidate.token_id, 220);
+        let decoded = backend
+            .tokenizer
+            .decode(&[candidate.token_id as u32], false)
+            .expect("candidate decodes");
+        assert!(decoded.trim().is_empty());
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
     fn native_top_p_sampling_selects_full_vocab_token_from_draw() {
         let token_id = sample_token_id_with_draw(
             &[2.0, 1.0, 0.0],
@@ -2076,6 +2176,32 @@ mod tests {
             .join("../../fixtures/qwen36")
             .join(name);
         std::fs::copy(&source, destination).expect("copy fixture");
+    }
+
+    fn tiny_multi_safetensors_bf16(tensors: &[(&str, &[usize], &[f32])]) -> Vec<u8> {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, shape, values) in tensors {
+            let start = data.len();
+            for value in *values {
+                data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+            }
+            let end = data.len();
+            header.insert(
+                (*name).to_owned(),
+                serde_json::json!({
+                    "dtype": "BF16",
+                    "shape": shape,
+                    "data_offsets": [start, end]
+                }),
+            );
+        }
+        let header = serde_json::Value::Object(header).to_string();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
     }
 
     fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {

@@ -204,6 +204,7 @@ async fn admin_model_plan_endpoint_returns_download_plan() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .method("POST")
@@ -255,6 +256,7 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .method("POST")
@@ -309,7 +311,8 @@ async fn admin_metrics_report_model_pull_operations() {
             hub_endpoint: Some(endpoint),
             ..EngineOptions::default()
         },
-    );
+    )
+    .expect("router builds");
     let response = app
         .clone()
         .oneshot(
@@ -365,6 +368,7 @@ async fn admin_metrics_report_model_store_usage() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .uri("/admin/metrics")
@@ -541,6 +545,7 @@ async fn admin_metrics_requires_bearer_token_when_configured() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .uri("/admin/metrics")
@@ -567,6 +572,7 @@ async fn admin_metrics_accepts_configured_bearer_token() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .uri("/admin/metrics")
@@ -831,7 +837,8 @@ async fn duplicate_active_request_id_fails_closed() {
             concurrency_limit: 2,
             ..EngineOptions::default()
         },
-    );
+    )
+    .expect("router builds");
     let first = tokio::spawn(
         app.clone()
             .oneshot(chat_request_body_with_id("first", "same-id")),
@@ -1444,6 +1451,7 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
             ..EngineOptions::default()
         },
     )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .method("POST")

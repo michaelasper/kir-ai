@@ -1517,6 +1517,7 @@ fn qwen_prefill_and_decode_use_configured_matvec_backend() {
     assert!(matvec.batched_bf16_calls.get() > 0);
     assert!(matvec.single_bf16_calls.get() > 0);
     assert!(matvec.dense_f32_calls.get() > 0);
+    assert!(matvec.rms_norm_calls.get() > 0);
     std::fs::remove_dir_all(root).ok();
 }
 

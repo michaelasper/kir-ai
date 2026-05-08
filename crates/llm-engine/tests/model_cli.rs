@@ -33,6 +33,26 @@ async fn serve_without_snapshot_requires_explicit_backend() {
 }
 
 #[tokio::test]
+async fn serve_rejects_invalid_hub_endpoint_without_panic() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--deterministic-test-backend",
+            "--hub-endpoint",
+            "not a url",
+        ])
+        .output()
+        .expect("run serve with invalid hub endpoint");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid hub endpoint"), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
+
+#[tokio::test]
 async fn model_list_outputs_promoted_snapshots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
