@@ -57,6 +57,24 @@ fn metal_softmax_f32_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_linear_attention_conv1d_silu_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let window = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let weights = [0.5, 1.0, -1.0, 0.25, 2.0, -0.5];
+    let expected = [silu(4.5), silu(-0.75), silu(3.0)];
+
+    let output = device
+        .linear_attention_conv1d_silu_f32(&window, &weights, 3, 2)
+        .expect("metal linear attention conv1d succeeds");
+
+    assert_close(&output, &expected, 1e-6);
+}
+
+#[test]
 fn metal_matvec_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
@@ -147,6 +165,10 @@ fn metal_top_k_f32_matches_cpu_reference_with_stable_ties() {
 
 fn f32_to_bf16_bits(value: f32) -> u16 {
     (value.to_bits() >> 16) as u16
+}
+
+fn silu(value: f32) -> f32 {
+    value / (1.0 + (-value).exp())
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {

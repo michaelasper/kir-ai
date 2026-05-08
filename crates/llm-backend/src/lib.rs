@@ -524,6 +524,34 @@ pub fn silu_f32(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
+fn linear_attention_conv1d_silu_f32(
+    window: &[f32],
+    weights: &[f32],
+    conv_dim: usize,
+    kernel_size: usize,
+) -> Result<Vec<f32>, MathError> {
+    if kernel_size == 0 {
+        return Err(MathError::InvalidShape(
+            "linear attention conv kernel size must be non-zero".to_owned(),
+        ));
+    }
+    let expected_len = conv_dim.checked_mul(kernel_size).ok_or_else(|| {
+        MathError::InvalidShape("linear attention conv shape overflows usize".to_owned())
+    })?;
+    require_len("conv window", window.len(), expected_len)?;
+    require_len("conv weight", weights.len(), expected_len)?;
+    let mut output = vec![0.0; conv_dim];
+    for channel in 0..conv_dim {
+        let mut mixed = 0.0;
+        for kernel_idx in 0..kernel_size {
+            mixed += window[kernel_idx * conv_dim + channel]
+                * weights[channel * kernel_size + kernel_idx];
+        }
+        output[channel] = silu_f32(mixed);
+    }
+    Ok(output)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TopKWeight {
     pub index: usize,
@@ -597,6 +625,16 @@ pub trait QwenMatvecBackend {
 
     fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
         softmax_f32(scores)
+    }
+
+    fn linear_attention_conv1d_silu_f32(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
     }
 }
 
@@ -1118,11 +1156,15 @@ pub fn qwen_linear_attention_first_token_from_parts_with_matvec(
             .ok_or_else(|| MathError::InvalidShape("out projection shape overflow".to_owned()))?,
     )?;
 
-    let mut mixed_qkv = vec![0.0; conv_dim];
-    for channel in 0..conv_dim {
-        let kernel_last = channel * dims.conv_kernel_size + (dims.conv_kernel_size - 1);
-        mixed_qkv[channel] = silu_f32(qkv[channel] * conv1d_weight[kernel_last]);
-    }
+    let mut conv_window = vec![0.0; conv_dim * dims.conv_kernel_size];
+    let current_start = (dims.conv_kernel_size - 1) * conv_dim;
+    conv_window[current_start..current_start + conv_dim].copy_from_slice(qkv);
+    let mixed_qkv = matvec.linear_attention_conv1d_silu_f32(
+        &conv_window,
+        conv1d_weight,
+        conv_dim,
+        dims.conv_kernel_size,
+    )?;
 
     let query = &mixed_qkv[..key_dim];
     let key = &mixed_qkv[key_dim..key_dim * 2];
@@ -1316,31 +1358,32 @@ fn qwen_linear_attention_sequence_from_parts_impl(
 
     let mut mixed_tokens = vec![vec![0.0; conv_dim]; seq_len];
     for token_idx in 0..seq_len {
-        let mixed_token = &mut mixed_tokens[token_idx];
         if let Some(cache) = cache.as_mut() {
             cache.push_conv_input(&qkv[token_idx]).map_err(|err| {
                 MathError::InvalidShape(format!("linear attention cache update failed: {err}"))
             })?;
-            for (channel, mixed_value) in mixed_token.iter_mut().enumerate() {
-                let mut mixed = 0.0;
-                for kernel_idx in 0..dims.conv_kernel_size {
-                    mixed += cache.conv_window()[kernel_idx * conv_dim + channel]
-                        * parts.conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
-                }
-                *mixed_value = silu_f32(mixed);
-            }
+            mixed_tokens[token_idx] = matvec.linear_attention_conv1d_silu_f32(
+                cache.conv_window(),
+                parts.conv1d_weight,
+                conv_dim,
+                dims.conv_kernel_size,
+            )?;
         } else {
-            for (channel, mixed_value) in mixed_token.iter_mut().enumerate() {
-                let mut mixed = 0.0;
-                for kernel_idx in 0..dims.conv_kernel_size {
-                    let lookback = dims.conv_kernel_size - 1 - kernel_idx;
-                    if token_idx >= lookback {
-                        mixed += qkv[token_idx - lookback][channel]
-                            * parts.conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
-                    }
+            let mut conv_window = vec![0.0; conv_dim * dims.conv_kernel_size];
+            for kernel_idx in 0..dims.conv_kernel_size {
+                let lookback = dims.conv_kernel_size - 1 - kernel_idx;
+                if token_idx >= lookback {
+                    let window_start = kernel_idx * conv_dim;
+                    conv_window[window_start..window_start + conv_dim]
+                        .copy_from_slice(&qkv[token_idx - lookback]);
                 }
-                *mixed_value = silu_f32(mixed);
             }
+            mixed_tokens[token_idx] = matvec.linear_attention_conv1d_silu_f32(
+                &conv_window,
+                parts.conv1d_weight,
+                conv_dim,
+                dims.conv_kernel_size,
+            )?;
         }
     }
 

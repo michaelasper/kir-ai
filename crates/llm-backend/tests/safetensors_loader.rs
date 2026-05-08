@@ -1426,6 +1426,42 @@ fn qwen_linear_attention_recurrent_matvecs_use_configured_backend() {
 }
 
 #[test]
+fn qwen_linear_attention_convolution_uses_configured_backend() {
+    let root = temp_snapshot_dir("qwen-linear-attn-conv-backend");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let mut expected_cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("expected cache");
+    let expected = qwen_layer_linear_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("cpu cached sequence");
+    let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording cached sequence");
+
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
+    assert_eq!(matvec.conv1d_calls.get(), 2);
+    assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
     let root = temp_snapshot_dir("qwen-lm-head");
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -1811,6 +1847,7 @@ struct RecordingMatvecBackend {
     dense_f32_calls: Cell<usize>,
     rms_norm_calls: Cell<usize>,
     softmax_calls: Cell<usize>,
+    conv1d_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -1882,6 +1919,22 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
     fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
         self.softmax_calls.set(self.softmax_calls.get() + 1);
         CpuQwenMatvecBackend.softmax_f32(scores)
+    }
+
+    fn linear_attention_conv1d_silu_f32(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.conv1d_calls.set(self.conv1d_calls.get() + 1);
+        CpuQwenMatvecBackend.linear_attention_conv1d_silu_f32(
+            window,
+            weights,
+            conv_dim,
+            kernel_size,
+        )
     }
 }
 

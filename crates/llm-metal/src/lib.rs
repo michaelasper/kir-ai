@@ -11,6 +11,7 @@ pub struct MetalDevice {
     vector_add: Arc<MetalKernel>,
     qwen_rms_norm: Arc<MetalKernel>,
     softmax_f32: Arc<MetalKernel>,
+    linear_attention_conv1d_silu_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
@@ -56,6 +57,8 @@ impl MetalDevice {
         let vector_add = Self::kernel(&device, &library, "vector_add")?;
         let qwen_rms_norm = Self::kernel(&device, &library, "qwen_rms_norm")?;
         let softmax_f32 = Self::kernel(&device, &library, "softmax_f32")?;
+        let linear_attention_conv1d_silu_f32 =
+            Self::kernel(&device, &library, "linear_attention_conv1d_silu_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
@@ -66,6 +69,7 @@ impl MetalDevice {
             vector_add,
             qwen_rms_norm,
             softmax_f32,
+            linear_attention_conv1d_silu_f32,
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
@@ -290,6 +294,105 @@ impl MetalDevice {
         let values = unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
             std::slice::from_raw_parts(ptr, scores.len()).to_vec()
+        };
+        Ok(values)
+    }
+
+    pub fn linear_attention_conv1d_silu_f32(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        if kernel_size == 0 {
+            return Err(MetalError::InvalidShape(
+                "linear attention conv kernel size must be non-zero".to_owned(),
+            ));
+        }
+        let expected_len = conv_dim.checked_mul(kernel_size).ok_or_else(|| {
+            MetalError::InvalidShape("linear attention conv shape overflows usize".to_owned())
+        })?;
+        if window.len() != expected_len {
+            return Err(MetalError::InvalidShape(format!(
+                "conv window length {} does not match conv_dim {conv_dim} * kernel_size {kernel_size}",
+                window.len()
+            )));
+        }
+        if weights.len() != expected_len {
+            return Err(MetalError::InvalidShape(format!(
+                "conv weight length {} does not match conv_dim {conv_dim} * kernel_size {kernel_size}",
+                weights.len()
+            )));
+        }
+        if conv_dim == 0 {
+            return Ok(Vec::new());
+        }
+        let conv_dim_u32 = u32::try_from(conv_dim)
+            .map_err(|err| MetalError::InvalidShape(format!("conv dim does not fit u32: {err}")))?;
+        let kernel_size_u32 = u32::try_from(kernel_size).map_err(|err| {
+            MetalError::InvalidShape(format!("kernel size does not fit u32: {err}"))
+        })?;
+        let input_byte_len = std::mem::size_of_val(window) as u64;
+        let output_byte_len = (conv_dim * std::mem::size_of::<f32>()) as u64;
+        let window_buffer = self.device.new_buffer_with_data(
+            window.as_ptr().cast::<c_void>(),
+            input_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let weight_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr().cast::<c_void>(),
+            input_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self
+            .linear_attention_conv1d_silu_f32
+            .queue
+            .new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.linear_attention_conv1d_silu_f32.pipeline);
+        encoder.set_buffer(0, Some(&window_buffer), 0);
+        encoder.set_buffer(1, Some(&weight_buffer), 0);
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&conv_dim_u32) as u64,
+            (&conv_dim_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&kernel_size_u32) as u64,
+            (&kernel_size_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(4, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: conv_dim as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .linear_attention_conv1d_silu_f32
+            .pipeline
+            .thread_execution_width()
+            .min(conv_dim as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per convolution channel.
+        let values = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, conv_dim).to_vec()
         };
         Ok(values)
     }
@@ -877,6 +980,25 @@ kernel void softmax_f32(
     for (uint index = 0; index < len; index++) {
         output[index] = exp(scores[index] - max_score) / denominator;
     }
+}
+
+kernel void linear_attention_conv1d_silu_f32(
+    device const float* window [[buffer(0)]],
+    device const float* weights [[buffer(1)]],
+    constant uint& conv_dim [[buffer(2)]],
+    constant uint& kernel_size [[buffer(3)]],
+    device float* output [[buffer(4)]],
+    uint channel [[thread_position_in_grid]]
+) {
+    if (channel >= conv_dim) {
+        return;
+    }
+    float mixed = 0.0;
+    for (uint kernel_index = 0; kernel_index < kernel_size; kernel_index++) {
+        mixed += window[(kernel_index * conv_dim) + channel]
+            * weights[(channel * kernel_size) + kernel_index];
+    }
+    output[channel] = mixed / (1.0 + exp(-mixed));
 }
 
 kernel void matvec_f32(

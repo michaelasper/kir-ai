@@ -478,6 +478,30 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 .or_else(|_| Self::cpu().softmax_f32(scores)),
         }
     }
+
+    fn linear_attention_conv1d_silu_f32(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu().linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
+            }
+            Self::Metal(device) => device
+                .linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
+                .or_else(|_| {
+                    Self::cpu().linear_attention_conv1d_silu_f32(
+                        window,
+                        weights,
+                        conv_dim,
+                        kernel_size,
+                    )
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
