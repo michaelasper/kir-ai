@@ -537,6 +537,121 @@ async fn chat_completions_rejects_multiple_choices() {
 }
 
 #[tokio::test]
+async fn streaming_chat_validation_errors_return_json_error() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .starts_with("text/event-stream")
+    );
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+}
+
+#[tokio::test]
+async fn streaming_chat_response_validation_errors_return_json_error() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: "not json".to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "return json"}],
+                    "response_format": {"type": "json_object"},
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .starts_with("text/event-stream")
+    );
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "json_validation_failed");
+    assert_eq!(body["error"]["phase"], "response_validation");
+}
+
+#[tokio::test]
+async fn invalid_chat_request_validates_before_busy_model_permit() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(BlockingBackend {
+        entered: entered.clone(),
+        release: release.clone(),
+    }));
+    let first = tokio::spawn(app.clone().oneshot(chat_request_body("first")));
+    entered.notified().await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": []
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+
+    release.notify_waiters();
+    first
+        .await
+        .expect("first request task")
+        .expect("first response");
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_required_tool_choice_without_tools() {
     let response = build_router()
         .oneshot(
@@ -1160,6 +1275,83 @@ async fn completions_endpoint_rejects_malformed_json_with_stable_error() {
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["phase"], "request_validation");
     assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
+async fn streaming_completion_validation_errors_return_json_error() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .starts_with("text/event-stream")
+    );
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+}
+
+#[tokio::test]
+async fn invalid_completion_request_validates_before_busy_model_permit() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(BlockingBackend {
+        entered: entered.clone(),
+        release: release.clone(),
+    }));
+    let first = tokio::spawn(app.clone().oneshot(chat_request_body("first")));
+    entered.notified().await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": ""
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+
+    release.notify_waiters();
+    first
+        .await
+        .expect("first request task")
+        .expect("first response");
 }
 
 #[tokio::test]

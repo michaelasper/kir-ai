@@ -133,10 +133,8 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
-        if requires_buffered_chat_stream(&request) {
-            let include_usage = request.stream_options.include_usage;
-            let completion = self.complete_chat(request).await?;
-            return buffered_chat_stream(completion, include_usage);
+        if chat_stream_requires_buffering(&request) {
+            return self.chat_stream_buffered(request).await;
         }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
@@ -167,6 +165,15 @@ where
             backend_stream,
             include_usage,
         ))
+    }
+
+    pub async fn chat_stream_buffered(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
+        let include_usage = request.stream_options.include_usage;
+        let completion = self.complete_chat(request).await?;
+        buffered_chat_stream(completion, include_usage)
     }
 
     async fn complete_chat(
@@ -605,7 +612,7 @@ fn streaming_chat_stream<'a>(
     }
 }
 
-fn requires_buffered_chat_stream(request: &ChatCompletionRequest) -> bool {
+pub fn chat_stream_requires_buffering(request: &ChatCompletionRequest) -> bool {
     !request.stop.is_empty()
         || !request.tools.is_empty()
         || !matches!(request.tool_choice, None | Some(ToolChoice::Auto))

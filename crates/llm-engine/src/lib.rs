@@ -15,6 +15,7 @@ use futures::{
 };
 use llm_api::{
     ApiError, ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
+    ValidateRequest,
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
@@ -25,7 +26,10 @@ use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
 };
 use llm_models::QwenModelSpec;
-use llm_runtime::{ChatCompletionStreamEvent, CompletionStreamEvent, Runtime, RuntimeError};
+use llm_runtime::{
+    ChatCompletionStreamEvent, CompletionStreamEvent, Runtime, RuntimeError,
+    chat_stream_requires_buffering,
+};
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Deserialize;
@@ -647,9 +651,42 @@ async fn chat_completions(
     request: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
+    validate_api_request(&request, &state)?;
     let streamed = request.stream;
-    let permit = acquire_model_permit(&state)?;
     if request.stream {
+        let permit = acquire_model_permit(&state)?;
+        if chat_stream_requires_buffering(&request) {
+            let response = match state.runtime.chat_stream_buffered(request).await {
+                Ok(response) => response,
+                Err(err) => {
+                    record_failure_metrics(&state);
+                    return Err(err.into());
+                }
+            };
+            let events = async_stream::stream! {
+                let _permit = permit;
+                let mut events = response.into_events();
+                while let Some(event) = events.next().await {
+                    match event {
+                        Ok(ChatCompletionStreamEvent::Chunk(chunk)) => {
+                            yield sse_json_event(chunk);
+                        }
+                        Ok(ChatCompletionStreamEvent::Complete(usage)) => {
+                            record_success_metrics(&state, &usage, streamed);
+                            yield Ok(Event::default().data("[DONE]"));
+                        }
+                        Err(err) => {
+                            record_failure_metrics(&state);
+                            for event in runtime_error_stream_events(err) {
+                                yield event;
+                            }
+                            return;
+                        }
+                    }
+                }
+            };
+            return Ok(Sse::new(events).into_response());
+        }
         let events = async_stream::stream! {
             let _permit = permit;
             match state.runtime.chat_stream(request).await {
@@ -684,6 +721,7 @@ async fn chat_completions(
         };
         return Ok(Sse::new(events).into_response());
     }
+    let _permit = acquire_model_permit(&state)?;
     let response = match state.runtime.chat(request).await {
         Ok(response) => response,
         Err(err) => {
@@ -700,9 +738,10 @@ async fn completions(
     request: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
+    validate_api_request(&request, &state)?;
     let streamed = request.stream;
-    let permit = acquire_model_permit(&state)?;
     if request.stream {
+        let permit = acquire_model_permit(&state)?;
         let events = async_stream::stream! {
             let _permit = permit;
             match state.runtime.completion_stream(request).await {
@@ -737,6 +776,7 @@ async fn completions(
         };
         return Ok(Sse::new(events).into_response());
     }
+    let _permit = acquire_model_permit(&state)?;
     let response = match state.runtime.completion(request).await {
         Ok(response) => response,
         Err(err) => {
@@ -833,6 +873,16 @@ fn parse_json_request<T>(
             .into())
         }
     }
+}
+
+fn validate_api_request<T: ValidateRequest>(
+    request: &T,
+    state: &AppState,
+) -> Result<(), EngineError> {
+    request.validate().map_err(|err| {
+        record_failure_metrics(state);
+        RuntimeError::Api(err).into()
+    })
 }
 
 #[cfg(test)]
