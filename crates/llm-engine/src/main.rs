@@ -4,7 +4,7 @@ use llm_backend::{
 use llm_backend::{
     qwen_final_norm, qwen_layer0_linear_attention_first_token,
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_top_k,
+    qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
@@ -157,6 +157,25 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 spec.hidden_size as usize,
                 spec.rms_norm_eps,
             )?;
+            let linear_layers = flag_value(&args, "--linear-layers")
+                .map(|count| {
+                    let count = count.parse::<usize>()?;
+                    let mut hidden = probe.embedding.clone();
+                    let mut layers = Vec::new();
+                    for layer_idx in 0..count {
+                        hidden =
+                            qwen_linear_decoder_layer_first_token(&store, &spec, layer_idx, &hidden)?;
+                        layers.push(serde_json::json!({
+                            "layer": layer_idx,
+                            "hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>()
+                        }));
+                    }
+                    anyhow::Ok(serde_json::json!({
+                        "layers": layers,
+                        "final_hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>()
+                    }))
+                })
+                .transpose()?;
             let run_layer0_attention = args.iter().any(|arg| arg == "--layer0-attention")
                 || args.iter().any(|arg| arg == "--layer0-router")
                 || args.iter().any(|arg| arg == "--layer0-moe");
@@ -304,6 +323,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "embedding_prefix": probe.embedding.iter().copied().take(limit).collect::<Vec<_>>(),
                     "normalized_prefix": probe.normalized.iter().copied().take(limit).collect::<Vec<_>>(),
                     "values_read": probe.normalized.len(),
+                    "linear_layers": linear_layers,
                     "layer0_projections": layer0_projections,
                     "layer0_attention": layer0_attention,
                     "layer0_router": layer0_router,

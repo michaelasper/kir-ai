@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use llm_api::FinishReason;
-use llm_models::{QwenModelSpec, SafetensorsIndex};
+use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
     collections::BTreeMap,
@@ -392,6 +392,29 @@ pub fn qwen_embedding_and_layer0_norm(
     })
 }
 
+pub fn qwen_layer_input_norm(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<f32>, TensorLoadError> {
+    if hidden_states.len() != hidden_size {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen layer input hidden length {} must match hidden size {hidden_size}",
+            hidden_states.len()
+        )));
+    }
+    let norm_weight = store.bf16_tensor_f32_range(
+        &qwen_layer_tensor(layer_idx, "input_layernorm.weight"),
+        0,
+        hidden_size,
+    )?;
+    qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
+    })
+}
+
 pub fn qwen_linear_attention_first_token_from_parts(
     dims: &QwenLinearAttentionDims,
     qkv: &[f32],
@@ -619,6 +642,65 @@ pub fn qwen_layer0_moe_forward(
     router: &QwenMoeRouterProbe,
 ) -> Result<Vec<f32>, TensorLoadError> {
     qwen_layer_moe_forward(store, 0, dims, hidden_states, router)
+}
+
+pub fn qwen_linear_decoder_layer_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+) -> Result<Vec<f32>, TensorLoadError> {
+    match spec.layer_kinds.get(layer_idx) {
+        Some(AttentionKind::LinearAttention) => {}
+        Some(AttentionKind::FullAttention) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} is full attention, not linear attention"
+            )));
+        }
+        None => {
+            return Err(TensorLoadError::missing(format!(
+                "Qwen layer {layer_idx} is outside configured layer count"
+            )));
+        }
+    }
+    let hidden_size = spec.hidden_size as usize;
+    let input_norm = qwen_layer_input_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let projections = qwen_layer_linear_attention_projections(store, layer_idx, &input_norm)?;
+    let attention_output =
+        qwen_layer_linear_attention_first_token(store, spec, layer_idx, &projections)?;
+    let post_attention = qwen_layer_post_attention_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        &attention_output,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let router = qwen_layer_moe_router(
+        store,
+        layer_idx,
+        &post_attention,
+        spec.num_experts_per_tok as usize,
+    )?;
+    let moe_output = qwen_layer_moe_forward(
+        store,
+        layer_idx,
+        &QwenMoeDims::from_spec(spec),
+        &post_attention,
+        &router,
+    )?;
+    hidden_states
+        .iter()
+        .zip(attention_output)
+        .zip(moe_output)
+        .map(|((hidden, attention), moe)| Ok(hidden + attention + moe))
+        .collect()
 }
 
 pub fn qwen_layer_moe_forward(
