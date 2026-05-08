@@ -534,6 +534,41 @@ async fn chat_completions_streams_tool_call_deltas() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_undeclared_generated_tool_call() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
+            .to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "lookup rust"}],
+                    "tools": [{
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {}}
+                    }],
+                    "tool_choice": "required"
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "tool_call_validation_failed");
+    assert_eq!(body["error"]["phase"], "response_validation");
+    assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_invalid_json_object_mode_output() {
     let response = build_router_with_backend(Box::new(StaticBackend {
         text: "not json".to_owned(),

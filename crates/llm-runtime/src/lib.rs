@@ -10,6 +10,7 @@ use llm_backend::BackendModelMetadata;
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
+use std::collections::BTreeSet;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -188,6 +189,7 @@ where
         let mut parsed = QwenParser.parse_complete(&output.text)?;
         let stopped = apply_stop_sequences(&mut parsed.content, &request.stop);
         validate_tool_call_arguments(&parsed)?;
+        validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
             validate_json_object_response(&parsed)?;
         }
@@ -394,6 +396,41 @@ fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeE
     Ok(())
 }
 
+fn validate_tool_calls_against_request(
+    parsed: &ParsedAssistant,
+    request: &ChatCompletionRequest,
+) -> Result<(), RuntimeError> {
+    if parsed.tool_calls.is_empty() {
+        return Ok(());
+    }
+    if matches!(request.tool_choice, Some(ToolChoice::None)) {
+        return Err(RuntimeError::ToolCallValidation(
+            "tool_choice none does not allow generated tool calls".to_owned(),
+        ));
+    }
+    let declared_tools = request
+        .tools
+        .iter()
+        .map(|tool| tool.function.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for tool_call in &parsed.tool_calls {
+        let name = tool_call.function.name.as_str();
+        if !declared_tools.contains(name) {
+            return Err(RuntimeError::ToolCallValidation(format!(
+                "generated tool call `{name}` was not declared in request tools"
+            )));
+        }
+        if let Some(ToolChoice::Function { name: required }) = &request.tool_choice
+            && name != required
+        {
+            return Err(RuntimeError::ToolCallValidation(format!(
+                "generated tool call `{name}` did not match required tool `{required}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
     if !parsed.content.is_empty() {
         let value = serde_json::from_str::<serde_json::Value>(&parsed.content).map_err(|err| {
@@ -453,6 +490,8 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     JsonMode(String),
+    #[error("tool call validation failed: {0}")]
+    ToolCallValidation(String),
     #[error("no progress classified as {0:?}")]
     NoProgress(NoProgressClass),
 }

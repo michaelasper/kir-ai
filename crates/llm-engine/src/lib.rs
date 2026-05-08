@@ -518,6 +518,12 @@ impl IntoResponse for EngineError {
                         "response_validation",
                         false,
                     ),
+                    RuntimeError::ToolCallValidation(_) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "tool_call_validation_failed",
+                        "response_validation",
+                        false,
+                    ),
                     RuntimeError::NoProgress(_) => (
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "no_progress",

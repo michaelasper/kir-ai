@@ -280,6 +280,90 @@ async fn parses_generated_tool_calls_into_openai_message() {
 }
 
 #[tokio::test]
+async fn rejects_generated_tool_call_for_undeclared_tool() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("undeclared generated tool call is rejected");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("delete_file"));
+}
+
+#[tokio::test]
+async fn rejects_generated_tool_call_that_mismatches_explicit_choice() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("edit Cargo.toml")],
+            tools: vec![
+                ToolDefinition::function("lookup", "lookup", json!({})),
+                ToolDefinition::function("edit_file", "edit file", json!({})),
+            ],
+            tool_choice: Some(ToolChoice::Function {
+                name: "edit_file".to_owned(),
+            }),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("explicit tool choice requires matching generated tool calls");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("edit_file"));
+}
+
+#[tokio::test]
+async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        concat!(
+            r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+            r#"<tool_call>{"name":"edit_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
+        ),
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup then edit")],
+            tools: vec![
+                ToolDefinition::function("lookup", "lookup", json!({})),
+                ToolDefinition::function("edit_file", "edit file", json!({})),
+            ],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("declared tool calls are accepted");
+
+    assert_eq!(response.choices[0].message.tool_calls.len(), 2);
+    assert_eq!(
+        response.choices[0].message.tool_calls[0].function.name,
+        "lookup"
+    );
+    assert_eq!(
+        response.choices[0].message.tool_calls[1].function.name,
+        "edit_file"
+    );
+}
+
+#[tokio::test]
 async fn runtime_returns_text_stream_chunks() {
     let backend = DeterministicBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
