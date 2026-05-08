@@ -93,6 +93,7 @@ Current commits:
 - `d6bdd00` - Native Qwen snapshots can be opened for serving without an engine manifest.
 - `bfb20f0` - Deterministic protocol mode can return prompt-conditioned chat responses for multi-turn smoke tests.
 - `b6df02d` - Model-store snapshot and staging paths include profile identity to avoid cross-profile collisions.
+- `bdc18ed` - HTTP SSE responses are constructed before backend completion and hold model permits inside the body stream.
 
 Current verified state:
 
@@ -150,13 +151,14 @@ Current verified state:
 - `NativeQwenBackend::open` treats `llm-engine-manifest.json` as optional for serving. Missing manifests now yield base native metadata with `snapshot_path`, while present manifests still populate artifact identity and digest fields.
 - The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behavior.
 - Model-store promoted snapshot and staging directory names now include a sanitized profile name in addition to repo and resolved commit. Metadata-only snapshots still use a distinct suffix, and full profiles at the same commit no longer share one manifest directory.
+- Streaming HTTP handlers now return SSE responses before backend generation completes and keep the model concurrency permit alive inside the body stream. Runtime stream assembly still buffers generated chunks before emitting events, so token-level backend streaming remains open work.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, including requested final usage chunks and aggregate streamed-request counts, but stream heartbeats during long prefill, stream stall detection, and disconnect cancellation are not complete.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks and aggregate streamed-request counts, but runtime/backend token streaming, stream heartbeats during long prefill, stream stall detection, and disconnect cancellation are not complete.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
