@@ -173,6 +173,7 @@ Current verified state:
 - `llm-sampler` now includes a deterministic-draw temperature/top-p sampler primitive with stable nucleus ordering, probability validation, and coverage for low/high draws, minimum one-token nuclei, and invalid controls.
 - Legacy completion SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, without falling back to non-streaming generation.
 - Native Qwen startup now has an opt-in eager shard materialization policy through `NativeQwenLoadOptions` and `serve --eager-materialize-shards`, mmap-loading every indexed safetensors shard before advertising the backend.
+- Non-streaming chat and text completion generation now use a cancellable backend contract. Dropping the runtime future cancels the backend token, and native Qwen checks the token before and after bounded blocking decode steps.
 
 Known incomplete items:
 
@@ -185,7 +186,7 @@ Known incomplete items:
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, and chunked BF16 matvecs are implemented.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
-- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation and interruption inside a long native prefill/Metal kernel are not complete.
+- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 
 The first-class model families are:
 

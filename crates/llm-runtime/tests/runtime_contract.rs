@@ -724,6 +724,56 @@ async fn dropping_unpolled_chat_stream_cancels_backend_stream() {
         .expect("backend cancellation token is cancelled");
 }
 
+#[tokio::test]
+async fn dropping_non_streaming_chat_future_cancels_backend_generation() {
+    let started = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let runtime = Runtime::new(CancellableGenerateBackend {
+        started: started.clone(),
+        cancelled: cancelled.clone(),
+    });
+    let mut future = Box::pin(runtime.chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("say hi")],
+        ..ChatCompletionRequest::default()
+    }));
+
+    tokio::select! {
+        result = &mut future => panic!("backend should stay pending until cancellation: {result:?}"),
+        _ = started.notified() => {}
+    }
+
+    drop(future);
+    tokio::time::timeout(Duration::from_millis(100), cancelled.notified())
+        .await
+        .expect("backend generation cancellation token is cancelled");
+}
+
+#[tokio::test]
+async fn dropping_non_streaming_completion_future_cancels_backend_generation() {
+    let started = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let runtime = Runtime::new(CancellableGenerateBackend {
+        started: started.clone(),
+        cancelled: cancelled.clone(),
+    });
+    let mut future = Box::pin(runtime.completion(CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "say hi".to_owned(),
+        ..CompletionRequest::default()
+    }));
+
+    tokio::select! {
+        result = &mut future => panic!("backend should stay pending until cancellation: {result:?}"),
+        _ = started.notified() => {}
+    }
+
+    drop(future);
+    tokio::time::timeout(Duration::from_millis(100), cancelled.notified())
+        .await
+        .expect("backend generation cancellation token is cancelled");
+}
+
 #[test]
 fn classifies_high_output_empty_completion_as_no_progress() {
     let class = llm_runtime::classify_no_progress("", 4096, false);
@@ -775,6 +825,11 @@ struct CancellableStreamBackend {
     cancelled: Arc<Notify>,
 }
 
+struct CancellableGenerateBackend {
+    started: Arc<Notify>,
+    cancelled: Arc<Notify>,
+}
+
 #[async_trait::async_trait]
 impl ModelBackend for CancellableStreamBackend {
     fn model_id(&self) -> &str {
@@ -805,6 +860,37 @@ impl ModelBackend for CancellableStreamBackend {
             yield chunk;
         }
         .boxed()
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for CancellableGenerateBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "unused".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        let started = self.started.clone();
+        let cancelled = self.cancelled.clone();
+        tokio::spawn(async move {
+            started.notify_waiters();
+            cancellation.cancelled().await;
+            cancelled.notify_waiters();
+        });
+        futures::future::pending().await
     }
 }
 

@@ -201,19 +201,24 @@ where
             },
         )?;
         let required_tool_choice = required_backend_tool_choice(&request);
+        let cancellation = CancellationToken::new();
+        let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
-            .generate(BackendRequest {
-                model: request.model.clone(),
-                prompt,
-                max_tokens: request.effective_max_tokens(),
-                required_tool_choice,
-                json_object_mode: matches!(
-                    request.response_format,
-                    Some(ResponseFormat::JsonObject)
-                ),
-                conversation_mode: true,
-            })
+            .generate_with_cancel(
+                BackendRequest {
+                    model: request.model.clone(),
+                    prompt,
+                    max_tokens: request.effective_max_tokens(),
+                    required_tool_choice,
+                    json_object_mode: matches!(
+                        request.response_format,
+                        Some(ResponseFormat::JsonObject)
+                    ),
+                    conversation_mode: true,
+                },
+                cancellation,
+            )
             .await?;
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
@@ -262,16 +267,21 @@ where
         request: CompletionRequest,
     ) -> Result<RuntimeCompletion, RuntimeError> {
         request.validate()?;
+        let cancellation = CancellationToken::new();
+        let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
-            .generate(BackendRequest {
-                model: request.model.clone(),
-                prompt: request.prompt,
-                max_tokens: request.max_tokens,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: false,
-            })
+            .generate_with_cancel(
+                BackendRequest {
+                    model: request.model.clone(),
+                    prompt: request.prompt,
+                    max_tokens: request.max_tokens,
+                    required_tool_choice: None,
+                    json_object_mode: false,
+                    conversation_mode: false,
+                },
+                cancellation,
+            )
             .await?;
         let mut text = output.text;
         let stopped = apply_stop_sequences(&mut text, &request.stop);

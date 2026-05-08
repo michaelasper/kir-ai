@@ -218,12 +218,26 @@ impl NativeQwenBackend {
         self
     }
 
-    fn generate_blocking(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+    fn generate_blocking(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Other(
+                "native Qwen generation cancelled".to_owned(),
+            ));
+        }
         if request.model != self.model_id {
             return Err(BackendError::ModelNotFound {
                 requested: request.model,
                 available: self.model_id.clone(),
             });
+        }
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Other(
+                "native Qwen generation cancelled".to_owned(),
+            ));
         }
         let prompt_tokens = self
             .tokenizer
@@ -247,7 +261,17 @@ impl NativeQwenBackend {
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
 
         for _ in 0..requested {
+            if cancellation.is_cancelled() {
+                return Err(BackendError::Other(
+                    "native Qwen generation cancelled".to_owned(),
+                ));
+            }
             let candidate = self.next_token(&context_tokens)?;
+            if cancellation.is_cancelled() {
+                return Err(BackendError::Other(
+                    "native Qwen generation cancelled".to_owned(),
+                ));
+            }
             context_tokens.push(candidate.token_id);
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
@@ -441,8 +465,17 @@ impl ModelBackend for NativeQwenBackend {
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.generate_with_cancel(request, CancellationToken::new())
+            .await
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
         let backend = self.clone();
-        tokio::task::spawn_blocking(move || backend.generate_blocking(request))
+        tokio::task::spawn_blocking(move || backend.generate_blocking(request, cancellation))
             .await
             .map_err(|err| BackendError::Other(format!("native Qwen worker failed: {err}")))?
     }
@@ -1109,6 +1142,41 @@ mod tests {
         .expect("backend opens and materializes shards");
 
         assert_eq!(backend.store.materialized_shard_count(), 1);
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[tokio::test]
+    async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
+        let snapshot = temp_snapshot_dir("cancelled-generate");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("config.json", snapshot.join("config.json"));
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+        let backend =
+            NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let err = backend
+            .generate_with_cancel(
+                BackendRequest {
+                    model: "local-qwen36".to_owned(),
+                    prompt: "say hi".to_owned(),
+                    max_tokens: Some(1),
+                    required_tool_choice: None,
+                    json_object_mode: false,
+                    conversation_mode: false,
+                },
+                cancellation,
+            )
+            .await
+            .expect_err("pre-cancelled generation fails before decode");
+
+        assert!(err.to_string().contains("cancelled"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 

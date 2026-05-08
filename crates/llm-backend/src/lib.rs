@@ -88,6 +88,14 @@ pub trait ModelBackend: Send + Sync + 'static {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
 
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        self.generate(request).await
+    }
+
     fn generate_stream<'a>(
         &'a self,
         request: BackendRequest,
@@ -129,6 +137,14 @@ where
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         (**self).generate(request).await
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        (**self).generate_with_cancel(request, cancellation).await
     }
 
     fn generate_stream<'a>(
