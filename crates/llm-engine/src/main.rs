@@ -75,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
                             "--eager-materialize-shards",
                         ),
                         metal_weight_cache_bytes: native_metal_weight_cache_bytes,
+                        warm_metal_weight_cache: has_flag(
+                            &serve_args,
+                            "--warm-native-metal-weight-cache",
+                        ),
                     },
                 )?
                 .with_max_new_tokens(max_new_tokens)

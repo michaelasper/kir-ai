@@ -43,6 +43,7 @@ Mise tasks:
 | `--max-new-tokens` | `u32` | `1` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Number of recent prompt tokens retained for native prefill. Clamped to at least `1`. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
+| `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 
 Native Qwen backend internal defaults:
 

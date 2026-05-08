@@ -182,6 +182,10 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
 
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     assert_eq!(store.cached_shard_count(), 0);
+    assert_eq!(
+        store.tensor_names().collect::<Vec<_>>(),
+        vec!["embed.weight"]
+    );
 
     assert_eq!(
         store.bf16_row_f32("embed.weight", 1).expect("row"),

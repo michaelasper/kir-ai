@@ -320,6 +320,23 @@ struct Bf16MatrixCacheKey {
     columns: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WarmableBf16MatrixTensor {
+    name: String,
+    rows: usize,
+    columns: usize,
+    byte_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeQwenMetalWarmup {
+    candidates: u64,
+    warmed: u64,
+    already_resident: u64,
+    skipped_budget: u64,
+    skipped_non_metal: u64,
+}
+
 #[derive(Debug)]
 struct Bf16MatrixBufferCache<T> {
     max_bytes: u64,
@@ -420,6 +437,10 @@ impl<T: Clone> Bf16MatrixBufferCache<T> {
         self.max_bytes
     }
 
+    fn can_insert_without_eviction(&self, byte_len: u64) -> bool {
+        byte_len <= self.max_bytes && self.used_bytes.saturating_add(byte_len) <= self.max_bytes
+    }
+
     fn next_access(&mut self) -> u64 {
         let access = self.next_access;
         self.next_access = self.next_access.saturating_add(1);
@@ -509,6 +530,43 @@ impl NativeQwenMetalState {
             matrices.max_bytes(),
         );
         Ok(buffer)
+    }
+
+    fn warm_bf16_matrix_cache(
+        &self,
+        store: &SafeTensorShardStore,
+    ) -> Result<NativeQwenMetalWarmup, NativeQwenMetalBufferError> {
+        let tensors = native_qwen_warmable_bf16_matrix_tensors(store)
+            .map_err(NativeQwenMetalBufferError::Tensor)?;
+        let mut warmup = NativeQwenMetalWarmup {
+            candidates: tensors.len() as u64,
+            ..NativeQwenMetalWarmup::default()
+        };
+        for tensor in tensors {
+            let key = Bf16MatrixCacheKey {
+                tensor: tensor.name.clone(),
+                element_offset: 0,
+                rows: tensor.rows,
+                columns: tensor.columns,
+            };
+            {
+                let mut matrices = self
+                    .bf16_matrices
+                    .lock()
+                    .expect("BF16 matrix buffer cache lock is not poisoned");
+                if matrices.get(&key).is_some() {
+                    warmup.already_resident += 1;
+                    continue;
+                }
+                if !matrices.can_insert_without_eviction(tensor.byte_len) {
+                    warmup.skipped_budget += 1;
+                    continue;
+                }
+            }
+            self.bf16_matrix_buffer(store, &tensor.name, 0, tensor.rows, tensor.columns)?;
+            warmup.warmed += 1;
+        }
+        Ok(warmup)
     }
 }
 
@@ -701,6 +759,23 @@ impl NativeQwenMatvecBackend {
 
     fn cpu() -> CpuQwenMatvecBackend {
         CpuQwenMatvecBackend
+    }
+
+    fn warm_bf16_matrix_cache(
+        &self,
+        store: &SafeTensorShardStore,
+    ) -> Result<NativeQwenMetalWarmup, NativeQwenMetalBufferError> {
+        let candidates = native_qwen_warmable_bf16_matrix_tensors(store)
+            .map_err(NativeQwenMetalBufferError::Tensor)?
+            .len() as u64;
+        match self {
+            Self::Cpu => Ok(NativeQwenMetalWarmup {
+                candidates,
+                skipped_non_metal: candidates,
+                ..NativeQwenMetalWarmup::default()
+            }),
+            Self::Metal(metal) => metal.warm_bf16_matrix_cache(store),
+        }
     }
 
     fn bf16_matrix_shape(
@@ -1358,6 +1433,7 @@ fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight
 pub struct NativeQwenLoadOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
+    pub warm_metal_weight_cache: bool,
 }
 
 impl NativeQwenBackend {
@@ -1385,15 +1461,29 @@ impl NativeQwenBackend {
                 "materialized native Qwen safetensors shards"
             );
         }
+        let matvec = NativeQwenMatvecBackend::system_default(native_qwen_metal_weight_cache_bytes(
+            options.metal_weight_cache_bytes,
+        ));
+        if options.warm_metal_weight_cache {
+            let warmup = matvec.warm_bf16_matrix_cache(&store).map_err(|err| {
+                anyhow::anyhow!("native Qwen Metal weight cache warm-up failed: {err}")
+            })?;
+            tracing::info!(
+                candidates = warmup.candidates,
+                warmed = warmup.warmed,
+                already_resident = warmup.already_resident,
+                skipped_budget = warmup.skipped_budget,
+                skipped_non_metal = warmup.skipped_non_metal,
+                "native Qwen Metal BF16 weight cache warm-up complete"
+            );
+        }
         Ok(Self {
             model_id,
             metadata,
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store,
-            matvec: NativeQwenMatvecBackend::system_default(native_qwen_metal_weight_cache_bytes(
-                options.metal_weight_cache_bytes,
-            )),
+            matvec,
             max_new_tokens: 1,
             max_prefill_tokens: 32,
             top_k: 16,
@@ -1752,6 +1842,24 @@ fn native_qwen_cache_token_capacity(max_prefill_tokens: usize, _max_new_tokens: 
 
 fn native_qwen_metal_weight_cache_bytes(configured: Option<u64>) -> u64 {
     configured.unwrap_or(DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES)
+}
+
+fn native_qwen_warmable_bf16_matrix_tensors(
+    store: &SafeTensorShardStore,
+) -> Result<Vec<WarmableBf16MatrixTensor>, TensorLoadError> {
+    let mut tensors = Vec::new();
+    for name in store.tensor_names() {
+        let metadata = store.tensor_metadata(name)?;
+        if metadata.dtype == "BF16" && metadata.shape.len() == 2 {
+            tensors.push(WarmableBf16MatrixTensor {
+                name: name.to_owned(),
+                rows: metadata.shape[0],
+                columns: metadata.shape[1],
+                byte_len: metadata.byte_len as u64,
+            });
+        }
+    }
+    Ok(tensors)
 }
 
 #[derive(Debug, Clone)]
@@ -2993,6 +3101,89 @@ mod tests {
         );
         assert_eq!(native_qwen_metal_weight_cache_bytes(Some(0)), 0);
         assert_eq!(native_qwen_metal_weight_cache_bytes(Some(4096)), 4096);
+    }
+
+    #[test]
+    fn native_qwen_warmable_bf16_matrix_tensors_filters_rank2_bf16() {
+        let snapshot = temp_snapshot_dir("warmable-bf16-matrices");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        let tensors = vec![
+            ("z.bias", vec![2], vec![1.0, 2.0]),
+            ("b.weight", vec![2, 1], vec![3.0, 4.0]),
+            ("a.weight", vec![1, 2], vec![5.0, 6.0]),
+        ];
+        let safetensors = tiny_owned_multi_safetensors_bf16(&tensors);
+        std::fs::write(snapshot.join("model.safetensors"), &safetensors).expect("write shard");
+        std::fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": safetensors.len() },
+                "weight_map": {
+                    "z.bias": "model.safetensors",
+                    "b.weight": "model.safetensors",
+                    "a.weight": "model.safetensors"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write index");
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+
+        let warmable = native_qwen_warmable_bf16_matrix_tensors(&store).expect("warmable tensors");
+
+        assert_eq!(
+            warmable
+                .iter()
+                .map(|tensor| (
+                    tensor.name.as_str(),
+                    tensor.rows,
+                    tensor.columns,
+                    tensor.byte_len
+                ))
+                .collect::<Vec<_>>(),
+            vec![("a.weight", 1, 2, 4), ("b.weight", 2, 1, 4)]
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
+        let snapshot = temp_snapshot_dir("cpu-warmup");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        let safetensors = tiny_owned_multi_safetensors_bf16(&[
+            ("a.weight", vec![1, 2], vec![1.0, 2.0]),
+            ("b.bias", vec![2], vec![3.0, 4.0]),
+        ]);
+        std::fs::write(snapshot.join("model.safetensors"), &safetensors).expect("write shard");
+        std::fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": safetensors.len() },
+                "weight_map": {
+                    "a.weight": "model.safetensors",
+                    "b.bias": "model.safetensors"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write index");
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+
+        let warmup = NativeQwenMatvecBackend::Cpu
+            .warm_bf16_matrix_cache(&store)
+            .expect("cpu warmup reports stats");
+
+        assert_eq!(
+            warmup,
+            NativeQwenMetalWarmup {
+                candidates: 1,
+                skipped_non_metal: 1,
+                ..NativeQwenMetalWarmup::default()
+            }
+        );
+        std::fs::remove_dir_all(snapshot).ok();
     }
 
     #[test]

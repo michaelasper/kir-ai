@@ -71,6 +71,10 @@ native prefill. It defaults to `32` and is clamped to at least `1`.
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
 set to `0` to disable weight-buffer caching.
 
+`--warm-native-metal-weight-cache` preloads rank-2 BF16 tensors into that cache
+at startup until the configured budget is full. Leave it off when you want
+minimum startup time or when first-request latency is not the bottleneck.
+
 Use small values while probing correctness:
 
 ```sh

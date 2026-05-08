@@ -4260,6 +4260,10 @@ impl SafeTensorShardStore {
         self.resolve_shard_path(shard)
     }
 
+    pub fn tensor_names(&self) -> impl Iterator<Item = &str> {
+        self.index.tensor_names()
+    }
+
     fn resolve_shard_path(&self, shard: &str) -> Result<PathBuf, TensorLoadError> {
         let root = fs::canonicalize(&self.root).map_err(|err| {
             TensorLoadError::missing(format!(

@@ -83,6 +83,10 @@ impl SafetensorsIndex {
             .collect()
     }
 
+    pub fn tensor_names(&self) -> impl Iterator<Item = &str> {
+        self.weight_map.keys().map(String::as_str)
+    }
+
     pub fn contains(&self, tensor: &str) -> bool {
         self.weight_map.contains_key(tensor)
     }
