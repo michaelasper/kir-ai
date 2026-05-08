@@ -305,7 +305,9 @@ SSE chunks use `data:` lines. The stream emits:
 
 Streaming is response-shape streaming. Text paths can forward backend chunks
 incrementally; tool-call and JSON-object validation paths may buffer before
-emitting deltas to preserve fail-closed semantics.
+emitting deltas to preserve fail-closed semantics. Runtime errors that happen
+after an SSE stream starts are emitted as `data:` error objects with stable
+`code`, `phase`, and `retryable` fields, followed by `[DONE]`.
 
 ## `POST /v1/completions`
 

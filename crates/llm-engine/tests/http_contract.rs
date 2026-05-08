@@ -1471,6 +1471,36 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
 }
 
 #[tokio::test]
+async fn chat_stream_runtime_errors_include_stable_metadata() {
+    let response = build_router_with_backend(Box::new(FailingStreamBackend))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"content\":\"first\""));
+    assert!(body.contains("\"code\":\"backend_execution_failed\""));
+    assert!(body.contains("\"phase\":\"decode\""));
+    assert!(body.contains("\"retryable\":true"));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
@@ -2254,6 +2284,40 @@ impl ModelBackend for CancellableStreamBackend {
                 finish_reason: None,
             };
             futures::future::pending::<()>().await;
+        }
+        .boxed()
+    }
+}
+
+struct FailingStreamBackend;
+
+#[async_trait]
+impl ModelBackend for FailingStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "first".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: "first".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            Err(BackendError::Other("stream failed".to_owned()))?;
         }
         .boxed()
     }

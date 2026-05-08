@@ -1259,15 +1259,95 @@ async fn completions(
 }
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
+    let metadata = runtime_error_metadata(&err);
     vec![
         sse_json_event(json!({
             "error": {
                 "message": err.to_string(),
+                "code": metadata.code,
+                "phase": metadata.phase,
+                "retryable": metadata.retryable,
                 "type": "llm_engine_error"
             }
         })),
         Ok(Event::default().data("[DONE]")),
     ]
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeErrorMetadata {
+    status: StatusCode,
+    code: &'static str,
+    phase: &'static str,
+    retryable: bool,
+}
+
+fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
+    let (status, code, phase, retryable) = match err {
+        RuntimeError::Api(api) => (
+            StatusCode::BAD_REQUEST,
+            api.code(),
+            "request_validation",
+            false,
+        ),
+        RuntimeError::Backend(BackendError::ModelNotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            "model_not_found",
+            "model_resolution",
+            false,
+        ),
+        RuntimeError::Backend(BackendError::UnsupportedRequest(_)) => (
+            StatusCode::BAD_REQUEST,
+            "unsupported_capability",
+            "request_validation",
+            false,
+        ),
+        RuntimeError::Backend(BackendError::Cancelled) => {
+            (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false)
+        }
+        RuntimeError::Backend(BackendError::Other(_)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "backend_execution_failed",
+            "decode",
+            true,
+        ),
+        RuntimeError::Template(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "chat_template_failed",
+            "prompt_rendering",
+            false,
+        ),
+        RuntimeError::Parser(err) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            err.code(),
+            "response_parsing",
+            false,
+        ),
+        RuntimeError::Json(_) | RuntimeError::JsonMode(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "json_validation_failed",
+            "response_validation",
+            false,
+        ),
+        RuntimeError::ToolCallValidation(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "tool_call_validation_failed",
+            "response_validation",
+            false,
+        ),
+        RuntimeError::NoProgress(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no_progress",
+            "response_validation",
+            false,
+        ),
+    };
+    RuntimeErrorMetadata {
+        status,
+        code,
+        phase,
+        retryable,
+    }
 }
 
 fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, Infallible>> {
@@ -1718,66 +1798,14 @@ impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, phase, retryable, message) = match self {
             Self::Runtime(err) => {
-                let (status, code, phase, retryable) = match &err {
-                    RuntimeError::Api(api) => (
-                        StatusCode::BAD_REQUEST,
-                        api.code(),
-                        "request_validation",
-                        false,
-                    ),
-                    RuntimeError::Backend(BackendError::ModelNotFound { .. }) => (
-                        StatusCode::NOT_FOUND,
-                        "model_not_found",
-                        "model_resolution",
-                        false,
-                    ),
-                    RuntimeError::Backend(BackendError::UnsupportedRequest(_)) => (
-                        StatusCode::BAD_REQUEST,
-                        "unsupported_capability",
-                        "request_validation",
-                        false,
-                    ),
-                    RuntimeError::Backend(BackendError::Cancelled) => {
-                        (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false)
-                    }
-                    RuntimeError::Backend(BackendError::Other(_)) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "backend_execution_failed",
-                        "decode",
-                        true,
-                    ),
-                    RuntimeError::Template(_) => (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "chat_template_failed",
-                        "prompt_rendering",
-                        false,
-                    ),
-                    RuntimeError::Parser(err) => (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        err.code(),
-                        "response_parsing",
-                        false,
-                    ),
-                    RuntimeError::Json(_) | RuntimeError::JsonMode(_) => (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "json_validation_failed",
-                        "response_validation",
-                        false,
-                    ),
-                    RuntimeError::ToolCallValidation(_) => (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "tool_call_validation_failed",
-                        "response_validation",
-                        false,
-                    ),
-                    RuntimeError::NoProgress(_) => (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "no_progress",
-                        "response_validation",
-                        false,
-                    ),
-                };
-                (status, code, phase, retryable, err.to_string())
+                let metadata = runtime_error_metadata(&err);
+                (
+                    metadata.status,
+                    metadata.code,
+                    metadata.phase,
+                    metadata.retryable,
+                    err.to_string(),
+                )
             }
             Self::ModelStore(err) => (
                 if err.code() == "model_not_found" {
