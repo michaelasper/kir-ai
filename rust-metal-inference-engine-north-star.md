@@ -125,6 +125,7 @@ Current commits:
 - `60d5328` - Safetensors exposes raw BF16 tensor ranges for acceleration paths.
 - `a316fbb` - Metal includes a batched BF16-weight matvec kernel.
 - `53e7fcd` - Open GitHub issues #35 through #40 are addressed and documented.
+- `a6f92f3` - Metal includes chunked `f32` argmax and top-k logits kernels.
 
 Current verified state:
 
