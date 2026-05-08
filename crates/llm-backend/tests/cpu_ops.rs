@@ -1,5 +1,7 @@
 use llm_backend::{QwenLinearAttentionDims, qwen_linear_attention_first_token_from_parts};
-use llm_backend::{matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32};
+use llm_backend::{
+    matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
+};
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -71,6 +73,19 @@ fn qwen_linear_attention_first_token_matches_simplified_reference() {
     .expect("linear attention output");
 
     assert_close(&output, &[1.4621172], 1e-6);
+}
+
+#[test]
+fn softmax_top_k_returns_normalized_selected_weights() {
+    let selected = softmax_top_k_f32(&[1.0, 3.0, 2.0, -4.0], 2).expect("top k");
+
+    assert_eq!(selected[0].index, 1);
+    assert_eq!(selected[1].index, 2);
+    assert_close(
+        &[selected[0].weight, selected[1].weight],
+        &[0.7310586, 0.26894143],
+        1e-6,
+    );
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {

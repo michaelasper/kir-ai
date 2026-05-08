@@ -1,6 +1,7 @@
 use llm_backend::{
     SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
     qwen_embedding_and_layer0_norm, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
 };
 
 #[test]
@@ -284,6 +285,81 @@ fn qwen_layer0_projection_probe_reads_bf16_matrices() {
     assert_eq!(projections.z, vec![9.0]);
     assert_eq!(projections.b, vec![8.0]);
     assert_eq!(projections.a, vec![15.0]);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_moe_router_probe_selects_top_experts() {
+    let root = temp_snapshot_dir("qwen-router");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 24 },
+            "weight_map": {
+                "model.language_model.layers.0.mlp.gate.weight": "router.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("router.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.mlp.gate.weight",
+            &[3, 2],
+            &[
+                1.0, 0.0, //
+                0.0, 2.0, //
+                1.0, 1.0,
+            ],
+        ),
+    )
+    .expect("router");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let router = qwen_layer0_moe_router(&store, &[2.0, 3.0], 2).expect("router");
+
+    assert_eq!(router.selected[0].index, 1);
+    assert_eq!(router.selected[1].index, 2);
+    assert_close(
+        &[router.selected[0].weight, router.selected[1].weight],
+        &[0.7310586, 0.26894143],
+        1e-6,
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_post_attention_norm_adds_residual_and_normalizes() {
+    let root = temp_snapshot_dir("qwen-post-attn-norm");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 4 },
+            "weight_map": {
+                "model.language_model.layers.0.post_attention_layernorm.weight": "post_norm.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("post_norm.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.post_attention_layernorm.weight",
+            &[2],
+            &[0.0, 1.0],
+        ),
+    )
+    .expect("post norm");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let normalized = qwen_layer0_post_attention_norm(&store, &[3.0, 4.0], &[3.0, 4.0], 2, 0.0)
+        .expect("post attention norm");
+
+    assert_close(&normalized, &[0.84852815, 2.2627418], 1e-6);
     std::fs::remove_dir_all(root).ok();
 }
 

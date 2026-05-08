@@ -1,6 +1,7 @@
 use llm_backend::{SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm};
 use llm_backend::{
     qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
 };
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
@@ -153,8 +154,10 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 spec.hidden_size as usize,
                 spec.rms_norm_eps,
             )?;
-            let run_layer0_projections = args.iter().any(|arg| arg == "--layer0-projections")
-                || args.iter().any(|arg| arg == "--layer0-attention");
+            let run_layer0_attention = args.iter().any(|arg| arg == "--layer0-attention")
+                || args.iter().any(|arg| arg == "--layer0-router");
+            let run_layer0_projections =
+                args.iter().any(|arg| arg == "--layer0-projections") || run_layer0_attention;
             let projections = if run_layer0_projections {
                 Some(qwen_layer0_linear_attention_projections(
                     &store,
@@ -163,12 +166,47 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             } else {
                 None
             };
-            let layer0_attention = if args.iter().any(|arg| arg == "--layer0-attention") {
+            let layer0_attention_output = if run_layer0_attention {
                 let projections = projections.as_ref().expect("projections are computed");
-                let output = qwen_layer0_linear_attention_first_token(&store, &spec, projections)?;
-                Some(serde_json::json!({
+                Some(qwen_layer0_linear_attention_first_token(
+                    &store,
+                    &spec,
+                    projections,
+                )?)
+            } else {
+                None
+            };
+            let layer0_attention = layer0_attention_output.as_ref().map(|output| {
+                serde_json::json!({
                     "output_len": output.len(),
                     "output_prefix": output.iter().copied().take(limit).collect::<Vec<_>>()
+                })
+            });
+            let layer0_router = if args.iter().any(|arg| arg == "--layer0-router") {
+                let attention_output = layer0_attention_output
+                    .as_ref()
+                    .expect("attention output is computed");
+                let post_attention = qwen_layer0_post_attention_norm(
+                    &store,
+                    &probe.embedding,
+                    attention_output,
+                    spec.hidden_size as usize,
+                    spec.rms_norm_eps,
+                )?;
+                let top_k = flag_value(&args, "--top-k")
+                    .map(str::parse::<usize>)
+                    .transpose()?
+                    .unwrap_or(spec.num_experts_per_tok as usize);
+                let router = qwen_layer0_moe_router(&store, &post_attention, top_k)?;
+                Some(serde_json::json!({
+                    "post_attention_norm_prefix": post_attention.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "logits_len": router.logits.len(),
+                    "selected": router.selected.iter().map(|item| {
+                        serde_json::json!({
+                            "index": item.index,
+                            "weight": item.weight
+                        })
+                    }).collect::<Vec<_>>()
                 }))
             } else {
                 None
@@ -196,7 +234,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "normalized_prefix": probe.normalized.iter().copied().take(limit).collect::<Vec<_>>(),
                     "values_read": probe.normalized.len(),
                     "layer0_projections": layer0_projections,
-                    "layer0_attention": layer0_attention
+                    "layer0_attention": layer0_attention,
+                    "layer0_router": layer0_router
                 }))?
             );
         }

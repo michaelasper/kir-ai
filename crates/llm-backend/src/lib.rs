@@ -167,6 +167,56 @@ pub fn silu_f32(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopKWeight {
+    pub index: usize,
+    pub weight: f32,
+}
+
+pub fn softmax_top_k_f32(logits: &[f32], top_k: usize) -> Result<Vec<TopKWeight>, MathError> {
+    if top_k == 0 || top_k > logits.len() {
+        return Err(MathError::InvalidShape(format!(
+            "top_k {top_k} must be in 1..={}",
+            logits.len()
+        )));
+    }
+    if logits.iter().any(|value| !value.is_finite()) {
+        return Err(MathError::InvalidShape(
+            "router logits must be finite".to_owned(),
+        ));
+    }
+    let mut selected = logits.iter().copied().enumerate().collect::<Vec<_>>();
+    selected.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    selected.truncate(top_k);
+    let max = selected
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut exp_values = selected
+        .iter()
+        .map(|(_, value)| (*value - max).exp())
+        .collect::<Vec<_>>();
+    let sum = exp_values.iter().sum::<f32>();
+    if sum == 0.0 || !sum.is_finite() {
+        return Err(MathError::InvalidShape(
+            "router softmax denominator is invalid".to_owned(),
+        ));
+    }
+    Ok(selected
+        .iter()
+        .zip(exp_values.iter_mut())
+        .map(|((index, _), value)| TopKWeight {
+            index: *index,
+            weight: *value / sum,
+        })
+        .collect())
+}
+
 pub const QWEN_EMBED_TOKENS_WEIGHT: &str = "model.language_model.embed_tokens.weight";
 pub const QWEN_LAYER0_INPUT_NORM_WEIGHT: &str =
     "model.language_model.layers.0.input_layernorm.weight";
@@ -184,6 +234,9 @@ pub const QWEN_LAYER0_LINEAR_NORM_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.norm.weight";
 pub const QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.out_proj.weight";
+pub const QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT: &str =
+    "model.language_model.layers.0.post_attention_layernorm.weight";
+pub const QWEN_LAYER0_MLP_GATE_WEIGHT: &str = "model.language_model.layers.0.mlp.gate.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
@@ -198,6 +251,12 @@ pub struct QwenLinearAttentionProjectionProbe {
     pub z: Vec<f32>,
     pub b: Vec<f32>,
     pub a: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QwenMoeRouterProbe {
+    pub logits: Vec<f32>,
+    pub selected: Vec<TopKWeight>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -389,6 +448,43 @@ pub fn qwen_layer0_linear_attention_projections(
         z: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT, hidden_states)?,
         b: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT, hidden_states)?,
         a: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT, hidden_states)?,
+    })
+}
+
+pub fn qwen_layer0_moe_router(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    top_k: usize,
+) -> Result<QwenMoeRouterProbe, TensorLoadError> {
+    let logits = store.bf16_matvec_row_major_f32(QWEN_LAYER0_MLP_GATE_WEIGHT, hidden_states)?;
+    let selected = softmax_top_k_f32(&logits, top_k)
+        .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
+    Ok(QwenMoeRouterProbe { logits, selected })
+}
+
+pub fn qwen_layer0_post_attention_norm(
+    store: &SafeTensorShardStore,
+    residual: &[f32],
+    attention_output: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<f32>, TensorLoadError> {
+    if residual.len() != hidden_size || attention_output.len() != hidden_size {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen post-attention residual lengths {}, {} must match hidden size {hidden_size}",
+            residual.len(),
+            attention_output.len()
+        )));
+    }
+    let hidden_states = residual
+        .iter()
+        .zip(attention_output)
+        .map(|(residual, attention)| residual + attention)
+        .collect::<Vec<_>>();
+    let norm_weight =
+        store.bf16_tensor_f32_range(QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT, 0, hidden_size)?;
+    qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen layer0 post-attention RMSNorm failed: {err}"))
     })
 }
 
