@@ -170,12 +170,28 @@ pub fn silu_f32(value: f32) -> f32 {
 pub const QWEN_EMBED_TOKENS_WEIGHT: &str = "model.language_model.embed_tokens.weight";
 pub const QWEN_LAYER0_INPUT_NORM_WEIGHT: &str =
     "model.language_model.layers.0.input_layernorm.weight";
+pub const QWEN_LAYER0_LINEAR_IN_PROJ_QKV_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.in_proj_qkv.weight";
+pub const QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.in_proj_z.weight";
+pub const QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.in_proj_b.weight";
+pub const QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT: &str =
+    "model.language_model.layers.0.linear_attn.in_proj_a.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
     pub token_id: usize,
     pub embedding: Vec<f32>,
     pub normalized: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QwenLinearAttentionProjectionProbe {
+    pub qkv: Vec<f32>,
+    pub z: Vec<f32>,
+    pub b: Vec<f32>,
+    pub a: Vec<f32>,
 }
 
 pub fn qwen_embedding_and_layer0_norm(
@@ -199,6 +215,19 @@ pub fn qwen_embedding_and_layer0_norm(
         token_id,
         embedding,
         normalized,
+    })
+}
+
+pub fn qwen_layer0_linear_attention_projections(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+) -> Result<QwenLinearAttentionProjectionProbe, TensorLoadError> {
+    Ok(QwenLinearAttentionProjectionProbe {
+        qkv: store
+            .bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_QKV_WEIGHT, hidden_states)?,
+        z: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT, hidden_states)?,
+        b: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT, hidden_states)?,
+        a: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT, hidden_states)?,
     })
 }
 
@@ -583,6 +612,29 @@ impl SafeTensorShardStore {
     ) -> Result<Vec<f32>, TensorLoadError> {
         self.open_tensor_file(tensor)?
             .bf16_tensor_f32_range(tensor, element_offset, element_count)
+    }
+
+    pub fn bf16_matvec_row_major_f32(
+        &self,
+        tensor: &str,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        let metadata = self.tensor_metadata(tensor)?;
+        if metadata.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{tensor}` matvec expects rank 2, got rank {}",
+                metadata.shape.len()
+            )));
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        let element_count = rows
+            .checked_mul(columns)
+            .ok_or_else(|| TensorLoadError::integrity("matvec tensor shape overflows usize"))?;
+        let weights = self.bf16_tensor_f32_range(tensor, 0, element_count)?;
+        matvec_row_major_f32(input, &weights, rows, columns).map_err(|err| {
+            TensorLoadError::integrity(format!("BF16 matvec for tensor `{tensor}` failed: {err}"))
+        })
     }
 
     fn open_tensor_file(&self, tensor: &str) -> Result<SafeTensorFile, TensorLoadError> {

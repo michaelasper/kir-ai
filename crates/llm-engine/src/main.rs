@@ -1,3 +1,4 @@
+use llm_backend::qwen_layer0_linear_attention_projections;
 use llm_backend::{SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm};
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
@@ -150,6 +151,22 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 spec.hidden_size as usize,
                 spec.rms_norm_eps,
             )?;
+            let layer0_projections = if args.iter().any(|arg| arg == "--layer0-projections") {
+                let projections =
+                    qwen_layer0_linear_attention_projections(&store, &probe.normalized)?;
+                Some(serde_json::json!({
+                    "qkv_len": projections.qkv.len(),
+                    "z_len": projections.z.len(),
+                    "b_len": projections.b.len(),
+                    "a_len": projections.a.len(),
+                    "qkv_prefix": projections.qkv.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "z_prefix": projections.z.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "b_prefix": projections.b.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "a_prefix": projections.a.iter().copied().take(limit).collect::<Vec<_>>()
+                }))
+            } else {
+                None
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -159,7 +176,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "rms_norm_eps": spec.rms_norm_eps,
                     "embedding_prefix": probe.embedding.iter().copied().take(limit).collect::<Vec<_>>(),
                     "normalized_prefix": probe.normalized.iter().copied().take(limit).collect::<Vec<_>>(),
-                    "values_read": probe.normalized.len()
+                    "values_read": probe.normalized.len(),
+                    "layer0_projections": layer0_projections
                 }))?
             );
         }

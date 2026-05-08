@@ -1,6 +1,6 @@
 use llm_backend::{
     SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_embedding_and_layer0_norm,
+    qwen_embedding_and_layer0_norm, qwen_layer0_linear_attention_projections,
 };
 
 #[test]
@@ -163,6 +163,12 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
     );
     assert_eq!(
         store
+            .bf16_matvec_row_major_f32("embed.weight", &[1.0, 2.0, 3.0])
+            .expect("matvec"),
+        vec![14.0, 32.0]
+    );
+    assert_eq!(
+        store
             .tensor_shard_path("embed.weight")
             .expect("shard path")
             .file_name()
@@ -212,6 +218,72 @@ fn qwen_embedding_probe_reads_and_normalizes_token() {
 
     assert_eq!(probe.embedding, vec![6.0, 8.0]);
     assert_close(&probe.normalized, &[0.84852815, 2.2627418], 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_layer0_projection_probe_reads_bf16_matrices() {
+    let root = temp_snapshot_dir("qwen-projections");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 80 },
+            "weight_map": {
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight": "qkv.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight": "z.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight": "b.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight": "a.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("qkv.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+            &[2, 2],
+            &[1.0, 0.0, 0.0, 1.0],
+        ),
+    )
+    .expect("qkv");
+    std::fs::write(
+        root.join("z.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+            &[1, 2],
+            &[1.0, 1.0],
+        ),
+    )
+    .expect("z");
+    std::fs::write(
+        root.join("b.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+            &[1, 2],
+            &[2.0, 0.0],
+        ),
+    )
+    .expect("b");
+    std::fs::write(
+        root.join("a.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+            &[1, 2],
+            &[0.0, 3.0],
+        ),
+    )
+    .expect("a");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let projections =
+        qwen_layer0_linear_attention_projections(&store, &[4.0, 5.0]).expect("projections");
+
+    assert_eq!(projections.qkv, vec![4.0, 5.0]);
+    assert_eq!(projections.z, vec![9.0]);
+    assert_eq!(projections.b, vec![8.0]);
+    assert_eq!(projections.a, vec![15.0]);
     std::fs::remove_dir_all(root).ok();
 }
 
