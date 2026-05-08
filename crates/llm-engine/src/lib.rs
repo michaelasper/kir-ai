@@ -9,10 +9,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures::{
-    Stream, StreamExt,
-    stream::{self, BoxStream},
-};
+use futures::{Stream, StreamExt, stream::BoxStream};
 use llm_api::{
     ApiError, ChatCompletionRequest, ChatCompletionStreamResponse, CompletionRequest,
     CompletionStreamResponse, FinishReason, ModelCard, ModelList, Usage, ValidateRequest,
@@ -1705,7 +1702,7 @@ impl NativeQwenBackend {
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
         if cancellation.is_cancelled() {
-            return Ok(());
+            return Err(BackendError::Cancelled);
         }
         if request.model != self.model_id {
             return Err(BackendError::ModelNotFound {
@@ -1714,7 +1711,7 @@ impl NativeQwenBackend {
             });
         }
         if cancellation.is_cancelled() {
-            return Ok(());
+            return Err(BackendError::Cancelled);
         }
         let prompt_tokens = self
             .tokenizer
@@ -1740,20 +1737,22 @@ impl NativeQwenBackend {
         let mut decode = match self.start_decode_session(&context_tokens, requested, &cancellation)
         {
             Ok(decode) => decode,
-            Err(BackendError::Cancelled) if cancellation.is_cancelled() => return Ok(()),
+            Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
+                return Err(BackendError::Cancelled);
+            }
             Err(err) => return Err(err),
         };
         if cancellation.is_cancelled() {
-            return Ok(());
+            return Err(BackendError::Cancelled);
         }
 
         for step_idx in 0..requested {
             if cancellation.is_cancelled() {
-                return Ok(());
+                return Err(BackendError::Cancelled);
             }
             let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
             if cancellation.is_cancelled() {
-                return Ok(());
+                return Err(BackendError::Cancelled);
             }
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
@@ -1772,7 +1771,7 @@ impl NativeQwenBackend {
                 .to_owned();
             decoded = next_decoded;
             if cancellation.is_cancelled() {
-                return Ok(());
+                return Err(BackendError::Cancelled);
             }
             send_backend_stream_chunk(
                 &tx,
@@ -1785,14 +1784,14 @@ impl NativeQwenBackend {
             )?;
             if step_idx + 1 < requested {
                 if cancellation.is_cancelled() {
-                    return Ok(());
+                    return Err(BackendError::Cancelled);
                 }
                 decode.step(&self.store, &self.spec, &self.matvec, candidate.token_id)?;
             }
         }
 
         if cancellation.is_cancelled() {
-            return Ok(());
+            return Err(BackendError::Cancelled);
         }
         send_backend_stream_chunk(
             &tx,
@@ -2126,17 +2125,64 @@ impl ModelBackend for NativeQwenBackend {
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         let backend = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tokio::task::spawn_blocking(move || {
+        let worker = tokio::task::spawn_blocking(move || {
             let err_tx = tx.clone();
             if let Err(err) = backend.generate_blocking_stream(request, tx, cancellation) {
                 let _ = err_tx.blocking_send(Err(err));
             }
         });
-        stream::unfold(rx, |mut rx| async {
-            rx.recv().await.map(|item| (item, rx))
-        })
-        .boxed()
+        native_qwen_worker_stream(rx, worker)
     }
+}
+
+fn native_qwen_worker_stream(
+    rx: tokio::sync::mpsc::Receiver<Result<BackendStreamChunk, BackendError>>,
+    worker: tokio::task::JoinHandle<()>,
+) -> BoxStream<'static, Result<BackendStreamChunk, BackendError>> {
+    async_stream::stream! {
+        let mut rx = rx;
+        let mut worker = Some(worker);
+        loop {
+            let Some(handle) = worker.as_mut() else {
+                match rx.recv().await {
+                    Some(item) => {
+                        yield item;
+                        continue;
+                    }
+                    None => break,
+                }
+            };
+            tokio::select! {
+                item = rx.recv() => {
+                    match item {
+                        Some(item) => yield item,
+                        None => {
+                            let result = worker
+                                .take()
+                                .expect("worker handle exists while stream watches it")
+                                .await;
+                            if let Err(err) = result {
+                                yield Err(BackendError::Other(format!(
+                                    "native Qwen streaming worker failed: {err}"
+                                )));
+                            }
+                            break;
+                        }
+                    }
+                }
+                result = handle => {
+                    worker = None;
+                    if let Err(err) = result {
+                        yield Err(BackendError::Other(format!(
+                            "native Qwen streaming worker failed: {err}"
+                        )));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    .boxed()
 }
 
 fn send_backend_stream_chunk(
@@ -3728,6 +3774,62 @@ mod tests {
 
         assert!(err.to_string().contains("cancelled"));
         std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
+        let snapshot = temp_snapshot_dir("cancelled-stream");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("config.json", snapshot.join("config.json"));
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+        let backend =
+            NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        let err = backend
+            .generate_blocking_stream(
+                BackendRequest {
+                    model: "local-qwen36".to_owned(),
+                    prompt: "say hi".to_owned(),
+                    max_tokens: Some(1),
+                    sampling: SamplingConfig::Greedy,
+                    required_tool_choice: None,
+                    json_object_mode: false,
+                    conversation_mode: false,
+                },
+                tx,
+                cancellation,
+            )
+            .expect_err("pre-cancelled stream fails before normal EOF");
+
+        assert!(matches!(err, BackendError::Cancelled));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[tokio::test]
+    async fn native_qwen_worker_stream_reports_join_failure_after_channel_close() {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let worker = tokio::task::spawn_blocking(|| panic!("stream worker panic"));
+        let mut stream = native_qwen_worker_stream(rx, worker);
+
+        let err = stream
+            .next()
+            .await
+            .expect("join failure event")
+            .expect_err("worker panic is surfaced");
+
+        assert!(
+            err.to_string()
+                .contains("native Qwen streaming worker failed")
+        );
+        assert!(stream.next().await.is_none());
     }
 
     #[test]
