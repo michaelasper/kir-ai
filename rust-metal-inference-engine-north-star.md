@@ -77,6 +77,7 @@ Current commits:
 - `bbb4da1` - Chat and text completions now fail closed for unsupported nonzero presence/frequency penalties while accepting neutral zero values.
 - `eee90ab` - Chat and text completions now fail closed for unsupported log probability controls instead of ignoring them.
 - `5c496d6` - Chat completions now fail closed for explicit parallel tool-call requests until parallel execution policy exists.
+- `90e4988` - Added admin snapshot verification for the currently served snapshot-backed model.
 
 Current verified state:
 
@@ -118,18 +119,20 @@ Current verified state:
 - Chat and text completions now accept neutral `presence_penalty: 0` and `frequency_penalty: 0`, and reject unsupported nonzero or non-finite penalty values as `unsupported_capability` instead of ignoring them.
 - Chat accepts `logprobs: false` as a no-op and rejects enabled `logprobs`/`top_logprobs`; legacy text completions reject requested `logprobs` until log probability output is implemented.
 - Chat completions accept `parallel_tool_calls: false` as a no-op and reject explicit `parallel_tool_calls: true` as `unsupported_capability` until the scheduler has a parallel tool execution policy.
+- `POST /admin/models/{alias}/verify` verifies the currently served snapshot from backend metadata via the engine manifest and reports status, snapshot path, repo ID, resolved commit, manifest digest, verified file count, and verified bytes.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, including requested final usage chunks, but stream heartbeats during long prefill, stream metrics, stream stall detection, and disconnect cancellation are not complete.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks and aggregate streamed-request counts, but stream heartbeats during long prefill, stream stall detection, and disconnect cancellation are not complete.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
+- Admin status, metrics, and served snapshot verification endpoints exist. Admin plan/pull HTTP endpoints and true request cancellation are not complete.
 
 The first-class model families are:
 
