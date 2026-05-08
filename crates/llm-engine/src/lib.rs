@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
 };
 use futures::{
-    StreamExt,
+    Stream, StreamExt,
     stream::{self, BoxStream},
 };
 use llm_api::{
@@ -53,16 +53,33 @@ struct AppState {
     model_home: PathBuf,
     hub_client: HubClient,
     hf_token: Option<Arc<str>>,
+    stream_stall_timeout: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EngineOptions {
     pub concurrency_limit: usize,
     pub admin_token: Option<String>,
     pub model_home: Option<PathBuf>,
     pub hub_endpoint: Option<String>,
     pub hf_token: Option<String>,
+    pub stream_stall_timeout: Option<Duration>,
 }
+
+impl Default for EngineOptions {
+    fn default() -> Self {
+        Self {
+            concurrency_limit: 0,
+            admin_token: None,
+            model_home: None,
+            hub_endpoint: None,
+            hf_token: None,
+            stream_stall_timeout: Some(DEFAULT_STREAM_STALL_TIMEOUT),
+        }
+    }
+}
+
+const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn build_router() -> Router {
     build_router_with_backend(Box::new(default_backend()))
@@ -117,6 +134,7 @@ pub fn build_router_with_backend_and_options(
                 })
                 .unwrap_or_default(),
             hf_token: options.hf_token.map(Arc::from),
+            stream_stall_timeout: options.stream_stall_timeout,
         })
 }
 
@@ -670,18 +688,26 @@ async fn chat_completions(
             let events = async_stream::stream! {
                 let _permit = permit;
                 let mut events = response.into_events();
-                while let Some(event) = events.next().await {
-                    match event {
-                        Ok(ChatCompletionStreamEvent::Chunk(chunk)) => {
+                loop {
+                    match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                        Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
                             yield sse_json_event(chunk);
                         }
-                        Ok(ChatCompletionStreamEvent::Complete(usage)) => {
+                        Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
                             record_success_metrics(&state, &usage, streamed);
                             yield Ok(Event::default().data("[DONE]"));
                         }
-                        Err(err) => {
+                        Ok(Some(Err(err))) => {
                             record_failure_metrics(&state);
                             for event in runtime_error_stream_events(err) {
+                                yield event;
+                            }
+                            return;
+                        }
+                        Ok(None) => break,
+                        Err(StreamStalled) => {
+                            record_failure_metrics(&state);
+                            for event in stream_stalled_stream_events(state.stream_stall_timeout) {
                                 yield event;
                             }
                             return;
@@ -698,18 +724,26 @@ async fn chat_completions(
             match state.runtime.chat_stream(request).await {
                 Ok(response) => {
                     let mut events = response.into_events();
-                    while let Some(event) = events.next().await {
-                        match event {
-                            Ok(ChatCompletionStreamEvent::Chunk(chunk)) => {
+                    loop {
+                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                            Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
                                 yield sse_json_event(chunk);
                             }
-                            Ok(ChatCompletionStreamEvent::Complete(usage)) => {
+                            Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
                                 record_success_metrics(&state, &usage, streamed);
                                 yield Ok(Event::default().data("[DONE]"));
                             }
-                            Err(err) => {
+                            Ok(Some(Err(err))) => {
                                 record_failure_metrics(&state);
                                 for event in runtime_error_stream_events(err) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                            Ok(None) => break,
+                            Err(StreamStalled) => {
+                                record_failure_metrics(&state);
+                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
                                     yield event;
                                 }
                                 return;
@@ -755,18 +789,26 @@ async fn completions(
             match state.runtime.completion_stream(request).await {
                 Ok(response) => {
                     let mut events = response.into_events();
-                    while let Some(event) = events.next().await {
-                        match event {
-                            Ok(CompletionStreamEvent::Chunk(chunk)) => {
+                    loop {
+                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                            Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
                                 yield sse_json_event(chunk);
                             }
-                            Ok(CompletionStreamEvent::Complete(usage)) => {
+                            Ok(Some(Ok(CompletionStreamEvent::Complete(usage)))) => {
                                 record_success_metrics(&state, &usage, streamed);
                                 yield Ok(Event::default().data("[DONE]"));
                             }
-                            Err(err) => {
+                            Ok(Some(Err(err))) => {
                                 record_failure_metrics(&state);
                                 for event in runtime_error_stream_events(err) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                            Ok(None) => break,
+                            Err(StreamStalled) => {
+                                record_failure_metrics(&state);
+                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
                                     yield event;
                                 }
                                 return;
@@ -808,6 +850,46 @@ fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallibl
         })),
         Ok(Event::default().data("[DONE]")),
     ]
+}
+
+fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, Infallible>> {
+    let message = match timeout {
+        Some(timeout) => format!(
+            "stream stalled for {} ms without backend output",
+            timeout.as_millis()
+        ),
+        None => "stream stalled without backend output".to_owned(),
+    };
+    vec![
+        sse_json_event(json!({
+            "error": {
+                "message": message,
+                "code": "stream_stalled",
+                "phase": "streaming",
+                "retryable": true,
+                "type": "llm_engine_error"
+            }
+        })),
+        Ok(Event::default().data("[DONE]")),
+    ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StreamStalled;
+
+async fn next_stream_event<S, T>(
+    events: &mut S,
+    timeout: Option<Duration>,
+) -> Result<Option<Result<T, RuntimeError>>, StreamStalled>
+where
+    S: Stream<Item = Result<T, RuntimeError>> + Unpin,
+{
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, events.next())
+            .await
+            .map_err(|_| StreamStalled),
+        None => Ok(events.next().await),
+    }
 }
 
 fn engine_sse_keep_alive() -> KeepAlive {

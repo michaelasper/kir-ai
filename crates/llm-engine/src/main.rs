@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
                 model_home,
                 hub_endpoint,
                 hf_token: std::env::var("HF_TOKEN").ok(),
+                ..EngineOptions::default()
             };
             let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
                 let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");

@@ -978,6 +978,44 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
 }
 
 #[tokio::test]
+async fn chat_stream_reports_backend_stall_after_configured_timeout() {
+    let release = Arc::new(Semaphore::new(0));
+    let response = build_router_with_backend_and_options(
+        Box::new(DelayedStreamBackend {
+            release: release.clone(),
+        }),
+        EngineOptions {
+            stream_stall_timeout: Some(Duration::from_millis(50)),
+            ..EngineOptions::default()
+        },
+    )
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
+        .await
+        .expect("stall response completes");
+    assert!(body.contains("\"code\":\"stream_stalled\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
