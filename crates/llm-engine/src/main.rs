@@ -23,6 +23,10 @@ async fn main() -> anyhow::Result<()> {
     match command.as_str() {
         "serve" => {
             let serve_args = std::env::args().skip(2).collect::<Vec<_>>();
+            if has_flag(&serve_args, "--help") || has_flag(&serve_args, "-h") {
+                print_serve_help();
+                return Ok(());
+            }
             let addr = flag_value(&serve_args, "--addr")
                 .unwrap_or("127.0.0.1:3000")
                 .parse::<SocketAddr>()?;
@@ -110,6 +114,29 @@ async fn main() -> anyhow::Result<()> {
         other => anyhow::bail!("unknown command `{other}`"),
     }
     Ok(())
+}
+
+fn print_serve_help() {
+    println!(
+        "\
+Usage: llm-engine serve [OPTIONS]
+
+Options:
+  --addr <host:port>                         Listen address [default: 127.0.0.1:3000]
+  --snapshot <path>                          Native Qwen snapshot path
+  --model-id <id>                            Served model id [default: local-qwen36]
+  --deterministic-test-backend               Use deterministic protocol backend
+  --max-new-tokens <n>                       Native Qwen maximum generated tokens
+  --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens
+  --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
+  --admin-token <token>                      Bearer token for admin endpoints
+  --model-home <path>                        Model store root
+  --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
+  --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
+  --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
+  --eager-materialize-shards                 Materialize indexed safetensor shards at startup
+  -h, --help                                 Print help"
+    );
 }
 
 async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {

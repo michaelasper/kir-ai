@@ -3,6 +3,29 @@ use serde_json::Value;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[test]
+fn serve_help_prints_without_backend_validation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("run serve help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--addr"), "stdout: {stdout}");
+    assert!(stdout.contains("--snapshot"), "stdout: {stdout}");
+    assert!(stdout.contains("--model-id"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("--deterministic-test-backend"),
+        "stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "stderr unexpectedly validated backend: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn serve_without_snapshot_requires_explicit_backend() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
