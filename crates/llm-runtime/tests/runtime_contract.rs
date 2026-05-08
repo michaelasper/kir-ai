@@ -130,13 +130,13 @@ async fn runtime_returns_text_stream_chunks() {
 }
 
 #[tokio::test]
-async fn streaming_tool_calls_fail_closed_until_delta_assembly_exists() {
+async fn runtime_streams_generated_tool_call_delta() {
     let backend = DeterministicBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     );
     let runtime = Runtime::new(backend);
-    let err = runtime
+    let stream = runtime
         .chat_stream(ChatCompletionRequest {
             model: "local-qwen36".to_owned(),
             messages: vec![ChatMessage::user("lookup rust")],
@@ -146,9 +146,30 @@ async fn streaming_tool_calls_fail_closed_until_delta_assembly_exists() {
             ..ChatCompletionRequest::default()
         })
         .await
-        .expect_err("streaming tool calls are not silently flattened");
+        .expect("streaming tool calls assemble");
 
-    assert!(matches!(err, RuntimeError::Api(_)));
+    assert_eq!(stream.chunks.len(), 3);
+    let delta = &stream.chunks[1].choices[0].delta.tool_calls[0];
+    assert_eq!(delta.index, 0);
+    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("lookup")
+    );
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(r#"{"query":"rust"}"#)
+    );
+    assert_eq!(
+        stream.chunks[2].choices[0].finish_reason,
+        Some(FinishReason::ToolCalls)
+    );
 }
 
 #[test]

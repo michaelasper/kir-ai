@@ -2,7 +2,7 @@ use chrono::Utc;
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
-    ChatRole, ToolChoice, Usage, ValidateRequest,
+    ChatRole, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage, ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
@@ -64,12 +64,6 @@ where
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionStream, RuntimeError> {
         let completion = self.complete_chat(request).await?;
-        if !completion.parsed.tool_calls.is_empty() {
-            return Err(ApiError::unsupported_capability(
-                "streaming tool-call deltas are not implemented yet",
-            )
-            .into());
-        }
         let mut chunks = Vec::new();
         chunks.push(stream_chunk(
             &completion,
@@ -84,6 +78,16 @@ where
                 &completion,
                 ChatCompletionDelta {
                     content: Some(completion.parsed.content.clone()),
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+            ));
+        }
+        for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
+            chunks.push(stream_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    tool_calls: vec![tool_call_delta(index, tool_call)?],
                     ..ChatCompletionDelta::default()
                 },
                 None,
@@ -185,6 +189,20 @@ fn stream_chunk(
     }
 }
 
+fn tool_call_delta(index: usize, tool_call: &ToolCall) -> Result<ToolCallDelta, RuntimeError> {
+    Ok(ToolCallDelta {
+        index: u32::try_from(index).map_err(|err| {
+            ApiError::invalid_request(format!("tool call index does not fit u32: {err}"))
+        })?,
+        id: Some(tool_call.id.clone()),
+        call_type: Some(tool_call.call_type.clone()),
+        function: Some(ToolCallFunctionDelta {
+            name: Some(tool_call.function.name.clone()),
+            arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
+        }),
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
     EmptyCompletion,
@@ -219,6 +237,8 @@ pub enum RuntimeError {
     Template(#[from] TemplateError),
     #[error(transparent)]
     Parser(#[from] ParserError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     #[error("no progress classified as {0:?}")]
     NoProgress(NoProgressClass),
 }

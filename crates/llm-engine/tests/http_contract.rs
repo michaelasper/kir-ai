@@ -117,6 +117,43 @@ async fn chat_completions_streams_openai_sse_chunks() {
 }
 
 #[tokio::test]
+async fn chat_completions_streams_tool_call_deltas() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#.to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "lookup rust"}],
+                    "tools": [{
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {}}
+                    }],
+                    "tool_choice": "required",
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
+    assert!(body.contains("\"name\":\"lookup\""));
+    assert!(body.contains("\"arguments\":\"{\\\"query\\\":\\\"rust\\\"}\""));
+    assert!(body.contains("\"finish_reason\":\"tool_calls\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn backend_execution_errors_are_not_reported_as_missing_model() {
     let response = build_router_with_backend(Box::new(FailingBackend))
         .oneshot(
@@ -149,6 +186,26 @@ impl ModelBackend for FailingBackend {
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::Other("execution failed".to_owned()))
+    }
+}
+
+struct StaticBackend {
+    text: String,
+}
+
+#[async_trait]
+impl ModelBackend for StaticBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: self.text.clone(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
     }
 }
 
