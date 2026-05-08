@@ -4,7 +4,7 @@ use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -304,6 +304,139 @@ impl SafeTensorHeader {
     }
 }
 
+#[derive(Debug)]
+pub struct SafeTensorFile {
+    header: SafeTensorHeader,
+    file: File,
+}
+
+impl SafeTensorFile {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, TensorLoadError> {
+        let path = path.as_ref();
+        let header = SafeTensorHeader::from_file(path)?;
+        let file = File::open(path).map_err(|err| {
+            TensorLoadError::missing(format!(
+                "could not open safetensors file `{}`: {err}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { header, file })
+    }
+
+    pub fn header(&self) -> &SafeTensorHeader {
+        &self.header
+    }
+
+    pub fn tensor_metadata(&self, name: &str) -> Result<TensorMetadata, TensorLoadError> {
+        self.header.tensor_metadata(name)
+    }
+
+    pub fn tensor_bytes_range(
+        &self,
+        name: &str,
+        tensor_byte_offset: u64,
+        byte_len: usize,
+    ) -> Result<Vec<u8>, TensorLoadError> {
+        let metadata = self.header.tensor_metadata(name)?;
+        let tensor_byte_len = u64_from_usize(
+            metadata.byte_len,
+            "tensor byte length does not fit in u64 for range read",
+        )?;
+        let requested_end = tensor_byte_offset
+            .checked_add(u64_from_usize(
+                byte_len,
+                "requested byte length does not fit in u64",
+            )?)
+            .ok_or_else(|| TensorLoadError::integrity(format!("tensor `{name}` range overflow")))?;
+        if requested_end > tensor_byte_len {
+            return Err(TensorLoadError::integrity(format!(
+                "tensor `{name}` requested byte range exceeds tensor length"
+            )));
+        }
+        let tensor_range = self.header.tensor_data_range(name)?;
+        let file_offset = tensor_range
+            .start
+            .checked_add(tensor_byte_offset)
+            .ok_or_else(|| {
+                TensorLoadError::integrity(format!("tensor `{name}` offset overflow"))
+            })?;
+        let mut bytes = vec![0_u8; byte_len];
+        let mut file = self.file.try_clone().map_err(|err| {
+            TensorLoadError::integrity(format!("could not clone safetensors file handle: {err}"))
+        })?;
+        file.seek(SeekFrom::Start(file_offset)).map_err(|err| {
+            TensorLoadError::integrity(format!("could not seek tensor `{name}`: {err}"))
+        })?;
+        file.read_exact(&mut bytes).map_err(|err| {
+            TensorLoadError::integrity(format!("could not read tensor `{name}` bytes: {err}"))
+        })?;
+        Ok(bytes)
+    }
+
+    pub fn bf16_tensor_f32_range(
+        &self,
+        name: &str,
+        element_offset: usize,
+        element_count: usize,
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        let metadata = self.header.tensor_metadata(name)?;
+        if metadata.dtype != "BF16" {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{name}` has dtype {}, expected BF16",
+                metadata.dtype
+            )));
+        }
+        let byte_offset = u64_from_usize(
+            element_offset
+                .checked_mul(2)
+                .ok_or_else(|| TensorLoadError::integrity("BF16 element offset overflow"))?,
+            "BF16 byte offset does not fit in u64",
+        )?;
+        let byte_len = element_count
+            .checked_mul(2)
+            .ok_or_else(|| TensorLoadError::integrity("BF16 element count overflow"))?;
+        let bytes = self.tensor_bytes_range(name, byte_offset, byte_len)?;
+        bf16_bytes_to_f32(&bytes)
+    }
+
+    pub fn bf16_row_f32(&self, name: &str, row: usize) -> Result<Vec<f32>, TensorLoadError> {
+        let metadata = self.header.tensor_metadata(name)?;
+        if metadata.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{name}` row reader expects rank 2, got rank {}",
+                metadata.shape.len()
+            )));
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        if row >= rows {
+            return Err(TensorLoadError::integrity(format!(
+                "tensor `{name}` row {row} exceeds row count {rows}"
+            )));
+        }
+        let element_offset = row
+            .checked_mul(columns)
+            .ok_or_else(|| TensorLoadError::integrity("row offset overflow"))?;
+        self.bf16_tensor_f32_range(name, element_offset, columns)
+    }
+}
+
+pub fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+fn bf16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, TensorLoadError> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(TensorLoadError::integrity(
+            "BF16 byte length must be divisible by 2",
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|chunk| bf16_bits_to_f32(u16::from_le_bytes(chunk.try_into().expect("BF16 chunk"))))
+        .collect())
+}
+
 #[derive(Debug, Clone)]
 struct TensorHeaderEntry {
     dtype: String,
@@ -426,6 +559,12 @@ fn parse_data_offsets(
 }
 
 fn usize_from_u64(value: u64, message: &str) -> Result<usize, TensorLoadError> {
+    value
+        .try_into()
+        .map_err(|_| TensorLoadError::integrity(message))
+}
+
+fn u64_from_usize(value: usize, message: &str) -> Result<u64, TensorLoadError> {
     value
         .try_into()
         .map_err(|_| TensorLoadError::integrity(message))

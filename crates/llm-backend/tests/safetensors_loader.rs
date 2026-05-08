@@ -1,4 +1,4 @@
-use llm_backend::{SafeTensorArchive, SafeTensorHeader};
+use llm_backend::{SafeTensorArchive, SafeTensorFile, SafeTensorHeader};
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -98,12 +98,55 @@ fn rejects_header_offsets_outside_payload() {
     assert_eq!(err.code(), "model_integrity_failed");
 }
 
+#[test]
+fn reads_bf16_ranges_from_file() {
+    let bytes = tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let path = temp_safetensors_path("bf16-ranges");
+    std::fs::write(&path, bytes).expect("write fixture");
+
+    let file = SafeTensorFile::open(&path).expect("open tensor file");
+
+    assert_eq!(
+        file.bf16_tensor_f32_range("embed.weight", 2, 3)
+            .expect("range"),
+        vec![3.0, 4.0, 5.0]
+    );
+    assert_eq!(
+        file.bf16_row_f32("embed.weight", 1).expect("row"),
+        vec![4.0, 5.0, 6.0]
+    );
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn rejects_bf16_range_outside_tensor() {
+    let bytes = tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let path = temp_safetensors_path("bf16-oob");
+    std::fs::write(&path, bytes).expect("write fixture");
+    let file = SafeTensorFile::open(&path).expect("open tensor file");
+
+    let err = file
+        .bf16_tensor_f32_range("embed.weight", 5, 2)
+        .expect_err("range fails");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    std::fs::remove_file(path).ok();
+}
+
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         data.extend_from_slice(&value.to_le_bytes());
     }
     tiny_safetensors(name, "F32", shape, &data)
+}
+
+fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(values.len() * 2);
+    for value in values {
+        data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+    }
+    tiny_safetensors(name, "BF16", shape, &data)
 }
 
 fn tiny_safetensors(name: &str, dtype: &str, shape: &[usize], data: &[u8]) -> Vec<u8> {
@@ -121,4 +164,11 @@ fn tiny_safetensors(name: &str, dtype: &str, shape: &[usize], data: &[u8]) -> Ve
     bytes.extend_from_slice(header.as_bytes());
     bytes.extend_from_slice(data);
     bytes
+}
+
+fn temp_safetensors_path(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "llm-backend-{label}-{}.safetensors",
+        std::process::id()
+    ))
 }

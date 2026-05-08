@@ -1,4 +1,4 @@
-use llm_backend::SafeTensorHeader;
+use llm_backend::SafeTensorFile;
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use std::net::SocketAddr;
@@ -33,9 +33,11 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")
             })?;
-            let header = SafeTensorHeader::from_file(path)?;
+            let tensor_file = SafeTensorFile::open(path)?;
+            let header = tensor_file.header();
             let sample_tensors: Vec<_> = header.tensor_names().take(8).collect();
-            let tensor = flag_value(&args, "--tensor")
+            let tensor_name = flag_value(&args, "--tensor");
+            let tensor = tensor_name
                 .map(|name| {
                     let metadata = header.tensor_metadata(name)?;
                     let range = header.tensor_data_range(name)?;
@@ -51,6 +53,24 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     }))
                 })
                 .transpose()?;
+            let bf16_row = match (tensor_name, flag_value(&args, "--bf16-row")) {
+                (Some(name), Some(row)) => {
+                    let row = row.parse::<usize>()?;
+                    let values = tensor_file.bf16_row_f32(name, row)?;
+                    let limit = flag_value(&args, "--limit")
+                        .map(str::parse::<usize>)
+                        .transpose()?
+                        .unwrap_or(8);
+                    Some(serde_json::json!({
+                        "tensor": name,
+                        "row": row,
+                        "values_read": values.len(),
+                        "values_prefix": values.into_iter().take(limit).collect::<Vec<_>>()
+                    }))
+                }
+                (None, Some(_)) => anyhow::bail!("--bf16-row requires --tensor <name>"),
+                _ => None,
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -60,7 +80,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "data_start": header.data_start(),
                     "tensor_count": header.tensor_count(),
                     "sample_tensors": sample_tensors,
-                    "tensor": tensor
+                    "tensor": tensor,
+                    "bf16_row": bf16_row
                 }))?
             );
         }
