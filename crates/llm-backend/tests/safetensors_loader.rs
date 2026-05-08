@@ -202,7 +202,7 @@ fn qwen_embedding_probe_reads_and_normalizes_token() {
         tiny_safetensors_bf16(
             "model.language_model.layers.0.input_layernorm.weight",
             &[2],
-            &[1.0, 2.0],
+            &[0.0, 1.0],
         ),
     )
     .expect("norm shard");

@@ -1,4 +1,4 @@
-use llm_backend::{matvec_row_major_f32, rms_norm_f32, silu_f32};
+use llm_backend::{matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32};
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -12,6 +12,13 @@ fn rms_norm_rejects_mismatched_weight_shape() {
     let err = rms_norm_f32(&[1.0, 2.0], &[1.0], 1e-6).expect_err("shape fails");
 
     assert!(err.to_string().contains("same length"));
+}
+
+#[test]
+fn qwen_rms_norm_uses_one_centered_weights() {
+    let output = qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0).expect("qwen rms norm");
+
+    assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
 }
 
 #[test]

@@ -96,6 +96,19 @@ fn count_tokens(text: &str) -> u64 {
 }
 
 pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+    rms_norm_with_weight_offset_f32(input, weight, eps, 0.0)
+}
+
+pub fn qwen_rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+    rms_norm_with_weight_offset_f32(input, weight, eps, 1.0)
+}
+
+fn rms_norm_with_weight_offset_f32(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+    weight_offset: f32,
+) -> Result<Vec<f32>, MathError> {
     if input.len() != weight.len() {
         return Err(MathError::InvalidShape(
             "input and weight must have the same length".to_owned(),
@@ -114,7 +127,7 @@ pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>,
     Ok(input
         .iter()
         .zip(weight)
-        .map(|(value, weight)| value * scale * weight)
+        .map(|(value, weight)| value * scale * (weight_offset + weight))
         .collect())
 }
 
@@ -179,7 +192,7 @@ pub fn qwen_embedding_and_layer0_norm(
         )));
     }
     let norm_weight = store.bf16_tensor_f32_range(QWEN_LAYER0_INPUT_NORM_WEIGHT, 0, hidden_size)?;
-    let normalized = rms_norm_f32(&embedding, &norm_weight, rms_norm_eps).map_err(|err| {
+    let normalized = qwen_rms_norm_f32(&embedding, &norm_weight, rms_norm_eps).map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 input RMSNorm failed: {err}"))
     })?;
     Ok(QwenEmbeddingProbe {
