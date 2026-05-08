@@ -64,6 +64,7 @@ Current commits:
 - `45bf64a` - Chat requests now fail closed for unsupported non-greedy `temperature`/`top_p` values instead of silently ignoring sampling controls.
 - `4cf4cf6` - Engine error bodies now include failure phase and retryability metadata alongside stable error codes.
 - `fdafefd` - Chat and text-completion streams honor `stream_options.include_usage` by emitting a usage-only chunk before `[DONE]`.
+- `1c8faef` - Added read-only admin model status endpoints for the currently served model with stable missing-model errors.
 
 Current verified state:
 
@@ -92,6 +93,7 @@ Current verified state:
 - Chat sampling controls are fail-closed: explicit greedy settings `temperature: 0` and `top_p: 1` are accepted, while unsupported non-greedy sampling settings return an `unsupported_capability` validation error.
 - HTTP failure bodies now include `error.phase` and `error.retryable` in addition to `error.code`, covering request validation, model resolution, prompt rendering, decode, response parsing, response validation, and serialization phases.
 - Streaming chat and legacy text completions accept OpenAI `stream_options.include_usage` and append a final usage-only chunk with `choices: []` before the single `[DONE]` terminator.
+- `GET /admin/models` and `GET /admin/models/{alias}` report read-only status for the currently served Rust model. Unknown aliases return the same stable `model_not_found` error metadata as inference requests.
 
 Known incomplete items:
 
