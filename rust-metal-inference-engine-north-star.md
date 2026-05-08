@@ -76,6 +76,7 @@ Current commits:
 - `5d4b371` - Malformed JSON request bodies now return stable request-validation error envelopes for chat and text completion routes.
 - `bbb4da1` - Chat and text completions now fail closed for unsupported nonzero presence/frequency penalties while accepting neutral zero values.
 - `eee90ab` - Chat and text completions now fail closed for unsupported log probability controls instead of ignoring them.
+- `5c496d6` - Chat completions now fail closed for explicit parallel tool-call requests until parallel execution policy exists.
 
 Current verified state:
 
@@ -116,6 +117,7 @@ Current verified state:
 - Malformed JSON bodies on `/v1/chat/completions` and `/v1/completions` now map through the same stable HTTP error envelope as other request-validation failures, including `error.code`, `error.phase`, and `error.retryable`.
 - Chat and text completions now accept neutral `presence_penalty: 0` and `frequency_penalty: 0`, and reject unsupported nonzero or non-finite penalty values as `unsupported_capability` instead of ignoring them.
 - Chat accepts `logprobs: false` as a no-op and rejects enabled `logprobs`/`top_logprobs`; legacy text completions reject requested `logprobs` until log probability output is implemented.
+- Chat completions accept `parallel_tool_calls: false` as a no-op and reject explicit `parallel_tool_calls: true` as `unsupported_capability` until the scheduler has a parallel tool execution policy.
 
 Known incomplete items:
 
