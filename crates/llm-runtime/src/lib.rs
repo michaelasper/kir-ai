@@ -11,7 +11,10 @@ use llm_api::{
     ValidateRequest,
 };
 use llm_backend::BackendModelMetadata;
-use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend, SamplingConfig};
+use llm_backend::{
+    BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
+    SamplingConfig,
+};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
@@ -975,10 +978,12 @@ fn validate_tool_calls_against_request(
     Ok(())
 }
 
-fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<String> {
+fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<BackendToolChoice> {
     match &request.tool_choice {
-        Some(ToolChoice::Required) => request.tools.first().map(|tool| tool.function.name.clone()),
-        Some(ToolChoice::Function { name }) => Some(name.clone()),
+        Some(ToolChoice::Required) => Some(BackendToolChoice::RequiredAny),
+        Some(ToolChoice::Function { name }) => {
+            Some(BackendToolChoice::RequiredFunction(name.clone()))
+        }
         Some(ToolChoice::Auto | ToolChoice::None) | None => None,
     }
 }

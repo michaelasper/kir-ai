@@ -28,9 +28,15 @@ pub struct BackendRequest {
     pub prompt: String,
     pub max_tokens: Option<u32>,
     pub sampling: SamplingConfig,
-    pub required_tool_choice: Option<String>,
+    pub required_tool_choice: Option<BackendToolChoice>,
     pub json_object_mode: bool,
     pub conversation_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendToolChoice {
+    RequiredAny,
+    RequiredFunction(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -261,7 +267,7 @@ impl ModelBackend for DeterministicBackend {
         }
         let (text, finish_reason) = if self.required_tool_protocol
             && let Some((name, arguments)) =
-                deterministic_tool_call(&request.prompt, request.required_tool_choice.as_deref())
+                deterministic_tool_call(&request.prompt, request.required_tool_choice.as_ref())
         {
             (
                 serde_json::json!({
@@ -309,13 +315,15 @@ impl ModelBackend for DeterministicBackend {
 
 fn deterministic_tool_call(
     prompt: &str,
-    required_name: Option<&str>,
+    required_choice: Option<&BackendToolChoice>,
 ) -> Option<(String, serde_json::Value)> {
     let tools = rendered_tool_definitions(prompt)?;
-    let tool = if let Some(name) = required_name {
-        tools.iter().find(|tool| tool.function.name == name)?
-    } else {
-        select_auto_tool(prompt, &tools)?
+    let tool = match required_choice {
+        Some(BackendToolChoice::RequiredFunction(name)) => {
+            tools.iter().find(|tool| tool.function.name == *name)?
+        }
+        Some(BackendToolChoice::RequiredAny) => select_required_any_tool(prompt, &tools)?,
+        None => select_auto_tool(prompt, &tools)?,
     };
     Some((
         tool.function.name.clone(),
@@ -331,29 +339,138 @@ fn rendered_tool_definitions(prompt: &str) -> Option<Vec<ToolDefinition>> {
     serde_json::from_str(tools_json).ok()
 }
 
+fn select_required_any_tool<'a>(
+    prompt: &str,
+    tools: &'a [ToolDefinition],
+) -> Option<&'a ToolDefinition> {
+    select_scored_tool(prompt, tools).or_else(|| (tools.len() == 1).then_some(&tools[0]))
+}
+
 fn select_auto_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&'a ToolDefinition> {
-    let user = last_user_message(prompt).to_ascii_lowercase();
-    let read_intent =
-        user.contains("secret.txt") || (user.contains("read") && user.contains("file"));
-    if !read_intent {
+    select_scored_tool(prompt, tools)
+}
+
+fn select_scored_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&'a ToolDefinition> {
+    let user_terms = lexical_user_terms(prompt);
+    if user_terms.is_empty() {
         return None;
     }
-    tools
+    let mut best = None;
+    for tool in tools {
+        let score = score_tool_match(&user_terms, tool);
+        if score == 0 {
+            continue;
+        }
+        if best
+            .map(|(_, best_score)| score > best_score)
+            .unwrap_or(true)
+        {
+            best = Some((tool, score));
+        }
+    }
+    best.map(|(tool, _)| tool)
+}
+
+fn lexical_user_terms(prompt: &str) -> Vec<String> {
+    let user = last_user_message(prompt);
+    let mut terms = lexical_terms(&user);
+    if argument_tokens(&user)
         .iter()
-        .find(|tool| {
-            let name = tool.function.name.to_ascii_lowercase();
-            let description = tool
-                .function
-                .description
-                .as_deref()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            name.contains("read")
-                || name.contains("file")
-                || description.contains("read")
-                || description.contains("file")
-        })
-        .or_else(|| (tools.len() == 1).then_some(&tools[0]))
+        .any(|token| token.contains('.') || token.contains('/'))
+    {
+        push_lexical_term(&mut terms, "file".to_owned());
+        push_lexical_term(&mut terms, "path".to_owned());
+    }
+    terms
+}
+
+fn score_tool_match(user_terms: &[String], tool: &ToolDefinition) -> usize {
+    let name_score = lexical_terms(&tool.function.name)
+        .iter()
+        .filter(|term| contains_term(user_terms, term))
+        .count()
+        * 3;
+    let description_score = tool
+        .function
+        .description
+        .as_deref()
+        .map(lexical_terms)
+        .unwrap_or_default()
+        .iter()
+        .filter(|term| contains_term(user_terms, term))
+        .count();
+    let parameter_score = parameter_terms(&tool.function.parameters)
+        .iter()
+        .filter(|term| contains_term(user_terms, term))
+        .count()
+        * 2;
+    name_score + description_score + parameter_score
+}
+
+fn contains_term(terms: &[String], needle: &str) -> bool {
+    terms.iter().any(|term| term == needle)
+}
+
+fn parameter_terms(parameters: &serde_json::Value) -> Vec<String> {
+    let mut terms = Vec::new();
+    for name in required_parameter_names(parameters) {
+        terms.extend(lexical_terms(&name));
+    }
+    if let Some(properties) = parameters
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for name in properties.keys() {
+            terms.extend(lexical_terms(name));
+        }
+    }
+    terms
+}
+
+fn lexical_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            push_lexical_term(&mut terms, std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        push_lexical_term(&mut terms, current);
+    }
+    terms
+}
+
+fn push_lexical_term(terms: &mut Vec<String>, term: String) {
+    if term.len() > 1 && !is_lexical_stop_word(&term) && !terms.contains(&term) {
+        terms.push(term);
+    }
+}
+
+fn is_lexical_stop_word(term: &str) -> bool {
+    matches!(
+        term,
+        "a" | "an"
+            | "and"
+            | "answer"
+            | "after"
+            | "before"
+            | "by"
+            | "for"
+            | "from"
+            | "in"
+            | "of"
+            | "on"
+            | "or"
+            | "please"
+            | "the"
+            | "to"
+            | "use"
+            | "using"
+            | "with"
+    )
 }
 
 fn deterministic_tool_arguments(prompt: &str, tool: &ToolDefinition) -> serde_json::Value {
