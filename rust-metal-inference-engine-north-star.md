@@ -147,6 +147,7 @@ Current commits:
 - `1822a58` - Backend cancellation support is an explicit trait requirement.
 - `6a898ad` - Hub repo IDs are validated as safe two-component paths, and Hub request paths encode revisions.
 - `5fb7d9e` - Native Qwen serving routes prefill, decode, MoE dense projections, and lm-head matvecs through a Metal-capable executor.
+- `ff60424` - Native Qwen decode-session startup checks cancellation before and between prefill layers.
 
 Current verified state:
 
