@@ -75,6 +75,7 @@ Current commits:
 - `17e3fd8` - Added aggregate inference metrics and `GET /admin/metrics` for request counts, stream counts, failures, and token totals.
 - `5d4b371` - Malformed JSON request bodies now return stable request-validation error envelopes for chat and text completion routes.
 - `bbb4da1` - Chat and text completions now fail closed for unsupported nonzero presence/frequency penalties while accepting neutral zero values.
+- `eee90ab` - Chat and text completions now fail closed for unsupported log probability controls instead of ignoring them.
 
 Current verified state:
 
@@ -114,6 +115,7 @@ Current verified state:
 - `GET /admin/metrics` exposes aggregate Rust inference metrics for total, successful, failed, and streamed requests plus prompt/completion/total token counters. Chat and text completion handlers record metrics from runtime usage.
 - Malformed JSON bodies on `/v1/chat/completions` and `/v1/completions` now map through the same stable HTTP error envelope as other request-validation failures, including `error.code`, `error.phase`, and `error.retryable`.
 - Chat and text completions now accept neutral `presence_penalty: 0` and `frequency_penalty: 0`, and reject unsupported nonzero or non-finite penalty values as `unsupported_capability` instead of ignoring them.
+- Chat accepts `logprobs: false` as a no-op and rejects enabled `logprobs`/`top_logprobs`; legacy text completions reject requested `logprobs` until log probability output is implemented.
 
 Known incomplete items:
 
