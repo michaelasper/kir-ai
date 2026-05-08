@@ -45,6 +45,7 @@ async fn runtime_returns_text_completion() {
             top_p: None,
             presence_penalty: None,
             frequency_penalty: None,
+            logprobs: None,
             n: None,
         })
         .await
@@ -72,6 +73,7 @@ async fn runtime_returns_streaming_text_completion_chunks() {
             top_p: None,
             presence_penalty: None,
             frequency_penalty: None,
+            logprobs: None,
             n: None,
         })
         .await

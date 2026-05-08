@@ -232,6 +232,10 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
@@ -267,6 +271,8 @@ pub struct CompletionRequest {
     pub presence_penalty: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,6 +439,16 @@ impl ValidateRequest for ChatCompletionRequest {
         }
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
         validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
+        if matches!(self.logprobs, Some(true)) {
+            return Err(ApiError::unsupported_capability(
+                "logprobs are not supported yet; use logprobs false",
+            ));
+        }
+        if self.top_logprobs.is_some() {
+            return Err(ApiError::unsupported_capability(
+                "top_logprobs are not supported yet",
+            ));
+        }
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
                 "max_tokens must be greater than 0",
@@ -485,6 +501,11 @@ impl ValidateRequest for CompletionRequest {
         }
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
         validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
+        if self.logprobs.is_some() {
+            return Err(ApiError::unsupported_capability(
+                "completion logprobs are not supported yet",
+            ));
+        }
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
                 "max_tokens must be greater than 0",

@@ -149,6 +149,45 @@ fn accepts_neutral_chat_penalty_controls() {
 }
 
 #[test]
+fn rejects_unsupported_chat_logprob_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        logprobs: Some(true),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("logprobs are not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        top_logprobs: Some(1),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("top_logprobs are not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn accepts_disabled_chat_logprobs() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        logprobs: Some(false),
+        ..ChatCompletionRequest::default()
+    };
+
+    request.validate().expect("disabled logprobs are a no-op");
+}
+
+#[test]
 fn completion_rejects_unsupported_non_greedy_sampling_controls() {
     let request = CompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -212,6 +251,21 @@ fn completion_rejects_unsupported_penalty_controls() {
     let err = request
         .validate()
         .expect_err("frequency penalty is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn completion_rejects_unsupported_logprobs() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        logprobs: Some(0),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("completion logprobs are not implemented");
     assert_eq!(err.code(), "unsupported_capability");
 }
 
