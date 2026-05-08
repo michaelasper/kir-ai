@@ -312,6 +312,15 @@ struct NativeQwenMetalState {
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
 }
 
+type NativeQwenMetalStateRegistry =
+    Mutex<HashMap<NativeQwenMetalStateKey, Arc<NativeQwenMetalState>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeQwenMetalStateKey {
+    cache_namespace: String,
+    weight_cache_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Bf16MatrixCacheKey {
     tensor: String,
@@ -749,13 +758,46 @@ fn native_qwen_metal_metrics() -> &'static MetalBackendMetrics {
     METRICS.get_or_init(MetalBackendMetrics::default)
 }
 
+fn native_qwen_metal_state_registry() -> &'static NativeQwenMetalStateRegistry {
+    static REGISTRY: OnceLock<NativeQwenMetalStateRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn native_qwen_shared_metal_state(
+    weight_cache_bytes: u64,
+    cache_namespace: &str,
+) -> Result<Option<Arc<NativeQwenMetalState>>, llm_metal::MetalError> {
+    let key = NativeQwenMetalStateKey {
+        cache_namespace: cache_namespace.to_owned(),
+        weight_cache_bytes,
+    };
+    let registry = native_qwen_metal_state_registry();
+    if let Some(state) = registry
+        .lock()
+        .expect("native Qwen Metal state registry lock is not poisoned")
+        .get(&key)
+        .cloned()
+    {
+        return Ok(Some(state));
+    }
+    let Some(device) = llm_metal::MetalDevice::system_default_result()? else {
+        return Ok(None);
+    };
+    let mut states = registry
+        .lock()
+        .expect("native Qwen Metal state registry lock is not poisoned");
+    if let Some(state) = states.get(&key).cloned() {
+        return Ok(Some(state));
+    }
+    let state = Arc::new(NativeQwenMetalState::new(device, weight_cache_bytes));
+    states.insert(key, Arc::clone(&state));
+    Ok(Some(state))
+}
+
 impl NativeQwenMatvecBackend {
-    fn system_default(weight_cache_bytes: u64) -> Self {
-        match llm_metal::MetalDevice::system_default_result() {
-            Ok(Some(device)) => Self::Metal(Arc::new(NativeQwenMetalState::new(
-                device,
-                weight_cache_bytes,
-            ))),
+    fn system_default(weight_cache_bytes: u64, cache_namespace: &str) -> Self {
+        match native_qwen_shared_metal_state(weight_cache_bytes, cache_namespace) {
+            Ok(Some(state)) => Self::Metal(state),
             Ok(None) => Self::Cpu,
             Err(err) => {
                 tracing::warn!("Metal Qwen matvec backend unavailable: {err}");
@@ -1458,6 +1500,7 @@ impl NativeQwenBackend {
     ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
+        let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
         let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
@@ -1468,9 +1511,10 @@ impl NativeQwenBackend {
                 "materialized native Qwen safetensors shards"
             );
         }
-        let matvec = NativeQwenMatvecBackend::system_default(native_qwen_metal_weight_cache_bytes(
-            options.metal_weight_cache_bytes,
-        ));
+        let matvec = NativeQwenMatvecBackend::system_default(
+            native_qwen_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
+            &cache_namespace,
+        );
         if options.warm_metal_weight_cache {
             let warmup = matvec.warm_bf16_matrix_cache(&store).map_err(|err| {
                 anyhow::anyhow!("native Qwen Metal weight cache warm-up failed: {err}")
@@ -3332,6 +3376,32 @@ mod tests {
             }
         );
         std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_system_default_reuses_shared_metal_state_for_same_model_budget() {
+        let first = NativeQwenMatvecBackend::system_default(1_234_567, "test-shared-model");
+        let second = NativeQwenMatvecBackend::system_default(1_234_567, "test-shared-model");
+        let other_model = NativeQwenMatvecBackend::system_default(1_234_567, "test-other-model");
+
+        match (&first, &second, &other_model) {
+            (
+                NativeQwenMatvecBackend::Metal(first),
+                NativeQwenMatvecBackend::Metal(second),
+                NativeQwenMatvecBackend::Metal(other_model),
+            ) => {
+                assert!(Arc::ptr_eq(first, second));
+                assert!(!Arc::ptr_eq(first, other_model));
+            }
+            (
+                NativeQwenMatvecBackend::Cpu,
+                NativeQwenMatvecBackend::Cpu,
+                NativeQwenMatvecBackend::Cpu,
+            ) => {
+                eprintln!("no Metal device available; skipping shared state test");
+            }
+            _ => panic!("Metal backend availability changed between calls"),
+        }
     }
 
     #[test]
