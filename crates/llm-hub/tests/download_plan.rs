@@ -1,4 +1,8 @@
-use llm_hub::{ArtifactClass, HubFile, HubRepoId, ModelProfile, build_download_plan};
+use llm_hub::{
+    ArtifactClass, HubFile, HubModelInfo, HubRepoId, ModelProfile, SnapshotManifest,
+    build_download_plan,
+};
+use serde_json::json;
 
 #[test]
 fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
@@ -41,4 +45,44 @@ fn plan_rejects_mutable_revision_without_resolved_commit() {
     .expect_err("mutable commit identity must fail closed");
 
     assert_eq!(err.code(), "model_revision_unresolved");
+}
+
+#[test]
+fn parses_hugging_face_model_info_with_lfs_sizes() {
+    let info = HubModelInfo::from_api_json(json!({
+        "id": "Qwen/Qwen3.6-35B-A3B",
+        "sha": "53c43178507d69762986fbfa314f6e8d4d859409",
+        "siblings": [
+            {"rfilename": "config.json", "size": 3690},
+            {"rfilename": "model-00001-of-00026.safetensors", "lfs": {"size": 4_294_967_296_u64, "oid": "abc"}}
+        ]
+    }))
+    .expect("hf model info parses");
+
+    assert_eq!(
+        info.resolved_commit,
+        "53c43178507d69762986fbfa314f6e8d4d859409"
+    );
+    assert_eq!(info.files[0].path, "config.json");
+    assert_eq!(info.files[1].size, 4_294_967_296);
+    assert_eq!(info.files[1].etag.as_deref(), Some("abc"));
+}
+
+#[test]
+fn manifest_digest_changes_with_artifact_identity() {
+    let plan = build_download_plan(
+        HubRepoId::model("mlx-community/Qwen3.6-35B-A3B-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        vec![HubFile::new("config.json", 100, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+
+    let manifest = SnapshotManifest::from_plan(&plan, "/models/qwen/snapshots/0123");
+    assert_eq!(manifest.source, "huggingface");
+    assert_eq!(manifest.family, "qwen");
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.digest().len(), 64);
 }

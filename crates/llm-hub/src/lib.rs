@@ -1,5 +1,9 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubRepoId {
@@ -37,6 +41,147 @@ pub struct HubFile {
     pub etag: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubModelInfo {
+    pub repo_id: String,
+    pub resolved_commit: String,
+    pub files: Vec<HubFile>,
+}
+
+impl HubModelInfo {
+    pub fn from_api_json(value: Value) -> Result<Self, HubError> {
+        let repo_id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HubError::invalid_response("Hugging Face model info missing id"))?
+            .to_owned();
+        let resolved_commit = value
+            .get("sha")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HubError::invalid_response("Hugging Face model info missing sha"))?
+            .to_owned();
+        if !is_commit_hash(&resolved_commit) {
+            return Err(HubError::model_revision_unresolved(
+                "Hugging Face model info sha was not an immutable commit",
+            ));
+        }
+        let siblings = value
+            .get("siblings")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                HubError::invalid_response("Hugging Face model info missing siblings")
+            })?;
+        let mut files = Vec::with_capacity(siblings.len());
+        for sibling in siblings {
+            let path = sibling
+                .get("rfilename")
+                .or_else(|| sibling.get("path"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    HubError::invalid_response("Hugging Face sibling missing rfilename")
+                })?;
+            let lfs = sibling.get("lfs");
+            let size = sibling
+                .get("size")
+                .and_then(Value::as_u64)
+                .or_else(|| lfs.and_then(|lfs| lfs.get("size")).and_then(Value::as_u64))
+                .unwrap_or(0);
+            let etag = sibling
+                .get("blobId")
+                .or_else(|| sibling.get("blob_id"))
+                .or_else(|| lfs.and_then(|lfs| lfs.get("oid")))
+                .and_then(Value::as_str);
+            files.push(HubFile::new(path, size, etag));
+        }
+        Ok(Self {
+            repo_id,
+            resolved_commit,
+            files,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HubClient {
+    endpoint: Url,
+    client: reqwest::Client,
+}
+
+impl Default for HubClient {
+    fn default() -> Self {
+        Self {
+            endpoint: Url::parse("https://huggingface.co").expect("static Hugging Face URL"),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+impl HubClient {
+    pub fn new(endpoint: Url) -> Self {
+        Self {
+            endpoint,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn model_info(
+        &self,
+        repo_id: &HubRepoId,
+        revision: &str,
+        token: Option<&str>,
+    ) -> Result<HubModelInfo, HubError> {
+        let mut url = self.endpoint.clone();
+        url.set_path(&format!(
+            "/api/models/{}/revision/{}",
+            repo_id.as_str(),
+            revision
+        ));
+        let mut request = self
+            .client
+            .get(url)
+            .query(&[("blobs", "true"), ("securityStatus", "true")]);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(HubError::network)?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(HubError::auth_failed("Hugging Face authentication failed"));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(HubError::model_not_found(format!(
+                "model repo `{}` revision `{revision}` was not found",
+                repo_id.as_str()
+            )));
+        }
+        if !status.is_success() {
+            return Err(HubError::network(format!(
+                "Hugging Face API returned HTTP {status}"
+            )));
+        }
+        let value = response.json::<Value>().await.map_err(HubError::network)?;
+        HubModelInfo::from_api_json(value)
+    }
+
+    pub async fn plan_model(
+        &self,
+        repo_id: HubRepoId,
+        revision: &str,
+        profile: ModelProfile,
+        token: Option<&str>,
+    ) -> Result<DownloadPlan, HubError> {
+        let info = self.model_info(&repo_id, revision, token).await?;
+        build_download_plan(
+            repo_id,
+            revision,
+            info.resolved_commit,
+            profile,
+            info.files,
+            &[],
+        )
+    }
+}
+
 impl HubFile {
     pub fn new(path: impl Into<String>, size: u64, etag: Option<&str>) -> Self {
         Self {
@@ -66,7 +211,11 @@ impl ModelProfile {
             quantization: "4bit".to_owned(),
             allow_patterns: vec![
                 "*.json".to_owned(),
+                "*.jinja".to_owned(),
+                "*.txt".to_owned(),
                 "tokenizer*".to_owned(),
+                "README.md".to_owned(),
+                "LICENSE*".to_owned(),
                 "*.safetensors".to_owned(),
                 "*.safetensors.index.json".to_owned(),
             ],
@@ -110,6 +259,69 @@ pub struct DownloadPlan {
     pub skipped_files: Vec<String>,
     pub total_bytes_to_download: u64,
     pub total_final_disk_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotManifest {
+    pub schema_version: u32,
+    pub source: String,
+    pub repo_type: RepoType,
+    pub repo_id: String,
+    pub requested_revision: String,
+    pub resolved_commit: String,
+    pub profile: String,
+    pub family: String,
+    pub loader: String,
+    pub quantization: String,
+    pub created_at: DateTime<Utc>,
+    pub snapshot_path: String,
+    pub files: Vec<ManifestFile>,
+    pub allow_patterns: Vec<String>,
+    pub ignore_patterns: Vec<String>,
+}
+
+impl SnapshotManifest {
+    pub fn from_plan(plan: &DownloadPlan, snapshot_path: impl Into<String>) -> Self {
+        Self {
+            schema_version: 1,
+            source: "huggingface".to_owned(),
+            repo_type: RepoType::Model,
+            repo_id: plan.repo_id.as_str().to_owned(),
+            requested_revision: plan.requested_revision.clone(),
+            resolved_commit: plan.resolved_commit.clone(),
+            profile: plan.profile.name.clone(),
+            family: plan.profile.family.clone(),
+            loader: plan.profile.loader.clone(),
+            quantization: plan.profile.quantization.clone(),
+            created_at: Utc::now(),
+            snapshot_path: snapshot_path.into(),
+            files: plan
+                .files_to_download
+                .iter()
+                .map(|file| ManifestFile {
+                    path: file.path.clone(),
+                    size: file.size,
+                    etag: file.etag.clone(),
+                    class: file.class,
+                })
+                .collect(),
+            allow_patterns: plan.profile.allow_patterns.clone(),
+            ignore_patterns: plan.profile.ignore_patterns.clone(),
+        }
+    }
+
+    pub fn digest(&self) -> String {
+        let bytes = serde_json::to_vec(self).expect("snapshot manifest serializes");
+        hex::encode(Sha256::digest(bytes))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestFile {
+    pub path: String,
+    pub size: u64,
+    pub etag: Option<String>,
+    pub class: ArtifactClass,
 }
 
 pub fn build_download_plan(
@@ -189,6 +401,34 @@ impl HubError {
         }
     }
 
+    fn invalid_response(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_integrity_failed",
+            message: message.into(),
+        }
+    }
+
+    fn auth_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_auth_failed",
+            message: message.into(),
+        }
+    }
+
+    fn model_not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_not_found",
+            message: message.into(),
+        }
+    }
+
+    fn network(message: impl ToString) -> Self {
+        Self {
+            code: "model_download_interrupted",
+            message: message.to_string(),
+        }
+    }
+
     fn model_revision_unresolved(message: impl Into<String>) -> Self {
         Self {
             code: "model_revision_unresolved",
@@ -226,6 +466,9 @@ fn classify_artifact(path: &str) -> ArtifactClass {
         "tokenizer.json" | "tokenizer_config.json" => ArtifactClass::Tokenizer,
         "README.md" | "LICENSE" | "LICENSE.txt" => ArtifactClass::License,
         _ if path.starts_with("tokenizer") => ArtifactClass::Tokenizer,
+        _ if path.ends_with(".jinja") || path == "merges.txt" || path == "vocab.json" => {
+            ArtifactClass::Tokenizer
+        }
         _ if path.ends_with(".safetensors") || path.ends_with(".gguf") => ArtifactClass::Weights,
         _ if path.contains("quant") => ArtifactClass::Quantization,
         _ => ArtifactClass::Other,
