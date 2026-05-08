@@ -1152,6 +1152,7 @@ name = "llm-tokenizer"
 version = "0.1.0"
 dependencies = [
  "llm-api",
+ "llm-models",
  "serde",
  "serde_json",
  "thiserror",
@@ -1163,6 +1164,7 @@ name = "llm-tool-parser"
 version = "0.1.0"
 dependencies = [
  "llm-api",
+ "llm-models",
  "serde",
  "serde_json",
  "thiserror",

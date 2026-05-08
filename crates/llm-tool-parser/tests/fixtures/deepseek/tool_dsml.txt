@@ -1,0 +1,1 @@
+<dsml_tool_call>{"name":"read_file","arguments":{"path":"Cargo.toml"}}</dsml_tool_call>

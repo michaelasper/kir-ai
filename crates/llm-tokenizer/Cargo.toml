@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 llm-api = { path = "../llm-api" }
+llm-models = { path = "../llm-models" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

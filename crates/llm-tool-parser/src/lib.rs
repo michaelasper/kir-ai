@@ -1,4 +1,5 @@
 use llm_api::{ToolCall, ToolCallFunction, ToolCallType};
+use llm_models::ModelFamily;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -69,6 +70,24 @@ impl ParserError {
             code: "malformed_tool_call",
             message: message.into(),
         }
+    }
+
+    fn unsupported_family(family: &'static str) -> Self {
+        Self {
+            code: "unsupported_parser_family",
+            message: format!("{family} parser support is deferred until Qwen production parity"),
+        }
+    }
+}
+
+pub fn parse_assistant_for_family(
+    family: ModelFamily,
+    text: &str,
+) -> Result<ParsedAssistant, ParserError> {
+    match family {
+        ModelFamily::Qwen => QwenParser.parse_complete(text),
+        ModelFamily::DeepSeek => Err(ParserError::unsupported_family("DeepSeek")),
+        ModelFamily::Gemma => Err(ParserError::unsupported_family("Gemma")),
     }
 }
 

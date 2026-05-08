@@ -145,6 +145,11 @@ Qwen support currently validates:
 - linear/full attention layer types
 - safetensors index tensor names expected by the text loader
 
+Deferred families should still have explicit adapters and fail-closed template
+and parser selectors. Add golden fixtures under `crates/llm-tokenizer/tests`
+and `crates/llm-tool-parser/tests/fixtures` before advertising backend
+execution for a new family.
+
 Add fixture-driven tests under `crates/llm-models/tests` before broadening model
 families or layer formats.
 

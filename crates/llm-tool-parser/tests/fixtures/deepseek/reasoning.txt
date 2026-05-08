@@ -1,0 +1,1 @@
+<think>Need inspect.</think>Use read_file.

@@ -1,4 +1,5 @@
 use llm_api::{ChatMessage, ChatRole, ToolDefinition};
+use llm_models::ModelFamily;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokenizers::Tokenizer;
@@ -17,6 +18,19 @@ pub enum TemplateError {
     ReservedControlToken(&'static str),
     #[error("message role `{0}` cannot be rendered in qwen chatml")]
     UnsupportedRole(String),
+    #[error("{0} chat template support is deferred until Qwen production parity")]
+    UnsupportedFamily(&'static str),
+}
+
+impl TemplateError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ToolSerialization(_) => "tool_serialization_failed",
+            Self::ReservedControlToken(_) => "reserved_prompt_control_token",
+            Self::UnsupportedRole(_) => "unsupported_role",
+            Self::UnsupportedFamily(_) => "unsupported_template_family",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -96,6 +110,25 @@ pub fn render_qwen_chatml(
     }
 
     Ok(out)
+}
+
+pub fn render_family_chat_template(
+    family: ModelFamily,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+) -> Result<String, TemplateError> {
+    match family {
+        ModelFamily::Qwen => render_qwen_chatml(
+            messages,
+            tools,
+            &QwenPromptOptions {
+                enable_thinking: false,
+                add_generation_prompt: true,
+            },
+        ),
+        ModelFamily::DeepSeek => Err(TemplateError::UnsupportedFamily("DeepSeek")),
+        ModelFamily::Gemma => Err(TemplateError::UnsupportedFamily("Gemma")),
+    }
 }
 
 fn render_plain(out: &mut String, role: &str, message: &ChatMessage) -> Result<(), TemplateError> {

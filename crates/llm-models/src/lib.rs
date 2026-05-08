@@ -17,11 +17,30 @@ pub enum BackendKind {
     Mlx,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionStage {
+    Production,
+    DeferredUntilQwenParity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FamilyCapabilityFlags {
+    pub text: bool,
+    pub reasoning: bool,
+    pub tool_calls: bool,
+    pub dsml_tools: bool,
+    pub raw_completion: bool,
+    pub backend_execution: bool,
+}
+
 pub trait ModelFamilyAdapter: Send + Sync {
     fn family(&self) -> ModelFamily;
     fn production_backends(&self) -> &'static [BackendKind];
     fn cache_template_id(&self) -> &'static str;
     fn tensor_namespace(&self) -> &'static str;
+    fn capabilities(&self) -> FamilyCapabilityFlags;
+    fn promotion_stage(&self) -> PromotionStage;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -42,6 +61,57 @@ impl ModelFamilyAdapter for QwenFamilyAdapter {
 
     fn tensor_namespace(&self) -> &'static str {
         "qwen3_5_moe"
+    }
+
+    fn capabilities(&self) -> FamilyCapabilityFlags {
+        FamilyCapabilityFlags {
+            text: true,
+            reasoning: true,
+            tool_calls: true,
+            dsml_tools: false,
+            raw_completion: true,
+            backend_execution: true,
+        }
+    }
+
+    fn promotion_stage(&self) -> PromotionStage {
+        PromotionStage::Production
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeepSeekFamilyAdapter;
+
+impl ModelFamilyAdapter for DeepSeekFamilyAdapter {
+    fn family(&self) -> ModelFamily {
+        ModelFamily::DeepSeek
+    }
+
+    fn production_backends(&self) -> &'static [BackendKind] {
+        &[BackendKind::Mlx]
+    }
+
+    fn cache_template_id(&self) -> &'static str {
+        "chatml/deepseek/v1"
+    }
+
+    fn tensor_namespace(&self) -> &'static str {
+        "deepseek_v4"
+    }
+
+    fn capabilities(&self) -> FamilyCapabilityFlags {
+        FamilyCapabilityFlags {
+            text: true,
+            reasoning: true,
+            tool_calls: true,
+            dsml_tools: true,
+            raw_completion: true,
+            backend_execution: false,
+        }
+    }
+
+    fn promotion_stage(&self) -> PromotionStage {
+        PromotionStage::DeferredUntilQwenParity
     }
 }
 

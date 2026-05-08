@@ -54,9 +54,9 @@ responses.
 | `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and native backend construction. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, and native Qwen uses `--snapshot`. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
 | `llm-backend` | Backend trait, deterministic backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
-| `llm-tokenizer` | Hugging Face tokenizer wrapper and simplified Qwen ChatML renderer. | Supports Qwen text chat and tools. Does not execute arbitrary downloaded chat templates. |
-| `llm-tool-parser` | Qwen assistant output parser. | Supports reasoning tags and JSON/XML tool-call forms. |
-| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports Qwen3.5/Qwen3.6 MoE text config and declares Qwen production backends as native Metal plus MLX. |
+| `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen text chat and tools. DeepSeek template selection is explicit and fails closed until Qwen production parity. |
+| `llm-tool-parser` | Family assistant output parser selection. | Supports Qwen reasoning tags and JSON/XML tool-call forms. DeepSeek fixtures exist for text, reasoning, DSML tools, and raw completions, but parser execution fails closed until Qwen production parity. |
+| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports Qwen3.5/Qwen3.6 MoE text config, declares Qwen production backends as native Metal plus MLX, and declares DeepSeek as a deferred first-class family. |
 | `llm-hub` | Hugging Face planning, download, snapshot promotion, and verification. | Requires immutable resolved commits, validates paths, supports resumable downloads, and writes engine manifests. |
 | `llm-metal` | Metal device and kernel experiments. | Smoke-tested vector add only. Not wired into Qwen inference yet. |
 | `llm-sampler` | Greedy argmax sampler. | Standalone and tested. Native backend currently chooses from LM-head top-k directly. |
