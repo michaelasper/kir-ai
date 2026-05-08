@@ -483,10 +483,21 @@ pub fn qwen_layer0_linear_attention_first_token(
     spec: &QwenModelSpec,
     projections: &QwenLinearAttentionProjectionProbe,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_linear_attention_first_token(store, spec, 0, projections)
+}
+
+pub fn qwen_layer_linear_attention_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    projections: &QwenLinearAttentionProjectionProbe,
+) -> Result<Vec<f32>, TensorLoadError> {
     let dims = QwenLinearAttentionDims::from_spec(spec);
-    let conv1d_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_CONV1D_WEIGHT)?;
-    let norm_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_NORM_WEIGHT)?;
-    let out_proj_weight = store.bf16_tensor_f32(QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT)?;
+    let conv1d_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "conv1d.weight"))?;
+    let norm_weight = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "norm.weight"))?;
+    let out_proj_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "out_proj.weight"))?;
     qwen_linear_attention_first_token_from_parts(
         &dims,
         &projections.qkv,
@@ -505,12 +516,31 @@ pub fn qwen_layer0_linear_attention_projections(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
 ) -> Result<QwenLinearAttentionProjectionProbe, TensorLoadError> {
+    qwen_layer_linear_attention_projections(store, 0, hidden_states)
+}
+
+pub fn qwen_layer_linear_attention_projections(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    hidden_states: &[f32],
+) -> Result<QwenLinearAttentionProjectionProbe, TensorLoadError> {
     Ok(QwenLinearAttentionProjectionProbe {
-        qkv: store
-            .bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_QKV_WEIGHT, hidden_states)?,
-        z: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT, hidden_states)?,
-        b: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT, hidden_states)?,
-        a: store.bf16_matvec_row_major_f32(QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT, hidden_states)?,
+        qkv: store.bf16_matvec_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_qkv.weight"),
+            hidden_states,
+        )?,
+        z: store.bf16_matvec_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_z.weight"),
+            hidden_states,
+        )?,
+        b: store.bf16_matvec_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_b.weight"),
+            hidden_states,
+        )?,
+        a: store.bf16_matvec_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_a.weight"),
+            hidden_states,
+        )?,
     })
 }
 
@@ -519,7 +549,17 @@ pub fn qwen_layer0_moe_router(
     hidden_states: &[f32],
     top_k: usize,
 ) -> Result<QwenMoeRouterProbe, TensorLoadError> {
-    let logits = store.bf16_matvec_row_major_f32(QWEN_LAYER0_MLP_GATE_WEIGHT, hidden_states)?;
+    qwen_layer_moe_router(store, 0, hidden_states, top_k)
+}
+
+pub fn qwen_layer_moe_router(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    top_k: usize,
+) -> Result<QwenMoeRouterProbe, TensorLoadError> {
+    let logits = store
+        .bf16_matvec_row_major_f32(&qwen_mlp_tensor(layer_idx, "gate.weight"), hidden_states)?;
     let selected = softmax_top_k_f32(&logits, top_k)
         .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
     Ok(QwenMoeRouterProbe { logits, selected })
@@ -527,6 +567,24 @@ pub fn qwen_layer0_moe_router(
 
 pub fn qwen_layer0_post_attention_norm(
     store: &SafeTensorShardStore,
+    residual: &[f32],
+    attention_output: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_post_attention_norm(
+        store,
+        0,
+        residual,
+        attention_output,
+        hidden_size,
+        rms_norm_eps,
+    )
+}
+
+pub fn qwen_layer_post_attention_norm(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
     residual: &[f32],
     attention_output: &[f32],
     hidden_size: usize,
@@ -544,8 +602,11 @@ pub fn qwen_layer0_post_attention_norm(
         .zip(attention_output)
         .map(|(residual, attention)| residual + attention)
         .collect::<Vec<_>>();
-    let norm_weight =
-        store.bf16_tensor_f32_range(QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT, 0, hidden_size)?;
+    let norm_weight = store.bf16_tensor_f32_range(
+        &qwen_layer_tensor(layer_idx, "post_attention_layernorm.weight"),
+        0,
+        hidden_size,
+    )?;
     qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 post-attention RMSNorm failed: {err}"))
     })
@@ -553,6 +614,16 @@ pub fn qwen_layer0_post_attention_norm(
 
 pub fn qwen_layer0_moe_forward(
     store: &SafeTensorShardStore,
+    dims: &QwenMoeDims,
+    hidden_states: &[f32],
+    router: &QwenMoeRouterProbe,
+) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_moe_forward(store, 0, dims, hidden_states, router)
+}
+
+pub fn qwen_layer_moe_forward(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
     dims: &QwenMoeDims,
     hidden_states: &[f32],
     router: &QwenMoeRouterProbe,
@@ -582,7 +653,7 @@ pub fn qwen_layer0_moe_forward(
             )));
         }
         let gate_up = store.bf16_tensor_f32_range(
-            QWEN_LAYER0_MLP_EXPERTS_GATE_UP_PROJ,
+            &qwen_mlp_tensor(layer_idx, "experts.gate_up_proj"),
             selected.index * gate_up_expert_elements,
             gate_up_expert_elements,
         )?;
@@ -591,7 +662,7 @@ pub fn qwen_layer0_moe_forward(
             .checked_mul(dims.hidden_size)
             .ok_or_else(|| TensorLoadError::integrity("Qwen expert split shape overflow"))?;
         let down = store.bf16_tensor_f32_range(
-            QWEN_LAYER0_MLP_EXPERTS_DOWN_PROJ,
+            &qwen_mlp_tensor(layer_idx, "experts.down_proj"),
             selected.index * down_expert_elements,
             down_expert_elements,
         )?;
@@ -610,9 +681,16 @@ pub fn qwen_layer0_moe_forward(
         }
     }
 
-    let shared_gate = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_GATE_PROJ_WEIGHT)?;
-    let shared_up = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_UP_PROJ_WEIGHT)?;
-    let shared_down = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT)?;
+    let shared_gate = store.bf16_tensor_f32(&qwen_mlp_tensor(
+        layer_idx,
+        "shared_expert.gate_proj.weight",
+    ))?;
+    let shared_up =
+        store.bf16_tensor_f32(&qwen_mlp_tensor(layer_idx, "shared_expert.up_proj.weight"))?;
+    let shared_down = store.bf16_tensor_f32(&qwen_mlp_tensor(
+        layer_idx,
+        "shared_expert.down_proj.weight",
+    ))?;
     let shared_output = swiglu_mlp_f32(
         hidden_states,
         &shared_gate,
@@ -621,7 +699,8 @@ pub fn qwen_layer0_moe_forward(
         dims.shared_expert_intermediate_size,
     )
     .map_err(|err| TensorLoadError::integrity(format!("Qwen shared expert MLP failed: {err}")))?;
-    let shared_expert_gate = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT)?;
+    let shared_expert_gate =
+        store.bf16_tensor_f32(&qwen_mlp_tensor(layer_idx, "shared_expert_gate.weight"))?;
     let shared_gate = matvec_row_major_f32(hidden_states, &shared_expert_gate, 1, dims.hidden_size)
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
@@ -634,6 +713,18 @@ pub fn qwen_layer0_moe_forward(
         *output += shared_gate * shared;
     }
     Ok(output)
+}
+
+fn qwen_layer_tensor(layer_idx: usize, suffix: &str) -> String {
+    format!("model.language_model.layers.{layer_idx}.{suffix}")
+}
+
+fn qwen_linear_attn_tensor(layer_idx: usize, suffix: &str) -> String {
+    qwen_layer_tensor(layer_idx, &format!("linear_attn.{suffix}"))
+}
+
+fn qwen_mlp_tensor(layer_idx: usize, suffix: &str) -> String {
+    qwen_layer_tensor(layer_idx, &format!("mlp.{suffix}"))
 }
 
 pub fn qwen_final_norm(
