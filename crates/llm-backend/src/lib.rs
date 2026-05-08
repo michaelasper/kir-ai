@@ -311,6 +311,37 @@ pub struct QwenMoeDims {
     pub shared_expert_intermediate_size: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QwenFullAttentionDims {
+    pub hidden_size: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub head_dim: usize,
+}
+
+impl QwenFullAttentionDims {
+    pub fn from_spec(spec: &QwenModelSpec) -> Self {
+        Self {
+            hidden_size: spec.hidden_size as usize,
+            num_attention_heads: spec.num_attention_heads as usize,
+            num_key_value_heads: spec.num_key_value_heads as usize,
+            head_dim: spec.head_dim as usize,
+        }
+    }
+
+    fn attention_dim(&self) -> Result<usize, MathError> {
+        self.num_attention_heads
+            .checked_mul(self.head_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen attention dimension overflow".to_owned()))
+    }
+
+    fn key_value_dim(&self) -> Result<usize, MathError> {
+        self.num_key_value_heads
+            .checked_mul(self.head_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen KV dimension overflow".to_owned()))
+    }
+}
+
 impl QwenMoeDims {
     pub fn from_spec(spec: &QwenModelSpec) -> Self {
         Self {
@@ -501,6 +532,58 @@ pub fn qwen_linear_attention_first_token_from_parts(
     matvec_row_major_f32(&gated, out_proj_weight, dims.hidden_size, value_dim)
 }
 
+pub fn qwen_full_attention_first_token_from_parts(
+    dims: &QwenFullAttentionDims,
+    q_proj: &[f32],
+    v_proj: &[f32],
+    o_proj_weight: &[f32],
+) -> Result<Vec<f32>, MathError> {
+    if dims.num_attention_heads == 0
+        || dims.num_key_value_heads == 0
+        || dims.head_dim == 0
+        || dims.hidden_size == 0
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen full attention dimensions must be non-zero".to_owned(),
+        ));
+    }
+    if !dims
+        .num_attention_heads
+        .is_multiple_of(dims.num_key_value_heads)
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen attention heads must be divisible by key/value heads".to_owned(),
+        ));
+    }
+    let attention_dim = dims.attention_dim()?;
+    let key_value_dim = dims.key_value_dim()?;
+    require_len("q projection", q_proj.len(), attention_dim * 2)?;
+    require_len("v projection", v_proj.len(), key_value_dim)?;
+    require_len(
+        "o projection weight",
+        o_proj_weight.len(),
+        dims.hidden_size
+            .checked_mul(attention_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen o projection overflow".to_owned()))?,
+    )?;
+
+    let groups = dims.num_attention_heads / dims.num_key_value_heads;
+    let mut gated = vec![0.0; attention_dim];
+    for head in 0..dims.num_attention_heads {
+        let q_proj_head_start = head * dims.head_dim * 2;
+        let gate_start = q_proj_head_start + dims.head_dim;
+        let kv_head = head / groups;
+        let value_start = kv_head * dims.head_dim;
+        let output_start = head * dims.head_dim;
+        for offset in 0..dims.head_dim {
+            gated[output_start + offset] =
+                v_proj[value_start + offset] * sigmoid_f32(q_proj[gate_start + offset]);
+        }
+    }
+
+    matvec_row_major_f32(&gated, o_proj_weight, dims.hidden_size, attention_dim)
+}
+
 pub fn qwen_layer0_linear_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
@@ -533,6 +616,32 @@ pub fn qwen_layer_linear_attention_first_token(
     .map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 linear attention failed: {err}"))
     })
+}
+
+pub fn qwen_layer_full_attention_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+) -> Result<Vec<f32>, TensorLoadError> {
+    let dims = QwenFullAttentionDims::from_spec(spec);
+    let q_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "q_proj.weight"),
+        hidden_states,
+    )?;
+    let v_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "v_proj.weight"),
+        hidden_states,
+    )?;
+    let o_proj_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
+    qwen_full_attention_first_token_from_parts(&dims, &q_proj, &v_proj, &o_proj_weight).map_err(
+        |err| {
+            TensorLoadError::integrity(format!(
+                "Qwen layer{layer_idx} full attention failed: {err}"
+            ))
+        },
+    )
 }
 
 pub fn qwen_layer0_linear_attention_projections(
@@ -703,6 +812,83 @@ pub fn qwen_linear_decoder_layer_first_token(
         .collect()
 }
 
+pub fn qwen_full_decoder_layer_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+) -> Result<Vec<f32>, TensorLoadError> {
+    match spec.layer_kinds.get(layer_idx) {
+        Some(AttentionKind::FullAttention) => {}
+        Some(AttentionKind::LinearAttention) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} is linear attention, not full attention"
+            )));
+        }
+        None => {
+            return Err(TensorLoadError::missing(format!(
+                "Qwen layer {layer_idx} is outside configured layer count"
+            )));
+        }
+    }
+    let hidden_size = spec.hidden_size as usize;
+    let input_norm = qwen_layer_input_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let attention_output =
+        qwen_layer_full_attention_first_token(store, spec, layer_idx, &input_norm)?;
+    let post_attention = qwen_layer_post_attention_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        &attention_output,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let router = qwen_layer_moe_router(
+        store,
+        layer_idx,
+        &post_attention,
+        spec.num_experts_per_tok as usize,
+    )?;
+    let moe_output = qwen_layer_moe_forward(
+        store,
+        layer_idx,
+        &QwenMoeDims::from_spec(spec),
+        &post_attention,
+        &router,
+    )?;
+    hidden_states
+        .iter()
+        .zip(attention_output)
+        .zip(moe_output)
+        .map(|((hidden, attention), moe)| Ok(hidden + attention + moe))
+        .collect()
+}
+
+pub fn qwen_decoder_layer_first_token(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+) -> Result<Vec<f32>, TensorLoadError> {
+    match spec.layer_kinds.get(layer_idx) {
+        Some(AttentionKind::LinearAttention) => {
+            qwen_linear_decoder_layer_first_token(store, spec, layer_idx, hidden_states)
+        }
+        Some(AttentionKind::FullAttention) => {
+            qwen_full_decoder_layer_first_token(store, spec, layer_idx, hidden_states)
+        }
+        None => Err(TensorLoadError::missing(format!(
+            "Qwen layer {layer_idx} is outside configured layer count"
+        ))),
+    }
+}
+
 pub fn qwen_layer_moe_forward(
     store: &SafeTensorShardStore,
     layer_idx: usize,
@@ -807,6 +993,10 @@ fn qwen_linear_attn_tensor(layer_idx: usize, suffix: &str) -> String {
 
 fn qwen_mlp_tensor(layer_idx: usize, suffix: &str) -> String {
     qwen_layer_tensor(layer_idx, &format!("mlp.{suffix}"))
+}
+
+fn qwen_self_attn_tensor(layer_idx: usize, suffix: &str) -> String {
+    qwen_layer_tensor(layer_idx, &format!("self_attn.{suffix}"))
 }
 
 pub fn qwen_final_norm(

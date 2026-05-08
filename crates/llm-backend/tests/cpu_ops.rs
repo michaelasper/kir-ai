@@ -1,4 +1,7 @@
-use llm_backend::{QwenLinearAttentionDims, qwen_linear_attention_first_token_from_parts};
+use llm_backend::{
+    QwenFullAttentionDims, QwenLinearAttentionDims, qwen_full_attention_first_token_from_parts,
+    qwen_linear_attention_first_token_from_parts,
+};
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
     swiglu_mlp_f32,
@@ -74,6 +77,21 @@ fn qwen_linear_attention_first_token_matches_simplified_reference() {
     .expect("linear attention output");
 
     assert_close(&output, &[1.4621172], 1e-6);
+}
+
+#[test]
+fn qwen_full_attention_first_token_matches_single_key_reference() {
+    let dims = QwenFullAttentionDims {
+        hidden_size: 1,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 1,
+    };
+
+    let output = qwen_full_attention_first_token_from_parts(&dims, &[0.0, 0.0], &[8.0], &[3.0])
+        .expect("full attention output");
+
+    assert_close(&output, &[12.0], 1e-6);
 }
 
 #[test]
