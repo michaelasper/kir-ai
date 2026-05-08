@@ -1,3 +1,4 @@
+use llm_backend::SafeTensorHeader;
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use std::net::SocketAddr;
@@ -28,6 +29,41 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         );
     };
     match subcommand.as_str() {
+        "inspect-safetensors" => {
+            let path = args.get(1).ok_or_else(|| {
+                anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")
+            })?;
+            let header = SafeTensorHeader::from_file(path)?;
+            let sample_tensors: Vec<_> = header.tensor_names().take(8).collect();
+            let tensor = flag_value(&args, "--tensor")
+                .map(|name| {
+                    let metadata = header.tensor_metadata(name)?;
+                    let range = header.tensor_data_range(name)?;
+                    anyhow::Ok(serde_json::json!({
+                        "name": metadata.name,
+                        "dtype": metadata.dtype,
+                        "shape": metadata.shape,
+                        "byte_len": metadata.byte_len,
+                        "file_byte_range": {
+                            "start": range.start,
+                            "end": range.end
+                        }
+                    }))
+                })
+                .transpose()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "path": path,
+                    "file_len": header.file_len(),
+                    "header_len": header.header_len(),
+                    "data_start": header.data_start(),
+                    "tensor_count": header.tensor_count(),
+                    "sample_tensors": sample_tensors,
+                    "tensor": tensor
+                }))?
+            );
+        }
         "plan" | "pull" => {
             let repo = args
                 .get(1)

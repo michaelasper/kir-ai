@@ -1,4 +1,4 @@
-use llm_backend::SafeTensorArchive;
+use llm_backend::{SafeTensorArchive, SafeTensorHeader};
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -25,6 +25,77 @@ fn rejects_wrong_dtype_for_f32_reader() {
         .f32_tensor("linear.weight")
         .expect_err("wrong dtype fails");
     assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn reads_bf16_header_metadata_without_decoding_payload() {
+    let bytes = tiny_safetensors(
+        "model.layers.0.mlp.gate.weight",
+        "BF16",
+        &[2, 4],
+        &[0_u8; 16],
+    );
+
+    let header = SafeTensorHeader::from_bytes(&bytes).expect("header loads");
+    let metadata = header
+        .tensor_metadata("model.layers.0.mlp.gate.weight")
+        .expect("metadata");
+
+    assert_eq!(header.tensor_count(), 1);
+    assert_eq!(metadata.dtype, "BF16");
+    assert_eq!(metadata.shape, vec![2, 4]);
+    assert_eq!(metadata.byte_len, 16);
+    assert_eq!(
+        header
+            .tensor_data_range("model.layers.0.mlp.gate.weight")
+            .expect("range"),
+        header.data_start()..header.data_start() + 16
+    );
+}
+
+#[test]
+fn reads_header_from_file_with_large_payload() {
+    let mut payload = vec![0_u8; 1024 * 1024];
+    payload[0] = 7;
+    let last = payload.len() - 1;
+    payload[last] = 9;
+    let bytes = tiny_safetensors("large.weight", "BF16", &[512, 1024], &payload);
+    let path = std::env::temp_dir().join(format!(
+        "llm-backend-safetensors-header-{}.safetensors",
+        std::process::id()
+    ));
+    std::fs::write(&path, bytes).expect("write fixture");
+
+    let header = SafeTensorHeader::from_file(&path).expect("header loads from file");
+    let metadata = header.tensor_metadata("large.weight").expect("metadata");
+
+    assert_eq!(metadata.dtype, "BF16");
+    assert_eq!(metadata.shape, vec![512, 1024]);
+    assert_eq!(metadata.byte_len, 1024 * 1024);
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn rejects_header_offsets_outside_payload() {
+    let mut bytes = tiny_safetensors("broken.weight", "BF16", &[8], &[0_u8; 16]);
+    let header_len = u64::from_le_bytes(bytes[0..8].try_into().expect("header prefix")) as usize;
+    let header = serde_json::json!({
+        "broken.weight": {
+            "dtype": "BF16",
+            "shape": [8],
+            "data_offsets": [0, 32]
+        }
+    })
+    .to_string();
+    bytes.splice(0..8 + header_len, {
+        let mut replacement = Vec::new();
+        replacement.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        replacement.extend_from_slice(header.as_bytes());
+        replacement
+    });
+
+    let err = SafeTensorHeader::from_bytes(&bytes).expect_err("offsets fail");
+    assert_eq!(err.code(), "model_integrity_failed");
 }
 
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
