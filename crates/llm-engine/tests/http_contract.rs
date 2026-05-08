@@ -513,6 +513,49 @@ impl ModelBackend for MetadataBackend {
     }
 }
 
+struct MlxMetadataBackend;
+
+#[async_trait]
+impl ModelBackend for MlxMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36-mlx"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata {
+            id: "local-qwen36-mlx".to_owned(),
+            backend: "mlx".to_owned(),
+            family: Some("qwen".to_owned()),
+            loader: Some("mlx".to_owned()),
+            quantization: Some("4bit".to_owned()),
+            repo_id: Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned()),
+            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            profile: Some("qwen36-mlx-4bit".to_owned()),
+            snapshot_path: Some(std::path::PathBuf::from("/tmp/local-qwen36-mlx")),
+            manifest_digest: Some(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            ),
+        }
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "mlx metadata".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
 struct SnapshotMetadataBackend {
     snapshot_path: PathBuf,
 }

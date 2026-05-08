@@ -38,10 +38,11 @@ Mise tasks:
 | --- | --- | --- | --- |
 | `--addr` | socket address | `127.0.0.1:3000` | Address bound by Axum. |
 | `--deterministic-test-backend` | boolean | unset | Enables deterministic protocol mode without model artifacts. |
-| `--snapshot` | path | unset | Enables native Qwen backend. Without this flag, `serve` requires `--deterministic-test-backend`. |
-| `--model-id` | string | `local-qwen36` | Served model id for native Qwen mode. |
+| `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--deterministic-test-backend`. |
+| `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
-| `--max-prefill-tokens` | `usize` | `32` | Number of recent prompt tokens retained for native prefill. Clamped to at least `1`. |
+| `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
+| `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` `/v1` endpoint for MLX snapshot manifests. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 

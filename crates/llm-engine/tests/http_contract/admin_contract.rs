@@ -66,6 +66,27 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
 }
 
 #[tokio::test]
+async fn admin_model_endpoint_reports_mlx_backend_identity() {
+    let response = build_router_with_backend(Box::new(MlxMetadataBackend))
+        .oneshot(
+            Request::builder()
+                .uri("/admin/models/local-qwen36-mlx")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin model response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["backend"], "mlx");
+    assert_eq!(body["family"], "qwen");
+    assert_eq!(body["loader"], "mlx");
+    assert_eq!(body["profile"], "qwen36-mlx-4bit");
+    assert_eq!(body["snapshot_path"], "/tmp/local-qwen36-mlx");
+}
+
+#[tokio::test]
 async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot_path = write_verified_test_snapshot(temp.path()).await;

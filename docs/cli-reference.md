@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
 llm-engine model <subcommand> ...
 ```
 
@@ -39,18 +39,22 @@ llm-engine serve \
 | --- | --- | --- |
 | `--addr <host:port>` | `127.0.0.1:3000` | Socket address to bind. |
 | `--deterministic-test-backend` | absent | Enables deterministic protocol mode without model artifacts. Intended for tests and client integration. |
-| `--snapshot <path>` | none | Enables native Qwen backend from a local snapshot directory. |
+| `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native Qwen; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--model-id <id>` | `local-qwen36` | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
-| `--max-prefill-tokens <usize>` | `32` | Number of recent prompt tokens retained for native Qwen prefill. Values below `1` are clamped to `1`. |
+| `--max-prefill-tokens <usize>` | `32` | Native Qwen prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
+| `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 
 Without `--snapshot`, `serve` exits unless `--deterministic-test-backend` is
 present. Implicit no-snapshot deterministic serving was removed.
 
-With `--snapshot`, the directory must contain `config.json`, `tokenizer.json`,
-`model.safetensors.index.json`, and all referenced shard files.
+With a native-metal snapshot, the directory must contain `config.json`,
+`tokenizer.json`, `model.safetensors.index.json`, and all referenced shard
+files. With an MLX snapshot, the directory must include an
+`llm-engine-manifest.json` whose loader is `mlx`, and an `mlx_lm.server`
+sidecar must already be listening on the configured loopback endpoint.
 
 ## `model list`
 

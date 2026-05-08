@@ -51,7 +51,7 @@ responses.
 | Crate | Responsibility | Current status |
 | --- | --- | --- |
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
-| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and native backend construction. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, and native Qwen uses `--snapshot`. |
+| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, native Qwen is isolated under the native backend module, and MLX manifests proxy through the MLX backend module. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
 | `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen text chat and tools. DeepSeek and Gemma template selection is explicit and fails closed until Qwen production parity. |
@@ -148,7 +148,7 @@ probes to Metal kernels without changing API or model-store semantics.
   metadata; Qwen is implemented, while non-Qwen families fail closed until their
   adapters exist.
 - Native model execution is BF16 safetensors-oriented.
-- Prompt context is bounded by `--max-prefill-tokens`.
+- Native Qwen uses `--max-prefill-tokens` as a prefill chunk size; retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
 - Multi-token decode recomputes bounded context instead of maintaining reusable
   KV or recurrent state caches.
 - The server does not use downloaded `generation_config.json` sampling settings.

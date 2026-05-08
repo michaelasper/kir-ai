@@ -446,6 +446,25 @@ async fn chat_rejects_unsupported_model_family_before_generation() {
 }
 
 #[tokio::test]
+async fn chat_accepts_mlx_backend_when_family_is_qwen() {
+    let runtime = Runtime::new(MlxQwenMetadataBackend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("qwen MLX metadata selects Qwen adapter");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("hello from mlx")
+    );
+}
+
+#[tokio::test]
 async fn required_tool_choice_rejects_text_fallback() {
     let backend = DeterministicBackend::new("local-qwen36", "plain text");
     let runtime = Runtime::new(backend);
@@ -673,6 +692,38 @@ async fn parses_generated_tool_calls_into_openai_message() {
 }
 
 #[tokio::test]
+async fn rejects_generated_tool_call_missing_required_schema_argument() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read Cargo.toml")],
+            tools: vec![ToolDefinition::function(
+                "read_file",
+                "read file",
+                json!({
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("missing required tool argument is rejected");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("path"));
+}
+
+#[tokio::test]
 async fn rejects_generated_tool_call_for_undeclared_tool() {
     let backend = DeterministicBackend::new(
         "local-qwen36",
@@ -819,6 +870,109 @@ async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
     assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
     assert!(!emitted_content.contains("<tool_call>"));
     assert!(!emitted_content.contains("</tool_call>"));
+}
+
+#[tokio::test]
+async fn streaming_required_tool_rejects_text_fallback_without_emitting_content() {
+    let backend = DeterministicBackend::new("local-qwen36", "plain text fallback");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read Cargo.toml")],
+            tools: vec![ToolDefinition::function(
+                "read_file",
+                "read file",
+                json!({}),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming required tool request starts");
+
+    let mut emitted_content = String::new();
+    let mut events = stream.into_events();
+    let err = loop {
+        match events.next().await.expect("stream yields validation error") {
+            Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
+                for choice in chunk.choices {
+                    if let Some(content) = choice.delta.content {
+                        emitted_content.push_str(&content);
+                    }
+                }
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                panic!("text fallback should not complete successfully")
+            }
+            Err(err) => break err,
+        }
+    };
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::TextFallbackRequiredTool)
+    ));
+    assert!(
+        emitted_content.is_empty(),
+        "required-tool streams must not emit text fallback before validation"
+    );
+}
+
+#[tokio::test]
+async fn streaming_tool_call_rejects_missing_required_schema_argument() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read Cargo.toml")],
+            tools: vec![ToolDefinition::function(
+                "read_file",
+                "read file",
+                json!({
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming tool call request starts");
+
+    let mut emitted_tool_calls = 0;
+    let mut events = stream.into_events();
+    let err = loop {
+        match events.next().await.expect("stream yields validation error") {
+            Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
+                emitted_tool_calls += chunk
+                    .choices
+                    .iter()
+                    .map(|choice| choice.delta.tool_calls.len())
+                    .sum::<usize>();
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                panic!("invalid tool call should not complete successfully")
+            }
+            Err(err) => break err,
+        }
+    };
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("path"));
+    assert_eq!(
+        emitted_tool_calls, 0,
+        "invalid tool call delta must not be emitted before schema validation"
+    );
 }
 
 #[tokio::test]
@@ -1183,6 +1337,8 @@ struct FamilyMetadataBackend {
     family: Option<String>,
 }
 
+struct MlxQwenMetadataBackend;
+
 #[async_trait::async_trait]
 impl ModelBackend for RecordingBackend {
     fn model_id(&self) -> &str {
@@ -1253,6 +1409,42 @@ impl ModelBackend for FamilyMetadataBackend {
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         panic!("unsupported family should fail before backend generation")
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for MlxQwenMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
+        metadata.family = Some("qwen".to_owned());
+        metadata.loader = Some("mlx".to_owned());
+        metadata
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        assert!(
+            request.prompt.contains("<|im_start|>user"),
+            "Qwen adapter should render ChatML prompt: {}",
+            request.prompt
+        );
+        Ok(BackendOutput {
+            text: "hello from mlx".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        })
     }
 
     async fn generate_with_cancel(

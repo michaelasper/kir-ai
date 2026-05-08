@@ -7,8 +7,8 @@ use llm_backend::{
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, EngineOptions, NativeQwenBackend, NativeQwenLoadOptions,
-    build_router_with_backend_and_options,
+    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeQwenLoadOptions,
+    SnapshotBackendOptions, build_router_with_backend_and_options, open_snapshot_backend,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, ProtectedSnapshot,
@@ -81,23 +81,36 @@ async fn main() -> anyhow::Result<()> {
                     flag_value(&serve_args, "--native-metal-weight-cache-bytes")
                         .map(str::parse::<u64>)
                         .transpose()?;
-                let backend = NativeQwenBackend::open_with_options(
+                let mlx_endpoint = if let Some(endpoint) = flag_value(&serve_args, "--mlx-endpoint")
+                {
+                    url::Url::parse(endpoint)?
+                } else if let Ok(endpoint) = std::env::var("MLX_LM_ENDPOINT") {
+                    url::Url::parse(&endpoint)?
+                } else {
+                    MlxBackendOptions::default().endpoint
+                };
+                let backend = open_snapshot_backend(
                     model_id,
                     &snapshot_path,
-                    NativeQwenLoadOptions {
-                        eager_materialize_shards: has_flag(
-                            &serve_args,
-                            "--eager-materialize-shards",
-                        ),
-                        metal_weight_cache_bytes: native_metal_weight_cache_bytes,
-                        warm_metal_weight_cache: has_flag(
-                            &serve_args,
-                            "--warm-native-metal-weight-cache",
-                        ),
+                    SnapshotBackendOptions {
+                        native_qwen: NativeQwenLoadOptions {
+                            eager_materialize_shards: has_flag(
+                                &serve_args,
+                                "--eager-materialize-shards",
+                            ),
+                            metal_weight_cache_bytes: native_metal_weight_cache_bytes,
+                            warm_metal_weight_cache: has_flag(
+                                &serve_args,
+                                "--warm-native-metal-weight-cache",
+                            ),
+                        },
+                        mlx: MlxBackendOptions {
+                            endpoint: mlx_endpoint,
+                        },
+                        max_new_tokens,
+                        max_prefill_tokens,
                     },
-                )?
-                .with_max_new_tokens(max_new_tokens)
-                .with_max_prefill_tokens(max_prefill_tokens);
+                )?;
                 if let Err(err) = ModelStore::mark_snapshot_used(&snapshot_path).await {
                     tracing::warn!(error = %err, snapshot = %snapshot_path.display(), "failed to record snapshot usage");
                 }
@@ -107,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     tracing::warn!(error = %err, alias = model_id, snapshot = %snapshot_path.display(), "failed to record model alias");
                 }
-                build_router_with_backend_and_options(Box::new(backend), options)?
+                build_router_with_backend_and_options(backend, options)?
             } else if has_flag(&serve_args, "--deterministic-test-backend") {
                 build_router_with_backend_and_options(
                     Box::new(
@@ -152,6 +165,7 @@ Options:
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
+  --mlx-endpoint <url>                       Loopback mlx_lm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup

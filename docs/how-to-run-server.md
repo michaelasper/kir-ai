@@ -1,7 +1,7 @@
 # How To Run The Server
 
-This guide shows the practical server modes: deterministic protocol mode and
-native Qwen snapshot mode.
+This guide shows the practical server modes: deterministic protocol mode,
+native Qwen snapshot mode, and the loopback MLX sidecar mode.
 
 ## Run Protocol Mode
 
@@ -59,13 +59,43 @@ The native path tokenises the rendered prompt, keeps a bounded tail of prompt
 tokens, runs Qwen prefill, applies final norm and LM-head top-k, then returns
 decoded text.
 
+## Run MLX Sidecar Mode
+
+Use MLX sidecar mode when the snapshot manifest has `loader: mlx`, for example
+the `qwen36-mlx-4bit` profile. Kir remains the public OpenAI-compatible server
+and proxies generation to a loopback `mlx_lm.server` `/v1/completions` endpoint.
+
+Start MLX separately:
+
+```sh
+SNAPSHOT=.llm-models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<resolved-commit>
+mlx_lm.server --model "$SNAPSHOT"
+```
+
+Then start Kir against the same snapshot:
+
+```sh
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+The MLX endpoint must be loopback. Kir rejects remote MLX endpoints and does
+not fall back to deterministic or native Qwen when an MLX manifest is selected.
+This is a bootstrap comparison path; the no-Python production target remains a
+native MLX bridge.
+
 ## Choose Generation Bounds
 
 `--max-new-tokens` caps native generation per request. It defaults to `256` and
 is clamped to at least `1`.
 
-`--max-prefill-tokens` controls how many recent prompt tokens are retained for
-native prefill. It defaults to `32` and is clamped to at least `1`.
+`--max-prefill-tokens` controls the native prefill chunk size. It defaults to
+`32` and is clamped to at least `1`. Native Qwen retains the accepted prompt
+context by sizing full-attention caches from prompt length plus generation
+budget, and rejects requests that exceed the model context limit.
 
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
@@ -84,8 +114,8 @@ cargo run -p llm-engine -- serve \
   --max-prefill-tokens 8
 ```
 
-Use a larger prefill window only when you expect the current CPU-bound path to
-spend more time in prefill:
+Use a larger prefill chunk only when you expect the current CPU-bound path to
+benefit from fewer prefill calls:
 
 ```sh
 cargo run -p llm-engine -- serve \

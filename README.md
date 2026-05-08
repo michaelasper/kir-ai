@@ -8,13 +8,17 @@ The project is intentionally explicit about its current state:
 
 - Running `llm-engine serve` requires an explicit backend: use
   `--deterministic-test-backend` for protocol and client integration work, or
-  `--snapshot <path>` for native Qwen serving. Implicit no-snapshot
-  deterministic serving was intentionally removed.
+  `--snapshot <path>` for manifest-selected model serving. Implicit
+  no-snapshot deterministic serving was intentionally removed.
 - Running `llm-engine serve --snapshot <path>` starts the constrained native
-  Qwen path, backed by local Hugging Face safetensors artefacts.
+  Qwen path for native-metal manifests, or an opt-in loopback MLX sidecar path
+  for MLX manifests.
 - The native Qwen path is a correctness and integration path, not a production
-  throughput path. It uses bounded prefill, conservative generation defaults,
-  CPU-oriented BF16 tensor reads, and no reusable KV cache yet.
+  throughput path. It uses chunked prefill, context-limit validation,
+  conservative generation defaults, prefix-cache reuse, and native Metal BF16
+  matvecs with CPU fallbacks.
+- The MLX sidecar path proxies to a loopback `mlx_lm.server` endpoint and is a
+  bootstrap comparison path, not the final no-Python production runtime.
 
 ## Quick Start
 
@@ -91,6 +95,17 @@ cargo run -p llm-engine -- serve \
   --max-new-tokens 256 \
   --max-prefill-tokens 32 \
   --native-metal-weight-cache-bytes 8589934592
+```
+
+For an MLX snapshot manifest such as `qwen36-mlx-4bit`, start `mlx_lm.server`
+separately on loopback and point Kir at its `/v1` endpoint:
+
+```sh
+mlx_lm.server --model "$SNAPSHOT"
+cargo run -p llm-engine -- serve \
+  --snapshot "$SNAPSHOT" \
+  --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1
 ```
 
 ## Documentation Map
