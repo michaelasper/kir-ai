@@ -6,6 +6,32 @@ This document defines the north star for a no-Python, Rust-first local inference
 
 The product goal is not "an LLM server that can answer prompts." The product goal is a native engine that can run long, growing OMP-style coding sessions against frontier local models while preserving tool-call structure, JSON correctness, cache reuse, streaming semantics, and predictable latency.
 
+## Implementation Tracker
+
+Last updated: 2026-05-08.
+
+Current commits:
+
+- `7fe9d9c` - Rust workspace scaffold with north-star crate layout and mise tasks.
+- `9dae41e` - Rust-owned OpenAI runtime/server skeleton with deterministic native backend.
+- `3630acd` - Native Hugging Face model planning and immutable manifest identity.
+
+Current verified state:
+
+- `mise run test` passes for the workspace.
+- `mise exec -- cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B --revision main --profile qwen36-mlx-4bit` resolves `main` to commit `995ad96eacd98c81ed38be0c5b274b04031597b0` and plans 71,926,864,255 bytes of selected artifacts without Python.
+- Official Qwen3.6 config/template fixtures are stored under `fixtures/qwen36/`.
+- `llm-models` parses the official Qwen3.6 hybrid Gated DeltaNet plus MoE topology: 40 layers, 30 linear-attention layers, 10 full-attention layers, 256 experts, 8 routed experts per token, 262,144 native context.
+- `llm-tokenizer` renders the Qwen no-thinking assistant prefix as `<think>\n\n</think>\n\n`, matching the official template behavior.
+
+Known incomplete items:
+
+- No real tensor inference yet; `llm-backend` currently has a deterministic Rust backend for protocol/runtime tests.
+- No weight download/pull command yet.
+- No safetensors tensor loader yet.
+- No Metal kernels beyond crate scaffolding.
+- No Qwen forward pass, KV cache, recurrent Gated DeltaNet state, or sampling over real logits yet.
+
 The first-class model families are:
 
 - Qwen, especially Qwen3.5, Qwen3.6, Qwen3-Coder, and Qwen3-Coder-Next.

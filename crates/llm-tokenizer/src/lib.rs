@@ -52,7 +52,9 @@ pub fn render_qwen_chatml(
     if options.add_generation_prompt {
         out.push_str("<|im_start|>assistant\n");
         if !options.enable_thinking {
-            out.push_str("</think>\n");
+            out.push_str("<think>\n\n</think>\n\n");
+        } else {
+            out.push_str("<think>\n");
         }
     }
 

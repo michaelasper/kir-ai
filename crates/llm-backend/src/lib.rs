@@ -79,6 +79,7 @@ fn count_tokens(text: &str) -> u64 {
         .replace("<|im_start|>assistant", " ")
         .replace("<|im_start|>tool", " ")
         .replace("<|im_end|>", " ")
+        .replace("<think>", " ")
         .replace("</think>", " ");
     normalized.split_whitespace().count().max(1) as u64
 }

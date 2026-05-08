@@ -31,7 +31,7 @@ fn renders_qwen_no_thinking_chatml_with_tools() {
     assert!(rendered.contains("<|im_start|>system\nYou are a coding agent.<|im_end|>"));
     assert!(rendered.contains("\"name\":\"read_file\""));
     assert!(rendered.contains("<tool_call>"));
-    assert!(rendered.ends_with("<|im_start|>assistant\n</think>\n"));
+    assert!(rendered.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
 }
 
 #[test]
