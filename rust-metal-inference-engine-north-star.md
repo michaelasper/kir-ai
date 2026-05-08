@@ -94,6 +94,7 @@ Current commits:
 - `bfb20f0` - Deterministic protocol mode can return prompt-conditioned chat responses for multi-turn smoke tests.
 - `b6df02d` - Model-store snapshot and staging paths include profile identity to avoid cross-profile collisions.
 - `bdc18ed` - HTTP SSE responses are constructed before backend completion and hold model permits inside the body stream.
+- `f9fe943` - Admin HTTP endpoints can plan and pull model snapshots through the native HubClient and ModelStore paths.
 
 Current verified state:
 
@@ -144,6 +145,7 @@ Current verified state:
 - Chat request validation rejects `tool_choice: "required"` when the request has no declared tools, returning `invalid_request` before any prompt rendering or backend generation.
 - Chat stop sequences now truncate raw model output before Qwen tool-call parsing. Tool calls after the earliest stop marker are suppressed, and the response finish reason remains `stop`.
 - `/admin/*` routes can be protected with `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN`; configured deployments require `Authorization: Bearer <token>` and return `admin_auth_required` otherwise. `serve --addr` refuses non-loopback binds unless an admin token is configured.
+- `POST /admin/models/{alias}/plan` returns a native Rust download plan for the served model alias, and `POST /admin/models/{alias}/pull` pulls and promotes a snapshot through `ModelStore`. Both routes reuse admin Bearer-token enforcement when configured; `serve` exposes `--model-home`, `--hub-endpoint`, and `HF_TOKEN` wiring for these operations.
 - Chat message deserialization accepts plain string content, `null`, and text-only OpenAI content-part arrays such as `[{"type":"text","text":"hello"}]`; text parts are concatenated before prompt rendering.
 - The default deterministic/protocol backend now threads required tool choice to the backend and emits a valid `<tool_call>` block for declared tools; optional tools still allow text fallback.
 - Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
@@ -164,7 +166,7 @@ Known incomplete items:
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
-- Admin status, metrics, and served snapshot verification endpoints exist. Admin plan/pull HTTP endpoints and true request cancellation are not complete.
+- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. True request cancellation is not complete.
 
 The first-class model families are:
 
