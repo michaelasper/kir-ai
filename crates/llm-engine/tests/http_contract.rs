@@ -324,6 +324,34 @@ async fn chat_completions_returns_openai_shape() {
 }
 
 #[tokio::test]
+async fn chat_completions_adapts_protocol_response_across_turns() {
+    let poem = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short, vivid poem about dogs."}
+    ]))
+    .await;
+    let critique = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short, vivid poem about dogs."},
+        {"role": "assistant", "content": poem},
+        {"role": "user", "content": "Critique the poem with concrete feedback."}
+    ]))
+    .await;
+    let rewrite = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short, vivid poem about dogs."},
+        {"role": "assistant", "content": poem},
+        {"role": "user", "content": "Critique the poem with concrete feedback."},
+        {"role": "assistant", "content": critique},
+        {"role": "user", "content": "Rewrite the poem applying that feedback."}
+    ]))
+    .await;
+
+    assert_ne!(poem, critique);
+    assert_ne!(critique, rewrite);
+    assert!(poem.to_ascii_lowercase().contains("dog"));
+    assert!(critique.to_ascii_lowercase().contains("feedback"));
+    assert!(rewrite.to_ascii_lowercase().contains("revised"));
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
     let response = build_router()
         .oneshot(
@@ -1179,6 +1207,33 @@ async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
         .await
         .expect("snapshot verifies");
     snapshot_path
+}
+
+async fn protocol_chat_content(messages: Value) -> String {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": messages
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    body["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("assistant content")
+        .to_owned()
 }
 
 async fn body_json(body: Body) -> Value {

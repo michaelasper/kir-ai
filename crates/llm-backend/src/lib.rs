@@ -22,6 +22,7 @@ pub struct BackendRequest {
     pub max_tokens: Option<u32>,
     pub required_tool_choice: Option<String>,
     pub json_object_mode: bool,
+    pub conversation_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +99,7 @@ pub struct DeterministicBackend {
     text: String,
     required_tool_protocol: bool,
     json_object_protocol: bool,
+    conversation_protocol: bool,
 }
 
 impl DeterministicBackend {
@@ -107,6 +109,7 @@ impl DeterministicBackend {
             text: text.into(),
             required_tool_protocol: false,
             json_object_protocol: false,
+            conversation_protocol: false,
         }
     }
 
@@ -117,6 +120,11 @@ impl DeterministicBackend {
 
     pub fn with_json_object_protocol(mut self) -> Self {
         self.json_object_protocol = true;
+        self
+    }
+
+    pub fn with_conversation_protocol(mut self) -> Self {
+        self.conversation_protocol = true;
         self
     }
 }
@@ -157,6 +165,12 @@ impl ModelBackend for DeterministicBackend {
                 .to_string(),
                 FinishReason::Stop,
             )
+        } else if self.conversation_protocol && request.conversation_mode {
+            (
+                deterministic_conversation_response(&request.prompt)
+                    .unwrap_or_else(|| self.text.clone()),
+                FinishReason::Stop,
+            )
         } else {
             (self.text.clone(), FinishReason::Stop)
         };
@@ -171,6 +185,25 @@ impl ModelBackend for DeterministicBackend {
             prompt_tokens: count_tokens(&request.prompt),
             finish_reason,
         })
+    }
+}
+
+fn deterministic_conversation_response(prompt: &str) -> Option<String> {
+    let prompt = prompt.to_ascii_lowercase();
+    if prompt.contains("rewrite") && prompt.contains("feedback") {
+        Some(
+            "Revised poem: Dogs sprint through morning light, bright paws drumming home."
+                .to_owned(),
+        )
+    } else if prompt.contains("critique") && prompt.contains("feedback") {
+        Some(
+            "Feedback: The dog poem has clear motion; add sharper images and a stronger final line."
+                .to_owned(),
+        )
+    } else if prompt.contains("poem") && prompt.contains("dog") {
+        Some("Dogs flash through rain-wet grass, brave hearts chasing the sun.".to_owned())
+    } else {
+        None
     }
 }
 

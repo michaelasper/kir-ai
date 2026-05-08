@@ -190,6 +190,7 @@ where
                     request.response_format,
                     Some(ResponseFormat::JsonObject)
                 ),
+                conversation_mode: true,
             })
             .await?;
         let mut raw_text = output.text;
@@ -247,6 +248,7 @@ where
                 max_tokens: request.max_tokens,
                 required_tool_choice: None,
                 json_object_mode: false,
+                conversation_mode: false,
             })
             .await?;
         let mut text = output.text;

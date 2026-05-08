@@ -96,6 +96,7 @@ fn default_backend() -> DeterministicBackend {
     DeterministicBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
         .with_json_object_protocol()
+        .with_conversation_protocol()
 }
 
 #[derive(Clone)]

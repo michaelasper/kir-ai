@@ -62,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
                             "hello from rust native backend",
                         )
                         .with_required_tool_protocol()
-                        .with_json_object_protocol(),
+                        .with_json_object_protocol()
+                        .with_conversation_protocol(),
                     ),
                     options,
                 )
