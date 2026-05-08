@@ -6,7 +6,9 @@ use llm_backend::{
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
-use llm_engine::{EngineOptions, NativeQwenBackend, build_router_with_backend_and_options};
+use llm_engine::{
+    EngineOptions, NativeQwenBackend, NativeQwenLoadOptions, build_router_with_backend_and_options,
+};
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -60,9 +62,18 @@ async fn main() -> anyhow::Result<()> {
                     .map(str::parse::<usize>)
                     .transpose()?
                     .unwrap_or(32);
-                let backend = NativeQwenBackend::open(model_id, snapshot_path)?
-                    .with_max_new_tokens(max_new_tokens)
-                    .with_max_prefill_tokens(max_prefill_tokens);
+                let backend = NativeQwenBackend::open_with_options(
+                    model_id,
+                    snapshot_path,
+                    NativeQwenLoadOptions {
+                        eager_materialize_shards: has_flag(
+                            &serve_args,
+                            "--eager-materialize-shards",
+                        ),
+                    },
+                )?
+                .with_max_new_tokens(max_new_tokens)
+                .with_max_prefill_tokens(max_prefill_tokens);
                 build_router_with_backend_and_options(Box::new(backend), options)
             } else {
                 build_router_with_backend_and_options(
@@ -598,6 +609,10 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.windows(2)
         .find_map(|window| (window[0] == flag).then_some(window[1].as_str()))
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| arg == flag)
 }
 
 #[derive(Debug, Clone, Copy)]

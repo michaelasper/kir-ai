@@ -165,21 +165,42 @@ pub struct NativeQwenBackend {
     chunk_rows: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeQwenLoadOptions {
+    pub eager_materialize_shards: bool,
+}
+
 impl NativeQwenBackend {
     pub fn open(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
+        Self::open_with_options(model_id, snapshot_path, NativeQwenLoadOptions::default())
+    }
+
+    pub fn open_with_options(
+        model_id: impl Into<String>,
+        snapshot_path: impl AsRef<Path>,
+        options: NativeQwenLoadOptions,
+    ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
         let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
+        let store = SafeTensorShardStore::open(snapshot_path)?;
+        if options.eager_materialize_shards {
+            let materialized_bytes = store.materialize_all_shards()?;
+            tracing::info!(
+                materialized_bytes,
+                "materialized native Qwen safetensors shards"
+            );
+        }
         Ok(Self {
             model_id,
             metadata,
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
             spec: QwenModelSpec::from_config_json(&config_json)?,
-            store: SafeTensorShardStore::open(snapshot_path)?,
+            store,
             max_new_tokens: 1,
             max_prefill_tokens: 32,
             top_k: 16,
@@ -1056,11 +1077,67 @@ mod tests {
         std::fs::remove_dir_all(snapshot).ok();
     }
 
+    #[test]
+    fn native_qwen_backend_can_eagerly_materialize_indexed_shards_on_open() {
+        let snapshot = temp_snapshot_dir("eager-materialize");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("config.json", snapshot.join("config.json"));
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        std::fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": 2 },
+                "weight_map": { "dummy.weight": "dummy.safetensors" }
+            })
+            .to_string(),
+        )
+        .expect("index");
+        std::fs::write(
+            snapshot.join("dummy.safetensors"),
+            tiny_safetensors_bf16("dummy.weight", &[1], &[1.0]),
+        )
+        .expect("dummy shard");
+
+        let backend = NativeQwenBackend::open_with_options(
+            "local-qwen36",
+            &snapshot,
+            NativeQwenLoadOptions {
+                eager_materialize_shards: true,
+            },
+        )
+        .expect("backend opens and materializes shards");
+
+        assert_eq!(backend.store.materialized_shard_count(), 1);
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
     fn copy_fixture(name: &str, destination: impl AsRef<Path>) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/qwen36")
             .join(name);
         std::fs::copy(&source, destination).expect("copy fixture");
+    }
+
+    fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(values.len() * 2);
+        for value in values {
+            data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+        }
+        let data_len = data.len();
+        let header = serde_json::json!({
+            name: {
+                "dtype": "BF16",
+                "shape": shape,
+                "data_offsets": [0, data_len]
+            }
+        })
+        .to_string();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
     }
 
     fn temp_snapshot_dir(label: &str) -> PathBuf {

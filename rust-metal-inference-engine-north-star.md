@@ -172,6 +172,7 @@ Current verified state:
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.
 - `llm-sampler` now includes a deterministic-draw temperature/top-p sampler primitive with stable nucleus ordering, probability validation, and coverage for low/high draws, minimum one-token nuclei, and invalid controls.
 - Legacy completion SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, without falling back to non-streaming generation.
+- Native Qwen startup now has an opt-in eager shard materialization policy through `NativeQwenLoadOptions` and `serve --eager-materialize-shards`, mmap-loading every indexed safetensors shard before advertising the backend.
 
 Known incomplete items:
 
@@ -181,7 +182,7 @@ Known incomplete items:
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion stop handling. Chat tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, and a reusable layer KV storage primitive, but native Qwen multi-token decode is not wired to read/write it yet.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill and a reusable recurrent/convolution cache primitive, but native Qwen decode is not wired to update it incrementally yet.
-- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, and chunked BF16 matvecs are implemented; native startup policy for eager materialization is not complete.
+- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, and chunked BF16 matvecs are implemented.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation and interruption inside a long native prefill/Metal kernel are not complete.
