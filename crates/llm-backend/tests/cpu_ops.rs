@@ -1,10 +1,11 @@
 use llm_backend::{
     QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
-    QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
+    QwenLinearAttentionDims, QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
     qwen_full_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
     qwen_linear_attention_sequence_with_cache_from_parts,
+    qwen_linear_attention_step_with_cache_from_parts,
 };
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
@@ -203,6 +204,94 @@ fn qwen_linear_attention_sequence_updates_linear_cache() {
     assert_eq!(cache.token_count(), 2);
     assert_close(cache.conv_window(), &[1.0, 1.0, 10.0, 0.0], 1e-6);
     assert_close(cache.recurrent_state(), &state1, 1e-6);
+}
+
+#[test]
+fn qwen_linear_attention_step_uses_existing_linear_cache() {
+    let dims = QwenLinearAttentionDims {
+        hidden_size: 2,
+        num_key_heads: 1,
+        num_value_heads: 1,
+        key_head_dim: 1,
+        value_head_dim: 2,
+        conv_kernel_size: 2,
+        rms_norm_eps: 0.0,
+    };
+    let qkv = vec![
+        vec![1.0, 1.0, 2.0, 4.0],
+        vec![1.0, 1.0, 10.0, 0.0],
+        vec![2.0, 1.0, 0.0, 8.0],
+    ];
+    let z = vec![vec![1.0, 1.0], vec![1.0, 1.0], vec![1.0, 1.0]];
+    let b = vec![vec![0.0], vec![0.0], vec![0.0]];
+    let a = vec![vec![0.0], vec![0.0], vec![0.0]];
+    let dt_bias = vec![0.0];
+    let a_log = vec![0.0];
+    let conv1d_weight = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+    let norm_weight = vec![1.0, 1.0];
+    let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+    let expected_parts = QwenLinearAttentionSequenceParts {
+        qkv: &qkv,
+        z: &z,
+        b: &b,
+        a: &a,
+        dt_bias: &dt_bias,
+        a_log: &a_log,
+        conv1d_weight: &conv1d_weight,
+        norm_weight: &norm_weight,
+        out_proj_weight: &out_proj_weight,
+    };
+    let mut expected_cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
+    let expected_output = qwen_linear_attention_sequence_with_cache_from_parts(
+        &dims,
+        &expected_parts,
+        &mut expected_cache,
+    )
+    .expect("full cached prefill");
+    let prefill_qkv = qkv[..2].to_vec();
+    let prefill_z = z[..2].to_vec();
+    let prefill_b = b[..2].to_vec();
+    let prefill_a = a[..2].to_vec();
+    let prefill_parts = QwenLinearAttentionSequenceParts {
+        qkv: &prefill_qkv,
+        z: &prefill_z,
+        b: &prefill_b,
+        a: &prefill_a,
+        dt_bias: &dt_bias,
+        a_log: &a_log,
+        conv1d_weight: &conv1d_weight,
+        norm_weight: &norm_weight,
+        out_proj_weight: &out_proj_weight,
+    };
+    let mut cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
+    qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
+        .expect("initial cached prefill");
+
+    let output = qwen_linear_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenLinearAttentionStepParts {
+            qkv: &qkv[2],
+            z: &z[2],
+            b: &b[2],
+            a: &a[2],
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
+        &mut cache,
+    )
+    .expect("linear attention decode step");
+
+    assert_close(&output, &expected_output[2], 1e-6);
+    assert_eq!(cache.token_count(), 3);
+    assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-6);
+    assert_close(
+        cache.recurrent_state(),
+        expected_cache.recurrent_state(),
+        1e-6,
+    );
 }
 
 #[test]

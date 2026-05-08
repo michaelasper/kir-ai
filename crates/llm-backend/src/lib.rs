@@ -573,6 +573,18 @@ pub struct QwenLinearAttentionSequenceParts<'a> {
     pub out_proj_weight: &'a [f32],
 }
 
+pub struct QwenLinearAttentionStepParts<'a> {
+    pub qkv: &'a [f32],
+    pub z: &'a [f32],
+    pub b: &'a [f32],
+    pub a: &'a [f32],
+    pub dt_bias: &'a [f32],
+    pub a_log: &'a [f32],
+    pub conv1d_weight: &'a [f32],
+    pub norm_weight: &'a [f32],
+    pub out_proj_weight: &'a [f32],
+}
+
 pub struct QwenFullAttentionSequenceParts<'a> {
     pub q_proj: &'a [Vec<f32>],
     pub k_proj: &'a [Vec<f32>],
@@ -890,6 +902,34 @@ pub fn qwen_linear_attention_sequence_with_cache_from_parts(
         ));
     }
     qwen_linear_attention_sequence_from_parts_impl(dims, parts, Some(cache))
+}
+
+pub fn qwen_linear_attention_step_with_cache_from_parts(
+    dims: &QwenLinearAttentionDims,
+    parts: &QwenLinearAttentionStepParts<'_>,
+    cache: &mut LinearAttentionCache,
+) -> Result<Vec<f32>, MathError> {
+    let qkv = vec![parts.qkv.to_vec()];
+    let z = vec![parts.z.to_vec()];
+    let b = vec![parts.b.to_vec()];
+    let a = vec![parts.a.to_vec()];
+    let sequence_parts = QwenLinearAttentionSequenceParts {
+        qkv: &qkv,
+        z: &z,
+        b: &b,
+        a: &a,
+        dt_bias: parts.dt_bias,
+        a_log: parts.a_log,
+        conv1d_weight: parts.conv1d_weight,
+        norm_weight: parts.norm_weight,
+        out_proj_weight: parts.out_proj_weight,
+    };
+    qwen_linear_attention_sequence_from_parts_impl(dims, &sequence_parts, Some(cache))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            MathError::InvalidShape("Qwen linear attention step returned no output".to_owned())
+        })
 }
 
 fn qwen_linear_attention_sequence_from_parts_impl(
