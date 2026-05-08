@@ -296,7 +296,6 @@ fn default_backend() -> DeterministicBackend {
     DeterministicBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
         .with_json_object_protocol()
-        .with_conversation_protocol()
 }
 
 fn default_model_home() -> PathBuf {
@@ -1750,7 +1749,8 @@ impl NativeQwenBackend {
             ));
         }
         let mut output_ids = Vec::new();
-        let mut decoded = String::new();
+        let mut text_deltas = NativeStreamTextDeltas::default();
+        let mut unreported_completion_tokens = 0_u64;
         let mut finish_reason = FinishReason::Length;
         let eos_id = self
             .tokenizer
@@ -1784,27 +1784,26 @@ impl NativeQwenBackend {
             output_ids.push(u32::try_from(candidate.token_id).map_err(|err| {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?);
+            unreported_completion_tokens += 1;
             let next_decoded = self
                 .tokenizer
                 .decode(&output_ids, false)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
-            let delta = next_decoded
-                .strip_prefix(&decoded)
-                .unwrap_or(&next_decoded)
-                .to_owned();
-            decoded = next_decoded;
+            let delta = text_deltas.observe(next_decoded)?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
-            send_backend_stream_chunk(
-                &tx,
-                BackendStreamChunk {
-                    text: delta,
-                    prompt_tokens: prompt_tokens.len() as u64,
-                    completion_tokens: 1,
-                    finish_reason: None,
-                },
-            )?;
+            if let Some(delta) = delta {
+                send_backend_stream_chunk(
+                    &tx,
+                    BackendStreamChunk {
+                        text: delta,
+                        prompt_tokens: prompt_tokens.len() as u64,
+                        completion_tokens: std::mem::take(&mut unreported_completion_tokens),
+                        finish_reason: None,
+                    },
+                )?;
+            }
             if step_idx + 1 < requested {
                 if cancellation.is_cancelled() {
                     return Err(BackendError::Cancelled);
@@ -1816,12 +1815,21 @@ impl NativeQwenBackend {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
+        let final_text = if output_ids.is_empty() {
+            None
+        } else {
+            let final_decoded = self
+                .tokenizer
+                .decode(&output_ids, false)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            text_deltas.finish(final_decoded)?
+        };
         send_backend_stream_chunk(
             &tx,
             BackendStreamChunk {
-                text: String::new(),
+                text: final_text.unwrap_or_default(),
                 prompt_tokens: prompt_tokens.len() as u64,
-                completion_tokens: 0,
+                completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                 finish_reason: Some(finish_reason),
             },
         )
@@ -1938,6 +1946,53 @@ fn native_qwen_prefill_context_with_cache(
 struct NativeQwenDecodeSession {
     hidden: Vec<f32>,
     caches: Vec<QwenLayerCache>,
+}
+
+#[derive(Default)]
+struct NativeStreamTextDeltas {
+    emitted: String,
+    pending: Option<String>,
+}
+
+impl NativeStreamTextDeltas {
+    fn observe(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
+        if !decoded.starts_with(&self.emitted) {
+            return Err(non_prefix_stream_error());
+        }
+        let Some(pending) = self.pending.take() else {
+            self.pending = Some(decoded);
+            return Ok(None);
+        };
+        let delta = if pending.starts_with(&self.emitted) && decoded.starts_with(&pending) {
+            let delta = pending[self.emitted.len()..].to_owned();
+            self.emitted = pending;
+            non_empty(delta)
+        } else {
+            None
+        };
+        self.pending = Some(decoded);
+        Ok(delta)
+    }
+
+    fn finish(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
+        self.pending = None;
+        if !decoded.starts_with(&self.emitted) {
+            return Err(non_prefix_stream_error());
+        }
+        let delta = decoded[self.emitted.len()..].to_owned();
+        self.emitted = decoded;
+        Ok(non_empty(delta))
+    }
+}
+
+fn non_empty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn non_prefix_stream_error() -> BackendError {
+    BackendError::Other(
+        "native tokenizer streaming decode became non-prefix after emitted delta".to_owned(),
+    )
 }
 
 impl NativeQwenDecodeSession {
@@ -3966,6 +4021,54 @@ mod tests {
             .expect("candidate decodes");
         assert!(decoded.trim().is_empty());
         std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_stream_text_deltas_withhold_unstable_prefix_until_finish() {
+        let mut deltas = NativeStreamTextDeltas::default();
+
+        assert_eq!(deltas.observe("�".to_owned()).expect("observe"), None);
+        assert_eq!(deltas.observe("é".to_owned()).expect("observe"), None);
+
+        assert_eq!(
+            deltas.finish("é".to_owned()).expect("finish"),
+            Some("é".to_owned())
+        );
+    }
+
+    #[test]
+    fn native_stream_text_deltas_emit_stable_prefix_with_one_token_delay() {
+        let mut deltas = NativeStreamTextDeltas::default();
+
+        assert_eq!(deltas.observe("a".to_owned()).expect("observe"), None);
+        assert_eq!(
+            deltas.observe("ab".to_owned()).expect("observe"),
+            Some("a".to_owned())
+        );
+        assert_eq!(
+            deltas.observe("abc".to_owned()).expect("observe"),
+            Some("b".to_owned())
+        );
+        assert_eq!(
+            deltas.finish("abc".to_owned()).expect("finish"),
+            Some("c".to_owned())
+        );
+    }
+
+    #[test]
+    fn native_stream_text_deltas_fail_closed_after_emitted_prefix_changes() {
+        let mut deltas = NativeStreamTextDeltas::default();
+
+        assert_eq!(deltas.observe("a".to_owned()).expect("observe"), None);
+        assert_eq!(
+            deltas.observe("ab".to_owned()).expect("observe"),
+            Some("a".to_owned())
+        );
+
+        let err = deltas
+            .observe("xb".to_owned())
+            .expect_err("emitted prefix mismatch fails closed");
+        assert!(err.to_string().contains("non-prefix"));
     }
 
     #[test]
