@@ -175,6 +175,7 @@ Current commits:
 - `0fc9099` - Native Qwen decode-session startup now uses the backend sequence-cache prefill path for the full prompt instead of stepping one token at a time.
 - `7684dd6` - Native Qwen prompt prefill now runs in cancellable sequence-cache chunks that append into existing linear/full-attention caches.
 - `4cc2b29` - Native Qwen Metal BF16 matvecs cache uploaded weight buffers by tensor slice and expose cache hit/miss/upload metrics.
+- `614c4e7` - Native Qwen Metal BF16 weight buffers now live behind a default 8 GiB per-backend LRU budget with eviction metrics.
 
 Current verified state:
 
@@ -284,7 +285,7 @@ Current verified state:
 - `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from a short-lived in-memory cache instead of rescanning snapshot manifests on every scrape. Successful admin pulls invalidate the cache so the next scrape refreshes usage.
 - `GET /admin/metrics` now reports cumulative artifact verification failures from failed admin snapshot verification.
 - `GET /admin/metrics` now reports process resident memory as `process_rss_bytes` on macOS and Linux.
-- `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, CPU fallback counters, and BF16 matrix buffer cache hits/misses/uploads under `native_qwen_metal`.
+- `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, CPU fallback counters, and BF16 matrix buffer cache hits/misses/uploads/evictions under `native_qwen_metal`.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
@@ -301,7 +302,7 @@ Current verified state:
 - Shard-backed full-attention single-token decode now has a cache-aware layer path that reads indexed safetensors projections, consumes existing `LayerKvCache`, and matches the corresponding token from full cached layer prefill.
 - Qwen single-token decode now has a cache-aware decoder loop that embeds a new token, steps typed per-layer caches, and matches the corresponding suffix from full cached prefill on a tiny shard-backed fixture.
 - Native Qwen generation now pre-fills the full prompt through cancellable backend sequence-cache chunks into typed per-layer caches, samples from the current hidden state, and steps those caches between generated tokens. Decode-session full-attention KV capacity is bounded by the configured retained prefill window rather than `max_new_tokens`, relying on sliding KV eviction for longer prompts and generations. Omitted native token limits resolve to the configured `max_new_tokens`, and explicit requests only fail closed above that cap.
-- Native Qwen Metal BF16 matvecs now upload each tensor slice into a reusable Metal matrix buffer on first use, share that buffer across single, batched, chunked, and lm-head top-k matvec calls within the backend, and report cache hits, misses, uploads, and uploaded bytes.
+- Native Qwen Metal BF16 matvecs now upload each tensor slice into a reusable Metal matrix buffer on first use, share that buffer across single, batched, chunked, and lm-head top-k matvec calls within the backend, enforce a default 8 GiB per-backend LRU budget, skip caching slices larger than the budget, and report cache hits, misses, uploads, uploaded bytes, evictions, and evicted bytes.
 
 Known incomplete items:
 
@@ -312,7 +313,7 @@ Known incomplete items:
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths. The native Qwen server path now routes projection/output matvecs, convolution+silu mixing, recurrent memory/core dot products, recurrent-state decay, and recurrent-state updates through the Metal-capable executor, but recurrent-state cache storage remains CPU-owned.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 f32/raw-bit reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
 - Direct Metal smoke compute, a Qwen RMSNorm kernel, `f32` softmax, `f32` weighted sum, full-attention head-row selection, linear-attention convolution+silu, linear-attention recurrent update, row-major `f32` matvec, row-major BF16-weight matvec, batched BF16-weight matvec, reusable BF16 matrix buffers, and `f32` argmax/top-k logits selection are implemented. Native serving now calls full-attention q/k RMSNorm, cache key/value row gathering, q/k score dot products, softmax, and value mixing, linear-attention convolution+silu, q/k/head normalization plus recurrent memory/core dot products, state decay, and state updates, MoE router top-k/softmax selection, selected/shared MoE accumulation, layer input/post-attention RMSNorm, final RMSNorm, and the matvec/top-k subset through a CPU-fallback executor; the remaining Qwen kernels are not complete.
-- Large projection reads can now use Metal chunked BF16 matvecs with backend-owned reusable BF16 matrix buffers when a device is available, but GPU weight residency is still per backend process and lacks a model-wide budgeted residency manager, eviction policy, and startup warm plan. The current full 40-layer plus lm-head probe is correctness evidence, not yet the final persistent GPU-resident serving-performance path.
+- Large projection reads can now use Metal chunked BF16 matvecs with backend-owned reusable BF16 matrix buffers and a per-backend LRU residency budget when a device is available, but GPU weight residency is still per backend process and lacks a model-wide/shared residency manager plus a startup warm plan. The current full 40-layer plus lm-head probe is correctness evidence, not yet the final persistent GPU-resident serving-performance path.
 - Admin status, metrics, served snapshot verification, model plan/pull, and active request cancellation HTTP endpoints exist. Non-streaming and streaming decode cancellation is wired through runtime/backend tokens, including checks before native prefill and between prefill layers. Interruption inside a single long Metal command or CPU layer kernel remains non-preemptive.
 
 The first-class model families are:
