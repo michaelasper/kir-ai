@@ -382,15 +382,20 @@ fn native_qwen_metadata(
     snapshot_path: &Path,
 ) -> anyhow::Result<BackendModelMetadata> {
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let manifest = serde_json::from_slice::<SnapshotManifest>(&std::fs::read(&manifest_path)?)?;
     let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "native-qwen");
+    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
+    let manifest_bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(metadata),
+        Err(err) => return Err(err.into()),
+    };
+    let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
     metadata.family = Some(manifest.family.clone());
     metadata.loader = Some(manifest.loader.clone());
     metadata.quantization = Some(manifest.quantization.clone());
     metadata.repo_id = Some(manifest.repo_id.clone());
     metadata.resolved_commit = Some(manifest.resolved_commit.clone());
     metadata.profile = Some(manifest.profile.clone());
-    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
     metadata.manifest_digest = Some(manifest.digest());
     Ok(metadata)
 }
@@ -574,6 +579,41 @@ mod tests {
 
         assert!(matches!(err, BackendError::UnsupportedRequest(_)));
         assert!(err.to_string().contains("max_tokens 8"));
+    }
+
+    #[test]
+    fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
+        let snapshot = temp_snapshot_dir("no-manifest");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("config.json", snapshot.join("config.json"));
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+
+        let backend =
+            NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+        let metadata = backend.model_metadata();
+
+        assert_eq!(metadata.id, "local-qwen36");
+        assert_eq!(metadata.backend, "native-qwen");
+        assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
+        assert!(metadata.manifest_digest.is_none());
+        assert!(metadata.repo_id.is_none());
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    fn copy_fixture(name: &str, destination: impl AsRef<Path>) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36")
+            .join(name);
+        std::fs::copy(&source, destination).expect("copy fixture");
+    }
+
+    fn temp_snapshot_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("llm-engine-{label}-{}", std::process::id()))
     }
 }
 
