@@ -6,8 +6,10 @@ no-Python local inference experiments on Apple Silicon.
 
 The project is intentionally explicit about its current state:
 
-- Running `llm-engine serve` without a snapshot starts a deterministic Rust
-  backend for protocol and client integration work.
+- Running `llm-engine serve` requires an explicit backend: use
+  `--deterministic-test-backend` for protocol and client integration work, or
+  `--snapshot <path>` for native Qwen serving. Implicit no-snapshot
+  deterministic serving was intentionally removed.
 - Running `llm-engine serve --snapshot <path>` starts the constrained native
   Qwen path, backed by local Hugging Face safetensors artefacts.
 - The native Qwen path is a correctness and integration path, not a production
@@ -31,7 +33,9 @@ mise run check
 Start the deterministic protocol server:
 
 ```sh
-cargo run -p llm-engine -- serve --addr 127.0.0.1:3000
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --deterministic-test-backend
 ```
 
 In another terminal, make a chat request:

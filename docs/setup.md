@@ -117,11 +117,13 @@ cargo run -p llm-engine -- model list --model-home /Volumes/models/kir-ai
 The fastest server path does not require a model:
 
 ```sh
-cargo run -p llm-engine -- serve --addr 127.0.0.1:3000
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --deterministic-test-backend
 ```
 
-This starts the deterministic Rust backend. Use it for HTTP contract work,
-client integration, and API shape checks.
+This starts the deterministic Rust backend explicitly. Use it for HTTP contract
+work, client integration, and API shape checks.
 
 ## Common Setup Problems
 

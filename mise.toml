@@ -23,4 +23,4 @@ depends = ["fmt-check", "test", "clippy"]
 
 [tasks.run]
 description = "Run the llm-engine server"
-run = "cargo run -p llm-engine -- serve"
+run = "cargo run -p llm-engine -- serve --deterministic-test-backend"

@@ -9,15 +9,21 @@ Use protocol mode when you want fast, repeatable OpenAI-compatible responses
 without model artefacts:
 
 ```sh
-cargo run -p llm-engine -- serve --addr 127.0.0.1:3000
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --deterministic-test-backend
 ```
 
-With no `--snapshot`, the server uses a deterministic Rust backend. It serves
-the model alias `local-qwen36` and returns the fixed text:
+With `--deterministic-test-backend` and no `--snapshot`, the server uses a
+deterministic Rust backend. It serves the model alias `local-qwen36` and returns
+the fixed text:
 
 ```text
 hello from rust native backend
 ```
+
+Omitting both `--snapshot` and `--deterministic-test-backend` exits with an
+explicit backend requirement.
 
 Confirm the server:
 

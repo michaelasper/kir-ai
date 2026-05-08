@@ -45,7 +45,9 @@ finish without a model snapshot.
 Open a terminal and run:
 
 ```sh
-cargo run -p llm-engine -- serve --addr 127.0.0.1:3000
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --deterministic-test-backend
 ```
 
 You should see a log line similar to:

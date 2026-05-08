@@ -28,7 +28,7 @@ Mise tasks:
 | `mise run test` | `cargo test --workspace` |
 | `mise run clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | `mise run check` | `fmt-check`, `test`, and `clippy` |
-| `mise run run` | `cargo run -p llm-engine -- serve` |
+| `mise run run` | `cargo run -p llm-engine -- serve --deterministic-test-backend` |
 
 ## Server Configuration
 
@@ -37,7 +37,8 @@ Mise tasks:
 | Flag | Type | Default | Behaviour |
 | --- | --- | --- | --- |
 | `--addr` | socket address | `127.0.0.1:3000` | Address bound by Axum. |
-| `--snapshot` | path | unset | Enables native Qwen backend. Without it, deterministic protocol backend is used. |
+| `--deterministic-test-backend` | boolean | unset | Enables deterministic protocol mode without model artifacts. |
+| `--snapshot` | path | unset | Enables native Qwen backend. Without this flag, `serve` requires `--deterministic-test-backend`. |
 | `--model-id` | string | `local-qwen36` | Served model id for native Qwen mode. |
 | `--max-new-tokens` | `u32` | `1` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Number of recent prompt tokens retained for native prefill. Clamped to at least `1`. |

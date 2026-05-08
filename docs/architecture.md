@@ -51,7 +51,7 @@ responses.
 | Crate | Responsibility | Current status |
 | --- | --- | --- |
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
-| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and native backend construction. | Default server uses deterministic backend. Native Qwen is enabled with `--snapshot`. |
+| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and native backend construction. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, and native Qwen uses `--snapshot`. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
 | `llm-backend` | Backend trait, deterministic backend, safetensors loading, BF16 tensor access, and CPU Qwen math. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and simplified Qwen ChatML renderer. | Supports Qwen text chat and tools. Does not execute arbitrary downloaded chat templates. |

@@ -7,16 +7,17 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>]
+llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>]
 llm-engine model <subcommand> ...
 ```
 
-If no command is provided, `llm-engine` defaults to `serve`.
+If no command is provided, `llm-engine` defaults to `serve`, which still
+requires either `--snapshot <path>` or `--deterministic-test-backend`.
 
 When running through Cargo:
 
 ```sh
-cargo run -p llm-engine -- serve
+cargo run -p llm-engine -- serve --deterministic-test-backend
 cargo run -p llm-engine -- model list
 ```
 
@@ -36,12 +37,14 @@ llm-engine serve \
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--addr <host:port>` | `127.0.0.1:3000` | Socket address to bind. |
+| `--deterministic-test-backend` | absent | Enables deterministic protocol mode without model artifacts. Intended for tests and client integration. |
 | `--snapshot <path>` | none | Enables native Qwen backend from a local snapshot directory. |
-| `--model-id <id>` | `local-qwen36` | Served model alias. Only used with `--snapshot`; deterministic mode also uses `local-qwen36`. |
+| `--model-id <id>` | `local-qwen36` | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `1` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Number of recent prompt tokens retained for native Qwen prefill. Values below `1` are clamped to `1`. |
 
-Without `--snapshot`, the deterministic backend is used.
+Without `--snapshot`, `serve` exits unless `--deterministic-test-backend` is
+present. Implicit no-snapshot deterministic serving was removed.
 
 With `--snapshot`, the directory must contain `config.json`, `tokenizer.json`,
 `model.safetensors.index.json`, and all referenced shard files.
