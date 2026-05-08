@@ -347,16 +347,19 @@ impl NativeQwenBackend {
 
 fn resolve_native_max_tokens(
     requested: Option<u32>,
-    configured_max: u32,
+    _configured_max: u32,
 ) -> Result<u32, BackendError> {
+    const UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS: u32 = 1;
     match requested {
-        None => Ok(configured_max),
+        None => Ok(UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS),
         Some(0) => Err(BackendError::UnsupportedRequest(
             "max_tokens must be greater than 0".to_owned(),
         )),
-        Some(value) if value > configured_max => Err(BackendError::UnsupportedRequest(format!(
-            "requested max_tokens {value} exceeds native Qwen max_new_tokens {configured_max}"
-        ))),
+        Some(value) if value > UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS => {
+            Err(BackendError::UnsupportedRequest(format!(
+                "native Qwen multi-token decode requires reusable KV/recurrent cache; requested max_tokens {value}, current uncached limit is {UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS}"
+            )))
+        }
         Some(value) => Ok(value),
     }
 }
@@ -890,20 +893,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_max_tokens_defaults_to_configured_limit_when_omitted() {
+    fn native_max_tokens_defaults_to_single_token_until_decode_cache_exists() {
         assert_eq!(
-            resolve_native_max_tokens(None, 4).expect("omitted max tokens uses backend cap"),
-            4
+            resolve_native_max_tokens(None, 4).expect("omitted max tokens uses uncached cap"),
+            1
         );
     }
 
     #[test]
-    fn native_max_tokens_rejects_requests_above_configured_limit() {
-        let err = resolve_native_max_tokens(Some(8), 4)
-            .expect_err("explicit max tokens above backend cap fails closed");
+    fn native_max_tokens_rejects_multi_token_decode_until_cache_exists() {
+        let err =
+            resolve_native_max_tokens(Some(2), 4).expect_err("multi-token decode fails closed");
 
         assert!(matches!(err, BackendError::UnsupportedRequest(_)));
-        assert!(err.to_string().contains("max_tokens 8"));
+        assert!(err.to_string().contains("multi-token"));
     }
 
     #[test]
