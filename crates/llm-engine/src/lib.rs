@@ -234,8 +234,9 @@ impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
         let status = match &self.0 {
             RuntimeError::Api(_) => StatusCode::BAD_REQUEST,
-            RuntimeError::Backend(_) => StatusCode::NOT_FOUND,
-            RuntimeError::Template(_) | RuntimeError::NoProgress(_) => {
+            RuntimeError::Backend(BackendError::ModelNotFound { .. }) => StatusCode::NOT_FOUND,
+            RuntimeError::Backend(BackendError::Other(_)) => StatusCode::INTERNAL_SERVER_ERROR,
+            RuntimeError::Template(_) | RuntimeError::Parser(_) | RuntimeError::NoProgress(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
         };

@@ -10,6 +10,10 @@ chrono.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-tokenizer = { path = "../llm-tokenizer" }
+llm-tool-parser = { path = "../llm-tool-parser" }
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,8 +1,10 @@
+use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use llm_engine::build_router;
+use llm_backend::{BackendError, BackendOutput, BackendRequest, ModelBackend};
+use llm_engine::{build_router, build_router_with_backend};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -73,6 +75,42 @@ async fn chat_completions_returns_openai_shape() {
             .unwrap()
             .contains("rust")
     );
+}
+
+#[tokio::test]
+async fn backend_execution_errors_are_not_reported_as_missing_model() {
+    let response = build_router_with_backend(Box::new(FailingBackend))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+struct FailingBackend;
+
+#[async_trait]
+impl ModelBackend for FailingBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other("execution failed".to_owned()))
+    }
 }
 
 async fn body_json(body: Body) -> Value {

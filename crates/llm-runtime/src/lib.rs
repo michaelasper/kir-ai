@@ -1,10 +1,11 @@
 use chrono::Utc;
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
-    Usage, ValidateRequest,
+    ChatRole, ToolChoice, Usage, ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
+use llm_tool_parser::{ParserError, QwenParser};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,6 +31,12 @@ where
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RuntimeError> {
         request.validate()?;
+        if request.stream {
+            return Err(ApiError::unsupported_capability(
+                "streaming chat completions are not implemented yet",
+            )
+            .into());
+        }
         let prompt = render_qwen_chatml(
             &request.messages,
             &request.tools,
@@ -46,14 +53,31 @@ where
                 max_tokens: request.max_tokens.unwrap_or(4096),
             })
             .await?;
+        let parsed = QwenParser::default().parse_complete(&output.text)?;
+        let required_tool_pending = matches!(
+            request.tool_choice,
+            Some(ToolChoice::Required | ToolChoice::Function { .. })
+        );
         let no_progress = classify_no_progress(
             &output.text,
             output.completion_tokens,
-            !request.tools.is_empty(),
+            required_tool_pending && parsed.tool_calls.is_empty(),
         );
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
         }
+        let finish_reason = if parsed.tool_calls.is_empty() {
+            output.finish_reason
+        } else {
+            llm_api::FinishReason::ToolCalls
+        };
+        let message = ChatMessage {
+            role: ChatRole::Assistant,
+            content: (!parsed.content.is_empty()).then_some(parsed.content),
+            name: None,
+            tool_call_id: None,
+            tool_calls: parsed.tool_calls,
+        };
         let usage = Usage {
             prompt_tokens: output.prompt_tokens,
             completion_tokens: output.completion_tokens,
@@ -66,8 +90,8 @@ where
             model: request.model,
             choices: vec![ChatCompletionChoice {
                 index: 0,
-                message: ChatMessage::assistant(output.text),
-                finish_reason: Some(output.finish_reason),
+                message,
+                finish_reason: Some(finish_reason),
             }],
             usage,
         })
@@ -106,6 +130,8 @@ pub enum RuntimeError {
     Backend(#[from] BackendError),
     #[error(transparent)]
     Template(#[from] TemplateError),
+    #[error(transparent)]
+    Parser(#[from] ParserError),
     #[error("no progress classified as {0:?}")]
     NoProgress(NoProgressClass),
 }

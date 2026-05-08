@@ -1100,6 +1100,8 @@ dependencies = [
  "llm-api",
  "llm-backend",
  "llm-tokenizer",
+ "llm-tool-parser",
+ "serde_json",
  "thiserror",
  "tokio",
  "uuid",
