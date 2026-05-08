@@ -366,6 +366,34 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
 }
 
 #[tokio::test]
+async fn completions_endpoint_rejects_unsupported_sampling_controls() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "hello",
+                        "temperature": 0.7
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "unsupported_capability");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
 async fn completions_endpoint_streams_openai_sse_chunks() {
     let response = build_router()
         .oneshot(

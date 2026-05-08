@@ -109,6 +109,46 @@ fn accepts_explicit_greedy_sampling_controls() {
 }
 
 #[test]
+fn completion_rejects_unsupported_non_greedy_sampling_controls() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        temperature: Some(0.7),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("non-greedy temperature is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        top_p: Some(0.9),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("nucleus sampling is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn completion_accepts_explicit_greedy_sampling_controls() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        temperature: Some(0.0),
+        top_p: Some(1.0),
+        ..CompletionRequest::default()
+    };
+
+    request.validate().expect("greedy controls are supported");
+}
+
+#[test]
 fn rejects_zero_chat_max_tokens() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),

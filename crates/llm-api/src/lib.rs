@@ -246,6 +246,10 @@ pub struct CompletionRequest {
     #[serde(default, skip_serializing_if = "StreamOptions::is_default")]
     pub stream_options: StreamOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(
         default,
@@ -428,6 +432,20 @@ impl ValidateRequest for CompletionRequest {
         }
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
+        }
+        if let Some(temperature) = self.temperature
+            && (!temperature.is_finite() || temperature != 0.0)
+        {
+            return Err(ApiError::unsupported_capability(
+                "non-greedy temperature sampling is not supported yet; use temperature 0",
+            ));
+        }
+        if let Some(top_p) = self.top_p
+            && (!top_p.is_finite() || top_p != 1.0)
+        {
+            return Err(ApiError::unsupported_capability(
+                "top_p sampling is not supported yet; use top_p 1",
+            ));
         }
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
