@@ -7,7 +7,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, Sse},
     },
-    routing::get,
+    routing::{get, post},
 };
 use futures::stream;
 use llm_api::{
@@ -17,7 +17,7 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
     ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
-use llm_hub::SnapshotManifest;
+use llm_hub::{HubError, ModelStore, SnapshotManifest};
 use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
 use llm_telemetry::{ServerMetrics, TokenCounters};
@@ -51,6 +51,7 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
         .route("/v1/models", get(models))
         .route("/admin/models", get(admin_models))
         .route("/admin/models/{alias}", get(admin_model))
+        .route("/admin/models/{alias}/verify", post(admin_model_verify))
         .route("/admin/metrics", get(admin_metrics))
         .route(
             "/v1/chat/completions",
@@ -268,6 +269,37 @@ async fn admin_model(
     Ok(Json(admin_model_status(&metadata)))
 }
 
+async fn admin_model_verify(
+    AxumPath(alias): AxumPath<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, EngineError> {
+    let metadata = state.runtime.model_metadata();
+    if alias != metadata.id {
+        return Err(RuntimeError::Backend(BackendError::ModelNotFound {
+            requested: alias,
+            available: metadata.id,
+        })
+        .into());
+    }
+    let snapshot_path = metadata.snapshot_path.ok_or_else(|| {
+        RuntimeError::Api(ApiError::unsupported_capability(
+            "model verification requires snapshot metadata",
+        ))
+    })?;
+    let verification = ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .map_err(EngineError::ModelStore)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "snapshot_path": verification.snapshot.path,
+        "repo_id": verification.snapshot.manifest.repo_id,
+        "resolved_commit": verification.snapshot.manifest.resolved_commit,
+        "manifest_digest": verification.snapshot.manifest_digest,
+        "verified_files": verification.verified_files,
+        "verified_bytes": verification.verified_bytes,
+    })))
+}
+
 fn admin_model_status(metadata: &BackendModelMetadata) -> Value {
     json!({
         "id": metadata.id,
@@ -435,6 +467,7 @@ fn parse_json_request<T>(
 #[derive(Debug)]
 enum EngineError {
     Runtime(RuntimeError),
+    ModelStore(HubError),
     Serialize(serde_json::Error),
 }
 
@@ -499,6 +532,17 @@ impl IntoResponse for EngineError {
                 "response_serialization_failed",
                 "response_serialization",
                 true,
+                err.to_string(),
+            ),
+            Self::ModelStore(err) => (
+                if err.code() == "model_not_found" {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                },
+                err.code(),
+                "model_artifact_verification",
+                false,
                 err.to_string(),
             ),
         };

@@ -7,7 +7,9 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, ModelBackend,
 };
 use llm_engine::{build_router, build_router_with_backend};
+use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -109,6 +111,32 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
         body["manifest_digest"],
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
+}
+
+#[tokio::test]
+async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_test_snapshot(temp.path()).await;
+    let response = build_router_with_backend(Box::new(SnapshotMetadataBackend {
+        snapshot_path: snapshot_path.clone(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/admin/models/local-qwen36/verify")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin model verify response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["repo_id"], "Qwen/Qwen3.6-35B-A3B");
+    assert_eq!(body["verified_files"], 1);
+    assert_eq!(body["verified_bytes"], 2);
+    assert_eq!(body["snapshot_path"], snapshot_path.display().to_string());
 }
 
 #[tokio::test]
@@ -753,6 +781,66 @@ impl ModelBackend for MetadataBackend {
             finish_reason: llm_api::FinishReason::Stop,
         })
     }
+}
+
+struct SnapshotMetadataBackend {
+    snapshot_path: PathBuf,
+}
+
+#[async_trait]
+impl ModelBackend for SnapshotMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata {
+            id: "local-qwen36".to_owned(),
+            backend: "native-qwen".to_owned(),
+            family: Some("qwen".to_owned()),
+            loader: Some("native-metal".to_owned()),
+            quantization: Some("bf16".to_owned()),
+            repo_id: Some("Qwen/Qwen3.6-35B-A3B".to_owned()),
+            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            profile: Some("qwen36-safetensors-bf16".to_owned()),
+            snapshot_path: Some(self.snapshot_path.clone()),
+            manifest_digest: None,
+        }
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "metadata".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+}
+
+async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
+    let store = ModelStore::new(root);
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+    snapshot_path
 }
 
 async fn body_json(body: Body) -> Value {
