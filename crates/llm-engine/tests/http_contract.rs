@@ -483,6 +483,10 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         body["native_qwen_metal"]["kernels"].is_object(),
         "native Qwen Metal metrics are exposed"
     );
+    assert!(
+        body["native_qwen_metal"]["bf16_matrix_cache"].is_object(),
+        "native Qwen Metal BF16 matrix cache metrics are exposed"
+    );
 }
 
 #[tokio::test]

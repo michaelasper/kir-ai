@@ -1,5 +1,5 @@
 use metal::{
-    CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState, Device,
+    Buffer, CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState, Device,
     MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
 };
 use std::ffi::c_void;
@@ -63,6 +63,28 @@ pub struct ArgmaxResult {
 pub struct TopKResult {
     pub index: usize,
     pub value: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Bf16MatrixBuffer {
+    buffer: Option<Buffer>,
+    rows: usize,
+    columns: usize,
+    byte_len: usize,
+}
+
+impl Bf16MatrixBuffer {
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.byte_len
+    }
 }
 
 impl MetalDevice {
@@ -873,6 +895,16 @@ impl MetalDevice {
         cols: usize,
         vector: &[f32],
     ) -> Result<Vec<f32>, MetalError> {
+        let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
+        self.matvec_bf16_f32_buffered(&matrix_buffer, vector)
+    }
+
+    pub fn new_bf16_matrix_buffer(
+        &self,
+        matrix: &[u16],
+        rows: usize,
+        cols: usize,
+    ) -> Result<Bf16MatrixBuffer, MetalError> {
         let expected_matrix_len = rows
             .checked_mul(cols)
             .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
@@ -882,6 +914,31 @@ impl MetalDevice {
                 matrix.len()
             )));
         }
+        let byte_len = std::mem::size_of_val(matrix);
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(self.device.new_buffer_with_data(
+                matrix.as_ptr().cast::<c_void>(),
+                byte_len as u64,
+                MTLResourceOptions::StorageModeShared,
+            ))
+        };
+        Ok(Bf16MatrixBuffer {
+            buffer,
+            rows,
+            columns: cols,
+            byte_len,
+        })
+    }
+
+    pub fn matvec_bf16_f32_buffered(
+        &self,
+        matrix: &Bf16MatrixBuffer,
+        vector: &[f32],
+    ) -> Result<Vec<f32>, MetalError> {
+        let rows = matrix.rows;
+        let cols = matrix.columns;
         if vector.len() != cols {
             return Err(MetalError::InvalidShape(format!(
                 "vector length {} does not match cols {cols}",
@@ -900,17 +957,16 @@ impl MetalDevice {
         let cols_u32 = u32::try_from(cols).map_err(|err| {
             MetalError::InvalidShape(format!("column count does not fit u32: {err}"))
         })?;
-        let matrix_byte_len = std::mem::size_of_val(matrix) as u64;
         let vector_byte_len = std::mem::size_of_val(vector) as u64;
         let output_byte_len = rows
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| MetalError::InvalidShape("output byte length overflow".to_owned()))?
             as u64;
-        let matrix_buffer = self.device.new_buffer_with_data(
-            matrix.as_ptr().cast::<c_void>(),
-            matrix_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let Some(matrix_buffer) = matrix.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty BF16 matvec requires a matrix buffer".to_owned(),
+            ));
+        };
         let vector_buffer = self.device.new_buffer_with_data(
             vector.as_ptr().cast::<c_void>(),
             vector_byte_len,
@@ -923,7 +979,7 @@ impl MetalDevice {
         let command_buffer = self.matvec_bf16_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.matvec_bf16_f32.pipeline);
-        encoder.set_buffer(0, Some(&matrix_buffer), 0);
+        encoder.set_buffer(0, Some(matrix_buffer), 0);
         encoder.set_buffer(1, Some(&vector_buffer), 0);
         encoder.set_bytes(
             2,
@@ -972,15 +1028,25 @@ impl MetalDevice {
         vectors: &[f32],
         vector_count: usize,
     ) -> Result<Vec<f32>, MetalError> {
+        let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
+        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count)
+    }
+
+    pub fn batched_matvec_bf16_f32_buffered(
+        &self,
+        matrix: &Bf16MatrixBuffer,
+        vectors: &[f32],
+        vector_count: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        let rows = matrix.rows;
+        let cols = matrix.columns;
         let expected_matrix_len = rows
             .checked_mul(cols)
             .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
-        if matrix.len() != expected_matrix_len {
-            return Err(MetalError::InvalidShape(format!(
-                "matrix length {} does not match rows {rows} * cols {cols}",
-                matrix.len()
-            )));
-        }
+        debug_assert_eq!(
+            matrix.byte_len / std::mem::size_of::<u16>(),
+            expected_matrix_len
+        );
         let expected_vectors_len = vector_count.checked_mul(cols).ok_or_else(|| {
             MetalError::InvalidShape("batched vector shape overflows usize".to_owned())
         })?;
@@ -1008,17 +1074,16 @@ impl MetalDevice {
         let vector_count_u32 = u32::try_from(vector_count).map_err(|err| {
             MetalError::InvalidShape(format!("vector count does not fit u32: {err}"))
         })?;
-        let matrix_byte_len = std::mem::size_of_val(matrix) as u64;
         let vector_byte_len = std::mem::size_of_val(vectors) as u64;
         let output_byte_len = output_len
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| MetalError::InvalidShape("output byte length overflow".to_owned()))?
             as u64;
-        let matrix_buffer = self.device.new_buffer_with_data(
-            matrix.as_ptr().cast::<c_void>(),
-            matrix_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let Some(matrix_buffer) = matrix.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty batched BF16 matvec requires a matrix buffer".to_owned(),
+            ));
+        };
         let vector_buffer = self.device.new_buffer_with_data(
             vectors.as_ptr().cast::<c_void>(),
             vector_byte_len,
@@ -1031,7 +1096,7 @@ impl MetalDevice {
         let command_buffer = self.batched_matvec_bf16_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.batched_matvec_bf16_f32.pipeline);
-        encoder.set_buffer(0, Some(&matrix_buffer), 0);
+        encoder.set_buffer(0, Some(matrix_buffer), 0);
         encoder.set_buffer(1, Some(&vector_buffer), 0);
         encoder.set_bytes(
             2,

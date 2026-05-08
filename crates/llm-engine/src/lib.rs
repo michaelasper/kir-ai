@@ -302,7 +302,95 @@ pub struct NativeQwenBackend {
 #[derive(Clone)]
 enum NativeQwenMatvecBackend {
     Cpu,
-    Metal(llm_metal::MetalDevice),
+    Metal(Arc<NativeQwenMetalState>),
+}
+
+struct NativeQwenMetalState {
+    device: llm_metal::MetalDevice,
+    bf16_matrices: Mutex<HashMap<Bf16MatrixCacheKey, Arc<llm_metal::Bf16MatrixBuffer>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Bf16MatrixCacheKey {
+    tensor: String,
+    element_offset: usize,
+    rows: usize,
+    columns: usize,
+}
+
+#[derive(Debug)]
+enum NativeQwenMetalBufferError {
+    Shape(String),
+    Tensor(TensorLoadError),
+    Metal(llm_metal::MetalError),
+}
+
+impl std::fmt::Display for NativeQwenMetalBufferError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shape(message) => formatter.write_str(message),
+            Self::Tensor(err) => write!(formatter, "{err}"),
+            Self::Metal(err) => write!(formatter, "{err}"),
+        }
+    }
+}
+
+impl NativeQwenMetalState {
+    fn new(device: llm_metal::MetalDevice) -> Self {
+        Self {
+            device,
+            bf16_matrices: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn bf16_matrix_buffer(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Arc<llm_metal::Bf16MatrixBuffer>, NativeQwenMetalBufferError> {
+        let key = Bf16MatrixCacheKey {
+            tensor: tensor.to_owned(),
+            element_offset,
+            rows,
+            columns,
+        };
+        if let Some(buffer) = self
+            .bf16_matrices
+            .lock()
+            .expect("BF16 matrix buffer cache lock is not poisoned")
+            .get(&key)
+            .cloned()
+        {
+            native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
+            return Ok(buffer);
+        }
+        native_qwen_metal_metrics().record_bf16_matrix_cache_miss();
+        let element_count = rows.checked_mul(columns).ok_or_else(|| {
+            NativeQwenMetalBufferError::Shape("BF16 matrix element count overflow".to_owned())
+        })?;
+        let weights = store
+            .bf16_tensor_bits_range(tensor, element_offset, element_count)
+            .map_err(NativeQwenMetalBufferError::Tensor)?;
+        let buffer = Arc::new(
+            self.device
+                .new_bf16_matrix_buffer(&weights, rows, columns)
+                .map_err(NativeQwenMetalBufferError::Metal)?,
+        );
+        let mut matrices = self
+            .bf16_matrices
+            .lock()
+            .expect("BF16 matrix buffer cache lock is not poisoned");
+        if let Some(existing) = matrices.get(&key) {
+            native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
+            return Ok(Arc::clone(existing));
+        }
+        native_qwen_metal_metrics().record_bf16_matrix_cache_upload(buffer.byte_len() as u64);
+        matrices.insert(key, Arc::clone(&buffer));
+        Ok(buffer)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -312,9 +400,18 @@ struct MetalKernelCounters {
     fallbacks: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MetalBf16MatrixCacheCounters {
+    hits: u64,
+    misses: u64,
+    uploads: u64,
+    bytes_uploaded: u64,
+}
+
 #[derive(Debug, Default)]
 struct MetalBackendMetrics {
     counters: Mutex<HashMap<&'static str, MetalKernelCounters>>,
+    bf16_matrix_cache: Mutex<MetalBf16MatrixCacheCounters>,
     warned_fallbacks: Mutex<HashSet<String>>,
 }
 
@@ -361,11 +458,40 @@ impl MetalBackendMetrics {
         }
     }
 
+    fn record_bf16_matrix_cache_hit(&self) {
+        let mut cache = self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        cache.hits += 1;
+    }
+
+    fn record_bf16_matrix_cache_miss(&self) {
+        let mut cache = self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        cache.misses += 1;
+    }
+
+    fn record_bf16_matrix_cache_upload(&self, byte_len: u64) {
+        let mut cache = self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        cache.uploads += 1;
+        cache.bytes_uploaded += byte_len;
+    }
+
     fn snapshot(&self) -> Value {
         let counters = self
             .counters
             .lock()
             .expect("Metal metrics lock is not poisoned");
+        let bf16_matrix_cache = *self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
         let mut kernels = serde_json::Map::new();
         let mut kernel_names = counters.keys().copied().collect::<Vec<_>>();
         kernel_names.sort_unstable();
@@ -380,7 +506,15 @@ impl MetalBackendMetrics {
                 }),
             );
         }
-        json!({ "kernels": kernels })
+        json!({
+            "kernels": kernels,
+            "bf16_matrix_cache": {
+                "hits": bf16_matrix_cache.hits,
+                "misses": bf16_matrix_cache.misses,
+                "uploads": bf16_matrix_cache.uploads,
+                "bytes_uploaded": bf16_matrix_cache.bytes_uploaded,
+            }
+        })
     }
 
     fn update_counter(&self, kernel: &'static str, update: impl FnOnce(&mut MetalKernelCounters)) {
@@ -400,7 +534,7 @@ fn native_qwen_metal_metrics() -> &'static MetalBackendMetrics {
 impl NativeQwenMatvecBackend {
     fn system_default() -> Self {
         match llm_metal::MetalDevice::system_default_result() {
-            Ok(Some(device)) => Self::Metal(device),
+            Ok(Some(device)) => Self::Metal(Arc::new(NativeQwenMetalState::new(device))),
             Ok(None) => Self::Cpu,
             Err(err) => {
                 tracing::warn!("Metal Qwen matvec backend unavailable: {err}");
@@ -494,7 +628,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
         tensor: &str,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let Self::Metal(device) = self else {
+        let Self::Metal(state) = self else {
             return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
         };
         let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
@@ -505,27 +639,21 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             );
             return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
         };
-        let element_count = rows.checked_mul(columns);
-        let Some(element_count) = element_count else {
-            Self::record_metal_fallback(
-                "matvec_bf16_f32",
-                format!("tensor={tensor},rows={rows},cols={columns}"),
-                "BF16 matrix element count overflow",
-            );
-            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
-        };
-        let Ok(weights) = store.bf16_tensor_bits_range(tensor, 0, element_count) else {
-            Self::record_metal_fallback(
-                "matvec_bf16_f32",
-                format!("tensor={tensor},rows={rows},cols={columns}"),
-                "BF16 tensor range load failed before Metal dispatch",
-            );
-            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+        let matrix = match state.bf16_matrix_buffer(store, tensor, 0, rows, columns) {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "matvec_bf16_f32",
+                    format!("tensor={tensor},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+            }
         };
         Self::run_metal_tensor(
             "matvec_bf16_f32",
             format!("tensor={tensor},rows={rows},cols={columns}"),
-            || device.matvec_bf16_f32(&weights, rows, columns, input),
+            || state.device.matvec_bf16_f32_buffered(&matrix, input),
             || Self::cpu().bf16_matvec_row_major_f32(store, tensor, input),
         )
     }
@@ -536,7 +664,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
-        let Self::Metal(device) = self else {
+        let Self::Metal(state) = self else {
             return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
         };
         let Some(first_input) = inputs.first() else {
@@ -562,21 +690,16 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             );
             return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
         };
-        let Some(element_count) = rows.checked_mul(columns) else {
-            Self::record_metal_fallback(
-                "batched_matvec_bf16_f32",
-                format!("tensor={tensor},rows={rows},cols={columns}"),
-                "BF16 matrix element count overflow",
-            );
-            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
-        };
-        let Ok(weights) = store.bf16_tensor_bits_range(tensor, 0, element_count) else {
-            Self::record_metal_fallback(
-                "batched_matvec_bf16_f32",
-                format!("tensor={tensor},rows={rows},cols={columns}"),
-                "BF16 tensor range load failed before Metal dispatch",
-            );
-            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        let matrix = match state.bf16_matrix_buffer(store, tensor, 0, rows, columns) {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "batched_matvec_bf16_f32",
+                    format!("tensor={tensor},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+            }
         };
         Self::run_metal_tensor(
             "batched_matvec_bf16_f32",
@@ -585,8 +708,9 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 inputs.len()
             ),
             || {
-                device
-                    .batched_matvec_bf16_f32(&weights, rows, columns, &flattened, inputs.len())
+                state
+                    .device
+                    .batched_matvec_bf16_f32_buffered(&matrix, &flattened, inputs.len())
                     .map(|values| {
                         values
                             .chunks_exact(rows)
@@ -605,7 +729,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
         input: &[f32],
         chunk_rows: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let Self::Metal(device) = self else {
+        let Self::Metal(state) = self else {
             return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
         };
         if chunk_rows == 0 {
@@ -638,28 +762,28 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 );
                 return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
             };
-            let Some(element_count) = rows_in_chunk.checked_mul(columns) else {
-                Self::record_metal_fallback(
-                    "matvec_bf16_f32",
-                    format!("tensor={tensor},rows_in_chunk={rows_in_chunk},cols={columns}"),
-                    "BF16 chunk element count overflow",
-                );
-                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
-            };
-            let Ok(weights) = store.bf16_tensor_bits_range(tensor, element_offset, element_count)
-            else {
-                Self::record_metal_fallback(
-                    "matvec_bf16_f32",
-                    format!(
-                        "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
-                    ),
-                    "BF16 tensor range load failed before Metal dispatch",
-                );
-                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+            let matrix = match state.bf16_matrix_buffer(
+                store,
+                tensor,
+                element_offset,
+                rows_in_chunk,
+                columns,
+            ) {
+                Ok(matrix) => matrix,
+                Err(err) => {
+                    Self::record_metal_fallback(
+                        "matvec_bf16_f32",
+                        format!(
+                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
+                        ),
+                        err,
+                    );
+                    return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+                }
             };
             let metrics = native_qwen_metal_metrics();
             metrics.record_attempt("matvec_bf16_f32");
-            let logits = match device.matvec_bf16_f32(&weights, rows_in_chunk, columns, input) {
+            let logits = match state.device.matvec_bf16_f32_buffered(&matrix, input) {
                 Ok(logits) => {
                     metrics.record_success("matvec_bf16_f32");
                     logits
@@ -688,7 +812,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
         top_k: usize,
         chunk_rows: usize,
     ) -> Result<Vec<TopKLogit>, TensorLoadError> {
-        let Self::Metal(device) = self else {
+        let Self::Metal(state) = self else {
             return Self::cpu().bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
         };
         if chunk_rows == 0 {
@@ -733,30 +857,29 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 return Self::cpu()
                     .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
             };
-            let Some(element_count) = rows_in_chunk.checked_mul(columns) else {
-                Self::record_metal_fallback(
-                    "matvec_bf16_f32",
-                    format!("tensor={tensor},rows_in_chunk={rows_in_chunk},cols={columns}"),
-                    "BF16 chunk element count overflow",
-                );
-                return Self::cpu()
-                    .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
-            };
-            let Ok(weights) = store.bf16_tensor_bits_range(tensor, element_offset, element_count)
-            else {
-                Self::record_metal_fallback(
-                    "matvec_bf16_f32",
-                    format!(
-                        "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
-                    ),
-                    "BF16 tensor range load failed before Metal dispatch",
-                );
-                return Self::cpu()
-                    .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+            let matrix = match state.bf16_matrix_buffer(
+                store,
+                tensor,
+                element_offset,
+                rows_in_chunk,
+                columns,
+            ) {
+                Ok(matrix) => matrix,
+                Err(err) => {
+                    Self::record_metal_fallback(
+                        "matvec_bf16_f32",
+                        format!(
+                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
+                        ),
+                        err,
+                    );
+                    return Self::cpu()
+                        .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+                }
             };
             let metrics = native_qwen_metal_metrics();
             metrics.record_attempt("matvec_bf16_f32");
-            let logits = match device.matvec_bf16_f32(&weights, rows_in_chunk, columns, input) {
+            let logits = match state.device.matvec_bf16_f32_buffered(&matrix, input) {
                 Ok(logits) => {
                     metrics.record_success("matvec_bf16_f32");
                     logits
@@ -774,7 +897,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 }
             };
             metrics.record_attempt("top_k_f32");
-            let chunk_top = match device.top_k_f32(&logits, top_k.min(rows_in_chunk)) {
+            let chunk_top = match state.device.top_k_f32(&logits, top_k.min(rows_in_chunk)) {
                 Ok(chunk_top) => {
                     metrics.record_success("top_k_f32");
                     chunk_top
@@ -815,10 +938,10 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         match self {
             Self::Cpu => Self::cpu().matvec_row_major_f32(input, weights, rows, columns),
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "matvec_f32",
                 format!("rows={rows},cols={columns},input_len={}", input.len()),
-                || device.matvec_f32(weights, rows, columns, input),
+                || metal.device.matvec_f32(weights, rows, columns, input),
                 || Self::cpu().matvec_row_major_f32(input, weights, rows, columns),
             ),
         }
@@ -832,10 +955,10 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         match self {
             Self::Cpu => Self::cpu().qwen_rms_norm_f32(input, weight, eps),
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "qwen_rms_norm",
                 format!("len={},weight_len={}", input.len(), weight.len()),
-                || device.qwen_rms_norm_f32(input, weight, eps),
+                || metal.device.qwen_rms_norm_f32(input, weight, eps),
                 || Self::cpu().qwen_rms_norm_f32(input, weight, eps),
             ),
         }
@@ -844,10 +967,10 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
     fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
         match self {
             Self::Cpu => Self::cpu().softmax_f32(scores),
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "softmax_f32",
                 format!("len={}", scores.len()),
-                || device.softmax_f32(scores),
+                || metal.device.softmax_f32(scores),
                 || Self::cpu().softmax_f32(scores),
             ),
         }
@@ -864,14 +987,21 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             Self::Cpu => {
                 Self::cpu().linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
             }
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "linear_attention_conv1d_silu_f32",
                 format!(
                     "window_len={},weight_len={},conv_dim={conv_dim},kernel_size={kernel_size}",
                     window.len(),
                     weights.len()
                 ),
-                || device.linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size),
+                || {
+                    metal.device.linear_attention_conv1d_silu_f32(
+                        window,
+                        weights,
+                        conv_dim,
+                        kernel_size,
+                    )
+                },
                 || {
                     Self::cpu().linear_attention_conv1d_silu_f32(
                         window,
@@ -891,7 +1021,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
     ) -> Result<Vec<TopKWeight>, MathError> {
         match self {
             Self::Cpu => Self::cpu().softmax_top_k_f32(logits, top_k),
-            Self::Metal(device) => {
+            Self::Metal(metal) => {
                 if top_k == 0
                     || top_k > logits.len()
                     || logits.iter().any(|value| !value.is_finite())
@@ -905,7 +1035,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 }
                 let metrics = native_qwen_metal_metrics();
                 metrics.record_attempt("top_k_f32");
-                let top = match device.top_k_f32(logits, top_k) {
+                let top = match metal.device.top_k_f32(logits, top_k) {
                     Ok(top) => top,
                     Err(err) => {
                         metrics.record_fallback(
@@ -942,14 +1072,14 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         match self {
             Self::Cpu => Self::cpu().weighted_sum_f32(values, weights, vector_len),
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "weighted_sum_f32",
                 format!(
                     "values_len={},weights_len={},vector_len={vector_len}",
                     values.len(),
                     weights.len()
                 ),
-                || device.weighted_sum_f32(values, weights, vector_len),
+                || metal.device.weighted_sum_f32(values, weights, vector_len),
                 || Self::cpu().weighted_sum_f32(values, weights, vector_len),
             ),
         }
@@ -978,7 +1108,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 key_head_dim,
                 value_head_dim,
             ),
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "linear_attention_recurrent_update_f32",
                 format!(
                     "state_len={},key_len={},value_len={},memory_len={},key_head_dim={key_head_dim},value_head_dim={value_head_dim}",
@@ -988,7 +1118,7 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                     memory.len()
                 ),
                 || {
-                    device.linear_attention_recurrent_update_f32(
+                    metal.device.linear_attention_recurrent_update_f32(
                         state,
                         key,
                         value,
@@ -1026,13 +1156,17 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             Self::Cpu => {
                 Self::cpu().select_head_rows_f32(values, row_count, row_len, head_start, head_len)
             }
-            Self::Metal(device) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math(
                 "select_head_rows_f32",
                 format!(
                     "values_len={},row_count={row_count},row_len={row_len},head_start={head_start},head_len={head_len}",
                     values.len()
                 ),
-                || device.select_head_rows_f32(values, row_count, row_len, head_start, head_len),
+                || {
+                    metal
+                        .device
+                        .select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+                },
                 || {
                     Self::cpu()
                         .select_head_rows_f32(values, row_count, row_len, head_start, head_len)
@@ -2607,6 +2741,22 @@ mod tests {
         assert_eq!(matvec["attempts"], 2);
         assert_eq!(matvec["successes"], 1);
         assert_eq!(matvec["fallbacks"], 1);
+    }
+
+    #[test]
+    fn metal_backend_metrics_records_bf16_matrix_cache_activity() {
+        let metrics = MetalBackendMetrics::default();
+
+        metrics.record_bf16_matrix_cache_miss();
+        metrics.record_bf16_matrix_cache_upload(12);
+        metrics.record_bf16_matrix_cache_hit();
+
+        let snapshot = metrics.snapshot();
+        let cache = &snapshot["bf16_matrix_cache"];
+        assert_eq!(cache["hits"], 1);
+        assert_eq!(cache["misses"], 1);
+        assert_eq!(cache["uploads"], 1);
+        assert_eq!(cache["bytes_uploaded"], 12);
     }
 
     #[test]

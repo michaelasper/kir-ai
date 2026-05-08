@@ -160,6 +160,37 @@ fn metal_matvec_bf16_f32_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_buffered_matvec_bf16_f32_reuses_matrix_buffer() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let matrix = [1.0, 2.0, 3.0, 4.0, -1.0, 0.5].map(f32_to_bf16_bits);
+    let matrix_buffer = device
+        .new_bf16_matrix_buffer(&matrix, 2, 3)
+        .expect("bf16 matrix buffer uploads");
+
+    assert_eq!(matrix_buffer.rows(), 2);
+    assert_eq!(matrix_buffer.columns(), 3);
+    assert_eq!(matrix_buffer.byte_len(), 12);
+
+    let first = device
+        .matvec_bf16_f32_buffered(&matrix_buffer, &[0.5, -2.0, 4.0])
+        .expect("buffered bf16 matvec succeeds");
+    let second = device
+        .matvec_bf16_f32_buffered(&matrix_buffer, &[1.0, 0.0, -1.0])
+        .expect("buffered bf16 matvec succeeds again");
+    let batched = device
+        .batched_matvec_bf16_f32_buffered(&matrix_buffer, &[0.5, -2.0, 4.0, 1.0, 0.0, -1.0], 2)
+        .expect("buffered batched bf16 matvec succeeds");
+
+    assert_close(&first, &[8.5, 6.0], 1e-6);
+    assert_close(&second, &[-2.0, 3.5], 1e-6);
+    assert_close(&batched, &[8.5, 6.0, -2.0, 3.5], 1e-6);
+}
+
+#[test]
 fn metal_batched_matvec_bf16_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
