@@ -100,7 +100,8 @@ Unknown aliases return `404` with `model_not_found`.
 ## `GET /admin/metrics`
 
 Returns aggregate request, stream, failure, prompt-token, completion-token, and
-total-token counters for the running process.
+total-token counters for the running process. The response also includes current
+`active_requests` and cumulative admin-triggered `cancelled_requests`.
 
 ## `POST /admin/models/{alias}/verify`
 

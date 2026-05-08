@@ -872,6 +872,12 @@ async fn admin_metrics(
         "successful_requests": metrics.successful_requests(),
         "failed_requests": metrics.failed_requests(),
         "streamed_requests": metrics.streamed_requests(),
+        "active_requests": state
+            .active_requests
+            .lock()
+            .expect("active request lock is not poisoned")
+            .len(),
+        "cancelled_requests": metrics.cancelled_requests(),
         "tokens": {
             "prompt_tokens": tokens.prompt_tokens(),
             "completion_tokens": tokens.completion_tokens(),
@@ -894,6 +900,7 @@ async fn admin_cancel_request(
         .cloned()
         .ok_or_else(|| EngineError::RequestNotFound(request_id.clone()))?;
     cancellation.cancel();
+    record_cancellation_metrics(&state);
     Ok(Json(json!({
         "object": "admin.request_cancellation",
         "request_id": request_id,
@@ -1206,6 +1213,14 @@ fn record_failure_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_failure();
+}
+
+fn record_cancellation_metrics(state: &AppState) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_cancellation();
 }
 
 fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, EngineError> {

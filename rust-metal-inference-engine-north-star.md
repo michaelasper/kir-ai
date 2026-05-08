@@ -215,6 +215,7 @@ Current verified state:
 - Existing snapshot verification now reuses a matching manifest instead of rewriting timestamp-only metadata, keeping no-op manifest digests stable.
 - Public docs now describe supported temperature/top-p sampling controls and the full admin endpoint surface, including mutating model-store operations and admin Bearer-token expectations.
 - `POST /admin/requests/{request_id}/cancel` can cancel active chat and text-completion requests registered with `x-request-id`/`x-llm-request-id` or a generated request ID. Cancelled backend requests return stable `cancelled` error metadata.
+- `GET /admin/metrics` now reports current active request count and cumulative admin-triggered cancellation count alongside request and token counters.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.

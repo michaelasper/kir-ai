@@ -70,6 +70,7 @@ pub struct ServerMetrics {
     successful_requests: u64,
     failed_requests: u64,
     streamed_requests: u64,
+    cancelled_requests: u64,
     tokens: TokenCounters,
 }
 
@@ -90,6 +91,10 @@ impl ServerMetrics {
         self.failed_requests += 1;
     }
 
+    pub fn record_cancellation(&mut self) {
+        self.cancelled_requests += 1;
+    }
+
     pub fn requests_total(&self) -> u64 {
         self.requests_total
     }
@@ -104,6 +109,10 @@ impl ServerMetrics {
 
     pub fn streamed_requests(&self) -> u64 {
         self.streamed_requests
+    }
+
+    pub fn cancelled_requests(&self) -> u64 {
+        self.cancelled_requests
     }
 
     pub fn tokens(&self) -> TokenCounters {
@@ -150,6 +159,10 @@ mod tests {
         assert_eq!(metrics.successful_requests(), 2);
         assert_eq!(metrics.failed_requests(), 1);
         assert_eq!(metrics.streamed_requests(), 1);
+        assert_eq!(metrics.cancelled_requests(), 0);
         assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
+
+        metrics.record_cancellation();
+        assert_eq!(metrics.cancelled_requests(), 1);
     }
 }

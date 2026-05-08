@@ -371,6 +371,70 @@ async fn admin_metrics_accepts_configured_bearer_token() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_active_and_cancelled_requests() {
+    let entered = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+        entered: entered.clone(),
+        cancelled: cancelled.clone(),
+    }));
+    let request_id = "metrics-cancel";
+    let first = tokio::spawn(
+        app.clone()
+            .oneshot(chat_request_body_with_id("long running", request_id)),
+    );
+    entered.notified().await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["active_requests"], 1);
+    assert_eq!(body["cancelled_requests"], 0);
+
+    let cancel_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/requests/{request_id}/cancel"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cancel response");
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend receives cancellation");
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::REQUEST_TIMEOUT);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["active_requests"], 0);
+    assert_eq!(body["cancelled_requests"], 1);
+    assert_eq!(body["failed_requests"], 1);
+}
+
+#[tokio::test]
 async fn concurrent_generation_returns_model_overloaded() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
