@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use axum::{
+    Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
@@ -17,7 +18,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -134,6 +135,55 @@ impl ModelBackend for BlockingBackend {
         self.release.notified().await;
         Ok(BackendOutput {
             text: "released".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+struct FairnessBackend {
+    order: Arc<Mutex<Vec<String>>>,
+    entered: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl ModelBackend for FairnessBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        let label = if request.prompt.contains("first-long") {
+            "first-long"
+        } else if request.prompt.contains("second-long") {
+            "second-long"
+        } else if request.prompt.contains("third-short") {
+            "third-short"
+        } else {
+            "unknown"
+        };
+        self.order
+            .lock()
+            .expect("order lock is not poisoned")
+            .push(label.to_owned());
+        self.entered.notify_waiters();
+        let _permit = self
+            .release
+            .acquire()
+            .await
+            .expect("release semaphore open");
+        Ok(BackendOutput {
+            text: label.to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,

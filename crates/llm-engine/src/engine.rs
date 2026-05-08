@@ -37,7 +37,7 @@ use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{
@@ -46,7 +46,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
@@ -56,7 +56,7 @@ struct AppState {
     runtime: Arc<EngineRuntime>,
     metrics: Arc<Mutex<ServerMetrics>>,
     generation_phases: Arc<GenerationPhaseMetrics>,
-    model_permits: Arc<Semaphore>,
+    model_scheduler: Arc<ModelScheduler>,
     active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
     next_request_id: Arc<AtomicU64>,
     admin_token: Option<Arc<str>>,
@@ -135,6 +135,403 @@ impl Drop for GenerationPhaseGuard {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchedulerClass {
+    Prefill,
+    Decode,
+}
+
+impl SchedulerClass {
+    fn as_phase(self) -> GenerationPhase {
+        match self {
+            Self::Prefill => GenerationPhase::Prefill,
+            Self::Decode => GenerationPhase::Decode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelSchedulerOptions {
+    concurrency_limit: usize,
+    queue_limit: usize,
+    queue_timeout: Option<Duration>,
+    prefill_threshold_chars: usize,
+    prefill_burst: usize,
+}
+
+#[derive(Debug)]
+struct ModelScheduler {
+    options: ModelSchedulerOptions,
+    state: Mutex<ModelSchedulerState>,
+    notify: Notify,
+}
+
+#[derive(Debug, Default)]
+struct ModelSchedulerState {
+    next_ticket: u64,
+    queued_prefill: VecDeque<u64>,
+    queued_decode: VecDeque<u64>,
+    active_prefill: usize,
+    active_decode: usize,
+    prefill_admissions_since_decode: usize,
+    admitted_prefill: u64,
+    admitted_decode: u64,
+    completed: u64,
+    cancelled: u64,
+    failed: u64,
+    queued_cancelled: u64,
+    queue_timeouts: u64,
+}
+
+impl ModelSchedulerState {
+    fn active_total(&self) -> usize {
+        self.active_prefill + self.active_decode
+    }
+
+    fn queued_total(&self) -> usize {
+        self.queued_prefill.len() + self.queued_decode.len()
+    }
+
+    fn queue(&self, class: SchedulerClass) -> &VecDeque<u64> {
+        match class {
+            SchedulerClass::Prefill => &self.queued_prefill,
+            SchedulerClass::Decode => &self.queued_decode,
+        }
+    }
+
+    fn queue_mut(&mut self, class: SchedulerClass) -> &mut VecDeque<u64> {
+        match class {
+            SchedulerClass::Prefill => &mut self.queued_prefill,
+            SchedulerClass::Decode => &mut self.queued_decode,
+        }
+    }
+
+    fn start_active(&mut self, admission_class: SchedulerClass, initial_phase: GenerationPhase) {
+        match initial_phase {
+            GenerationPhase::Prefill => self.active_prefill += 1,
+            GenerationPhase::Decode => self.active_decode += 1,
+        }
+        match admission_class {
+            SchedulerClass::Prefill => {
+                self.prefill_admissions_since_decode += 1;
+                self.admitted_prefill += 1;
+            }
+            SchedulerClass::Decode => {
+                self.prefill_admissions_since_decode = 0;
+                self.admitted_decode += 1;
+            }
+        }
+    }
+
+    fn finish_active(&mut self, phase: GenerationPhase, outcome: SchedulerOutcome) {
+        match phase {
+            GenerationPhase::Prefill => self.active_prefill = self.active_prefill.saturating_sub(1),
+            GenerationPhase::Decode => self.active_decode = self.active_decode.saturating_sub(1),
+        }
+        match outcome {
+            SchedulerOutcome::Completed => self.completed += 1,
+            SchedulerOutcome::Cancelled => self.cancelled += 1,
+            SchedulerOutcome::Failed => self.failed += 1,
+        }
+    }
+
+    fn transition_to_decode(&mut self) {
+        self.active_prefill = self.active_prefill.saturating_sub(1);
+        self.active_decode += 1;
+    }
+
+    fn next_admissible_class(&self, prefill_burst: usize) -> Option<SchedulerClass> {
+        let has_prefill = !self.queued_prefill.is_empty();
+        let has_decode = !self.queued_decode.is_empty();
+        match (has_prefill, has_decode) {
+            (false, false) => None,
+            (true, false) => Some(SchedulerClass::Prefill),
+            (false, true) => Some(SchedulerClass::Decode),
+            (true, true) => {
+                if self.prefill_admissions_since_decode >= prefill_burst {
+                    return Some(SchedulerClass::Decode);
+                }
+                let prefill_ticket = self.queued_prefill.front().copied().unwrap_or(u64::MAX);
+                let decode_ticket = self.queued_decode.front().copied().unwrap_or(u64::MAX);
+                if decode_ticket < prefill_ticket {
+                    Some(SchedulerClass::Decode)
+                } else {
+                    Some(SchedulerClass::Prefill)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchedulerOutcome {
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug)]
+struct SchedulerPermit {
+    scheduler: Arc<ModelScheduler>,
+    phase: GenerationPhase,
+    outcome: SchedulerOutcome,
+}
+
+impl SchedulerPermit {
+    fn transition_to_decode(&mut self) {
+        if self.phase == GenerationPhase::Decode {
+            return;
+        }
+        self.scheduler
+            .state
+            .lock()
+            .expect("scheduler lock is not poisoned")
+            .transition_to_decode();
+        self.phase = GenerationPhase::Decode;
+    }
+
+    fn mark_failed(&mut self) {
+        self.outcome = SchedulerOutcome::Failed;
+    }
+
+    fn mark_cancelled(&mut self) {
+        self.outcome = SchedulerOutcome::Cancelled;
+    }
+}
+
+impl Drop for SchedulerPermit {
+    fn drop(&mut self) {
+        self.scheduler
+            .state
+            .lock()
+            .expect("scheduler lock is not poisoned")
+            .finish_active(self.phase, self.outcome);
+        self.scheduler.notify.notify_waiters();
+    }
+}
+
+#[derive(Debug)]
+struct QueuedSchedulerTicket {
+    scheduler: Arc<ModelScheduler>,
+    id: u64,
+    class: SchedulerClass,
+    admitted: bool,
+    timeout: bool,
+}
+
+impl QueuedSchedulerTicket {
+    fn admitted(&mut self) {
+        self.admitted = true;
+    }
+
+    fn timed_out(&mut self) {
+        self.timeout = true;
+    }
+}
+
+impl Drop for QueuedSchedulerTicket {
+    fn drop(&mut self) {
+        if self.admitted {
+            return;
+        }
+        let mut state = self
+            .scheduler
+            .state
+            .lock()
+            .expect("scheduler lock is not poisoned");
+        let queue = state.queue_mut(self.class);
+        if let Some(index) = queue.iter().position(|ticket| *ticket == self.id) {
+            queue.remove(index);
+            if self.timeout {
+                state.queue_timeouts += 1;
+            } else {
+                state.queued_cancelled += 1;
+            }
+        }
+        drop(state);
+        self.scheduler.notify.notify_waiters();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelSchedulerSnapshot {
+    queued_prefill: usize,
+    queued_decode: usize,
+    active_prefill: usize,
+    active_decode: usize,
+    admitted_prefill: u64,
+    admitted_decode: u64,
+    completed: u64,
+    cancelled: u64,
+    failed: u64,
+    queued_cancelled: u64,
+    queue_timeouts: u64,
+}
+
+impl ModelSchedulerSnapshot {
+    fn queued_total(&self) -> usize {
+        self.queued_prefill + self.queued_decode
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchedulerAcquireError {
+    QueueFull,
+    QueueTimedOut,
+}
+
+impl ModelScheduler {
+    fn new(options: ModelSchedulerOptions) -> Self {
+        Self {
+            options,
+            state: Mutex::new(ModelSchedulerState::default()),
+            notify: Notify::new(),
+        }
+    }
+
+    fn classify_chat(&self, request: &ChatCompletionRequest) -> SchedulerClass {
+        let chars = request
+            .messages
+            .iter()
+            .map(|message| message.content.as_ref().map_or(0, String::len))
+            .sum::<usize>()
+            + request
+                .tools
+                .iter()
+                .filter_map(|tool| serde_json::to_string(tool).ok())
+                .map(|tool| tool.len())
+                .sum::<usize>();
+        self.classify_chars(chars)
+    }
+
+    fn classify_completion(&self, request: &CompletionRequest) -> SchedulerClass {
+        self.classify_chars(request.prompt.len())
+    }
+
+    fn classify_chars(&self, chars: usize) -> SchedulerClass {
+        if chars >= self.options.prefill_threshold_chars {
+            SchedulerClass::Prefill
+        } else {
+            SchedulerClass::Decode
+        }
+    }
+
+    async fn acquire(
+        self: &Arc<Self>,
+        admission_class: SchedulerClass,
+        initial_phase: GenerationPhase,
+    ) -> Result<SchedulerPermit, SchedulerAcquireError> {
+        if let Some(permit) = self.try_acquire_immediate(admission_class, initial_phase) {
+            return Ok(permit);
+        }
+        let mut ticket = self.enqueue(admission_class)?;
+        let deadline = self
+            .options
+            .queue_timeout
+            .map(|timeout| tokio::time::Instant::now() + timeout);
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            if let Some(permit) = self.try_admit_queued(ticket.id, admission_class, initial_phase) {
+                ticket.admitted();
+                return Ok(permit);
+            }
+            if let Some(deadline) = deadline {
+                tokio::select! {
+                    () = &mut notified => {}
+                    () = tokio::time::sleep_until(deadline) => {
+                        ticket.timed_out();
+                        return Err(SchedulerAcquireError::QueueTimedOut);
+                    }
+                }
+            } else {
+                notified.await;
+            }
+        }
+    }
+
+    fn try_acquire_immediate(
+        self: &Arc<Self>,
+        admission_class: SchedulerClass,
+        initial_phase: GenerationPhase,
+    ) -> Option<SchedulerPermit> {
+        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        if state.active_total() >= self.options.concurrency_limit || state.queued_total() > 0 {
+            return None;
+        }
+        state.start_active(admission_class, initial_phase);
+        Some(SchedulerPermit {
+            scheduler: Arc::clone(self),
+            phase: initial_phase,
+            outcome: SchedulerOutcome::Completed,
+        })
+    }
+
+    fn enqueue(
+        self: &Arc<Self>,
+        class: SchedulerClass,
+    ) -> Result<QueuedSchedulerTicket, SchedulerAcquireError> {
+        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        if state.queued_total() >= self.options.queue_limit {
+            return Err(SchedulerAcquireError::QueueFull);
+        }
+        state.next_ticket += 1;
+        let id = state.next_ticket;
+        state.queue_mut(class).push_back(id);
+        drop(state);
+        self.notify.notify_waiters();
+        Ok(QueuedSchedulerTicket {
+            scheduler: Arc::clone(self),
+            id,
+            class,
+            admitted: false,
+            timeout: false,
+        })
+    }
+
+    fn try_admit_queued(
+        self: &Arc<Self>,
+        ticket: u64,
+        admission_class: SchedulerClass,
+        initial_phase: GenerationPhase,
+    ) -> Option<SchedulerPermit> {
+        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        if state.active_total() >= self.options.concurrency_limit {
+            return None;
+        }
+        if state.next_admissible_class(self.options.prefill_burst)? != admission_class {
+            return None;
+        }
+        if state.queue(admission_class).front().copied() != Some(ticket) {
+            return None;
+        }
+        state.queue_mut(admission_class).pop_front();
+        state.start_active(admission_class, initial_phase);
+        Some(SchedulerPermit {
+            scheduler: Arc::clone(self),
+            phase: initial_phase,
+            outcome: SchedulerOutcome::Completed,
+        })
+    }
+
+    fn snapshot(&self) -> ModelSchedulerSnapshot {
+        let state = self.state.lock().expect("scheduler lock is not poisoned");
+        ModelSchedulerSnapshot {
+            queued_prefill: state.queued_prefill.len(),
+            queued_decode: state.queued_decode.len(),
+            active_prefill: state.active_prefill,
+            active_decode: state.active_decode,
+            admitted_prefill: state.admitted_prefill,
+            admitted_decode: state.admitted_decode,
+            completed: state.completed,
+            cancelled: state.cancelled,
+            failed: state.failed,
+            queued_cancelled: state.queued_cancelled,
+            queue_timeouts: state.queue_timeouts,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ActiveRequest {
     id: String,
@@ -154,6 +551,10 @@ impl Drop for ActiveRequest {
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
     pub concurrency_limit: usize,
+    pub scheduler_queue_limit: usize,
+    pub scheduler_queue_timeout: Option<Duration>,
+    pub scheduler_prefill_threshold_chars: usize,
+    pub scheduler_prefill_burst: usize,
     pub admin_token: Option<String>,
     pub model_home: Option<PathBuf>,
     pub hub_endpoint: Option<String>,
@@ -165,6 +566,10 @@ impl Default for EngineOptions {
     fn default() -> Self {
         Self {
             concurrency_limit: 0,
+            scheduler_queue_limit: 1,
+            scheduler_queue_timeout: Some(Duration::from_secs(30)),
+            scheduler_prefill_threshold_chars: 4096,
+            scheduler_prefill_burst: 1,
             admin_token: None,
             model_home: None,
             hub_endpoint: None,
@@ -231,7 +636,13 @@ pub fn build_router_with_backend_and_options(
             runtime: Arc::new(runtime),
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
             generation_phases: Arc::new(GenerationPhaseMetrics::default()),
-            model_permits: Arc::new(Semaphore::new(options.concurrency_limit.max(1))),
+            model_scheduler: Arc::new(ModelScheduler::new(ModelSchedulerOptions {
+                concurrency_limit: options.concurrency_limit.max(1),
+                queue_limit: options.scheduler_queue_limit,
+                queue_timeout: options.scheduler_queue_timeout,
+                prefill_threshold_chars: options.scheduler_prefill_threshold_chars,
+                prefill_burst: options.scheduler_prefill_burst.max(1),
+            })),
             active_requests: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
             admin_token: options.admin_token.map(Arc::from),
@@ -3335,6 +3746,7 @@ async fn admin_metrics(
     let request_latency = metrics.request_latency();
     let time_to_first_token = metrics.time_to_first_token();
     let model_store_usage = model_store_usage(&state).await?;
+    let scheduler = state.model_scheduler.snapshot();
     let active_requests = state
         .active_requests
         .lock()
@@ -3346,9 +3758,20 @@ async fn admin_metrics(
         "failed_requests": metrics.failed_requests(),
         "streamed_requests": metrics.streamed_requests(),
         "active_requests": active_requests,
-        "queued_requests": 0,
+        "queued_requests": scheduler.queued_total(),
+        "queued_prefill_requests": scheduler.queued_prefill,
+        "queued_decode_requests": scheduler.queued_decode,
         "prefill_requests": state.generation_phases.prefill_requests(),
         "decode_requests": state.generation_phases.decode_requests(),
+        "active_prefill_requests": scheduler.active_prefill,
+        "active_decode_requests": scheduler.active_decode,
+        "scheduler_admitted_prefill_requests": scheduler.admitted_prefill,
+        "scheduler_admitted_decode_requests": scheduler.admitted_decode,
+        "scheduler_completed_requests": scheduler.completed,
+        "scheduler_cancelled_requests": scheduler.cancelled,
+        "scheduler_failed_requests": scheduler.failed,
+        "scheduler_queued_cancelled_requests": scheduler.queued_cancelled,
+        "scheduler_queue_timeouts": scheduler.queue_timeouts,
         "cancelled_requests": metrics.cancelled_requests(),
         "no_progress_failures": metrics.no_progress_failures(),
         "model_pull_operations": metrics.model_pull_operations(),
@@ -3535,10 +3958,18 @@ async fn chat_completions(
     let request = parse_json_request(request, &state)?;
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
+    let (admission_class, initial_phase) = chat_scheduler_classes(&state, &request);
     if request.stream {
-        let permit = acquire_model_permit(&state)?;
-        let active_request = register_active_request(&state, &headers)?;
-        let phase = state.generation_phases.begin(GenerationPhase::Prefill);
+        let mut scheduler_slot =
+            acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
+        let active_request = match register_active_request(&state, &headers) {
+            Ok(active_request) => active_request,
+            Err(err) => {
+                scheduler_slot.mark_failed();
+                return Err(err);
+            }
+        };
+        let phase = state.generation_phases.begin(initial_phase);
         let request_id = active_request.id.clone();
         let request_started = Instant::now();
         if chat_stream_requires_buffering(&request) {
@@ -3549,12 +3980,13 @@ async fn chat_completions(
             {
                 Ok(response) => response,
                 Err(err) => {
+                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
                     record_runtime_error_metrics(&state, &err);
                     return Err(err.into());
                 }
             };
             let events = async_stream::stream! {
-                let _permit = permit;
+                let mut scheduler_slot = scheduler_slot;
                 let _active_request = active_request;
                 let mut phase = phase;
                 let mut events = response.into_events();
@@ -3564,6 +3996,7 @@ async fn chat_completions(
                         Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
                             if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
                                 phase.transition_to_decode();
+                                scheduler_slot.transition_to_decode();
                                 record_time_to_first_token_metrics(&state, request_started.elapsed());
                                 ttft_recorded = true;
                             }
@@ -3574,6 +4007,7 @@ async fn chat_completions(
                             yield Ok(Event::default().data("[DONE]"));
                         }
                         Ok(Some(Err(err))) => {
+                            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
                             record_runtime_error_metrics(&state, &err);
                             for event in runtime_error_stream_events(err) {
                                 yield event;
@@ -3582,6 +4016,7 @@ async fn chat_completions(
                         }
                         Ok(None) => break,
                         Err(StreamStalled) => {
+                            scheduler_slot.mark_failed();
                             record_failure_metrics(&state);
                             for event in stream_stalled_stream_events(state.stream_stall_timeout) {
                                 yield event;
@@ -3597,69 +4032,77 @@ async fn chat_completions(
             insert_request_id_header(&mut response, &request_id);
             return Ok(response);
         }
-        let request_started = Instant::now();
         let events = async_stream::stream! {
-                    let _permit = permit;
-                    let _active_request = active_request;
-                    let mut phase = phase;
-                    match state
-                        .runtime
-                        .chat_stream_with_cancel(request, _active_request.cancellation.clone())
-                        .await
-                    {
-                        Ok(response) => {
-                            let mut events = response.into_events();
-                            let mut ttft_recorded = false;
-                            loop {
-                                match next_stream_event(&mut events, state.stream_stall_timeout).await {
-                                    Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
-                                        if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
-                                            phase.transition_to_decode();
-                                            record_time_to_first_token_metrics(&state, request_started.elapsed());
-                                            ttft_recorded = true;
-                                        }
-                                        yield sse_json_event(chunk);
-                                    }
-                                    Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                                        record_success_metrics(&state, &usage, streamed, request_started.elapsed());
-                                        yield Ok(Event::default().data("[DONE]"));
-                                    }
-                                    Ok(Some(Err(err))) => {
-                                        record_runtime_error_metrics(&state, &err);
-                                        for event in runtime_error_stream_events(err) {
-                                            yield event;
-                                        }
-                                        return;
-                                    }
-                                    Ok(None) => break,
-                                    Err(StreamStalled) => {
-                                        record_failure_metrics(&state);
-                                        for event in stream_stalled_stream_events(state.stream_stall_timeout) {
-                                            yield event;
-                                        }
-                                        return;
-                    }
-                }
-            }
-        }
-
-                        Err(err) => {
-                            record_runtime_error_metrics(&state, &err);
-                            for event in runtime_error_stream_events(err) {
-                                yield event;
+            let mut scheduler_slot = scheduler_slot;
+            let _active_request = active_request;
+            let mut phase = phase;
+            match state
+                .runtime
+                .chat_stream_with_cancel(request, _active_request.cancellation.clone())
+                .await
+            {
+                Ok(response) => {
+                    let mut events = response.into_events();
+                    let mut ttft_recorded = false;
+                    loop {
+                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                            Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                                if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                    phase.transition_to_decode();
+                                    scheduler_slot.transition_to_decode();
+                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
+                                    ttft_recorded = true;
+                                }
+                                yield sse_json_event(chunk);
+                            }
+                            Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
+                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
+                                yield Ok(Event::default().data("[DONE]"));
+                            }
+                            Ok(Some(Err(err))) => {
+                                mark_scheduler_runtime_error(&mut scheduler_slot, &err);
+                                record_runtime_error_metrics(&state, &err);
+                                for event in runtime_error_stream_events(err) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                            Ok(None) => break,
+                            Err(StreamStalled) => {
+                                scheduler_slot.mark_failed();
+                                record_failure_metrics(&state);
+                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
+                                    yield event;
+                                }
+                                return;
                             }
                         }
                     }
-                };
+                }
+                Err(err) => {
+                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
+                    record_runtime_error_metrics(&state, &err);
+                    for event in runtime_error_stream_events(err) {
+                        yield event;
+                    }
+                }
+            }
+        };
         let mut response = Sse::new(events)
             .keep_alive(engine_sse_keep_alive())
             .into_response();
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let _permit = acquire_model_permit(&state)?;
-    let active_request = register_active_request(&state, &headers)?;
-    let _phase = state.generation_phases.begin(GenerationPhase::Decode);
+    let mut scheduler_slot = acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
+    let active_request = match register_active_request(&state, &headers) {
+        Ok(active_request) => active_request,
+        Err(err) => {
+            scheduler_slot.mark_failed();
+            return Err(err);
+        }
+    };
+    let _phase = state.generation_phases.begin(initial_phase);
     let request_id = active_request.id.clone();
     let request_started = Instant::now();
     let response = match state
@@ -3669,6 +4112,7 @@ async fn chat_completions(
     {
         Ok(response) => response,
         Err(err) => {
+            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
             record_runtime_error_metrics(&state, &err);
             return Err(err.into());
         }
@@ -3688,14 +4132,22 @@ async fn completions(
     let request = parse_json_request(request, &state)?;
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
+    let (admission_class, initial_phase) = completion_scheduler_classes(&state, &request);
     if request.stream {
-        let permit = acquire_model_permit(&state)?;
-        let active_request = register_active_request(&state, &headers)?;
-        let phase = state.generation_phases.begin(GenerationPhase::Prefill);
+        let mut scheduler_slot =
+            acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
+        let active_request = match register_active_request(&state, &headers) {
+            Ok(active_request) => active_request,
+            Err(err) => {
+                scheduler_slot.mark_failed();
+                return Err(err);
+            }
+        };
+        let phase = state.generation_phases.begin(initial_phase);
         let request_id = active_request.id.clone();
         let request_started = Instant::now();
         let events = async_stream::stream! {
-            let _permit = permit;
+            let mut scheduler_slot = scheduler_slot;
             let _active_request = active_request;
             let mut phase = phase;
             match state
@@ -3711,6 +4163,7 @@ async fn completions(
                             Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
                                 if !ttft_recorded && completion_chunk_has_real_delta(&chunk) {
                                     phase.transition_to_decode();
+                                    scheduler_slot.transition_to_decode();
                                     record_time_to_first_token_metrics(&state, request_started.elapsed());
                                     ttft_recorded = true;
                                 }
@@ -3721,6 +4174,7 @@ async fn completions(
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
+                                mark_scheduler_runtime_error(&mut scheduler_slot, &err);
                                 record_runtime_error_metrics(&state, &err);
                                 for event in runtime_error_stream_events(err) {
                                     yield event;
@@ -3729,6 +4183,7 @@ async fn completions(
                             }
                             Ok(None) => break,
                             Err(StreamStalled) => {
+                                scheduler_slot.mark_failed();
                                 record_failure_metrics(&state);
                                 for event in stream_stalled_stream_events(state.stream_stall_timeout) {
                                     yield event;
@@ -3739,6 +4194,7 @@ async fn completions(
                     }
                 }
                 Err(err) => {
+                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
                     record_runtime_error_metrics(&state, &err);
                     for event in runtime_error_stream_events(err) {
                         yield event;
@@ -3752,9 +4208,15 @@ async fn completions(
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let _permit = acquire_model_permit(&state)?;
-    let active_request = register_active_request(&state, &headers)?;
-    let _phase = state.generation_phases.begin(GenerationPhase::Decode);
+    let mut scheduler_slot = acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
+    let active_request = match register_active_request(&state, &headers) {
+        Ok(active_request) => active_request,
+        Err(err) => {
+            scheduler_slot.mark_failed();
+            return Err(err);
+        }
+    };
+    let _phase = state.generation_phases.begin(initial_phase);
     let request_id = active_request.id.clone();
     let request_started = Instant::now();
     let response = match state
@@ -3764,6 +4226,7 @@ async fn completions(
     {
         Ok(response) => response,
         Err(err) => {
+            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
             record_runtime_error_metrics(&state, &err);
             return Err(err.into());
         }
@@ -4009,15 +4472,65 @@ fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
         .record_time_to_first_token(latency);
 }
 
-fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, EngineError> {
-    state
-        .model_permits
+async fn acquire_scheduler_slot(
+    state: &AppState,
+    admission_class: SchedulerClass,
+    initial_phase: GenerationPhase,
+) -> Result<SchedulerPermit, EngineError> {
+    match state
+        .model_scheduler
         .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
+        .acquire(admission_class, initial_phase)
+        .await
+    {
+        Ok(permit) => Ok(permit),
+        Err(SchedulerAcquireError::QueueFull) => {
             record_failure_metrics(state);
-            EngineError::Overloaded("model is busy; retry the request later".to_owned())
-        })
+            Err(EngineError::Overloaded(
+                "model scheduler queue is full; retry the request later".to_owned(),
+            ))
+        }
+        Err(SchedulerAcquireError::QueueTimedOut) => {
+            record_failure_metrics(state);
+            Err(EngineError::Overloaded(
+                "model scheduler queue timed out; retry the request later".to_owned(),
+            ))
+        }
+    }
+}
+
+fn chat_scheduler_classes(
+    state: &AppState,
+    request: &ChatCompletionRequest,
+) -> (SchedulerClass, GenerationPhase) {
+    let admission = state.model_scheduler.classify_chat(request);
+    let initial_phase = if request.stream || admission == SchedulerClass::Prefill {
+        GenerationPhase::Prefill
+    } else {
+        admission.as_phase()
+    };
+    (admission, initial_phase)
+}
+
+fn completion_scheduler_classes(
+    state: &AppState,
+    request: &CompletionRequest,
+) -> (SchedulerClass, GenerationPhase) {
+    let admission = state.model_scheduler.classify_completion(request);
+    let initial_phase = if request.stream || admission == SchedulerClass::Prefill {
+        GenerationPhase::Prefill
+    } else {
+        admission.as_phase()
+    };
+    (admission, initial_phase)
+}
+
+fn mark_scheduler_runtime_error(permit: &mut SchedulerPermit, err: &RuntimeError) {
+    if matches!(err, RuntimeError::Backend(BackendError::Cancelled)) {
+        permit.mark_cancelled();
+    } else {
+        permit.mark_failed();
+    }
 }
 
 fn register_active_request(
