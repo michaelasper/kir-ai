@@ -1,7 +1,7 @@
 use llm_api::{
     ChatCompletionDelta, ChatCompletionRequest, ChatCompletionStreamChoice,
     ChatCompletionStreamResponse, ChatMessage, ChatRole, CompletionRequest, CompletionResponse,
-    FinishReason, ResponseFormat, ToolChoice, ValidateRequest,
+    CompletionStreamResponse, FinishReason, ResponseFormat, ToolChoice, ValidateRequest,
 };
 use serde_json::json;
 
@@ -148,6 +148,27 @@ fn text_completion_response_serializes_openai_shape() {
     assert_eq!(value["object"], "text_completion");
     assert_eq!(value["choices"][0]["text"], "hello");
     assert_eq!(value["choices"][0]["finish_reason"], "stop");
+}
+
+#[test]
+fn text_completion_stream_response_serializes_without_usage() {
+    let response = CompletionStreamResponse {
+        id: "cmpl-test".to_owned(),
+        object: "text_completion".to_owned(),
+        created: 1,
+        model: "local-qwen36".to_owned(),
+        choices: vec![llm_api::CompletionChoice {
+            text: "hello".to_owned(),
+            index: 0,
+            finish_reason: None,
+        }],
+    };
+
+    let value = serde_json::to_value(response).expect("response serializes");
+
+    assert_eq!(value["object"], "text_completion");
+    assert_eq!(value["choices"][0]["text"], "hello");
+    assert!(value.get("usage").is_none());
 }
 
 #[test]

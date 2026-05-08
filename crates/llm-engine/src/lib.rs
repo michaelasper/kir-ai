@@ -247,6 +247,17 @@ async fn completions(
     State(state): State<AppState>,
     Json(request): Json<CompletionRequest>,
 ) -> Result<Response, EngineError> {
+    if request.stream {
+        let response = state.runtime.completion_stream(request).await?;
+        let mut events: Vec<Result<Event, Infallible>> =
+            Vec::with_capacity(response.chunks.len() + 1);
+        for chunk in response.chunks {
+            let data = serde_json::to_string(&chunk).map_err(EngineError::Serialize)?;
+            events.push(Ok(Event::default().data(data)));
+        }
+        events.push(Ok(Event::default().data("[DONE]")));
+        return Ok(Sse::new(stream::iter(events)).into_response());
+    }
     let response = state.runtime.completion(request).await?;
     Ok(Json(response).into_response())
 }

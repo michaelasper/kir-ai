@@ -2,8 +2,9 @@ use chrono::Utc;
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
-    ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, ResponseFormat, ToolCall,
-    ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage, ValidateRequest,
+    ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, CompletionStreamResponse,
+    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
+    ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
@@ -35,44 +36,39 @@ where
         request.validate()?;
         if request.stream {
             return Err(ApiError::unsupported_capability(
-                "streaming text completions are not implemented yet",
+                "streaming text completion requests must use Runtime::completion_stream",
             )
             .into());
         }
-        let output = self
-            .backend
-            .generate(BackendRequest {
-                model: request.model.clone(),
-                prompt: request.prompt,
-                max_tokens: request.max_tokens.unwrap_or(4096),
-            })
-            .await?;
-        let mut text = output.text;
-        let stopped = apply_stop_sequences(&mut text, &request.stop);
-        let no_progress = classify_no_progress(&text, output.completion_tokens, false);
-        if let Some(class) = no_progress {
-            return Err(RuntimeError::NoProgress(class));
-        }
-        let usage = Usage {
-            prompt_tokens: output.prompt_tokens,
-            completion_tokens: output.completion_tokens,
-            total_tokens: output.prompt_tokens + output.completion_tokens,
-        };
+        let completion = self.complete_text(request).await?;
         Ok(CompletionResponse {
-            id: format!("cmpl-{}", Uuid::now_v7()),
+            id: completion.id,
             object: "text_completion".to_owned(),
-            created: Utc::now().timestamp(),
-            model: request.model,
+            created: completion.created,
+            model: completion.model,
             choices: vec![CompletionChoice {
-                text,
+                text: completion.text,
                 index: 0,
-                finish_reason: Some(if stopped {
-                    llm_api::FinishReason::Stop
-                } else {
-                    output.finish_reason
-                }),
+                finish_reason: Some(completion.finish_reason),
             }],
-            usage,
+            usage: completion.usage,
+        })
+    }
+
+    pub async fn completion_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionStream, RuntimeError> {
+        let completion = self.complete_text(request).await?;
+        Ok(CompletionStream {
+            chunks: vec![
+                completion_stream_chunk(&completion, completion.text.clone(), None),
+                completion_stream_chunk(
+                    &completion,
+                    String::new(),
+                    Some(completion.finish_reason.clone()),
+                ),
+            ],
         })
     }
 
@@ -210,11 +206,64 @@ where
             usage,
         })
     }
+
+    async fn complete_text(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<RuntimeCompletion, RuntimeError> {
+        request.validate()?;
+        let output = self
+            .backend
+            .generate(BackendRequest {
+                model: request.model.clone(),
+                prompt: request.prompt,
+                max_tokens: request.max_tokens.unwrap_or(4096),
+            })
+            .await?;
+        let mut text = output.text;
+        let stopped = apply_stop_sequences(&mut text, &request.stop);
+        let no_progress = classify_no_progress(&text, output.completion_tokens, false);
+        if let Some(class) = no_progress {
+            return Err(RuntimeError::NoProgress(class));
+        }
+        let usage = Usage {
+            prompt_tokens: output.prompt_tokens,
+            completion_tokens: output.completion_tokens,
+            total_tokens: output.prompt_tokens + output.completion_tokens,
+        };
+        Ok(RuntimeCompletion {
+            id: format!("cmpl-{}", Uuid::now_v7()),
+            created: Utc::now().timestamp(),
+            model: request.model,
+            text,
+            finish_reason: if stopped {
+                llm_api::FinishReason::Stop
+            } else {
+                output.finish_reason
+            },
+            usage,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatCompletionStream {
     pub chunks: Vec<ChatCompletionStreamResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletionStream {
+    pub chunks: Vec<CompletionStreamResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RuntimeCompletion {
+    id: String,
+    created: i64,
+    model: String,
+    text: String,
+    finish_reason: llm_api::FinishReason,
+    usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +289,24 @@ fn stream_chunk(
         choices: vec![ChatCompletionStreamChoice {
             index: 0,
             delta,
+            finish_reason,
+        }],
+    }
+}
+
+fn completion_stream_chunk(
+    completion: &RuntimeCompletion,
+    text: String,
+    finish_reason: Option<llm_api::FinishReason>,
+) -> CompletionStreamResponse {
+    CompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "text_completion".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: vec![CompletionChoice {
+            text,
+            index: 0,
             finish_reason,
         }],
     }

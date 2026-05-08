@@ -51,6 +51,31 @@ async fn runtime_returns_text_completion() {
 }
 
 #[tokio::test]
+async fn runtime_returns_streaming_text_completion_chunks() {
+    let backend = DeterministicBackend::new("local-qwen36", "hello from completion END ignored");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            max_tokens: Some(8),
+            stop: vec![" END".to_owned()],
+            stream: true,
+        })
+        .await
+        .expect("completion stream succeeds");
+
+    assert_eq!(stream.chunks.len(), 2);
+    assert_eq!(stream.chunks[0].choices[0].text, "hello from completion");
+    assert_eq!(stream.chunks[0].choices[0].finish_reason, None);
+    assert_eq!(stream.chunks[1].choices[0].text, "");
+    assert_eq!(
+        stream.chunks[1].choices[0].finish_reason,
+        Some(FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
 async fn optional_tools_allow_text_completion() {
     let backend = DeterministicBackend::new("local-qwen36", "plain text");
     let runtime = Runtime::new(backend);

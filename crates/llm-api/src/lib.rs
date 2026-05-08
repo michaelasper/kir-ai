@@ -262,6 +262,15 @@ pub struct CompletionResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompletionStreamResponse {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<CompletionChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionChoice {
     pub text: String,
     pub index: u32,

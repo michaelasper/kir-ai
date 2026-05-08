@@ -217,6 +217,46 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
 }
 
 #[tokio::test]
+async fn completions_endpoint_streams_openai_sse_chunks() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "hello",
+                        "stream": true,
+                        "max_tokens": 8,
+                        "stop": " backend"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .expect("content type")
+            .starts_with("text/event-stream")
+    );
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("data: {\"id\":\"cmpl-"));
+    assert!(body.contains("\"object\":\"text_completion\""));
+    assert!(body.contains("\"text\":\"hello from rust native\""));
+    assert!(body.contains("\"finish_reason\":\"stop\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn backend_execution_errors_are_not_reported_as_missing_model() {
     let response = build_router_with_backend(Box::new(FailingBackend))
         .oneshot(
