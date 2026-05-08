@@ -143,6 +143,7 @@ Current commits:
 - `48a3aa5` - Admin metrics report manifest-backed model-store usage.
 - `392da7b` - Admin metrics report artifact verification failure counts.
 - `a80cd60` - Admin metrics report process RSS bytes on macOS and Linux.
+- `3e50842` - Streaming runtime errors include stable error metadata.
 
 Current verified state:
 
