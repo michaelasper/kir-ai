@@ -177,6 +177,7 @@ Current commits:
 - `4cc2b29` - Native Qwen Metal BF16 matvecs cache uploaded weight buffers by tensor slice and expose cache hit/miss/upload metrics.
 - `614c4e7` - Native Qwen Metal BF16 weight buffers now live behind a default 8 GiB per-backend LRU budget with eviction metrics.
 - `850b34d` - Native Qwen serving exposes `--native-metal-weight-cache-bytes` to configure or disable the per-backend Metal BF16 weight-buffer budget.
+- `5786c7f` - Native Qwen Metal BF16 weight-cache metrics now include resident bytes, resident buffer count, and active budget bytes.
 
 Current verified state:
 
@@ -286,7 +287,7 @@ Current verified state:
 - `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from a short-lived in-memory cache instead of rescanning snapshot manifests on every scrape. Successful admin pulls invalidate the cache so the next scrape refreshes usage.
 - `GET /admin/metrics` now reports cumulative artifact verification failures from failed admin snapshot verification.
 - `GET /admin/metrics` now reports process resident memory as `process_rss_bytes` on macOS and Linux.
-- `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, CPU fallback counters, and BF16 matrix buffer cache hits/misses/uploads/evictions under `native_qwen_metal`.
+- `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, CPU fallback counters, and BF16 matrix buffer cache hits/misses/uploads/evictions plus resident bytes, resident buffers, and budget bytes under `native_qwen_metal`.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
@@ -303,7 +304,7 @@ Current verified state:
 - Shard-backed full-attention single-token decode now has a cache-aware layer path that reads indexed safetensors projections, consumes existing `LayerKvCache`, and matches the corresponding token from full cached layer prefill.
 - Qwen single-token decode now has a cache-aware decoder loop that embeds a new token, steps typed per-layer caches, and matches the corresponding suffix from full cached prefill on a tiny shard-backed fixture.
 - Native Qwen generation now pre-fills the full prompt through cancellable backend sequence-cache chunks into typed per-layer caches, samples from the current hidden state, and steps those caches between generated tokens. Decode-session full-attention KV capacity is bounded by the configured retained prefill window rather than `max_new_tokens`, relying on sliding KV eviction for longer prompts and generations. Omitted native token limits resolve to the configured `max_new_tokens`, and explicit requests only fail closed above that cap.
-- Native Qwen Metal BF16 matvecs now upload each tensor slice into a reusable Metal matrix buffer on first use, share that buffer across single, batched, chunked, and lm-head top-k matvec calls within the backend, enforce a configurable default 8 GiB per-backend LRU budget through `--native-metal-weight-cache-bytes`, skip caching slices larger than the budget, and report cache hits, misses, uploads, uploaded bytes, evictions, and evicted bytes.
+- Native Qwen Metal BF16 matvecs now upload each tensor slice into a reusable Metal matrix buffer on first use, share that buffer across single, batched, chunked, and lm-head top-k matvec calls within the backend, enforce a configurable default 8 GiB per-backend LRU budget through `--native-metal-weight-cache-bytes`, skip caching slices larger than the budget, and report cache hits, misses, uploads, uploaded bytes, evictions, evicted bytes, resident bytes, resident buffer count, and active budget bytes.
 
 Known incomplete items:
 
