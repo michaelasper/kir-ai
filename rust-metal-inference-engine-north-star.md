@@ -84,6 +84,7 @@ Current commits:
 - `dd34c95` - Runtime generation limits now preserve omitted max-token requests and native Qwen rejects explicit requests above its configured cap.
 - `913e25b` - Added model-level concurrency backpressure with structured retryable 429 overload errors.
 - `e3ef5d4` - `tool_choice: required` now fails request validation when no tools are declared.
+- `562b3dd` - Chat stop sequences are applied to raw backend output before tool-call parsing.
 
 Current verified state:
 
@@ -132,6 +133,7 @@ Current verified state:
 - Runtime backend requests now carry `max_tokens` as `Option<u32>`, preserving omitted OpenAI token limits as backend defaults instead of converting them to an arbitrary numeric request. Native Qwen uses its configured `max_new_tokens` only for omitted limits and rejects explicit requests above that cap as `unsupported_capability`.
 - The HTTP engine state now uses a model-level semaphore. The default serve path allows one concurrent generation, `--max-concurrent-requests` can raise that limit, and requests received while all permits are busy return a stable retryable `model_overloaded` error with HTTP 429.
 - Chat request validation rejects `tool_choice: "required"` when the request has no declared tools, returning `invalid_request` before any prompt rendering or backend generation.
+- Chat stop sequences now truncate raw model output before Qwen tool-call parsing. Tool calls after the earliest stop marker are suppressed, and the response finish reason remains `stop`.
 
 Known incomplete items:
 
