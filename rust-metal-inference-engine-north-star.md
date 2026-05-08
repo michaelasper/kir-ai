@@ -140,6 +140,7 @@ Current commits:
 - `b08bdbb` - Admin metrics expose current prefill/decode scheduler phase gauges.
 - `7a9198b` - Tracker updated with scheduler phase metrics commit identity.
 - `4201417` - Admin metrics report model pull operation counts and promoted manifest bytes.
+- `48a3aa5` - Admin metrics report manifest-backed model-store usage.
 
 Current verified state:
 
