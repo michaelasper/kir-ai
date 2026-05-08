@@ -373,6 +373,39 @@ pub fn qwen_rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<
     rms_norm_with_weight_offset_f32(input, weight, eps, 1.0)
 }
 
+fn rms_norm_f32_with_matvec(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, MathError> {
+    if input.len() != weight.len() {
+        return Err(MathError::InvalidShape(
+            "input and weight must have the same length".to_owned(),
+        ));
+    }
+    let qwen_weight = weight.iter().map(|value| value - 1.0).collect::<Vec<_>>();
+    matvec.qwen_rms_norm_f32(input, &qwen_weight, eps)
+}
+
+fn l2_normalize_f32_with_matvec(
+    input: &[f32],
+    eps: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, MathError> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if eps < 0.0 {
+        return Err(MathError::InvalidShape(
+            "l2 norm epsilon must be non-negative".to_owned(),
+        ));
+    }
+    let weight_scale = (input.len() as f32).sqrt().recip();
+    let qwen_weight = vec![weight_scale - 1.0; input.len()];
+    matvec.qwen_rms_norm_f32(input, &qwen_weight, eps / input.len() as f32)
+}
+
 fn rms_norm_with_weight_offset_f32(
     input: &[f32],
     weight: &[f32],
@@ -668,6 +701,15 @@ pub struct QwenLinearAttentionProjectionSequence {
     pub z: Vec<Vec<f32>>,
     pub b: Vec<Vec<f32>>,
     pub a: Vec<Vec<f32>>,
+}
+
+pub struct QwenLinearAttentionFirstTokenParts<'a> {
+    pub qkv: &'a [f32],
+    pub z: &'a [f32],
+    pub b: &'a [f32],
+    pub conv1d_weight: &'a [f32],
+    pub norm_weight: &'a [f32],
+    pub out_proj_weight: &'a [f32],
 }
 
 pub struct QwenLinearAttentionSequenceParts<'a> {
@@ -1013,6 +1055,28 @@ pub fn qwen_linear_attention_first_token_from_parts(
     norm_weight: &[f32],
     out_proj_weight: &[f32],
 ) -> Result<Vec<f32>, MathError> {
+    let parts = QwenLinearAttentionFirstTokenParts {
+        qkv,
+        z,
+        b,
+        conv1d_weight,
+        norm_weight,
+        out_proj_weight,
+    };
+    qwen_linear_attention_first_token_from_parts_with_matvec(dims, &parts, &CpuQwenMatvecBackend)
+}
+
+pub fn qwen_linear_attention_first_token_from_parts_with_matvec(
+    dims: &QwenLinearAttentionDims,
+    parts: &QwenLinearAttentionFirstTokenParts<'_>,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, MathError> {
+    let qkv = parts.qkv;
+    let z = parts.z;
+    let b = parts.b;
+    let conv1d_weight = parts.conv1d_weight;
+    let norm_weight = parts.norm_weight;
+    let out_proj_weight = parts.out_proj_weight;
     if dims.num_key_heads == 0
         || dims.num_value_heads == 0
         || dims.key_head_dim == 0
@@ -1067,9 +1131,16 @@ pub fn qwen_linear_attention_first_token_from_parts(
         let key_head = value_head / repeat;
         let key_start = key_head * dims.key_head_dim;
         let value_start = value_head * dims.value_head_dim;
-        let query_head = l2_normalize_f32(&query[key_start..key_start + dims.key_head_dim], 1e-6)?;
-        let key_head_values =
-            l2_normalize_f32(&key[key_start..key_start + dims.key_head_dim], 1e-6)?;
+        let query_head = l2_normalize_f32_with_matvec(
+            &query[key_start..key_start + dims.key_head_dim],
+            1e-6,
+            matvec,
+        )?;
+        let key_head_values = l2_normalize_f32_with_matvec(
+            &key[key_start..key_start + dims.key_head_dim],
+            1e-6,
+            matvec,
+        )?;
         let attention_score = query_head
             .iter()
             .zip(&key_head_values)
@@ -1081,13 +1152,14 @@ pub fn qwen_linear_attention_first_token_from_parts(
         for offset in 0..dims.value_head_dim {
             core_head.push(attention_score * value[value_start + offset] * beta);
         }
-        let normalized = rms_norm_f32(&core_head, norm_weight, dims.rms_norm_eps)?;
+        let normalized =
+            rms_norm_f32_with_matvec(&core_head, norm_weight, dims.rms_norm_eps, matvec)?;
         for offset in 0..dims.value_head_dim {
             gated[value_start + offset] = normalized[offset] * silu_f32(z[value_start + offset]);
         }
     }
 
-    matvec_row_major_f32(&gated, out_proj_weight, dims.hidden_size, value_dim)
+    matvec.matvec_row_major_f32(&gated, out_proj_weight, dims.hidden_size, value_dim)
 }
 
 pub fn qwen_linear_attention_sequence_from_parts(
@@ -1289,10 +1361,16 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             let key_head = value_head / repeat;
             let key_start = key_head * dims.key_head_dim;
             let value_start = value_head * dims.value_head_dim;
-            let query_head =
-                l2_normalize_f32(&query[key_start..key_start + dims.key_head_dim], 1e-6)?;
-            let key_head_values =
-                l2_normalize_f32(&key[key_start..key_start + dims.key_head_dim], 1e-6)?;
+            let query_head = l2_normalize_f32_with_matvec(
+                &query[key_start..key_start + dims.key_head_dim],
+                1e-6,
+                matvec,
+            )?;
+            let key_head_values = l2_normalize_f32_with_matvec(
+                &key[key_start..key_start + dims.key_head_dim],
+                1e-6,
+                matvec,
+            )?;
             let query_scaled = query_head
                 .into_iter()
                 .map(|value| value * scale)
@@ -1337,7 +1415,8 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                         recurrent_state[state_row + value_offset] * query_value;
                 }
             }
-            let normalized = rms_norm_f32(&core_head, parts.norm_weight, dims.rms_norm_eps)?;
+            let normalized =
+                rms_norm_f32_with_matvec(&core_head, parts.norm_weight, dims.rms_norm_eps, matvec)?;
             for value_offset in 0..dims.value_head_dim {
                 gated[value_start + value_offset] =
                     normalized[value_offset] * silu_f32(z[token_idx][value_start + value_offset]);
@@ -1594,7 +1673,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
     for head in 0..dims.num_attention_heads {
         let projected_head_start = head * dims.head_dim * 2;
         let q_start = head * dims.head_dim;
-        let normalized = qwen_rms_norm_f32(
+        let normalized = matvec.qwen_rms_norm_f32(
             &parts.q_proj[projected_head_start..projected_head_start + dims.head_dim],
             parts.q_norm_weight,
             config.rms_norm_eps,
@@ -1615,7 +1694,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
     let mut key = vec![0.0; key_value_dim];
     for head in 0..dims.num_key_value_heads {
         let head_start = head * dims.head_dim;
-        let normalized = qwen_rms_norm_f32(
+        let normalized = matvec.qwen_rms_norm_f32(
             &parts.k_proj[head_start..head_start + dims.head_dim],
             parts.k_norm_weight,
             config.rms_norm_eps,
@@ -1745,7 +1824,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
         for head in 0..dims.num_attention_heads {
             let projected_head_start = head * dims.head_dim * 2;
             let q_start = head * dims.head_dim;
-            let query = qwen_rms_norm_f32(
+            let query = matvec.qwen_rms_norm_f32(
                 &q_proj[token_idx][projected_head_start..projected_head_start + dims.head_dim],
                 parts.q_norm_weight,
                 config.rms_norm_eps,
@@ -1764,7 +1843,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
         }
         for head in 0..dims.num_key_value_heads {
             let head_start = head * dims.head_dim;
-            let key = qwen_rms_norm_f32(
+            let key = matvec.qwen_rms_norm_f32(
                 &k_proj[token_idx][head_start..head_start + dims.head_dim],
                 parts.k_norm_weight,
                 config.rms_norm_eps,
@@ -3378,21 +3457,6 @@ fn apply_rope_to_head(head: &mut [f32], position: usize, rotary_dim: usize, thet
         head[offset] = first * cos - second * sin;
         head[offset + half] = second * cos + first * sin;
     }
-}
-
-fn l2_normalize_f32(input: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    if eps < 0.0 {
-        return Err(MathError::InvalidShape(
-            "l2 norm epsilon must be non-negative".to_owned(),
-        ));
-    }
-    let inv_norm = (input.iter().map(|value| value * value).sum::<f32>() + eps)
-        .sqrt()
-        .recip();
-    Ok(input.iter().map(|value| value * inv_norm).collect())
 }
 
 #[derive(Debug, Error)]

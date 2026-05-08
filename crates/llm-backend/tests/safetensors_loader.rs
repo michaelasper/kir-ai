@@ -5,14 +5,17 @@ use llm_backend::{
     qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_final_norm_with_matvec,
     qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
     qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
-    qwen_layer_full_attention_step_with_cache, qwen_layer_linear_attention_first_token,
+    qwen_layer_full_attention_sequence_with_cache_with_matvec,
+    qwen_layer_full_attention_step_with_cache,
+    qwen_layer_full_attention_step_with_cache_with_matvec, qwen_layer_linear_attention_first_token,
     qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
-    qwen_layer_linear_attention_sequence_with_cache, qwen_layer_linear_attention_step_with_cache,
-    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_logits_with_matvec,
-    qwen_lm_head_top_k, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence,
-    qwen_prefill_sequence_with_cache, qwen_prefill_sequence_with_cache_with_matvec,
-    qwen_rms_norm_f32,
+    qwen_layer_linear_attention_sequence_with_cache,
+    qwen_layer_linear_attention_sequence_with_cache_with_matvec,
+    qwen_layer_linear_attention_step_with_cache, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
+    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
+    qwen_prefill_sequence_with_cache_with_matvec, qwen_rms_norm_f32,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -890,6 +893,51 @@ fn qwen_full_attention_step_with_cache_uses_indexed_weights() {
 }
 
 #[test]
+fn qwen_full_attention_normalization_uses_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-full-attn-custom-norm");
+    write_tiny_full_attention_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+    let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("expected cache shape");
+    let expected_output = qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("full cached sequence");
+    let prefill = hidden_states[..2].to_vec();
+    let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+        &store, &spec, 0, &prefill, &mut cache, &matvec,
+    )
+    .expect("recording full cached sequence");
+    let after_prefill_norm_calls = matvec.rms_norm_calls.get();
+    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states[2],
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording full attention step");
+
+    assert_close(&output[0], &expected_output[0], 1e-6);
+    assert_close(&output[1], &expected_output[1], 1e-6);
+    assert_close(&decoded, &expected_output[2], 1e-6);
+    assert_eq!(after_prefill_norm_calls, 4);
+    assert_eq!(matvec.rms_norm_calls.get(), 6);
+    assert_close(cache.keys(), expected_cache.keys(), 1e-6);
+    assert_close(cache.values(), expected_cache.values(), 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_linear_attention_first_token_requires_delta_parameters() {
     let root = temp_snapshot_dir("qwen-linear-delta-required");
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -1201,6 +1249,47 @@ fn qwen_linear_attention_step_with_cache_uses_indexed_weights() {
 
     assert_close(&output, &expected_output[2], 1e-6);
     assert_eq!(cache.token_count(), 3);
+    assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-6);
+    assert_close(
+        cache.recurrent_state(),
+        expected_cache.recurrent_state(),
+        1e-6,
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_linear_attention_normalization_uses_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-linear-attn-custom-norm");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let mut expected_cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("expected cache");
+    let expected = qwen_layer_linear_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("cpu cached sequence");
+    let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording cached sequence");
+
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
+    assert_eq!(matvec.rms_norm_calls.get(), 6);
     assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-6);
     assert_close(
         cache.recurrent_state(),
@@ -1666,6 +1755,70 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
 
 fn caches_for_spec(spec: &QwenModelSpec, capacity: usize) -> Vec<QwenLayerCache> {
     qwen_layer_caches_for_spec(spec, capacity).expect("temporary caches")
+}
+
+fn write_tiny_full_attention_snapshot(root: &std::path::Path) {
+    std::fs::create_dir_all(root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 64 },
+            "weight_map": {
+                "model.language_model.layers.0.self_attn.q_proj.weight": "q.safetensors",
+                "model.language_model.layers.0.self_attn.k_proj.weight": "k.safetensors",
+                "model.language_model.layers.0.self_attn.v_proj.weight": "v.safetensors",
+                "model.language_model.layers.0.self_attn.q_norm.weight": "q_norm.safetensors",
+                "model.language_model.layers.0.self_attn.k_norm.weight": "k_norm.safetensors",
+                "model.language_model.layers.0.self_attn.o_proj.weight": "o.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "q.safetensors",
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+            vec![4, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            "k.safetensors",
+            "model.language_model.layers.0.self_attn.k_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "v.safetensors",
+            "model.language_model.layers.0.self_attn.v_proj.weight",
+            vec![2, 2],
+            vec![2.0, 0.0, 0.0, 4.0],
+        ),
+        (
+            "q_norm.safetensors",
+            "model.language_model.layers.0.self_attn.q_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "k_norm.safetensors",
+            "model.language_model.layers.0.self_attn.k_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "o.safetensors",
+            "model.language_model.layers.0.self_attn.o_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
 }
 
 fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
