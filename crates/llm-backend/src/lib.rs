@@ -1391,13 +1391,18 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                 *state *= decay;
             }
 
-            let mut memory = vec![0.0; dims.value_head_dim];
-            for (key_offset, key_value) in key_head_values.iter().enumerate() {
-                let state_row = state_start + key_offset * dims.value_head_dim;
-                for value_offset in 0..dims.value_head_dim {
-                    memory[value_offset] += recurrent_state[state_row + value_offset] * key_value;
-                }
-            }
+            let mut value_major_state = linear_attention_value_major_state_rows(
+                &recurrent_state,
+                state_start,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            );
+            let memory = matvec.matvec_row_major_f32(
+                &key_head_values,
+                &value_major_state,
+                dims.value_head_dim,
+                dims.key_head_dim,
+            )?;
 
             let mut delta = vec![0.0; dims.value_head_dim];
             for value_offset in 0..dims.value_head_dim {
@@ -1411,14 +1416,18 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                 }
             }
 
-            let mut core_head = vec![0.0; dims.value_head_dim];
-            for (key_offset, query_value) in query_scaled.iter().enumerate() {
-                let state_row = state_start + key_offset * dims.value_head_dim;
-                for value_offset in 0..dims.value_head_dim {
-                    core_head[value_offset] +=
-                        recurrent_state[state_row + value_offset] * query_value;
-                }
-            }
+            value_major_state = linear_attention_value_major_state_rows(
+                &recurrent_state,
+                state_start,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            );
+            let core_head = matvec.matvec_row_major_f32(
+                &query_scaled,
+                &value_major_state,
+                dims.value_head_dim,
+                dims.key_head_dim,
+            )?;
             let normalized =
                 rms_norm_f32_with_matvec(&core_head, parts.norm_weight, dims.rms_norm_eps, matvec)?;
             for value_offset in 0..dims.value_head_dim {
@@ -1443,6 +1452,22 @@ fn qwen_linear_attention_sequence_from_parts_impl(
     }
 
     Ok(outputs)
+}
+
+fn linear_attention_value_major_state_rows(
+    recurrent_state: &[f32],
+    state_start: usize,
+    key_head_dim: usize,
+    value_head_dim: usize,
+) -> Vec<f32> {
+    let mut rows = vec![0.0; value_head_dim * key_head_dim];
+    for value_offset in 0..value_head_dim {
+        for key_offset in 0..key_head_dim {
+            rows[value_offset * key_head_dim + key_offset] =
+                recurrent_state[state_start + key_offset * value_head_dim + value_offset];
+        }
+    }
+    rows
 }
 
 fn require_linear_attention_cache_shape(
