@@ -57,6 +57,7 @@ Current commits:
 - `986f580` - Streaming Qwen tool calls now emit structured OpenAI tool-call deltas with JSON argument strings and final `tool_calls` finish reason.
 - `24fca9c` - JSON object response mode is now enforced for non-streaming and streaming completions, and parsed tool-call arguments must be JSON objects.
 - `2c8d4b5` - OpenAI chat `stop` accepts string or array forms and truncates parsed assistant content at the earliest stop sequence.
+- `7b96723` - Added non-streaming `/v1/completions` with OpenAI `text_completion` response shape and stop-sequence support.
 
 Current verified state:
 
@@ -78,6 +79,7 @@ Current verified state:
 - `/v1/chat/completions` now supports `stream: true` through native Rust SSE for text completions and parsed Qwen tool calls. The stream emits OpenAI-compatible `chat.completion.chunk` events, preserves a stable completion ID across role/content/tool/final chunks, emits tool-call deltas with JSON argument strings, and emits `data: [DONE]` exactly once.
 - `response_format: {"type":"json_object"}` is now validated in the Rust runtime before non-streaming responses or SSE streams are returned. Assistant content must parse as a JSON object, and parsed tool-call arguments must be JSON objects.
 - OpenAI chat `stop` supports both string and string-array request forms. The runtime applies the earliest stop sequence to parsed assistant content and reports `finish_reason: stop`.
+- `/v1/completions` now serves non-streaming OpenAI text completions through the Rust runtime, including usage accounting and stop-sequence truncation.
 
 Known incomplete items:
 
