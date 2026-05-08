@@ -1888,6 +1888,56 @@ fn qwen_layer_full_attention_sequence_impl(
     })
 }
 
+pub fn qwen_layer_full_attention_step_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    cache: &mut LayerKvCache,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let dims = QwenFullAttentionDims::from_spec(spec);
+    let q_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "q_proj.weight"),
+        hidden_states,
+    )?;
+    let k_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "k_proj.weight"),
+        hidden_states,
+    )?;
+    let v_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "v_proj.weight"),
+        hidden_states,
+    )?;
+    let q_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "q_norm.weight"))?;
+    let k_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "k_norm.weight"))?;
+    let o_proj_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
+    qwen_full_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenFullAttentionStepParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        QwenFullAttentionSequenceConfig {
+            rms_norm_eps: spec.rms_norm_eps,
+            rope_theta: spec.rope_theta,
+            partial_rotary_factor: spec.partial_rotary_factor,
+        },
+        cache,
+    )
+    .map_err(|err| {
+        TensorLoadError::integrity(format!(
+            "Qwen layer{layer_idx} full attention step failed: {err}"
+        ))
+    })
+}
+
 pub fn qwen_layer0_linear_attention_projections(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
