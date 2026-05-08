@@ -73,6 +73,7 @@ Current commits:
 - `1b76a55` - Chat requests now support `max_completion_tokens` as the OpenAI token-limit alias and reject conflicting token limit fields.
 - `dbeffc8` - Added non-destructive `llm-engine model prune --dry-run` snapshot usage reporting.
 - `17e3fd8` - Added aggregate inference metrics and `GET /admin/metrics` for request counts, stream counts, failures, and token totals.
+- `5d4b371` - Malformed JSON request bodies now return stable request-validation error envelopes for chat and text completion routes.
 
 Current verified state:
 
@@ -110,6 +111,7 @@ Current verified state:
 - Chat completions accept `max_completion_tokens` as an alias for `max_tokens`, reject zero values, and reject conflicting `max_tokens`/`max_completion_tokens` values before backend execution.
 - `llm-engine model prune --dry-run --model-home <path>` reports local snapshot count, per-snapshot manifest byte totals, and zero reclaimable bytes without deleting files. Destructive pruning remains disabled until a retention policy is implemented.
 - `GET /admin/metrics` exposes aggregate Rust inference metrics for total, successful, failed, and streamed requests plus prompt/completion/total token counters. Chat and text completion handlers record metrics from runtime usage.
+- Malformed JSON bodies on `/v1/chat/completions` and `/v1/completions` now map through the same stable HTTP error envelope as other request-validation failures, including `error.code`, `error.phase`, and `error.retryable`.
 
 Known incomplete items:
 
