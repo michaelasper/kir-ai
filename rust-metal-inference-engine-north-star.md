@@ -171,13 +171,14 @@ Current verified state:
 - `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.
 - `llm-sampler` now includes a deterministic-draw temperature/top-p sampler primitive with stable nucleus ordering, probability validation, and coverage for low/high draws, minimum one-token nuclei, and invalid controls.
+- Legacy completion SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, without falling back to non-streaming generation.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches are wired into decode. A non-greedy sampler primitive exists, but OpenAI request validation/native RNG wiring and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, and stream-drop backend cancellation. Tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion stop handling. Chat tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, and a reusable layer KV storage primitive, but native Qwen multi-token decode is not wired to read/write it yet.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill and a reusable recurrent/convolution cache primitive, but native Qwen decode is not wired to update it incrementally yet.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, and chunked BF16 matvecs are implemented; native startup policy for eager materialization is not complete.

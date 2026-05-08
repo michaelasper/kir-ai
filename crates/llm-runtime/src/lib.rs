@@ -71,13 +71,9 @@ where
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
-        if !request.stop.is_empty() {
-            let include_usage = request.stream_options.include_usage;
-            let completion = self.complete_text(request).await?;
-            return Ok(buffered_completion_stream(completion, include_usage));
-        }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
+        let stop = request.stop.clone();
         let completion = RuntimeCompletionSeed {
             id: format!("cmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
@@ -98,6 +94,7 @@ where
         Ok(streaming_completion_stream(
             completion,
             backend_stream,
+            stop,
             include_usage,
             cancellation,
         ))
@@ -420,36 +417,10 @@ struct RuntimeChatCompletion {
     usage: Usage,
 }
 
-fn buffered_completion_stream(
-    completion: RuntimeCompletion,
-    include_usage: bool,
-) -> CompletionStream<'static> {
-    let mut events = vec![
-        Ok(CompletionStreamEvent::Chunk(completion_stream_chunk(
-            &completion,
-            completion.text.clone(),
-            None,
-        ))),
-        Ok(CompletionStreamEvent::Chunk(completion_stream_chunk(
-            &completion,
-            String::new(),
-            Some(completion.finish_reason.clone()),
-        ))),
-    ];
-    if include_usage {
-        events.push(Ok(CompletionStreamEvent::Chunk(
-            completion_stream_usage_chunk(&completion),
-        )));
-    }
-    events.push(Ok(CompletionStreamEvent::Complete(completion.usage)));
-    CompletionStream {
-        events: stream::iter(events).boxed(),
-    }
-}
-
 fn streaming_completion_stream<'a>(
     completion: RuntimeCompletionSeed,
     backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
+    stop: Vec<String>,
     include_usage: bool,
     cancellation: CancellationToken,
 ) -> CompletionStream<'a> {
@@ -457,29 +428,58 @@ fn streaming_completion_stream<'a>(
     let events = async_stream::try_stream! {
         let _cancel_on_drop = cancel_on_drop;
         let mut backend_stream = backend_stream;
-        let mut text = String::new();
+        let mut raw_text = String::new();
+        let mut emitted_len = 0;
         let mut prompt_tokens = 0;
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
+        let max_stop_len = max_stop_sequence_len(&stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             completion_tokens += chunk.completion_tokens;
             if !chunk.text.is_empty() {
-                text.push_str(&chunk.text);
-                yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-                    &completion,
-                    chunk.text,
-                    None,
-                    None,
-                ));
+                raw_text.push_str(&chunk.text);
+                if let Some(stop_at) = earliest_stop_index(&raw_text, &stop) {
+                    if stop_at > emitted_len {
+                        yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+                            &completion,
+                            raw_text[emitted_len..stop_at].to_owned(),
+                            None,
+                            None,
+                        ));
+                    }
+                    emitted_len = stop_at;
+                    finish_reason = llm_api::FinishReason::Stop;
+                    break;
+                }
+                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len);
+                if safe_len > emitted_len {
+                    yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+                        &completion,
+                        raw_text[emitted_len..safe_len].to_owned(),
+                        None,
+                        None,
+                    ));
+                    emitted_len = safe_len;
+                }
             }
             if let Some(reason) = chunk.finish_reason {
                 finish_reason = reason;
                 break;
             }
         }
-        if let Some(class) = classify_no_progress(&text, completion_tokens, false) {
+        if finish_reason != llm_api::FinishReason::Stop && emitted_len < raw_text.len() {
+            yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+                &completion,
+                raw_text[emitted_len..].to_owned(),
+                None,
+                None,
+            ));
+            emitted_len = raw_text.len();
+        }
+        let visible_text = &raw_text[..emitted_len];
+        if let Some(class) = classify_no_progress(visible_text, completion_tokens, false) {
             Err(RuntimeError::NoProgress(class))?;
         }
         let usage = Usage {
@@ -718,36 +718,6 @@ fn stream_seed_chunk(
     }
 }
 
-fn completion_stream_chunk(
-    completion: &RuntimeCompletion,
-    text: String,
-    finish_reason: Option<llm_api::FinishReason>,
-) -> CompletionStreamResponse {
-    CompletionStreamResponse {
-        id: completion.id.clone(),
-        object: "text_completion".to_owned(),
-        created: completion.created,
-        model: completion.model.clone(),
-        choices: vec![CompletionChoice {
-            text,
-            index: 0,
-            finish_reason,
-        }],
-        usage: None,
-    }
-}
-
-fn completion_stream_usage_chunk(completion: &RuntimeCompletion) -> CompletionStreamResponse {
-    CompletionStreamResponse {
-        id: completion.id.clone(),
-        object: "text_completion".to_owned(),
-        created: completion.created,
-        model: completion.model.clone(),
-        choices: Vec::new(),
-        usage: Some(completion.usage.clone()),
-    }
-}
-
 fn completion_stream_seed_chunk(
     completion: &RuntimeCompletionSeed,
     text: String,
@@ -796,6 +766,30 @@ fn apply_stop_sequences(content: &mut String, stop: &[String]) -> bool {
     };
     content.truncate(stop_at);
     true
+}
+
+fn earliest_stop_index(content: &str, stop: &[String]) -> Option<usize> {
+    stop.iter()
+        .filter_map(|sequence| content.find(sequence))
+        .min()
+}
+
+fn max_stop_sequence_len(stop: &[String]) -> usize {
+    stop.iter().map(String::len).max().unwrap_or(0)
+}
+
+fn safe_stream_emit_len(content: &str, max_stop_len: usize) -> usize {
+    if max_stop_len <= 1 {
+        return content.len();
+    }
+    floor_char_boundary(content, content.len().saturating_sub(max_stop_len - 1))
+}
+
+fn floor_char_boundary(content: &str, mut index: usize) -> usize {
+    while !content.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

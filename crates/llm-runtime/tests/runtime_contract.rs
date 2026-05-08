@@ -160,6 +160,49 @@ async fn runtime_returns_streaming_text_completion_chunks() {
 }
 
 #[tokio::test]
+async fn runtime_completion_stream_applies_stop_across_backend_chunks() {
+    let runtime = Runtime::new(StopStreamingBackend);
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            max_tokens: Some(8),
+            stop: vec![" STOP".to_owned()],
+            stream: true,
+            stream_options: llm_api::StreamOptions::default(),
+            temperature: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logprobs: None,
+            n: None,
+        })
+        .await
+        .expect("completion stream succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| {
+            chunk
+                .choices
+                .first()
+                .map(|choice| choice.text.as_str())
+                .unwrap_or("")
+        })
+        .collect::<String>();
+    assert_eq!(text, "hello");
+    assert_eq!(
+        chunks
+            .iter()
+            .filter_map(|chunk| chunk.choices.first())
+            .next_back()
+            .and_then(|choice| choice.finish_reason.clone()),
+        Some(FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
 async fn runtime_completion_stream_returns_before_backend_finishes() {
     let release = Arc::new(Notify::new());
     let runtime = Runtime::new(BlockingTextBackend {
@@ -721,6 +764,8 @@ struct BlockingTextBackend {
     release: Arc<Notify>,
 }
 
+struct StopStreamingBackend;
+
 struct TwoChunkStreamBackend {
     first: Arc<Notify>,
     finish: Arc<Notify>,
@@ -820,5 +865,39 @@ impl ModelBackend for BlockingTextBackend {
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for StopStreamingBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "stop streaming test must use generate_stream".to_owned(),
+        ))
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: "hello ST".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            yield BackendStreamChunk {
+                text: "OP ignored".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: Some(FinishReason::Stop),
+            };
+        }
+        .boxed()
     }
 }
