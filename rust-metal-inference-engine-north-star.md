@@ -83,6 +83,7 @@ Current commits:
 - `7a20446` - Parsed generated tool calls are validated against declared tools and explicit tool choices.
 - `dd34c95` - Runtime generation limits now preserve omitted max-token requests and native Qwen rejects explicit requests above its configured cap.
 - `913e25b` - Added model-level concurrency backpressure with structured retryable 429 overload errors.
+- `e3ef5d4` - `tool_choice: required` now fails request validation when no tools are declared.
 
 Current verified state:
 
@@ -130,6 +131,7 @@ Current verified state:
 - Parsed generated tool calls must now match the request tool contract before any response is returned. The runtime rejects undeclared tool names, rejects tool calls when `tool_choice` is `none`, rejects names that differ from an explicit function choice, and still accepts multiple generated tool calls when each name was declared.
 - Runtime backend requests now carry `max_tokens` as `Option<u32>`, preserving omitted OpenAI token limits as backend defaults instead of converting them to an arbitrary numeric request. Native Qwen uses its configured `max_new_tokens` only for omitted limits and rejects explicit requests above that cap as `unsupported_capability`.
 - The HTTP engine state now uses a model-level semaphore. The default serve path allows one concurrent generation, `--max-concurrent-requests` can raise that limit, and requests received while all permits are busy return a stable retryable `model_overloaded` error with HTTP 429.
+- Chat request validation rejects `tool_choice: "required"` when the request has no declared tools, returning `invalid_request` before any prompt rendering or backend generation.
 
 Known incomplete items:
 
