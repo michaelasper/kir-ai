@@ -109,31 +109,37 @@ impl LayerKvCache {
     }
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
-        let vector_len = self.vector_len();
-        if key.len() != vector_len {
-            return Err(KvCacheError::ShapeMismatch {
-                expected: vector_len,
-                actual: key.len(),
-            });
-        }
-        if value.len() != vector_len {
-            return Err(KvCacheError::ShapeMismatch {
-                expected: vector_len,
-                actual: value.len(),
-            });
-        }
+        self.validate_token_shape(key, value)?;
         if self.token_count == self.max_tokens {
             return Err(KvCacheError::CapacityExceeded {
                 requested: 1,
                 available: 0,
             });
         }
+        let vector_len = self.vector_len();
         let token_index = self.token_count;
         let start = token_index * vector_len;
         let end = start + vector_len;
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
         self.token_count += 1;
+        Ok(token_index)
+    }
+
+    pub fn append_sliding(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
+        self.validate_token_shape(key, value)?;
+        if self.token_count < self.max_tokens {
+            return self.append(key, value);
+        }
+        let vector_len = self.vector_len();
+        let used_len = self.used_len();
+        self.keys.copy_within(vector_len..used_len, 0);
+        self.values.copy_within(vector_len..used_len, 0);
+        let token_index = self.max_tokens - 1;
+        let start = token_index * vector_len;
+        let end = start + vector_len;
+        self.keys[start..end].copy_from_slice(key);
+        self.values[start..end].copy_from_slice(value);
         Ok(token_index)
     }
 
@@ -164,6 +170,23 @@ impl LayerKvCache {
         let vector_len = self.vector_len();
         let start = token_index * vector_len;
         Some(&storage[start..start + vector_len])
+    }
+
+    fn validate_token_shape(&self, key: &[f32], value: &[f32]) -> Result<(), KvCacheError> {
+        let vector_len = self.vector_len();
+        if key.len() != vector_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: vector_len,
+                actual: key.len(),
+            });
+        }
+        if value.len() != vector_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: vector_len,
+                actual: value.len(),
+            });
+        }
+        Ok(())
     }
 
     fn used_len(&self) -> usize {
@@ -432,6 +455,39 @@ mod tests {
 
         let err = LayerKvCache::new(1, 0, 2).expect_err("zero heads are invalid");
         assert_eq!(err, KvCacheError::InvalidShape);
+    }
+
+    #[test]
+    fn layer_kv_cache_sliding_append_evicts_oldest_token_when_full() {
+        let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape is valid");
+
+        assert_eq!(
+            cache
+                .append_sliding(&[1.0, 2.0], &[10.0, 20.0])
+                .expect("first token fits"),
+            0
+        );
+        assert_eq!(
+            cache
+                .append_sliding(&[3.0, 4.0], &[30.0, 40.0])
+                .expect("second token fits"),
+            1
+        );
+        assert_eq!(
+            cache
+                .append_sliding(&[5.0, 6.0], &[50.0, 60.0])
+                .expect("full cache evicts oldest token"),
+            1
+        );
+
+        assert_eq!(cache.token_count(), 2);
+        assert_eq!(cache.key(0), Some(&[3.0, 4.0][..]));
+        assert_eq!(cache.value(0), Some(&[30.0, 40.0][..]));
+        assert_eq!(cache.key(1), Some(&[5.0, 6.0][..]));
+        assert_eq!(cache.value(1), Some(&[50.0, 60.0][..]));
+        assert_eq!(cache.keys(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(cache.values(), &[30.0, 40.0, 50.0, 60.0]);
+        assert_eq!(cache.remaining_tokens(), 0);
     }
 
     #[test]
