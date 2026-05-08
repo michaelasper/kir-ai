@@ -1906,7 +1906,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
         )));
     }
 
-    let position = cache.token_count();
+    let position = cache.next_position();
     let mut query = vec![0.0; attention_dim];
     let mut gate = vec![0.0; attention_dim];
     for head in 0..dims.num_attention_heads {
@@ -1947,7 +1947,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
         );
     }
     cache
-        .append(&key, parts.v_proj)
+        .append_sliding(&key, parts.v_proj)
         .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
 
     let groups = dims.num_attention_heads / dims.num_key_value_heads;

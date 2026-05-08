@@ -55,6 +55,7 @@ pub struct LayerKvCache {
     key_value_heads: usize,
     head_dim: usize,
     token_count: usize,
+    tokens_seen: usize,
     keys: Vec<f32>,
     values: Vec<f32>,
 }
@@ -79,6 +80,7 @@ impl LayerKvCache {
             key_value_heads,
             head_dim,
             token_count: 0,
+            tokens_seen: 0,
             keys: vec![0.0; storage_len],
             values: vec![0.0; storage_len],
         })
@@ -104,6 +106,10 @@ impl LayerKvCache {
         self.token_count
     }
 
+    pub fn next_position(&self) -> usize {
+        self.tokens_seen
+    }
+
     pub fn remaining_tokens(&self) -> usize {
         self.max_tokens - self.token_count
     }
@@ -116,6 +122,10 @@ impl LayerKvCache {
                 available: 0,
             });
         }
+        let tokens_seen = self
+            .tokens_seen
+            .checked_add(1)
+            .ok_or(KvCacheError::InvalidShape)?;
         let vector_len = self.vector_len();
         let token_index = self.token_count;
         let start = token_index * vector_len;
@@ -123,6 +133,7 @@ impl LayerKvCache {
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
         self.token_count += 1;
+        self.tokens_seen = tokens_seen;
         Ok(token_index)
     }
 
@@ -131,6 +142,10 @@ impl LayerKvCache {
         if self.token_count < self.max_tokens {
             return self.append(key, value);
         }
+        let tokens_seen = self
+            .tokens_seen
+            .checked_add(1)
+            .ok_or(KvCacheError::InvalidShape)?;
         let vector_len = self.vector_len();
         let used_len = self.used_len();
         self.keys.copy_within(vector_len..used_len, 0);
@@ -140,6 +155,7 @@ impl LayerKvCache {
         let end = start + vector_len;
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
+        self.tokens_seen = tokens_seen;
         Ok(token_index)
     }
 
@@ -161,6 +177,7 @@ impl LayerKvCache {
 
     pub fn clear(&mut self) {
         self.token_count = 0;
+        self.tokens_seen = 0;
     }
 
     fn token_slice<'a>(&self, storage: &'a [f32], token_index: usize) -> Option<&'a [f32]> {
@@ -467,18 +484,21 @@ mod tests {
                 .expect("first token fits"),
             0
         );
+        assert_eq!(cache.next_position(), 1);
         assert_eq!(
             cache
                 .append_sliding(&[3.0, 4.0], &[30.0, 40.0])
                 .expect("second token fits"),
             1
         );
+        assert_eq!(cache.next_position(), 2);
         assert_eq!(
             cache
                 .append_sliding(&[5.0, 6.0], &[50.0, 60.0])
                 .expect("full cache evicts oldest token"),
             1
         );
+        assert_eq!(cache.next_position(), 3);
 
         assert_eq!(cache.token_count(), 2);
         assert_eq!(cache.key(0), Some(&[3.0, 4.0][..]));

@@ -459,6 +459,62 @@ fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
 }
 
 #[test]
+fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
+    let dims = QwenFullAttentionDims {
+        hidden_size: 2,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+    };
+    let q_norm_weight = vec![0.0, 0.0];
+    let k_norm_weight = vec![0.0, 0.0];
+    let o_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+    let config = QwenFullAttentionSequenceConfig {
+        rms_norm_eps: 0.0,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 0.0,
+    };
+    let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
+    let prefill_q_proj = [vec![1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]];
+    let prefill_k_proj = [vec![1.0, 0.0], vec![1.0, 0.0]];
+    let prefill_v_proj = [vec![2.0, 0.0], vec![0.0, 4.0]];
+    qwen_full_attention_sequence_with_cache_from_parts(
+        &dims,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &prefill_q_proj,
+            k_proj: &prefill_k_proj,
+            v_proj: &prefill_v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        config,
+        &mut cache,
+    )
+    .expect("prefill fills cache");
+
+    let output = qwen_full_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenFullAttentionStepParts {
+            q_proj: &[1.0, 0.0, 0.0, 0.0],
+            k_proj: &[1.0, 0.0],
+            v_proj: &[8.0, 0.0],
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        config,
+        &mut cache,
+    )
+    .expect("full cache evicts oldest token during decode");
+
+    assert_eq!(cache.token_count(), 2);
+    assert_close(cache.value(0).expect("value 0"), &[0.0, 4.0], 1e-6);
+    assert_close(cache.value(1).expect("value 1"), &[8.0, 0.0], 1e-6);
+    assert_close(&output, &[2.0, 1.0], 1e-6);
+}
+
+#[test]
 fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
