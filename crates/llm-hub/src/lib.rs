@@ -3,9 +3,13 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,22 +112,42 @@ impl HubModelInfo {
 pub struct HubClient {
     endpoint: Url,
     client: reqwest::Client,
+    timeouts: HubTimeouts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HubTimeouts {
+    pub connect: Duration,
+    pub request: Duration,
+    pub read: Duration,
+}
+
+impl Default for HubTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(15),
+            request: Duration::from_secs(60 * 60 * 6),
+            read: Duration::from_secs(120),
+        }
+    }
 }
 
 impl Default for HubClient {
     fn default() -> Self {
-        Self {
-            endpoint: Url::parse("https://huggingface.co").expect("static Hugging Face URL"),
-            client: reqwest::Client::new(),
-        }
+        Self::new(Url::parse("https://huggingface.co").expect("static Hugging Face URL"))
     }
 }
 
 impl HubClient {
     pub fn new(endpoint: Url) -> Self {
+        Self::with_timeouts(endpoint, HubTimeouts::default())
+    }
+
+    pub fn with_timeouts(endpoint: Url, timeouts: HubTimeouts) -> Self {
         Self {
             endpoint,
-            client: reqwest::Client::new(),
+            client: build_http_client(timeouts),
+            timeouts,
         }
     }
 
@@ -248,7 +272,15 @@ impl HubClient {
                 .map_err(HubError::io)?
         };
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = time::timeout(self.timeouts.read, stream.next())
+            .await
+            .map_err(|_| {
+                HubError::network(format!(
+                    "download for `{path}` stalled for {} while reading response body",
+                    format_duration(self.timeouts.read)
+                ))
+            })?
+        {
             let chunk = chunk.map_err(HubError::network)?;
             file.write_all(&chunk).await.map_err(HubError::io)?;
         }
@@ -264,6 +296,22 @@ impl HubClient {
         }
         verify_file_sha256(destination, expected_sha256).await?;
         Ok(())
+    }
+}
+
+fn build_http_client(timeouts: HubTimeouts) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(timeouts.connect)
+        .timeout(timeouts.request)
+        .build()
+        .expect("hub HTTP client builds")
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_secs() > 0 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}ms", duration.as_millis())
     }
 }
 
