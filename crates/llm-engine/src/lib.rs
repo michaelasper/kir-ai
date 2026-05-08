@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, Sse},
@@ -37,6 +37,13 @@ struct AppState {
     runtime: Arc<EngineRuntime>,
     metrics: Arc<Mutex<ServerMetrics>>,
     model_permits: Arc<Semaphore>,
+    admin_token: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EngineOptions {
+    pub concurrency_limit: usize,
+    pub admin_token: Option<String>,
 }
 
 pub fn build_router() -> Router {
@@ -50,6 +57,19 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
 pub fn build_router_with_backend_and_concurrency(
     backend: Box<dyn ModelBackend>,
     concurrency_limit: usize,
+) -> Router {
+    build_router_with_backend_and_options(
+        backend,
+        EngineOptions {
+            concurrency_limit,
+            admin_token: None,
+        },
+    )
+}
+
+pub fn build_router_with_backend_and_options(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
 ) -> Router {
     let runtime = Runtime::new(backend);
     Router::new()
@@ -67,7 +87,8 @@ pub fn build_router_with_backend_and_concurrency(
         .with_state(AppState {
             runtime: Arc::new(runtime),
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
-            model_permits: Arc::new(Semaphore::new(concurrency_limit.max(1))),
+            model_permits: Arc::new(Semaphore::new(options.concurrency_limit.max(1))),
+            admin_token: options.admin_token.map(Arc::from),
         })
 }
 
@@ -273,18 +294,24 @@ async fn models(State(state): State<AppState>) -> impl IntoResponse {
     })
 }
 
-async fn admin_models(State(state): State<AppState>) -> impl IntoResponse {
+async fn admin_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
-    Json(json!({
+    Ok(Json(json!({
         "object": "list",
         "data": [admin_model_status(&metadata)],
-    }))
+    })))
 }
 
 async fn admin_model(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
         return Err(RuntimeError::Backend(BackendError::ModelNotFound {
@@ -299,7 +326,9 @@ async fn admin_model(
 async fn admin_model_verify(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
         return Err(RuntimeError::Backend(BackendError::ModelNotFound {
@@ -364,10 +393,14 @@ fn native_qwen_metadata(
     Ok(metadata)
 }
 
-async fn admin_metrics(State(state): State<AppState>) -> impl IntoResponse {
+async fn admin_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
     let metrics = *state.metrics.lock().expect("metrics lock is not poisoned");
     let tokens = metrics.tokens();
-    Json(json!({
+    Ok(Json(json!({
         "requests_total": metrics.requests_total(),
         "successful_requests": metrics.successful_requests(),
         "failed_requests": metrics.failed_requests(),
@@ -377,7 +410,7 @@ async fn admin_metrics(State(state): State<AppState>) -> impl IntoResponse {
             "completion_tokens": tokens.completion_tokens(),
             "total_tokens": tokens.total_tokens(),
         }
-    }))
+    })))
 }
 
 async fn chat_completions(
@@ -488,6 +521,22 @@ fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, Engine
         })
 }
 
+fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), EngineError> {
+    let Some(token) = &state.admin_token else {
+        return Ok(());
+    };
+    let Some(header_value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(EngineError::UnauthorizedAdmin);
+    };
+    if header_value == format!("Bearer {token}") {
+        return Ok(());
+    }
+    Err(EngineError::UnauthorizedAdmin)
+}
+
 fn parse_json_request<T>(
     request: Result<Json<T>, JsonRejection>,
     state: &AppState,
@@ -531,6 +580,7 @@ enum EngineError {
     Runtime(RuntimeError),
     ModelStore(HubError),
     Overloaded(String),
+    UnauthorizedAdmin,
     Serialize(serde_json::Error),
 }
 
@@ -626,6 +676,13 @@ impl IntoResponse for EngineError {
                 "scheduler",
                 true,
                 message,
+            ),
+            Self::UnauthorizedAdmin => (
+                StatusCode::UNAUTHORIZED,
+                "admin_auth_required",
+                "admin_auth",
+                false,
+                "admin bearer token is required".to_owned(),
             ),
         };
         let body = Json(json!({

@@ -6,7 +6,9 @@ use axum::{
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, ModelBackend,
 };
-use llm_engine::{build_router, build_router_with_backend};
+use llm_engine::{
+    EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
+};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
 use std::{
@@ -206,6 +208,56 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
     assert_eq!(body["tokens"]["completion_tokens"], 5);
     assert_eq!(body["tokens"]["total_tokens"], 6);
+}
+
+#[tokio::test]
+async fn admin_metrics_requires_bearer_token_when_configured() {
+    let response = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            ..EngineOptions::default()
+        },
+    )
+    .oneshot(
+        Request::builder()
+            .uri("/admin/metrics")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin metrics response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "admin_auth_required");
+    assert_eq!(body["error"]["phase"], "admin_auth");
+}
+
+#[tokio::test]
+async fn admin_metrics_accepts_configured_bearer_token() {
+    let response = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            ..EngineOptions::default()
+        },
+    )
+    .oneshot(
+        Request::builder()
+            .uri("/admin/metrics")
+            .header("authorization", "Bearer secret-admin-token")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

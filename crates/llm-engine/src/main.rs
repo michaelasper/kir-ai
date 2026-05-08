@@ -6,7 +6,7 @@ use llm_backend::{
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
-use llm_engine::{NativeQwenBackend, build_router_with_backend_and_concurrency};
+use llm_engine::{EngineOptions, NativeQwenBackend, build_router_with_backend_and_options};
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -28,6 +28,18 @@ async fn main() -> anyhow::Result<()> {
                 .map(str::parse::<usize>)
                 .transpose()?
                 .unwrap_or(1);
+            let admin_token = flag_value(&serve_args, "--admin-token")
+                .map(str::to_owned)
+                .or_else(|| std::env::var("LLM_ENGINE_ADMIN_TOKEN").ok());
+            if admin_token.is_none() && !addr.ip().is_loopback() {
+                anyhow::bail!(
+                    "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
+                );
+            }
+            let options = EngineOptions {
+                concurrency_limit: max_concurrent_requests,
+                admin_token,
+            };
             let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
                 let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
@@ -41,17 +53,14 @@ async fn main() -> anyhow::Result<()> {
                 let backend = NativeQwenBackend::open(model_id, snapshot_path)?
                     .with_max_new_tokens(max_new_tokens)
                     .with_max_prefill_tokens(max_prefill_tokens);
-                build_router_with_backend_and_concurrency(
-                    Box::new(backend),
-                    max_concurrent_requests,
-                )
+                build_router_with_backend_and_options(Box::new(backend), options)
             } else {
-                build_router_with_backend_and_concurrency(
+                build_router_with_backend_and_options(
                     Box::new(llm_backend::DeterministicBackend::new(
                         "local-qwen36",
                         "hello from rust native backend",
                     )),
-                    max_concurrent_requests,
+                    options,
                 )
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
