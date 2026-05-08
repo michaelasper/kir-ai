@@ -1545,7 +1545,7 @@ fn qwen_linear_attention_recurrent_matvecs_use_configured_backend() {
 }
 
 #[test]
-fn qwen_linear_attention_recurrent_update_uses_configured_backend() {
+fn qwen_linear_attention_recurrent_decay_and_update_use_configured_backend() {
     let root = temp_snapshot_dir("qwen-linear-attn-recurrent-update");
     write_tiny_linear_decoder_snapshot(&root);
     let store = SafeTensorShardStore::open(&root).expect("store opens");
@@ -1575,7 +1575,7 @@ fn qwen_linear_attention_recurrent_update_uses_configured_backend() {
 
     assert_close(&output[0], &expected[0], 1e-6);
     assert_close(&output[1], &expected[1], 1e-6);
-    assert_eq!(matvec.recurrent_update_calls.get(), 2);
+    assert_eq!(matvec.recurrent_update_calls.get(), 4);
     assert_close(
         cache.recurrent_state(),
         expected_cache.recurrent_state(),

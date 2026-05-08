@@ -1541,11 +1541,19 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             .exp();
 
             let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
-            for state in &mut recurrent_state
-                [state_start..state_start + dims.key_head_dim * dims.value_head_dim]
-            {
-                *state *= decay;
-            }
+            let state_end = state_start + dims.key_head_dim * dims.value_head_dim;
+            let zero_memory = vec![0.0; dims.value_head_dim];
+            let decayed_state = matvec.linear_attention_recurrent_update_f32(
+                &recurrent_state[state_start..state_end],
+                &key_head_values,
+                &value[value_start..value_start + dims.value_head_dim],
+                &zero_memory,
+                0.0,
+                decay,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            )?;
+            recurrent_state[state_start..state_end].copy_from_slice(&decayed_state);
 
             let mut value_major_state = linear_attention_value_major_state_rows(
                 &recurrent_state,
@@ -1560,7 +1568,6 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                 dims.key_head_dim,
             )?;
 
-            let state_end = state_start + dims.key_head_dim * dims.value_head_dim;
             let updated_state = matvec.linear_attention_recurrent_update_f32(
                 &recurrent_state[state_start..state_end],
                 &key_head_values,
