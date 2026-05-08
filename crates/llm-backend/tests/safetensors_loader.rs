@@ -1,11 +1,12 @@
-use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_backend::{
-    SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_full_attention_first_token,
-    qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
-    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_top_k,
+    QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
+    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_caches_for_spec,
+    qwen_layer_full_attention_first_token, qwen_layer_linear_attention_first_token,
+    qwen_layer_linear_attention_projections, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_lm_head_logits, qwen_lm_head_top_k,
 };
+use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 
 #[test]
@@ -827,6 +828,35 @@ fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
     assert_close(&[top[0].logit], &[2.2627418], 1e-6);
     assert_close(&logits, &[0.84852815, 2.2627418], 1e-6);
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_layer_caches_match_hybrid_attention_shapes() {
+    let mut spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    spec.num_hidden_layers = 2;
+    spec.layer_kinds = vec![AttentionKind::LinearAttention, AttentionKind::FullAttention];
+
+    let caches = qwen_layer_caches_for_spec(&spec, 4).expect("layer caches");
+
+    assert_eq!(caches.len(), 2);
+    match &caches[0] {
+        QwenLayerCache::Linear(cache) => {
+            assert_eq!(cache.conv_kernel_size(), 1);
+            assert_eq!(cache.conv_dim(), 4);
+            assert_eq!(cache.num_value_heads(), 1);
+            assert_eq!(cache.key_head_dim(), 1);
+            assert_eq!(cache.value_head_dim(), 2);
+        }
+        QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+    }
+    match &caches[1] {
+        QwenLayerCache::Full(cache) => {
+            assert_eq!(cache.max_tokens(), 4);
+            assert_eq!(cache.key_value_heads(), 1);
+            assert_eq!(cache.head_dim(), 2);
+        }
+        QwenLayerCache::Linear(_) => panic!("layer 1 should be full attention"),
+    }
 }
 
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {

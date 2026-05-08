@@ -111,6 +111,7 @@ Current commits:
 - `ac91d0b` - Full-attention sequence prefill has a cache-backed `LayerKvCache` CPU path.
 - `a77c129` - Linear-attention sequence prefill has a cache-backed `LinearAttentionCache` CPU path.
 - `c2ec88f` - Linear-attention single-token decode has a cache-backed `LinearAttentionCache` CPU step.
+- `b1b8f82` - Full-attention single-token decode has a cache-backed `LayerKvCache` CPU step.
 
 Current verified state:
 
@@ -192,11 +193,12 @@ Current verified state:
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
 - Full-attention single-token decode now has a cache-backed CPU primitive that uses the cache token count for RoPE position, appends the normalized key/value, attends across the full `LayerKvCache`, and matches full cached sequence prefill.
+- Hybrid Qwen layer cache allocation now derives one cache per parsed layer kind, using `LinearAttentionCache` for Gated DeltaNet layers and fixed-capacity `LayerKvCache` for full-attention layers.
 
 Known incomplete items:
 
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
-- Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches are wired into decode. Non-greedy top-p sampling is wired over full lm-head logits, but token-level stop handling across incremental native decode is not complete.
+- Native Qwen multi-token decode is fail-closed until reusable per-layer KV/recurrent caches are wired into decode. Non-greedy top-p sampling is wired over full lm-head logits, but token-level stop handling across incremental native decode is not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` prefill and single-token step paths, but native Qwen layer decode is not wired to use it in the server multi-token path yet.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus a cache-backed `LinearAttentionCache` prefill and single-token step path, but native Qwen layer decode is not wired to use it in the server multi-token path yet.

@@ -712,6 +712,71 @@ impl QwenLinearAttentionDims {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum QwenLayerCache {
+    Linear(LinearAttentionCache),
+    Full(LayerKvCache),
+}
+
+pub fn qwen_layer_caches_for_spec(
+    spec: &QwenModelSpec,
+    max_tokens: usize,
+) -> Result<Vec<QwenLayerCache>, TensorLoadError> {
+    let layer_count = spec.num_hidden_layers as usize;
+    if spec.layer_kinds.len() != layer_count {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen spec declares {layer_count} layers but has {} attention kind entries",
+            spec.layer_kinds.len()
+        )));
+    }
+    spec.layer_kinds
+        .iter()
+        .enumerate()
+        .map(|(layer_idx, kind)| qwen_layer_cache_for_kind(spec, layer_idx, *kind, max_tokens))
+        .collect()
+}
+
+fn qwen_layer_cache_for_kind(
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    kind: AttentionKind,
+    max_tokens: usize,
+) -> Result<QwenLayerCache, TensorLoadError> {
+    match kind {
+        AttentionKind::LinearAttention => {
+            let dims = QwenLinearAttentionDims::from_spec(spec);
+            let conv_dim = dims.conv_dim().map_err(|err| {
+                TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} linear cache shape failed: {err}"
+                ))
+            })?;
+            LinearAttentionCache::new(
+                dims.conv_kernel_size,
+                conv_dim,
+                dims.num_value_heads,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            )
+            .map(QwenLayerCache::Linear)
+            .map_err(|err| {
+                TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} linear cache allocation failed: {err}"
+                ))
+            })
+        }
+        AttentionKind::FullAttention => {
+            let dims = QwenFullAttentionDims::from_spec(spec);
+            LayerKvCache::new(max_tokens, dims.num_key_value_heads, dims.head_dim)
+                .map(QwenLayerCache::Full)
+                .map_err(|err| {
+                    TensorLoadError::integrity(format!(
+                        "Qwen layer{layer_idx} full attention cache allocation failed: {err}"
+                    ))
+                })
+        }
+    }
+}
+
 pub fn qwen_embedding_and_layer0_norm(
     store: &SafeTensorShardStore,
     token_id: usize,
