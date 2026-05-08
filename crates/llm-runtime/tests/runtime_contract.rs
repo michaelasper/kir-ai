@@ -8,7 +8,7 @@ use llm_backend::{
     ModelBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -912,12 +912,126 @@ fn content_delta_is_progress_even_with_many_tokens() {
     assert_eq!(class, None);
 }
 
+#[tokio::test]
+async fn no_progress_transcript_replay_fixtures_return_stable_codes() {
+    for fixture_json in [
+        include_str!("fixtures/no_progress/hidden_only_reasoning.json"),
+        include_str!("fixtures/no_progress/repeated_invalid_tool_call.json"),
+        include_str!("fixtures/no_progress/repeated_assistant_content.json"),
+        include_str!("fixtures/no_progress/stalled_assistant_turn.json"),
+    ] {
+        let fixture: Value = serde_json::from_str(fixture_json).expect("fixture json parses");
+        let request = serde_json::from_value::<ChatCompletionRequest>(
+            fixture.get("request").expect("fixture has request").clone(),
+        )
+        .expect("fixture request parses");
+        let runtime = Runtime::new(ReplayBackend {
+            output: fixture_backend_output(
+                fixture
+                    .get("backend_output")
+                    .expect("fixture has backend output"),
+            ),
+        });
+
+        let err = runtime
+            .chat(request)
+            .await
+            .expect_err("fixture must replay no-progress failure");
+        let RuntimeError::NoProgress(class) = err else {
+            panic!("expected no-progress error for fixture {fixture:?}");
+        };
+        assert_eq!(
+            class.code(),
+            fixture["expected_code"]
+                .as_str()
+                .expect("fixture has expected code")
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
+    let content = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: "Patched Cargo.toml and added the regression test.".to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 8,
+            finish_reason: FinishReason::Stop,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("What changed?")],
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("normal content is progress");
+    assert_eq!(
+        content.choices[0].message.content.as_deref(),
+        Some("Patched Cargo.toml and added the regression test.")
+    );
+
+    let tool = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text:
+                r#"<tool_call>{"name":"read_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
+                    .to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 5,
+            finish_reason: FinishReason::ToolCalls,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("Read Cargo.toml")],
+        tools: vec![ToolDefinition::function(
+            "read_file",
+            "read a file",
+            json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        )],
+        tool_choice: Some(ToolChoice::Required),
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("valid tool call is progress");
+    assert_eq!(tool.choices[0].message.tool_calls.len(), 1);
+
+    let json_response = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: r#"{"answer":"ok"}"#.to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("Return JSON")],
+        response_format: Some(ResponseFormat::JsonObject),
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("valid JSON object is progress");
+    assert_eq!(
+        json_response.choices[0].message.content.as_deref(),
+        Some(r#"{"answer":"ok"}"#)
+    );
+}
+
 struct RecordingBackend {
     observed_max_tokens: Arc<Mutex<Option<Option<u32>>>>,
 }
 
 struct RecordingSamplingBackend {
     observed_sampling: Arc<Mutex<Option<SamplingConfig>>>,
+}
+
+struct ReplayBackend {
+    output: BackendOutput,
 }
 
 #[async_trait::async_trait]
@@ -973,6 +1087,55 @@ impl ModelBackend for RecordingSamplingBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for ReplayBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        if request.model != self.model_id() {
+            return Err(BackendError::ModelNotFound {
+                requested: request.model,
+                available: self.model_id().to_owned(),
+            });
+        }
+        Ok(self.output.clone())
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+fn fixture_backend_output(value: &Value) -> BackendOutput {
+    BackendOutput {
+        text: value["text"]
+            .as_str()
+            .expect("backend output has text")
+            .to_owned(),
+        prompt_tokens: value["prompt_tokens"]
+            .as_u64()
+            .expect("backend output has prompt_tokens"),
+        completion_tokens: value["completion_tokens"]
+            .as_u64()
+            .expect("backend output has completion_tokens"),
+        finish_reason: match value["finish_reason"]
+            .as_str()
+            .expect("backend output has finish_reason")
+        {
+            "stop" => FinishReason::Stop,
+            "length" => FinishReason::Length,
+            "tool_calls" => FinishReason::ToolCalls,
+            other => panic!("unknown fixture finish_reason `{other}`"),
+        },
     }
 }
 

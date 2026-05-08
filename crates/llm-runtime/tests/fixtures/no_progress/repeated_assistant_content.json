@@ -1,0 +1,28 @@
+{
+  "name": "repeated_assistant_content",
+  "expected_code": "no_progress_repeated_assistant_content",
+  "request": {
+    "model": "local-qwen36",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Patch the failing parser test."
+      },
+      {
+        "role": "assistant",
+        "content": "I will inspect the parser tests and patch the failure."
+      },
+      {
+        "role": "user",
+        "content": "What changed?"
+      }
+    ],
+    "max_tokens": 64
+  },
+  "backend_output": {
+    "text": "I will inspect the parser tests and patch the failure.",
+    "prompt_tokens": 20,
+    "completion_tokens": 9,
+    "finish_reason": "stop"
+  }
+}

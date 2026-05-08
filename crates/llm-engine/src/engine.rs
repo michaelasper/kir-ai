@@ -3852,9 +3852,9 @@ fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
             "response_validation",
             false,
         ),
-        RuntimeError::NoProgress(_) => (
+        RuntimeError::NoProgress(class) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            "no_progress",
+            class.code(),
             "response_validation",
             false,
         ),

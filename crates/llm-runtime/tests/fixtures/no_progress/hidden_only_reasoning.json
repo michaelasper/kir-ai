@@ -1,0 +1,20 @@
+{
+  "name": "hidden_only_reasoning",
+  "expected_code": "no_progress_hidden_only_output",
+  "request": {
+    "model": "local-qwen36",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Inspect the repository and tell me the next code change."
+      }
+    ],
+    "max_tokens": 64
+  },
+  "backend_output": {
+    "text": "<think>I should inspect the repository before answering.</think>",
+    "prompt_tokens": 14,
+    "completion_tokens": 24,
+    "finish_reason": "length"
+  }
+}

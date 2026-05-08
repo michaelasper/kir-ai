@@ -714,7 +714,10 @@ async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
         .expect("chat response");
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response.into_body()).await;
-    assert_eq!(body["error"]["code"], "no_progress");
+    assert_eq!(
+        body["error"]["code"],
+        "no_progress_empty_high_output_completion"
+    );
 
     let response = app
         .oneshot(
