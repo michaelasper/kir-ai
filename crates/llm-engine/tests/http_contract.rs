@@ -257,6 +257,63 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_model_pull_operations() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (endpoint, server) = spawn_fake_hub_server(2);
+    let app = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            model_home: Some(temp.path().to_path_buf()),
+            hub_endpoint: Some(endpoint),
+            ..EngineOptions::default()
+        },
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/models/local-qwen36/pull")
+                .header("authorization", "Bearer secret-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "repo_id": "Qwen/Qwen3.6-35B-A3B",
+                        "revision": "main",
+                        "profile": "qwen36-safetensors-bf16",
+                        "metadata_only": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin pull response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .header("authorization", "Bearer secret-admin-token")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["model_pull_operations"], 1);
+    assert_eq!(body["model_pull_successes"], 1);
+    assert_eq!(body["model_pull_failures"], 0);
+    assert_eq!(body["model_pull_bytes"], 2);
+    server.join().expect("fake hub exits");
+}
+
+#[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
     let response = build_router()
         .oneshot(

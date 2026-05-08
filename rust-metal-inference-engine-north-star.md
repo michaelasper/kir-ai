@@ -138,6 +138,7 @@ Current commits:
 - `4f8cddf` - Admin metrics report streaming time-to-first-token summaries.
 - `c76ce8d` - Tracker updated with streaming TTFT metrics commit identity.
 - `b08bdbb` - Admin metrics expose current prefill/decode scheduler phase gauges.
+- `7a9198b` - Tracker updated with scheduler phase metrics commit identity.
 
 Current verified state:
 
@@ -230,6 +231,7 @@ Current verified state:
 - `GET /admin/metrics` now includes completed-request latency summaries and cumulative tokens/sec throughput.
 - `GET /admin/metrics` now records streamed time-to-first-token summaries from the first real content/tool/text delta.
 - `GET /admin/metrics` now exposes explicit prefill and decode phase gauges for the current single-stage scheduler.
+- `GET /admin/metrics` now reports model pull operation counts, success/failure counts, and promoted manifest bytes for admin pull operations.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.

@@ -120,6 +120,10 @@ pub struct ServerMetrics {
     streamed_requests: u64,
     cancelled_requests: u64,
     no_progress_failures: u64,
+    model_pull_operations: u64,
+    model_pull_successes: u64,
+    model_pull_failures: u64,
+    model_pull_bytes: u64,
     request_latency: LatencyMetrics,
     time_to_first_token: LatencyMetrics,
     tokens: TokenCounters,
@@ -151,6 +155,17 @@ impl ServerMetrics {
         self.no_progress_failures += 1;
     }
 
+    pub fn record_model_pull_success(&mut self, bytes: u64) {
+        self.model_pull_operations += 1;
+        self.model_pull_successes += 1;
+        self.model_pull_bytes += bytes;
+    }
+
+    pub fn record_model_pull_failure(&mut self) {
+        self.model_pull_operations += 1;
+        self.model_pull_failures += 1;
+    }
+
     pub fn record_time_to_first_token(&mut self, latency: Duration) {
         self.time_to_first_token.record(latency);
     }
@@ -177,6 +192,22 @@ impl ServerMetrics {
 
     pub fn no_progress_failures(&self) -> u64 {
         self.no_progress_failures
+    }
+
+    pub fn model_pull_operations(&self) -> u64 {
+        self.model_pull_operations
+    }
+
+    pub fn model_pull_successes(&self) -> u64 {
+        self.model_pull_successes
+    }
+
+    pub fn model_pull_failures(&self) -> u64 {
+        self.model_pull_failures
+    }
+
+    pub fn model_pull_bytes(&self) -> u64 {
+        self.model_pull_bytes
     }
 
     pub fn request_latency(&self) -> LatencyMetrics {
@@ -242,6 +273,10 @@ mod tests {
         assert_eq!(metrics.streamed_requests(), 1);
         assert_eq!(metrics.cancelled_requests(), 0);
         assert_eq!(metrics.no_progress_failures(), 0);
+        assert_eq!(metrics.model_pull_operations(), 0);
+        assert_eq!(metrics.model_pull_successes(), 0);
+        assert_eq!(metrics.model_pull_failures(), 0);
+        assert_eq!(metrics.model_pull_bytes(), 0);
         assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
         assert_eq!(metrics.request_latency().count(), 2);
         assert_eq!(metrics.request_latency().min_ms(), 10.0);
@@ -257,5 +292,11 @@ mod tests {
         assert_eq!(metrics.cancelled_requests(), 1);
         metrics.record_no_progress_failure();
         assert_eq!(metrics.no_progress_failures(), 1);
+        metrics.record_model_pull_success(17);
+        metrics.record_model_pull_failure();
+        assert_eq!(metrics.model_pull_operations(), 2);
+        assert_eq!(metrics.model_pull_successes(), 1);
+        assert_eq!(metrics.model_pull_failures(), 1);
+        assert_eq!(metrics.model_pull_bytes(), 17);
     }
 }

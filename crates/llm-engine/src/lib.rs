@@ -759,11 +759,25 @@ async fn admin_model_pull(
     require_admin(&state, &headers)?;
     require_model_alias(&state, alias)?;
     let request = parse_json_request(request, &state)?;
-    let plan = build_admin_download_plan(&state, request).await?;
-    let snapshot = ModelStore::new(&state.model_home)
+    let plan = match build_admin_download_plan(&state, request).await {
+        Ok(plan) => plan,
+        Err(err) => {
+            record_model_pull_failure_metrics(&state);
+            return Err(err);
+        }
+    };
+    let snapshot = match ModelStore::new(&state.model_home)
         .pull_plan(&state.hub_client, &plan, state.hf_token.as_deref())
         .await
-        .map_err(EngineError::ModelStore)?;
+    {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            record_model_pull_failure_metrics(&state);
+            return Err(EngineError::ModelStore(err));
+        }
+    };
+    let model_pull_bytes = snapshot.manifest.files.iter().map(|file| file.size).sum();
+    record_model_pull_success_metrics(&state, model_pull_bytes);
     Ok(Json(json!({
         "snapshot_path": snapshot.path,
         "manifest_digest": snapshot.manifest_digest,
@@ -885,6 +899,10 @@ async fn admin_metrics(
         "decode_requests": active_requests,
         "cancelled_requests": metrics.cancelled_requests(),
         "no_progress_failures": metrics.no_progress_failures(),
+        "model_pull_operations": metrics.model_pull_operations(),
+        "model_pull_successes": metrics.model_pull_successes(),
+        "model_pull_failures": metrics.model_pull_failures(),
+        "model_pull_bytes": metrics.model_pull_bytes(),
         "tokens_per_second": metrics.tokens_per_second(),
         "request_latency_ms": {
             "count": request_latency.count(),
@@ -1285,6 +1303,22 @@ fn record_cancellation_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_cancellation();
+}
+
+fn record_model_pull_success_metrics(state: &AppState, bytes: u64) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_model_pull_success(bytes);
+}
+
+fn record_model_pull_failure_metrics(state: &AppState) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_model_pull_failure();
 }
 
 fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
