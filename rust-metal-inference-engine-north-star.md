@@ -46,6 +46,13 @@ Current commits:
 - `2e0a54a` - Tested Qwen full-attention sequence math with RoPE and causal softmax.
 - `d7c10eb` - Shard-backed Qwen prefill layer infrastructure and parsed RoPE parameters.
 - `6bb686d` - Native Qwen backend uses bounded prompt prefill before lm-head decode.
+- `7dcbda2` - Tracker update for bounded Qwen prefill server smoke.
+- `5e71661` - Hardened Hugging Face snapshot artifact path and digest integrity.
+- `d3b091c` - Correct OpenAI runtime behavior for optional tools, generated tool calls, streaming rejection, and backend error status mapping.
+- `608dafe` - Qwen first-token attention paths now require and use full-attention norms/keys plus Gated DeltaNet A/dt parameters; safetensors shard files are cached and matvecs read in chunks.
+- `01f6ce4` - Metal vector-add kernel compilation is cached per device, generated placeholder crates were replaced, and unused API/engine dependencies were pruned.
+- `cd3cd41` - Hub download input grouping keeps the strict clippy gate clean.
+- `87d560d` - Runtime parser construction now satisfies strict clippy checks.
 
 Current verified state:
 
@@ -63,17 +70,18 @@ Current verified state:
 - `llm-engine serve --addr 127.0.0.1:3017 --snapshot .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --model-id local-qwen36 --max-new-tokens 1` starts an OpenAI-compatible server backed by the native Qwen executor. `GET /health` reports `python_runtime: false`, `GET /v1/models` lists `local-qwen36`, and `POST /v1/chat/completions` for `Say the word test.` returns a real Qwen-decoded one-token assistant response with usage `{prompt_tokens: 17, completion_tokens: 1, total_tokens: 18}`.
 - `llm-engine serve --addr 127.0.0.1:3018 --snapshot .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --model-id local-qwen36 --max-new-tokens 1 --max-prefill-tokens 2` exercises the sequence prefill path through the OpenAI-compatible endpoint. The `Say the word test.` smoke returned decoded Qwen token `"#"` with usage `{prompt_tokens: 17, completion_tokens: 1, total_tokens: 18}`.
 - The sequence path has unit coverage for Gated DeltaNet recurrent state updates, full-attention RoPE plus causal softmax, and indexed BF16 batched matvecs. Workspace `fmt-check`, `test`, and `clippy` pass after the bounded-prefill backend change.
+- GitHub issues #1 through #13 have local fixes committed. The fixes cover hub artifact path sanitization, SHA-256 verification, metadata-only cache isolation, optional tool semantics, generated tool-call parsing, explicit streaming rejection, backend error status mapping, Metal kernel reuse, placeholder crate replacement, dependency pruning, Qwen full-attention norm/key usage, Gated DeltaNet A/dt usage, and safetensors shard reuse/chunked matvecs. Workspace `mise run fmt-check`, `mise run test`, and `mise run clippy` pass after the issue pass.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Efficient decode cache updates, sampling controls, and robust stop handling are not complete.
-- Full-attention first-token execution uses the single-key no-cache simplification. Real prefill/decode still needs RoPE, KV-cache reads/writes, grouped query attention over prior tokens, and causal masking.
-- Linear Gated DeltaNet execution uses the first-token zero-state simplification. Recurrent convolution/state cache updates are not complete.
-- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, and targeted BF16 reads are implemented; mmap-backed tensor caching/materialization is not complete.
+- Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
+- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
+- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
-- Weight reads are intentionally uncached and slow; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
+- Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 
 The first-class model families are:
 
