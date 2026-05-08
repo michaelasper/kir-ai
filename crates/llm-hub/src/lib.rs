@@ -190,6 +190,7 @@ impl HubClient {
         resolved_commit: &str,
         path: &str,
         destination: &Path,
+        expected_size: u64,
         token: Option<&str>,
     ) -> Result<(), HubError> {
         if let Some(parent) = destination.parent() {
@@ -197,6 +198,18 @@ impl HubClient {
                 .await
                 .map_err(HubError::io)?;
         }
+        let existing_len = match tokio::fs::metadata(destination).await {
+            Ok(metadata) if metadata.len() == expected_size => return Ok(()),
+            Ok(metadata) if metadata.len() < expected_size => metadata.len(),
+            Ok(_) => {
+                tokio::fs::remove_file(destination)
+                    .await
+                    .map_err(HubError::io)?;
+                0
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(HubError::io(err)),
+        };
         let mut url = self.endpoint.clone();
         url.set_path(&format!(
             "/{}/resolve/{}/{}",
@@ -208,22 +221,42 @@ impl HubClient {
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
+        if existing_len > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing_len}-"));
+        }
         let response = request.send().await.map_err(HubError::network)?;
         let status = response.status();
-        if !status.is_success() {
+        if !(status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT) {
             return Err(HubError::network(format!(
                 "download for `{path}` returned HTTP {status}"
             )));
         }
-        let mut file = tokio::fs::File::create(destination)
-            .await
-            .map_err(HubError::io)?;
+        let mut file = if existing_len > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(destination)
+                .await
+                .map_err(HubError::io)?
+        } else {
+            tokio::fs::File::create(destination)
+                .await
+                .map_err(HubError::io)?
+        };
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(HubError::network)?;
             file.write_all(&chunk).await.map_err(HubError::io)?;
         }
         file.flush().await.map_err(HubError::io)?;
+        let final_len = tokio::fs::metadata(destination)
+            .await
+            .map_err(HubError::io)?
+            .len();
+        if final_len != expected_size {
+            return Err(HubError::integrity_failed(format!(
+                "downloaded `{path}` size {final_len} did not match expected {expected_size}"
+            )));
+        }
         Ok(())
     }
 }
@@ -413,14 +446,6 @@ impl ModelStore {
             .repo_root(&plan.repo_id)
             .join("staging")
             .join(format!("{}.partial", plan.resolved_commit));
-        if tokio::fs::try_exists(&staging)
-            .await
-            .map_err(HubError::io)?
-        {
-            tokio::fs::remove_dir_all(&staging)
-                .await
-                .map_err(HubError::io)?;
-        }
         tokio::fs::create_dir_all(&staging)
             .await
             .map_err(HubError::io)?;
@@ -478,6 +503,7 @@ impl ModelStore {
                     &plan.resolved_commit,
                     &file.path,
                     &staging.join(&file.path),
+                    file.size,
                     token,
                 )
                 .await?;
@@ -577,6 +603,13 @@ impl HubError {
     }
 
     fn invalid_response(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_integrity_failed",
+            message: message.into(),
+        }
+    }
+
+    fn integrity_failed(message: impl Into<String>) -> Self {
         Self {
             code: "model_integrity_failed",
             message: message.into(),
