@@ -92,6 +92,7 @@ Current commits:
 - `66f1dd2` - Deterministic protocol mode now emits valid JSON objects for `response_format: json_object`.
 - `d6bdd00` - Native Qwen snapshots can be opened for serving without an engine manifest.
 - `bfb20f0` - Deterministic protocol mode can return prompt-conditioned chat responses for multi-turn smoke tests.
+- `b6df02d` - Model-store snapshot and staging paths include profile identity to avoid cross-profile collisions.
 
 Current verified state:
 
@@ -148,6 +149,7 @@ Current verified state:
 - The default deterministic/protocol backend now returns valid JSON object content when `response_format.type` is `json_object`, while fixed-text backends still fail response validation if they emit invalid JSON.
 - `NativeQwenBackend::open` treats `llm-engine-manifest.json` as optional for serving. Missing manifests now yield base native metadata with `snapshot_path`, while present manifests still populate artifact identity and digest fields.
 - The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behavior.
+- Model-store promoted snapshot and staging directory names now include a sanitized profile name in addition to repo and resolved commit. Metadata-only snapshots still use a distinct suffix, and full profiles at the same commit no longer share one manifest directory.
 
 Known incomplete items:
 
