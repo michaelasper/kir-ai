@@ -3,7 +3,7 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use llm_api::FinishReason;
+use llm_api::{FinishReason, ToolDefinition};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use memmap2::{Mmap, MmapOptions};
@@ -267,12 +267,13 @@ impl ModelBackend for DeterministicBackend {
             ));
         }
         let (text, finish_reason) = if self.required_tool_protocol
-            && let Some(name) = request.required_tool_choice
+            && let Some((name, arguments)) =
+                deterministic_tool_call(&request.prompt, request.required_tool_choice.as_deref())
         {
             (
                 serde_json::json!({
                     "name": name,
-                    "arguments": {},
+                    "arguments": arguments,
                 })
                 .to_string(),
                 FinishReason::ToolCalls,
@@ -336,6 +337,156 @@ fn deterministic_conversation_response(prompt: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn deterministic_tool_call(
+    prompt: &str,
+    required_name: Option<&str>,
+) -> Option<(String, serde_json::Value)> {
+    let tools = rendered_tool_definitions(prompt)?;
+    let tool = if let Some(name) = required_name {
+        tools.iter().find(|tool| tool.function.name == name)?
+    } else {
+        select_auto_tool(prompt, &tools)?
+    };
+    Some((
+        tool.function.name.clone(),
+        deterministic_tool_arguments(prompt, tool),
+    ))
+}
+
+fn rendered_tool_definitions(prompt: &str) -> Option<Vec<ToolDefinition>> {
+    const TOOL_PREAMBLE: &str =
+        "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n";
+    let (_, rest) = prompt.split_once(TOOL_PREAMBLE)?;
+    let (tools_json, _) = rest.split_once("<|im_end|>")?;
+    serde_json::from_str(tools_json).ok()
+}
+
+fn select_auto_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&'a ToolDefinition> {
+    let user = last_user_message(prompt).to_ascii_lowercase();
+    let read_intent =
+        user.contains("secret.txt") || (user.contains("read") && user.contains("file"));
+    if !read_intent {
+        return None;
+    }
+    tools
+        .iter()
+        .find(|tool| {
+            let name = tool.function.name.to_ascii_lowercase();
+            let description = tool
+                .function
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            name.contains("read")
+                || name.contains("file")
+                || description.contains("read")
+                || description.contains("file")
+        })
+        .or_else(|| (tools.len() == 1).then_some(&tools[0]))
+}
+
+fn deterministic_tool_arguments(prompt: &str, tool: &ToolDefinition) -> serde_json::Value {
+    let user = last_user_message(prompt);
+    let mut arguments = serde_json::Map::new();
+    for name in required_parameter_names(&tool.function.parameters) {
+        if let Some(value) = argument_value_for_parameter(&user, &name) {
+            arguments.insert(name, serde_json::Value::String(value));
+        }
+    }
+    serde_json::Value::Object(arguments)
+}
+
+fn required_parameter_names(parameters: &serde_json::Value) -> Vec<String> {
+    parameters
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn argument_value_for_parameter(user: &str, name: &str) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("path") || lower.contains("file") {
+        return extract_file_argument(user);
+    }
+    if lower == "key" || lower.contains("query") || lower.contains("value") {
+        return extract_lookup_argument(user, &lower);
+    }
+    extract_lookup_argument(user, &lower)
+}
+
+fn extract_file_argument(text: &str) -> Option<String> {
+    argument_tokens(text)
+        .into_iter()
+        .find(|token| token.contains('.') || token.contains('/'))
+}
+
+fn extract_lookup_argument(text: &str, parameter: &str) -> Option<String> {
+    let tokens = argument_tokens(text);
+    for (index, token) in tokens.iter().enumerate() {
+        let token_lower = token.to_ascii_lowercase();
+        if (matches!(token_lower.as_str(), "key" | "query" | "value") || token_lower == parameter)
+            && let Some(next) = tokens.get(index + 1)
+            && !is_argument_stop_word(next)
+        {
+            return Some(next.clone());
+        }
+    }
+    tokens
+        .into_iter()
+        .rev()
+        .find(|token| !is_argument_stop_word(token) && !token.contains('_'))
+}
+
+fn argument_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/') {
+            current.push(ch);
+        } else if !current.is_empty() {
+            push_argument_token(&mut tokens, std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        push_argument_token(&mut tokens, current);
+    }
+    tokens
+}
+
+fn push_argument_token(tokens: &mut Vec<String>, token: String) {
+    let token = token.trim_end_matches('.').to_owned();
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+}
+
+fn is_argument_stop_word(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "a" | "an" | "and" | "answer" | "after" | "for" | "the" | "to" | "use" | "with"
+    )
+}
+
+fn last_user_message(prompt: &str) -> String {
+    const USER_START: &str = "<|im_start|>user\n";
+    let Some(start) = prompt.rfind(USER_START) else {
+        return prompt.to_owned();
+    };
+    let body_start = start + USER_START.len();
+    let Some(end_rel) = prompt[body_start..].find("<|im_end|>") else {
+        return prompt[body_start..].to_owned();
+    };
+    prompt[body_start..body_start + end_rel].to_owned()
 }
 
 #[derive(Debug, Error)]

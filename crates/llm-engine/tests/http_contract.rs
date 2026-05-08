@@ -1333,6 +1333,108 @@ async fn chat_completions_returns_required_tool_call_in_protocol_mode() {
 }
 
 #[tokio::test]
+async fn chat_completions_returns_required_tool_arguments_as_json_string() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{
+                            "role": "user",
+                            "content": "Use lookup_value for key alpha."
+                        }],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "lookup_value",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {"type": "string"}
+                                    },
+                                    "required": ["key"]
+                                }
+                            }
+                        }],
+                        "tool_choice": {
+                            "type": "function",
+                            "function": {"name": "lookup_value"}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let tool_call = &body["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(tool_call["type"], "function");
+    assert_eq!(tool_call["function"]["name"], "lookup_value");
+    let arguments = tool_call["function"]["arguments"]
+        .as_str()
+        .expect("tool arguments are a JSON string");
+    let arguments: Value = serde_json::from_str(arguments).expect("arguments parse as JSON");
+    assert_eq!(arguments, json!({"key": "alpha"}));
+}
+
+#[tokio::test]
+async fn chat_completions_auto_read_intent_returns_read_tool_call() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{
+                            "role": "user",
+                            "content": "Read secret.txt and answer with the value after LOCAL_BENCH_VALUE."
+                        }],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"}
+                                    },
+                                    "required": ["path"]
+                                }
+                            }
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let tool_call = &body["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(tool_call["type"], "function");
+    assert_eq!(tool_call["function"]["name"], "read_file");
+    let arguments = tool_call["function"]["arguments"]
+        .as_str()
+        .expect("tool arguments are a JSON string");
+    let arguments: Value = serde_json::from_str(arguments).expect("arguments parse as JSON");
+    assert_eq!(arguments, json!({"path": "secret.txt"}));
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_unsupported_penalties() {
     let response = build_router()
         .oneshot(

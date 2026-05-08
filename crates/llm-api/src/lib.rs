@@ -101,6 +101,10 @@ pub enum ToolCallType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallFunction {
     pub name: String,
+    #[serde(
+        serialize_with = "serialize_tool_call_arguments",
+        deserialize_with = "deserialize_tool_call_arguments"
+    )]
     pub arguments: Value,
 }
 
@@ -616,6 +620,25 @@ impl ApiError {
 
 fn empty_object() -> Value {
     serde_json::json!({})
+}
+
+fn serialize_tool_call_arguments<S>(arguments: &Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let encoded = serde_json::to_string(arguments).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&encoded)
+}
+
+fn deserialize_tool_call_arguments<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(arguments) => serde_json::from_str(&arguments).map_err(D::Error::custom),
+        arguments => Ok(arguments),
+    }
 }
 
 fn deserialize_stop_sequences<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
