@@ -462,6 +462,8 @@ async fn admin_metrics_report_active_and_cancelled_requests() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["active_requests"], 1);
+    assert_eq!(body["decode_requests"], 1);
+    assert_eq!(body["prefill_requests"], 0);
     assert_eq!(body["cancelled_requests"], 0);
 
     let cancel_response = app
@@ -494,6 +496,8 @@ async fn admin_metrics_report_active_and_cancelled_requests() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["active_requests"], 0);
+    assert_eq!(body["decode_requests"], 0);
+    assert_eq!(body["prefill_requests"], 0);
     assert_eq!(body["cancelled_requests"], 1);
     assert_eq!(body["failed_requests"], 1);
 }

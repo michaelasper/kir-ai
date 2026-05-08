@@ -869,17 +869,20 @@ async fn admin_metrics(
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
     let time_to_first_token = metrics.time_to_first_token();
+    let active_requests = state
+        .active_requests
+        .lock()
+        .expect("active request lock is not poisoned")
+        .len();
     Ok(Json(json!({
         "requests_total": metrics.requests_total(),
         "successful_requests": metrics.successful_requests(),
         "failed_requests": metrics.failed_requests(),
         "streamed_requests": metrics.streamed_requests(),
-        "active_requests": state
-            .active_requests
-            .lock()
-            .expect("active request lock is not poisoned")
-            .len(),
+        "active_requests": active_requests,
         "queued_requests": 0,
+        "prefill_requests": 0,
+        "decode_requests": active_requests,
         "cancelled_requests": metrics.cancelled_requests(),
         "no_progress_failures": metrics.no_progress_failures(),
         "tokens_per_second": metrics.tokens_per_second(),
