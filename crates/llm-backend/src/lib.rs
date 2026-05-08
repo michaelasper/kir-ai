@@ -2245,6 +2245,85 @@ pub fn qwen_decoder_layer_sequence_with_cache(
     qwen_decoder_layer_sequence_impl(store, spec, layer_idx, hidden_states, Some(cache))
 }
 
+pub fn qwen_decoder_layer_step_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    cache: &mut QwenLayerCache,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let hidden_size = spec.hidden_size as usize;
+    let input_norm = qwen_layer_input_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let attention_output = match spec.layer_kinds.get(layer_idx) {
+        Some(AttentionKind::LinearAttention) => match cache {
+            QwenLayerCache::Linear(cache) => qwen_layer_linear_attention_step_with_cache(
+                store,
+                spec,
+                layer_idx,
+                &input_norm,
+                cache,
+            )?,
+            QwenLayerCache::Full(_) => {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} expected linear attention cache"
+                )));
+            }
+        },
+        Some(AttentionKind::FullAttention) => match cache {
+            QwenLayerCache::Full(cache) => qwen_layer_full_attention_step_with_cache(
+                store,
+                spec,
+                layer_idx,
+                &input_norm,
+                cache,
+            )?,
+            QwenLayerCache::Linear(_) => {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} expected full attention cache"
+                )));
+            }
+        },
+        None => {
+            return Err(TensorLoadError::missing(format!(
+                "Qwen layer {layer_idx} is outside configured layer count"
+            )));
+        }
+    };
+    let post_attention = qwen_layer_post_attention_norm(
+        store,
+        layer_idx,
+        hidden_states,
+        &attention_output,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let router = qwen_layer_moe_router(
+        store,
+        layer_idx,
+        &post_attention,
+        spec.num_experts_per_tok as usize,
+    )?;
+    let moe_output = qwen_layer_moe_forward(
+        store,
+        layer_idx,
+        &QwenMoeDims::from_spec(spec),
+        &post_attention,
+        &router,
+    )?;
+    hidden_states
+        .iter()
+        .zip(attention_output)
+        .zip(moe_output)
+        .map(|((hidden, attention), moe)| Ok(hidden + attention + moe))
+        .collect()
+}
+
 fn qwen_decoder_layer_sequence_impl(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
@@ -2358,6 +2437,34 @@ pub fn qwen_prefill_sequence_with_cache(
     for (layer_idx, cache) in caches.iter_mut().enumerate().take(layer_count) {
         hidden_states =
             qwen_decoder_layer_sequence_with_cache(store, spec, layer_idx, &hidden_states, cache)?;
+    }
+    Ok(hidden_states)
+}
+
+pub fn qwen_decode_token_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    token_id: usize,
+    caches: &mut [QwenLayerCache],
+) -> Result<Vec<f32>, TensorLoadError> {
+    let layer_count = spec.num_hidden_layers as usize;
+    if caches.len() != layer_count {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen decode expected {layer_count} layer caches, got {}",
+            caches.len()
+        )));
+    }
+    let mut hidden_states = store.bf16_row_f32(QWEN_EMBED_TOKENS_WEIGHT, token_id)?;
+    if hidden_states.len() != spec.hidden_size as usize {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen embedding row has length {}, expected hidden size {}",
+            hidden_states.len(),
+            spec.hidden_size
+        )));
+    }
+    for (layer_idx, cache) in caches.iter_mut().enumerate().take(layer_count) {
+        hidden_states =
+            qwen_decoder_layer_step_with_cache(store, spec, layer_idx, &hidden_states, cache)?;
     }
     Ok(hidden_states)
 }

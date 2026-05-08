@@ -1,14 +1,14 @@
 use llm_backend::{
     QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_caches_for_spec,
-    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
-    qwen_layer_full_attention_sequence_with_cache, qwen_layer_full_attention_step_with_cache,
-    qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
-    qwen_layer_linear_attention_sequence, qwen_layer_linear_attention_sequence_with_cache,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_top_k, qwen_prefill_sequence,
-    qwen_prefill_sequence_with_cache,
+    qwen_decode_token_with_cache, qwen_embedding_and_layer0_norm, qwen_final_norm,
+    qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
+    qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
+    qwen_layer_full_attention_step_with_cache, qwen_layer_linear_attention_first_token,
+    qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
+    qwen_layer_linear_attention_sequence_with_cache, qwen_layer_linear_attention_step_with_cache,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_top_k,
+    qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -1443,6 +1443,186 @@ fn qwen_prefill_sequence_with_cache_updates_layer_cache() {
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
     }
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
+    let root = temp_snapshot_dir("qwen-decode-token-cache");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let mut expected_caches = qwen_layer_caches_for_spec(&spec, 3).expect("expected caches");
+    let expected =
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1, 0], &mut expected_caches)
+            .expect("full cached prefill");
+    let mut caches = qwen_layer_caches_for_spec(&spec, 3).expect("layer caches");
+    qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .expect("initial cached prefill");
+
+    let output =
+        qwen_decode_token_with_cache(&store, &spec, 0, &mut caches).expect("cached token decode");
+
+    assert_close(&output, &expected[2], 1e-5);
+    match &caches[0] {
+        QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+        QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+    }
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
+    std::fs::create_dir_all(root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 256 },
+            "weight_map": {
+                "model.language_model.embed_tokens.weight": "embed.safetensors",
+                "model.language_model.layers.0.input_layernorm.weight": "input_norm.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight": "qkv.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight": "z.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight": "b.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight": "a.safetensors",
+                "model.language_model.layers.0.linear_attn.dt_bias": "dt.safetensors",
+                "model.language_model.layers.0.linear_attn.A_log": "a_log.safetensors",
+                "model.language_model.layers.0.linear_attn.conv1d.weight": "conv.safetensors",
+                "model.language_model.layers.0.linear_attn.norm.weight": "attn_norm.safetensors",
+                "model.language_model.layers.0.linear_attn.out_proj.weight": "out.safetensors",
+                "model.language_model.layers.0.post_attention_layernorm.weight": "post_norm.safetensors",
+                "model.language_model.layers.0.mlp.gate.weight": "router.safetensors",
+                "model.language_model.layers.0.mlp.experts.gate_up_proj": "experts_gate_up.safetensors",
+                "model.language_model.layers.0.mlp.experts.down_proj": "experts_down.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight": "shared_gate.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.up_proj.weight": "shared_up.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.down_proj.weight": "shared_down.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert_gate.weight": "shared_expert_gate.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "embed.safetensors",
+            "model.language_model.embed_tokens.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "input_norm.safetensors",
+            "model.language_model.layers.0.input_layernorm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "qkv.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+            vec![4, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 4.0],
+        ),
+        (
+            "z.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "b.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "a.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "dt.safetensors",
+            "model.language_model.layers.0.linear_attn.dt_bias",
+            vec![1],
+            vec![0.0],
+        ),
+        (
+            "a_log.safetensors",
+            "model.language_model.layers.0.linear_attn.A_log",
+            vec![1],
+            vec![0.0],
+        ),
+        (
+            "conv.safetensors",
+            "model.language_model.layers.0.linear_attn.conv1d.weight",
+            vec![4, 1],
+            vec![1.0, 1.0, 1.0, 1.0],
+        ),
+        (
+            "attn_norm.safetensors",
+            "model.language_model.layers.0.linear_attn.norm.weight",
+            vec![2],
+            vec![1.0, 1.0],
+        ),
+        (
+            "out.safetensors",
+            "model.language_model.layers.0.linear_attn.out_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "post_norm.safetensors",
+            "model.language_model.layers.0.post_attention_layernorm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "router.safetensors",
+            "model.language_model.layers.0.mlp.gate.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "experts_gate_up.safetensors",
+            "model.language_model.layers.0.mlp.experts.gate_up_proj",
+            vec![2, 2],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            "experts_down.safetensors",
+            "model.language_model.layers.0.mlp.experts.down_proj",
+            vec![2, 1],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_gate.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_up.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_down.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+            vec![2, 1],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_expert_gate.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
 }
 
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
