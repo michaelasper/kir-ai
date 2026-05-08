@@ -9,7 +9,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures::stream;
+use futures::{StreamExt, stream};
 use llm_api::{
     ApiError, ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
 };
@@ -19,7 +19,7 @@ use llm_backend::{
 };
 use llm_hub::{HubError, ModelStore, SnapshotManifest};
 use llm_models::QwenModelSpec;
-use llm_runtime::{Runtime, RuntimeError};
+use llm_runtime::{ChatCompletionStream, CompletionStream, Runtime, RuntimeError};
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::{Value, json};
@@ -427,27 +427,23 @@ async fn chat_completions(
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
-    let _permit = acquire_model_permit(&state)?;
+    let permit = acquire_model_permit(&state)?;
     if request.stream {
-        let response = match state.runtime.chat_stream(request).await {
-            Ok(response) => response,
-            Err(err) => {
-                record_failure_metrics(&state);
-                return Err(err.into());
+        let events = stream::once(async move {
+            let _permit = permit;
+            match state.runtime.chat_stream(request).await {
+                Ok(response) => {
+                    record_success_metrics(&state, &response.usage, streamed);
+                    stream::iter(chat_stream_events(response))
+                }
+                Err(err) => {
+                    record_failure_metrics(&state);
+                    stream::iter(runtime_error_stream_events(err))
+                }
             }
-        };
-        record_success_metrics(&state, &response.usage, streamed);
-        let mut events: Vec<Result<Event, Infallible>> =
-            Vec::with_capacity(response.chunks.len() + 1);
-        for chunk in response.chunks {
-            let data = serde_json::to_string(&chunk).map_err(|err| {
-                record_failure_metrics(&state);
-                EngineError::Serialize(err)
-            })?;
-            events.push(Ok(Event::default().data(data)));
-        }
-        events.push(Ok(Event::default().data("[DONE]")));
-        return Ok(Sse::new(stream::iter(events)).into_response());
+        })
+        .flatten();
+        return Ok(Sse::new(events).into_response());
     }
     let response = match state.runtime.chat(request).await {
         Ok(response) => response,
@@ -466,27 +462,23 @@ async fn completions(
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
-    let _permit = acquire_model_permit(&state)?;
+    let permit = acquire_model_permit(&state)?;
     if request.stream {
-        let response = match state.runtime.completion_stream(request).await {
-            Ok(response) => response,
-            Err(err) => {
-                record_failure_metrics(&state);
-                return Err(err.into());
+        let events = stream::once(async move {
+            let _permit = permit;
+            match state.runtime.completion_stream(request).await {
+                Ok(response) => {
+                    record_success_metrics(&state, &response.usage, streamed);
+                    stream::iter(completion_stream_events(response))
+                }
+                Err(err) => {
+                    record_failure_metrics(&state);
+                    stream::iter(runtime_error_stream_events(err))
+                }
             }
-        };
-        record_success_metrics(&state, &response.usage, streamed);
-        let mut events: Vec<Result<Event, Infallible>> =
-            Vec::with_capacity(response.chunks.len() + 1);
-        for chunk in response.chunks {
-            let data = serde_json::to_string(&chunk).map_err(|err| {
-                record_failure_metrics(&state);
-                EngineError::Serialize(err)
-            })?;
-            events.push(Ok(Event::default().data(data)));
-        }
-        events.push(Ok(Event::default().data("[DONE]")));
-        return Ok(Sse::new(stream::iter(events)).into_response());
+        })
+        .flatten();
+        return Ok(Sse::new(events).into_response());
     }
     let response = match state.runtime.completion(request).await {
         Ok(response) => response,
@@ -497,6 +489,49 @@ async fn completions(
     };
     record_success_metrics(&state, &response.usage, streamed);
     Ok(Json(response).into_response())
+}
+
+fn chat_stream_events(response: ChatCompletionStream) -> Vec<Result<Event, Infallible>> {
+    let mut events = Vec::with_capacity(response.chunks.len() + 1);
+    for chunk in response.chunks {
+        events.push(sse_json_event(chunk));
+    }
+    events.push(Ok(Event::default().data("[DONE]")));
+    events
+}
+
+fn completion_stream_events(response: CompletionStream) -> Vec<Result<Event, Infallible>> {
+    let mut events = Vec::with_capacity(response.chunks.len() + 1);
+    for chunk in response.chunks {
+        events.push(sse_json_event(chunk));
+    }
+    events.push(Ok(Event::default().data("[DONE]")));
+    events
+}
+
+fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
+    vec![
+        sse_json_event(json!({
+            "error": {
+                "message": err.to_string(),
+                "type": "llm_engine_error"
+            }
+        })),
+        Ok(Event::default().data("[DONE]")),
+    ]
+}
+
+fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
+    let data = serde_json::to_string(&value).unwrap_or_else(|err| {
+        json!({
+            "error": {
+                "message": format!("response serialization failed: {err}"),
+                "type": "llm_engine_error"
+            }
+        })
+        .to_string()
+    });
+    Ok(Event::default().data(data))
 }
 
 fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool) {
@@ -624,7 +659,6 @@ enum EngineError {
     ModelStore(HubError),
     Overloaded(String),
     UnauthorizedAdmin,
-    Serialize(serde_json::Error),
 }
 
 impl From<RuntimeError> for EngineError {
@@ -695,13 +729,6 @@ impl IntoResponse for EngineError {
                 };
                 (status, code, phase, retryable, err.to_string())
             }
-            Self::Serialize(err) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "response_serialization_failed",
-                "response_serialization",
-                true,
-                err.to_string(),
-            ),
             Self::ModelStore(err) => (
                 if err.code() == "model_not_found" {
                     StatusCode::NOT_FOUND

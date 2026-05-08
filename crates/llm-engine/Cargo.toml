@@ -17,6 +17,7 @@ llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
 llm-telemetry = { path = "../llm-telemetry" }
 llm-tokenizer = { path = "../llm-tokenizer" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true

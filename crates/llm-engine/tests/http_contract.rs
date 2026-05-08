@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -670,6 +670,41 @@ async fn chat_completions_streams_openai_sse_chunks() {
 }
 
 #[tokio::test]
+async fn chat_stream_headers_return_before_backend_completion() {
+    let release = Arc::new(Semaphore::new(0));
+    let app = build_router_with_backend(Box::new(DelayedStreamBackend {
+        release: release.clone(),
+    }));
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        ),
+    )
+    .await
+    .expect("streaming response starts before backend release")
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    release.add_permits(1);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"content\":\"released\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn chat_completions_streams_usage_when_requested() {
     let response = build_router()
         .oneshot(
@@ -1105,6 +1140,31 @@ impl ModelBackend for BlockingBackend {
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         self.entered.notify_waiters();
         self.release.notified().await;
+        Ok(BackendOutput {
+            text: "released".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+}
+
+struct DelayedStreamBackend {
+    release: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl ModelBackend for DelayedStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        let _permit = self
+            .release
+            .acquire()
+            .await
+            .expect("release semaphore open");
         Ok(BackendOutput {
             text: "released".to_owned(),
             prompt_tokens: 1,

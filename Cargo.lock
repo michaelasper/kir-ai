@@ -1038,6 +1038,7 @@ dependencies = [
  "llm-runtime",
  "llm-telemetry",
  "llm-tokenizer",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
