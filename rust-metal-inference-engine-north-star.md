@@ -136,6 +136,8 @@ Current commits:
 - `36acd23` - Admin metrics report request latency summaries and tokens/sec throughput.
 - `a19a5cc` - Tracker updated with latency metrics commit identity.
 - `4f8cddf` - Admin metrics report streaming time-to-first-token summaries.
+- `c76ce8d` - Tracker updated with streaming TTFT metrics commit identity.
+- `b08bdbb` - Admin metrics expose current prefill/decode scheduler phase gauges.
 
 Current verified state:
 
