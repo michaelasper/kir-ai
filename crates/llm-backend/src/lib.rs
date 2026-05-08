@@ -19,7 +19,7 @@ const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 pub struct BackendRequest {
     pub model: String,
     pub prompt: String,
-    pub max_tokens: u32,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +138,8 @@ pub enum BackendError {
         requested: String,
         available: String,
     },
+    #[error("unsupported backend request: {0}")]
+    UnsupportedRequest(String),
     #[error("backend error: {0}")]
     Other(String),
 }

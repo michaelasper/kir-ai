@@ -2,9 +2,12 @@ use llm_api::{
     ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
     ToolChoice, ToolDefinition,
 };
-use llm_backend::DeterministicBackend;
+use llm_backend::{
+    BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
+};
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 #[tokio::test]
 async fn runtime_returns_non_streaming_chat_completion() {
@@ -27,6 +30,51 @@ async fn runtime_returns_non_streaming_chat_completion() {
         Some("hello from rust")
     );
     assert_eq!(response.usage.total_tokens, 5);
+}
+
+#[tokio::test]
+async fn runtime_forwards_omitted_chat_max_tokens_as_backend_default() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingBackend {
+        observed_max_tokens: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed max_tokens lock"),
+        Some(None)
+    );
+}
+
+#[tokio::test]
+async fn runtime_forwards_explicit_chat_max_tokens_to_backend() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingBackend {
+        observed_max_tokens: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(7),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed max_tokens lock"),
+        Some(Some(7))
+    );
 }
 
 #[tokio::test]
@@ -468,4 +516,28 @@ fn classifies_high_output_empty_completion_as_no_progress() {
 fn content_delta_is_progress_even_with_many_tokens() {
     let class = llm_runtime::classify_no_progress("patched Cargo.toml", 4096, false);
     assert_eq!(class, None);
+}
+
+struct RecordingBackend {
+    observed_max_tokens: Arc<Mutex<Option<Option<u32>>>>,
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for RecordingBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        *self
+            .observed_max_tokens
+            .lock()
+            .expect("observed max_tokens lock") = Some(request.max_tokens);
+        Ok(BackendOutput {
+            text: "hello".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: FinishReason::Stop,
+        })
+    }
 }

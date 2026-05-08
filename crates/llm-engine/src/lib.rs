@@ -135,7 +135,7 @@ impl NativeQwenBackend {
             .tokenizer
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
-        let requested = request.max_tokens.max(1).min(self.max_new_tokens);
+        let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
 
         for _ in 0..requested {
             let candidate = self.next_token(&context_tokens)?;
@@ -200,6 +200,22 @@ impl NativeQwenBackend {
             }
         }
         fallback.ok_or_else(|| BackendError::Other("Qwen lm head returned no logits".to_owned()))
+    }
+}
+
+fn resolve_native_max_tokens(
+    requested: Option<u32>,
+    configured_max: u32,
+) -> Result<u32, BackendError> {
+    match requested {
+        None => Ok(configured_max),
+        Some(0) => Err(BackendError::UnsupportedRequest(
+            "max_tokens must be greater than 0".to_owned(),
+        )),
+        Some(value) if value > configured_max => Err(BackendError::UnsupportedRequest(format!(
+            "requested max_tokens {value} exceeds native Qwen max_new_tokens {configured_max}"
+        ))),
+        Some(value) => Ok(value),
     }
 }
 
@@ -464,6 +480,28 @@ fn parse_json_request<T>(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_max_tokens_defaults_to_configured_limit_when_omitted() {
+        assert_eq!(
+            resolve_native_max_tokens(None, 4).expect("omitted max tokens uses backend cap"),
+            4
+        );
+    }
+
+    #[test]
+    fn native_max_tokens_rejects_requests_above_configured_limit() {
+        let err = resolve_native_max_tokens(Some(8), 4)
+            .expect_err("explicit max tokens above backend cap fails closed");
+
+        assert!(matches!(err, BackendError::UnsupportedRequest(_)));
+        assert!(err.to_string().contains("max_tokens 8"));
+    }
+}
+
 #[derive(Debug)]
 enum EngineError {
     Runtime(RuntimeError),
@@ -492,6 +530,12 @@ impl IntoResponse for EngineError {
                         StatusCode::NOT_FOUND,
                         "model_not_found",
                         "model_resolution",
+                        false,
+                    ),
+                    RuntimeError::Backend(BackendError::UnsupportedRequest(_)) => (
+                        StatusCode::BAD_REQUEST,
+                        "unsupported_capability",
+                        "request_validation",
                         false,
                     ),
                     RuntimeError::Backend(BackendError::Other(_)) => (
