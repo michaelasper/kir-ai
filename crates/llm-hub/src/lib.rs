@@ -4,13 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    io::ErrorKind,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time;
 use url::Url;
+
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubRepoId {
@@ -530,14 +534,27 @@ impl ModelStore {
     }
 
     pub async fn create_staging_dir(&self, plan: &DownloadPlan) -> Result<PathBuf, HubError> {
-        let staging = self
-            .repo_root(&plan.repo_id)
-            .join("staging")
-            .join(format!("{}.partial", snapshot_dir_name(plan)));
-        tokio::fs::create_dir_all(&staging)
+        let staging_root = self.repo_root(&plan.repo_id).join("staging");
+        tokio::fs::create_dir_all(&staging_root)
             .await
             .map_err(HubError::io)?;
-        Ok(staging)
+        let snapshot_name = snapshot_dir_name(plan);
+        for _ in 0..16 {
+            let counter = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let timestamp = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+            let staging = staging_root.join(format!(
+                "{snapshot_name}.partial.{}.{timestamp}.{counter}",
+                std::process::id()
+            ));
+            match tokio::fs::create_dir(&staging).await {
+                Ok(()) => return Ok(staging),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(HubError::io(err)),
+            }
+        }
+        Err(HubError::invalid_request(
+            "failed to allocate unique model staging directory",
+        ))
     }
 
     pub async fn promote_staging(
@@ -550,10 +567,9 @@ impl ModelStore {
             .await
             .map_err(HubError::io)?
         {
-            return Err(HubError::invalid_request(format!(
-                "snapshot already exists at {}",
-                snapshot.display()
-            )));
+            remove_staging_dir(&staging).await?;
+            self.verify_snapshot_files(plan, &snapshot).await?;
+            return self.write_snapshot_manifest(plan, snapshot).await;
         }
         let manifest = SnapshotManifest::from_plan(plan, snapshot.display().to_string());
         let manifest_digest = manifest.digest();
@@ -795,6 +811,14 @@ impl ModelStore {
         self.root
             .join("huggingface")
             .join(format!("models--{}", repo_id.as_str().replace('/', "--")))
+    }
+}
+
+async fn remove_staging_dir(path: &Path) -> Result<(), HubError> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(HubError::io(err)),
     }
 }
 

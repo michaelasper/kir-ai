@@ -32,6 +32,77 @@ async fn promotes_staged_snapshot_with_manifest() {
 }
 
 #[tokio::test]
+async fn staging_dirs_are_unique_for_same_plan() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+
+    let first = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("first staging");
+    let second = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("second staging");
+
+    assert_ne!(first, second);
+    assert!(first.is_dir());
+    assert!(second.is_dir());
+}
+
+#[tokio::test]
+async fn promoting_when_snapshot_exists_reuses_snapshot_and_cleans_staging() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+
+    let winner = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("winner staging");
+    tokio::fs::write(winner.join("config.json"), "{}")
+        .await
+        .expect("write winner file");
+    let promoted = store
+        .promote_staging(&plan, winner)
+        .await
+        .expect("winner promoted");
+
+    let loser = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("loser staging");
+    tokio::fs::write(loser.join("config.json"), "{}")
+        .await
+        .expect("write loser file");
+    let reused = store
+        .promote_staging(&plan, loser.clone())
+        .await
+        .expect("existing snapshot reused");
+
+    assert_eq!(reused.path, promoted.path);
+    assert!(!loser.exists());
+    assert!(promoted.path.join("config.json").is_file());
+}
+
+#[tokio::test]
 async fn verifies_existing_snapshot_and_refreshes_manifest_profile() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
