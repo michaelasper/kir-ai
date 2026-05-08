@@ -45,6 +45,64 @@ async fn models_endpoint_lists_qwen_alias() {
 }
 
 #[tokio::test]
+async fn admin_models_endpoint_reports_ready_model() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/models")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin models response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["object"], "list");
+    assert_eq!(body["data"][0]["id"], "local-qwen36");
+    assert_eq!(body["data"][0]["status"], "ready");
+    assert_eq!(body["data"][0]["python_runtime"], false);
+}
+
+#[tokio::test]
+async fn admin_model_endpoint_reports_ready_model() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/models/local-qwen36")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin model response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["id"], "local-qwen36");
+    assert_eq!(body["status"], "ready");
+    assert_eq!(body["python_runtime"], false);
+}
+
+#[tokio::test]
+async fn admin_model_endpoint_uses_stable_missing_model_error() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/models/not-loaded")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin model response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "model_not_found");
+    assert_eq!(body["error"]["phase"], "model_resolution");
+    assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
 async fn chat_completions_returns_openai_shape() {
     let response = build_router()
         .oneshot(

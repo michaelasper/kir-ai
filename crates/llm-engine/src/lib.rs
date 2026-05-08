@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{
         IntoResponse, Response,
@@ -18,7 +18,7 @@ use llm_backend::{
 use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
 use llm_tokenizer::HuggingFaceTokenizer;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
@@ -40,6 +40,8 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
+        .route("/admin/models", get(admin_models))
+        .route("/admin/models/{alias}", get(admin_model))
         .route(
             "/v1/chat/completions",
             axum::routing::post(chat_completions),
@@ -221,6 +223,38 @@ async fn models(State(state): State<AppState>) -> impl IntoResponse {
             object: "model".to_owned(),
             owned_by: "local".to_owned(),
         }],
+    })
+}
+
+async fn admin_models(State(state): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "object": "list",
+        "data": [admin_model_status(state.runtime.model_id())],
+    }))
+}
+
+async fn admin_model(
+    AxumPath(alias): AxumPath<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, EngineError> {
+    let model_id = state.runtime.model_id();
+    if alias != model_id {
+        return Err(RuntimeError::Backend(BackendError::ModelNotFound {
+            requested: alias,
+            available: model_id.to_owned(),
+        })
+        .into());
+    }
+    Ok(Json(admin_model_status(model_id)))
+}
+
+fn admin_model_status(model_id: &str) -> Value {
+    json!({
+        "id": model_id,
+        "object": "admin.model",
+        "status": "ready",
+        "runtime": "rust",
+        "python_runtime": false,
     })
 }
 
