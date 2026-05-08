@@ -165,6 +165,7 @@ Current commits:
 - `d27a0a4` - Metal command-buffer execution status is checked before reading outputs, fixing GitHub issue #49.
 - `e8b2bad` - Native Qwen Metal CPU fallbacks are logged, metered, and exposed through admin metrics, fixing GitHub issue #50.
 - `e476210` - Admin metrics now track active streaming generation prefill/decode phases instead of reporting placeholder gauges.
+- `4f70955` - Full-attention KV cache storage now has a tested sliding append primitive that evicts the oldest stored token when full.
 
 Current verified state:
 
@@ -279,6 +280,7 @@ Current verified state:
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
 - Full-attention single-token decode now has a cache-backed CPU primitive that uses the cache token count for RoPE position, appends the normalized key/value, attends across the full `LayerKvCache`, and matches full cached sequence prefill.
+- `LayerKvCache` now supports strict appends for fixed-capacity prefill/decode and sliding appends that evict the oldest stored key/value row when full, giving the long-context path a tested local eviction primitive.
 - Hybrid Qwen layer cache allocation now derives one cache per parsed layer kind, using `LinearAttentionCache` for Gated DeltaNet layers and fixed-capacity `LayerKvCache` for full-attention layers.
 - Shard-backed full-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, writes `LayerKvCache`, and matches the existing uncached layer output.
 - Shard-backed linear-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, updates `LinearAttentionCache`, and matches the existing uncached layer output.
@@ -290,7 +292,7 @@ Current verified state:
 
 Known incomplete items:
 
-- The native Qwen server path currently tokenizes the rendered prompt, keeps a configurable tail window, and reuses typed per-layer caches across bounded multi-token decode. It defaults to 32 retained prompt tokens and still needs longer-context cache paging or sliding-window eviction.
+- The native Qwen server path currently tokenizes the rendered prompt, keeps a configurable tail window, and reuses typed per-layer caches across bounded multi-token decode. It defaults to 32 retained prompt tokens. Full-attention cache storage has a local sliding eviction primitive, but the server still needs longer-context cache paging or sliding-window integration with correct position handling.
 - Native Qwen multi-token decode is wired through backend caches and a Metal-capable executor, but attention cache storage/lifetime, recurrent-state cache storage, MoE expert dispatch, and remaining control flow are still CPU-owned. The remaining Qwen Metal kernels are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths. The native Qwen server path now routes projection/output matvecs, q/k RMSNorm, cache key/value row gathering, q/k score dot products, attention softmax, and value mixing through the Metal-capable executor, but attention cache storage and lifetime remain CPU-owned.
