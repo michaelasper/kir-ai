@@ -3,8 +3,10 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use futures::StreamExt;
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, ModelBackend,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    ModelBackend,
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
@@ -812,6 +814,65 @@ async fn chat_stream_headers_return_before_backend_completion() {
 }
 
 #[tokio::test]
+async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
+    let first = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(TwoStageStreamBackend {
+        first: first.clone(),
+        finish: finish.clone(),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    first.notify_one();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(200), async {
+        while !seen.contains("\"content\":\"first\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first backend chunk is sent before final backend chunk");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), body.next())
+            .await
+            .is_err(),
+        "body should wait for final backend chunk"
+    );
+
+    finish.notify_one();
+    let mut tail = seen;
+    while let Some(chunk) = body.next().await {
+        tail.push_str(std::str::from_utf8(&chunk.expect("body chunk")).expect("utf8 sse"));
+    }
+    assert!(tail.contains("\"content\":\" second\""));
+    assert_eq!(tail.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn chat_completions_streams_usage_when_requested() {
     let response = build_router()
         .oneshot(
@@ -1278,6 +1339,54 @@ impl ModelBackend for DelayedStreamBackend {
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
+    }
+}
+
+struct TwoStageStreamBackend {
+    first: Arc<Notify>,
+    finish: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for TwoStageStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.first.notified().await;
+        self.finish.notified().await;
+        Ok(BackendOutput {
+            text: "first second".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let first = self.first.clone();
+        let finish = self.finish.clone();
+        async_stream::try_stream! {
+            first.notified().await;
+            yield BackendStreamChunk {
+                text: "first".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            finish.notified().await;
+            yield BackendStreamChunk {
+                text: " second".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: Some(llm_api::FinishReason::Stop),
+            };
+        }
+        .boxed()
     }
 }
 

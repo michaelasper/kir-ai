@@ -1,4 +1,8 @@
 use chrono::Utc;
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
@@ -7,10 +11,11 @@ use llm_api::{
     ValidateRequest,
 };
 use llm_backend::BackendModelMetadata;
-use llm_backend::{BackendError, BackendRequest, ModelBackend};
+use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
+use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -64,24 +69,32 @@ where
     pub async fn completion_stream(
         &self,
         request: CompletionRequest,
-    ) -> Result<CompletionStream, RuntimeError> {
-        let include_usage = request.stream_options.include_usage;
-        let completion = self.complete_text(request).await?;
-        let mut chunks = vec![
-            completion_stream_chunk(&completion, completion.text.clone(), None),
-            completion_stream_chunk(
-                &completion,
-                String::new(),
-                Some(completion.finish_reason.clone()),
-            ),
-        ];
-        if include_usage {
-            chunks.push(completion_stream_usage_chunk(&completion));
+    ) -> Result<CompletionStream<'_>, RuntimeError> {
+        if !request.stop.is_empty() {
+            let include_usage = request.stream_options.include_usage;
+            let completion = self.complete_text(request).await?;
+            return Ok(buffered_completion_stream(completion, include_usage));
         }
-        Ok(CompletionStream {
-            chunks,
-            usage: completion.usage,
-        })
+        request.validate()?;
+        let include_usage = request.stream_options.include_usage;
+        let completion = RuntimeCompletionSeed {
+            id: format!("cmpl-{}", Uuid::now_v7()),
+            created: Utc::now().timestamp(),
+            model: request.model.clone(),
+        };
+        let backend_stream = self.backend.generate_stream(BackendRequest {
+            model: request.model,
+            prompt: request.prompt,
+            max_tokens: request.max_tokens,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+        });
+        Ok(streaming_completion_stream(
+            completion,
+            backend_stream,
+            include_usage,
+        ))
     }
 
     pub async fn chat(
@@ -119,50 +132,41 @@ where
     pub async fn chat_stream(
         &self,
         request: ChatCompletionRequest,
-    ) -> Result<ChatCompletionStream, RuntimeError> {
+    ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
+        if requires_buffered_chat_stream(&request) {
+            let include_usage = request.stream_options.include_usage;
+            let completion = self.complete_chat(request).await?;
+            return buffered_chat_stream(completion, include_usage);
+        }
+        request.validate()?;
         let include_usage = request.stream_options.include_usage;
-        let completion = self.complete_chat(request).await?;
-        let mut chunks = Vec::new();
-        chunks.push(stream_chunk(
-            &completion,
-            ChatCompletionDelta {
-                role: Some(ChatRole::Assistant),
-                ..ChatCompletionDelta::default()
+        let prompt = render_qwen_chatml(
+            &request.messages,
+            &request.tools,
+            &QwenPromptOptions {
+                enable_thinking: false,
+                add_generation_prompt: true,
             },
-            None,
-        ));
-        if !completion.parsed.content.is_empty() {
-            chunks.push(stream_chunk(
-                &completion,
-                ChatCompletionDelta {
-                    content: Some(completion.parsed.content.clone()),
-                    ..ChatCompletionDelta::default()
-                },
-                None,
-            ));
-        }
-        for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
-            chunks.push(stream_chunk(
-                &completion,
-                ChatCompletionDelta {
-                    tool_calls: vec![tool_call_delta(index, tool_call)?],
-                    ..ChatCompletionDelta::default()
-                },
-                None,
-            ));
-        }
-        chunks.push(stream_chunk(
-            &completion,
-            ChatCompletionDelta::default(),
-            Some(completion.finish_reason.clone()),
-        ));
-        if include_usage {
-            chunks.push(stream_usage_chunk(&completion));
-        }
-        Ok(ChatCompletionStream {
-            chunks,
-            usage: completion.usage,
-        })
+        )?;
+        let completion = RuntimeCompletionSeed {
+            id: format!("chatcmpl-{}", Uuid::now_v7()),
+            created: Utc::now().timestamp(),
+            model: request.model.clone(),
+        };
+        let backend_stream = self.backend.generate_stream(BackendRequest {
+            model: request.model.clone(),
+            prompt,
+            max_tokens: request.effective_max_tokens(),
+            required_tool_choice: required_backend_tool_choice(&request),
+            json_object_mode: matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            conversation_mode: true,
+        });
+        Ok(streaming_chat_stream(
+            completion,
+            request,
+            backend_stream,
+            include_usage,
+        ))
     }
 
     async fn complete_chat(
@@ -277,16 +281,85 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChatCompletionStream {
-    pub chunks: Vec<ChatCompletionStreamResponse>,
-    pub usage: Usage,
+pub struct ChatCompletionStream<'a> {
+    events: BoxStream<'a, Result<ChatCompletionStreamEvent, RuntimeError>>,
+}
+
+impl fmt::Debug for ChatCompletionStream<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChatCompletionStream { events: <stream> }")
+    }
+}
+
+impl<'a> ChatCompletionStream<'a> {
+    pub fn into_events(self) -> BoxStream<'a, Result<ChatCompletionStreamEvent, RuntimeError>> {
+        self.events
+    }
+
+    pub async fn collect_chunks(
+        self,
+    ) -> Result<(Vec<ChatCompletionStreamResponse>, Usage), RuntimeError> {
+        let mut chunks = Vec::new();
+        let mut usage = None;
+        let mut events = self.into_events();
+        while let Some(event) = events.next().await {
+            match event? {
+                ChatCompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
+                ChatCompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
+            }
+        }
+        Ok((chunks, usage.unwrap_or_else(empty_usage)))
+    }
+}
+
+pub struct CompletionStream<'a> {
+    events: BoxStream<'a, Result<CompletionStreamEvent, RuntimeError>>,
+}
+
+impl fmt::Debug for CompletionStream<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CompletionStream { events: <stream> }")
+    }
+}
+
+impl<'a> CompletionStream<'a> {
+    pub fn into_events(self) -> BoxStream<'a, Result<CompletionStreamEvent, RuntimeError>> {
+        self.events
+    }
+
+    pub async fn collect_chunks(
+        self,
+    ) -> Result<(Vec<CompletionStreamResponse>, Usage), RuntimeError> {
+        let mut chunks = Vec::new();
+        let mut usage = None;
+        let mut events = self.into_events();
+        while let Some(event) = events.next().await {
+            match event? {
+                CompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
+                CompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
+            }
+        }
+        Ok((chunks, usage.unwrap_or_else(empty_usage)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CompletionStream {
-    pub chunks: Vec<CompletionStreamResponse>,
-    pub usage: Usage,
+pub enum ChatCompletionStreamEvent {
+    Chunk(ChatCompletionStreamResponse),
+    Complete(Usage),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompletionStreamEvent {
+    Chunk(CompletionStreamResponse),
+    Complete(Usage),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RuntimeCompletionSeed {
+    id: String,
+    created: i64,
+    model: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -307,6 +380,244 @@ struct RuntimeChatCompletion {
     parsed: ParsedAssistant,
     finish_reason: llm_api::FinishReason,
     usage: Usage,
+}
+
+fn buffered_completion_stream(
+    completion: RuntimeCompletion,
+    include_usage: bool,
+) -> CompletionStream<'static> {
+    let mut events = vec![
+        Ok(CompletionStreamEvent::Chunk(completion_stream_chunk(
+            &completion,
+            completion.text.clone(),
+            None,
+        ))),
+        Ok(CompletionStreamEvent::Chunk(completion_stream_chunk(
+            &completion,
+            String::new(),
+            Some(completion.finish_reason.clone()),
+        ))),
+    ];
+    if include_usage {
+        events.push(Ok(CompletionStreamEvent::Chunk(
+            completion_stream_usage_chunk(&completion),
+        )));
+    }
+    events.push(Ok(CompletionStreamEvent::Complete(completion.usage)));
+    CompletionStream {
+        events: stream::iter(events).boxed(),
+    }
+}
+
+fn streaming_completion_stream<'a>(
+    completion: RuntimeCompletionSeed,
+    backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
+    include_usage: bool,
+) -> CompletionStream<'a> {
+    let events = async_stream::try_stream! {
+        let mut backend_stream = backend_stream;
+        let mut text = String::new();
+        let mut prompt_tokens = 0;
+        let mut completion_tokens = 0;
+        let mut finish_reason = llm_api::FinishReason::Length;
+        while let Some(chunk) = backend_stream.next().await {
+            let chunk = chunk?;
+            prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+            completion_tokens += chunk.completion_tokens;
+            if !chunk.text.is_empty() {
+                text.push_str(&chunk.text);
+                yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+                    &completion,
+                    chunk.text,
+                    None,
+                    None,
+                ));
+            }
+            if let Some(reason) = chunk.finish_reason {
+                finish_reason = reason;
+                break;
+            }
+        }
+        if let Some(class) = classify_no_progress(&text, completion_tokens, false) {
+            Err(RuntimeError::NoProgress(class))?;
+        }
+        let usage = Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        };
+        yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+            &completion,
+            String::new(),
+            Some(finish_reason),
+            None,
+        ));
+        if include_usage {
+            yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
+                &completion,
+                String::new(),
+                None,
+                Some(usage.clone()),
+            ));
+        }
+        yield CompletionStreamEvent::Complete(usage);
+    };
+    CompletionStream {
+        events: events.boxed(),
+    }
+}
+
+fn buffered_chat_stream(
+    completion: RuntimeChatCompletion,
+    include_usage: bool,
+) -> Result<ChatCompletionStream<'static>, RuntimeError> {
+    let mut events = Vec::new();
+    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
+        &completion,
+        ChatCompletionDelta {
+            role: Some(ChatRole::Assistant),
+            ..ChatCompletionDelta::default()
+        },
+        None,
+    ))));
+    if !completion.parsed.content.is_empty() {
+        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
+            &completion,
+            ChatCompletionDelta {
+                content: Some(completion.parsed.content.clone()),
+                ..ChatCompletionDelta::default()
+            },
+            None,
+        ))));
+    }
+    for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
+        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
+            &completion,
+            ChatCompletionDelta {
+                tool_calls: vec![tool_call_delta(index, tool_call)?],
+                ..ChatCompletionDelta::default()
+            },
+            None,
+        ))));
+    }
+    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
+        &completion,
+        ChatCompletionDelta::default(),
+        Some(completion.finish_reason.clone()),
+    ))));
+    if include_usage {
+        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_usage_chunk(
+            &completion,
+        ))));
+    }
+    events.push(Ok(ChatCompletionStreamEvent::Complete(completion.usage)));
+    Ok(ChatCompletionStream {
+        events: stream::iter(events).boxed(),
+    })
+}
+
+fn streaming_chat_stream<'a>(
+    completion: RuntimeCompletionSeed,
+    request: ChatCompletionRequest,
+    backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
+    include_usage: bool,
+) -> ChatCompletionStream<'a> {
+    let events = async_stream::try_stream! {
+        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+            &completion,
+            ChatCompletionDelta {
+                role: Some(ChatRole::Assistant),
+                ..ChatCompletionDelta::default()
+            },
+            None,
+            None,
+        ));
+
+        let mut backend_stream = backend_stream;
+        let mut raw_text = String::new();
+        let mut prompt_tokens = 0;
+        let mut completion_tokens = 0;
+        let mut backend_finish_reason = llm_api::FinishReason::Length;
+        while let Some(chunk) = backend_stream.next().await {
+            let chunk = chunk?;
+            prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+            completion_tokens += chunk.completion_tokens;
+            if !chunk.text.is_empty() {
+                raw_text.push_str(&chunk.text);
+                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                    &completion,
+                    ChatCompletionDelta {
+                        content: Some(chunk.text),
+                        ..ChatCompletionDelta::default()
+                    },
+                    None,
+                    None,
+                ));
+            }
+            if let Some(reason) = chunk.finish_reason {
+                backend_finish_reason = reason;
+                break;
+            }
+        }
+
+        let parsed = QwenParser.parse_complete(&raw_text)?;
+        validate_tool_call_arguments(&parsed)?;
+        validate_tool_calls_against_request(&parsed, &request)?;
+        let required_tool_pending = matches!(
+            request.tool_choice,
+            Some(ToolChoice::Required | ToolChoice::Function { .. })
+        );
+        if let Some(class) = classify_no_progress(
+            &raw_text,
+            completion_tokens,
+            required_tool_pending && parsed.tool_calls.is_empty(),
+        ) {
+            Err(RuntimeError::NoProgress(class))?;
+        }
+        let finish_reason = if !parsed.tool_calls.is_empty() {
+            llm_api::FinishReason::ToolCalls
+        } else {
+            backend_finish_reason
+        };
+        let usage = Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        };
+        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+            &completion,
+            ChatCompletionDelta::default(),
+            Some(finish_reason),
+            None,
+        ));
+        if include_usage {
+            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                &completion,
+                ChatCompletionDelta::default(),
+                None,
+                Some(usage.clone()),
+            ));
+        }
+        yield ChatCompletionStreamEvent::Complete(usage);
+    };
+    ChatCompletionStream {
+        events: events.boxed(),
+    }
+}
+
+fn requires_buffered_chat_stream(request: &ChatCompletionRequest) -> bool {
+    !request.stop.is_empty()
+        || !request.tools.is_empty()
+        || !matches!(request.tool_choice, None | Some(ToolChoice::Auto))
+        || matches!(request.response_format, Some(ResponseFormat::JsonObject))
+}
+
+fn empty_usage() -> Usage {
+    Usage {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+    }
 }
 
 fn stream_chunk(
@@ -339,6 +650,30 @@ fn stream_usage_chunk(completion: &RuntimeChatCompletion) -> ChatCompletionStrea
     }
 }
 
+fn stream_seed_chunk(
+    completion: &RuntimeCompletionSeed,
+    delta: ChatCompletionDelta,
+    finish_reason: Option<llm_api::FinishReason>,
+    usage: Option<Usage>,
+) -> ChatCompletionStreamResponse {
+    ChatCompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "chat.completion.chunk".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: if usage.is_some() {
+            Vec::new()
+        } else {
+            vec![ChatCompletionStreamChoice {
+                index: 0,
+                delta,
+                finish_reason,
+            }]
+        },
+        usage,
+    }
+}
+
 fn completion_stream_chunk(
     completion: &RuntimeCompletion,
     text: String,
@@ -366,6 +701,30 @@ fn completion_stream_usage_chunk(completion: &RuntimeCompletion) -> CompletionSt
         model: completion.model.clone(),
         choices: Vec::new(),
         usage: Some(completion.usage.clone()),
+    }
+}
+
+fn completion_stream_seed_chunk(
+    completion: &RuntimeCompletionSeed,
+    text: String,
+    finish_reason: Option<llm_api::FinishReason>,
+    usage: Option<Usage>,
+) -> CompletionStreamResponse {
+    CompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "text_completion".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: if usage.is_some() {
+            Vec::new()
+        } else {
+            vec![CompletionChoice {
+                text,
+                index: 0,
+                finish_reason,
+            }]
+        },
+        usage,
     }
 }
 

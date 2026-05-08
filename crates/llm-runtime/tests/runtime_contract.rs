@@ -1,13 +1,17 @@
+use futures::StreamExt;
 use llm_api::{
     ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
+    BackendError, BackendOutput, BackendRequest, BackendStreamChunk, DeterministicBackend,
+    ModelBackend,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::Notify;
 
 #[tokio::test]
 async fn runtime_returns_non_streaming_chat_completion() {
@@ -145,15 +149,85 @@ async fn runtime_returns_streaming_text_completion_chunks() {
         })
         .await
         .expect("completion stream succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
 
-    assert_eq!(stream.chunks.len(), 2);
-    assert_eq!(stream.chunks[0].choices[0].text, "hello from completion");
-    assert_eq!(stream.chunks[0].choices[0].finish_reason, None);
-    assert_eq!(stream.chunks[1].choices[0].text, "");
-    assert_eq!(
-        stream.chunks[1].choices[0].finish_reason,
-        Some(FinishReason::Stop)
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].choices[0].text, "hello from completion");
+    assert_eq!(chunks[0].choices[0].finish_reason, None);
+    assert_eq!(chunks[1].choices[0].text, "");
+    assert_eq!(chunks[1].choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
+async fn runtime_completion_stream_returns_before_backend_finishes() {
+    let release = Arc::new(Notify::new());
+    let runtime = Runtime::new(BlockingTextBackend {
+        release: release.clone(),
+    });
+
+    let stream = tokio::time::timeout(
+        Duration::from_millis(200),
+        runtime.completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            stream: true,
+            ..CompletionRequest::default()
+        }),
+    )
+    .await
+    .expect("stream handle returns before backend finishes")
+    .expect("completion stream starts");
+
+    release.notify_one();
+    drop(stream);
+}
+
+#[tokio::test]
+async fn runtime_completion_stream_yields_backend_chunks_incrementally() {
+    let first = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let runtime = Runtime::new(TwoChunkStreamBackend {
+        first: first.clone(),
+        finish: finish.clone(),
+    });
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            stream: true,
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("completion stream starts");
+    let mut events = stream.into_events();
+
+    first.notify_one();
+    let first_event = tokio::time::timeout(Duration::from_millis(200), events.next())
+        .await
+        .expect("first chunk arrives before completion")
+        .expect("first event")
+        .expect("first chunk");
+    let llm_runtime::CompletionStreamEvent::Chunk(first_chunk) = first_event else {
+        panic!("expected first chunk");
+    };
+    assert_eq!(first_chunk.choices[0].text, "first");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.next())
+            .await
+            .is_err(),
+        "stream should wait for the backend's final chunk"
     );
+
+    finish.notify_one();
+    let second_event = tokio::time::timeout(Duration::from_millis(200), events.next())
+        .await
+        .expect("second chunk arrives")
+        .expect("second event")
+        .expect("second chunk");
+    let llm_runtime::CompletionStreamEvent::Chunk(second_chunk) = second_event else {
+        panic!("expected second chunk");
+    };
+    assert_eq!(second_chunk.choices[0].text, " second");
 }
 
 #[tokio::test]
@@ -172,8 +246,9 @@ async fn runtime_appends_text_completion_stream_usage_when_requested() {
         })
         .await
         .expect("completion stream succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
 
-    let usage_chunk = stream.chunks.last().expect("usage chunk");
+    let usage_chunk = chunks.last().expect("usage chunk");
     assert!(usage_chunk.choices.is_empty());
     assert_eq!(usage_chunk.usage.as_ref().expect("usage").total_tokens, 3);
 }
@@ -504,21 +579,16 @@ async fn runtime_returns_text_stream_chunks() {
         })
         .await
         .expect("streaming text succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
 
-    assert_eq!(stream.chunks.len(), 3);
-    assert_eq!(stream.chunks[0].object, "chat.completion.chunk");
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].object, "chat.completion.chunk");
     assert_eq!(
-        stream.chunks[0].choices[0].delta.role,
+        chunks[0].choices[0].delta.role,
         Some(llm_api::ChatRole::Assistant)
     );
-    assert_eq!(
-        stream.chunks[1].choices[0].delta.content.as_deref(),
-        Some("hello")
-    );
-    assert_eq!(
-        stream.chunks[2].choices[0].finish_reason,
-        Some(FinishReason::Stop)
-    );
+    assert_eq!(chunks[1].choices[0].delta.content.as_deref(), Some("hello"));
+    assert_eq!(chunks[2].choices[0].finish_reason, Some(FinishReason::Stop));
 }
 
 #[tokio::test]
@@ -537,8 +607,9 @@ async fn runtime_appends_chat_stream_usage_when_requested() {
         })
         .await
         .expect("streaming text succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
 
-    let usage_chunk = stream.chunks.last().expect("usage chunk");
+    let usage_chunk = chunks.last().expect("usage chunk");
     assert!(usage_chunk.choices.is_empty());
     assert_eq!(usage_chunk.usage.as_ref().expect("usage").total_tokens, 3);
 }
@@ -561,9 +632,10 @@ async fn runtime_streams_generated_tool_call_delta() {
         })
         .await
         .expect("streaming tool calls assemble");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
 
-    assert_eq!(stream.chunks.len(), 3);
-    let delta = &stream.chunks[1].choices[0].delta.tool_calls[0];
+    assert_eq!(chunks.len(), 3);
+    let delta = &chunks[1].choices[0].delta.tool_calls[0];
     assert_eq!(delta.index, 0);
     assert_eq!(delta.id.as_deref(), Some("call_0"));
     assert_eq!(
@@ -581,7 +653,7 @@ async fn runtime_streams_generated_tool_call_delta() {
         Some(r#"{"query":"rust"}"#)
     );
     assert_eq!(
-        stream.chunks[2].choices[0].finish_reason,
+        chunks[2].choices[0].finish_reason,
         Some(FinishReason::ToolCalls)
     );
 }
@@ -615,6 +687,75 @@ impl ModelBackend for RecordingBackend {
             .expect("observed max_tokens lock") = Some(request.max_tokens);
         Ok(BackendOutput {
             text: "hello".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+}
+
+struct BlockingTextBackend {
+    release: Arc<Notify>,
+}
+
+struct TwoChunkStreamBackend {
+    first: Arc<Notify>,
+    finish: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for TwoChunkStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.first.notified().await;
+        self.finish.notified().await;
+        Ok(BackendOutput {
+            text: "first second".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let first = self.first.clone();
+        let finish = self.finish.clone();
+        async_stream::try_stream! {
+            first.notified().await;
+            yield BackendStreamChunk {
+                text: "first".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            finish.notified().await;
+            yield BackendStreamChunk {
+                text: " second".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: Some(FinishReason::Stop),
+            };
+        }
+        .boxed()
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for BlockingTextBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.release.notified().await;
+        Ok(BackendOutput {
+            text: "released".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,

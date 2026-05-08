@@ -9,19 +9,23 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures::{StreamExt, stream};
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use llm_api::{
     ApiError, ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
 };
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
-    ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    DeterministicBackend, ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k,
+    qwen_prefill_sequence,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
 };
 use llm_models::QwenModelSpec;
-use llm_runtime::{ChatCompletionStream, CompletionStream, Runtime, RuntimeError};
+use llm_runtime::{ChatCompletionStreamEvent, CompletionStreamEvent, Runtime, RuntimeError};
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Deserialize;
@@ -221,6 +225,80 @@ impl NativeQwenBackend {
         })
     }
 
+    fn generate_blocking_stream(
+        &self,
+        request: BackendRequest,
+        tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
+    ) -> Result<(), BackendError> {
+        if request.model != self.model_id {
+            return Err(BackendError::ModelNotFound {
+                requested: request.model,
+                available: self.model_id.clone(),
+            });
+        }
+        let prompt_tokens = self
+            .tokenizer
+            .encode(&request.prompt, false)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let mut context_tokens = prompt_tokens
+            .iter()
+            .map(|token| *token as usize)
+            .collect::<Vec<_>>();
+        if context_tokens.is_empty() {
+            return Err(BackendError::Other(
+                "Qwen prompt encoded to zero tokens".to_owned(),
+            ));
+        }
+        let mut output_ids = Vec::new();
+        let mut decoded = String::new();
+        let mut finish_reason = FinishReason::Length;
+        let eos_id = self
+            .tokenizer
+            .token_to_id("<|im_end|>")
+            .map(|id| id as usize);
+        let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
+
+        for _ in 0..requested {
+            let candidate = self.next_token(&context_tokens)?;
+            context_tokens.push(candidate.token_id);
+            if Some(candidate.token_id) == eos_id {
+                finish_reason = FinishReason::Stop;
+                break;
+            }
+            output_ids.push(u32::try_from(candidate.token_id).map_err(|err| {
+                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
+            })?);
+            let next_decoded = self
+                .tokenizer
+                .decode(&output_ids, false)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            let delta = next_decoded
+                .strip_prefix(&decoded)
+                .unwrap_or(&next_decoded)
+                .to_owned();
+            decoded = next_decoded;
+            send_backend_stream_chunk(
+                &tx,
+                BackendStreamChunk {
+                    text: delta,
+                    prompt_tokens: prompt_tokens.len() as u64,
+                    completion_tokens: 1,
+                    finish_reason: None,
+                },
+            )?;
+        }
+
+        send_backend_stream_chunk(
+            &tx,
+            BackendStreamChunk {
+                text: String::new(),
+                prompt_tokens: prompt_tokens.len() as u64,
+                completion_tokens: 0,
+                finish_reason: Some(finish_reason),
+            },
+        )
+    }
+
     fn next_token(&self, context_tokens: &[usize]) -> Result<NativeQwenCandidate, BackendError> {
         let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
         let hidden_states =
@@ -301,6 +379,32 @@ impl ModelBackend for NativeQwenBackend {
             .await
             .map_err(|err| BackendError::Other(format!("native Qwen worker failed: {err}")))?
     }
+
+    fn generate_stream<'a>(
+        &'a self,
+        request: BackendRequest,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let backend = self.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::task::spawn_blocking(move || {
+            let err_tx = tx.clone();
+            if let Err(err) = backend.generate_blocking_stream(request, tx) {
+                let _ = err_tx.blocking_send(Err(err));
+            }
+        });
+        stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        })
+        .boxed()
+    }
+}
+
+fn send_backend_stream_chunk(
+    tx: &tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
+    chunk: BackendStreamChunk,
+) -> Result<(), BackendError> {
+    tx.blocking_send(Ok(chunk))
+        .map_err(|_| BackendError::Other("stream receiver dropped".to_owned()))
 }
 
 async fn health() -> impl IntoResponse {
@@ -546,20 +650,38 @@ async fn chat_completions(
     let streamed = request.stream;
     let permit = acquire_model_permit(&state)?;
     if request.stream {
-        let events = stream::once(async move {
+        let events = async_stream::stream! {
             let _permit = permit;
             match state.runtime.chat_stream(request).await {
                 Ok(response) => {
-                    record_success_metrics(&state, &response.usage, streamed);
-                    stream::iter(chat_stream_events(response))
+                    let mut events = response.into_events();
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(ChatCompletionStreamEvent::Chunk(chunk)) => {
+                                yield sse_json_event(chunk);
+                            }
+                            Ok(ChatCompletionStreamEvent::Complete(usage)) => {
+                                record_success_metrics(&state, &usage, streamed);
+                                yield Ok(Event::default().data("[DONE]"));
+                            }
+                            Err(err) => {
+                                record_failure_metrics(&state);
+                                for event in runtime_error_stream_events(err) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     record_failure_metrics(&state);
-                    stream::iter(runtime_error_stream_events(err))
+                    for event in runtime_error_stream_events(err) {
+                        yield event;
+                    }
                 }
             }
-        })
-        .flatten();
+        };
         return Ok(Sse::new(events).into_response());
     }
     let response = match state.runtime.chat(request).await {
@@ -581,20 +703,38 @@ async fn completions(
     let streamed = request.stream;
     let permit = acquire_model_permit(&state)?;
     if request.stream {
-        let events = stream::once(async move {
+        let events = async_stream::stream! {
             let _permit = permit;
             match state.runtime.completion_stream(request).await {
                 Ok(response) => {
-                    record_success_metrics(&state, &response.usage, streamed);
-                    stream::iter(completion_stream_events(response))
+                    let mut events = response.into_events();
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(CompletionStreamEvent::Chunk(chunk)) => {
+                                yield sse_json_event(chunk);
+                            }
+                            Ok(CompletionStreamEvent::Complete(usage)) => {
+                                record_success_metrics(&state, &usage, streamed);
+                                yield Ok(Event::default().data("[DONE]"));
+                            }
+                            Err(err) => {
+                                record_failure_metrics(&state);
+                                for event in runtime_error_stream_events(err) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     record_failure_metrics(&state);
-                    stream::iter(runtime_error_stream_events(err))
+                    for event in runtime_error_stream_events(err) {
+                        yield event;
+                    }
                 }
             }
-        })
-        .flatten();
+        };
         return Ok(Sse::new(events).into_response());
     }
     let response = match state.runtime.completion(request).await {
@@ -606,24 +746,6 @@ async fn completions(
     };
     record_success_metrics(&state, &response.usage, streamed);
     Ok(Json(response).into_response())
-}
-
-fn chat_stream_events(response: ChatCompletionStream) -> Vec<Result<Event, Infallible>> {
-    let mut events = Vec::with_capacity(response.chunks.len() + 1);
-    for chunk in response.chunks {
-        events.push(sse_json_event(chunk));
-    }
-    events.push(Ok(Event::default().data("[DONE]")));
-    events
-}
-
-fn completion_stream_events(response: CompletionStream) -> Vec<Result<Event, Infallible>> {
-    let mut events = Vec::with_capacity(response.chunks.len() + 1);
-    for chunk in response.chunks {
-        events.push(sse_json_event(chunk));
-    }
-    events.push(Ok(Event::default().data("[DONE]")));
-    events
 }
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {

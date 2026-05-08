@@ -1,4 +1,8 @@
 use async_trait::async_trait;
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use llm_api::FinishReason;
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use safetensors::{SafeTensors, tensor::Dtype};
@@ -31,6 +35,14 @@ pub struct BackendOutput {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub finish_reason: FinishReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendStreamChunk {
+    pub text: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub finish_reason: Option<FinishReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +85,23 @@ pub trait ModelBackend: Send + Sync + 'static {
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
+
+    fn generate_stream<'a>(
+        &'a self,
+        request: BackendRequest,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        stream::once(async move {
+            self.generate(request)
+                .await
+                .map(|output| BackendStreamChunk {
+                    text: output.text,
+                    prompt_tokens: output.prompt_tokens,
+                    completion_tokens: output.completion_tokens,
+                    finish_reason: Some(output.finish_reason),
+                })
+        })
+        .boxed()
+    }
 }
 
 #[async_trait]
@@ -90,6 +119,13 @@ where
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         (**self).generate(request).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        request: BackendRequest,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        (**self).generate_stream(request)
     }
 }
 

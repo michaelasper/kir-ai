@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+futures.workspace = true
 llm-api = { path = "../llm-api" }
 llm-models = { path = "../llm-models" }
 safetensors.workspace = true
