@@ -177,6 +177,18 @@ pub fn matvec_row_major_f32(
         .collect())
 }
 
+pub fn matvecs_row_major_f32(
+    inputs: &[Vec<f32>],
+    weights: &[f32],
+    rows: usize,
+    columns: usize,
+) -> Result<Vec<Vec<f32>>, MathError> {
+    inputs
+        .iter()
+        .map(|input| matvec_row_major_f32(input, weights, rows, columns))
+        .collect()
+}
+
 pub fn swiglu_mlp_f32(
     input: &[f32],
     gate_weight: &[f32],
@@ -312,6 +324,14 @@ pub struct QwenLinearAttentionProjectionProbe {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct QwenLinearAttentionProjectionSequence {
+    pub qkv: Vec<Vec<f32>>,
+    pub z: Vec<Vec<f32>>,
+    pub b: Vec<Vec<f32>>,
+    pub a: Vec<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct QwenMoeRouterProbe {
     pub logits: Vec<f32>,
     pub selected: Vec<TopKWeight>,
@@ -437,6 +457,26 @@ pub fn qwen_embedding_and_layer0_norm(
     })
 }
 
+pub fn qwen_embedding_sequence(
+    store: &SafeTensorShardStore,
+    token_ids: &[usize],
+    hidden_size: usize,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    token_ids
+        .iter()
+        .map(|token_id| {
+            let embedding = store.bf16_row_f32(QWEN_EMBED_TOKENS_WEIGHT, *token_id)?;
+            if embedding.len() != hidden_size {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen embedding row has length {}, expected hidden size {hidden_size}",
+                    embedding.len()
+                )));
+            }
+            Ok(embedding)
+        })
+        .collect()
+}
+
 pub fn qwen_layer_input_norm(
     store: &SafeTensorShardStore,
     layer_idx: usize,
@@ -458,6 +498,34 @@ pub fn qwen_layer_input_norm(
     qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
     })
+}
+
+fn qwen_layer_input_norm_sequence(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let norm_weight = store.bf16_tensor_f32_range(
+        &qwen_layer_tensor(layer_idx, "input_layernorm.weight"),
+        0,
+        hidden_size,
+    )?;
+    hidden_states
+        .iter()
+        .map(|hidden| {
+            if hidden.len() != hidden_size {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen layer input hidden length {} must match hidden size {hidden_size}",
+                    hidden.len()
+                )));
+            }
+            qwen_rms_norm_f32(hidden, &norm_weight, rms_norm_eps).map_err(|err| {
+                TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
+            })
+        })
+        .collect()
 }
 
 pub fn qwen_linear_attention_first_token_from_parts(
@@ -940,6 +1008,57 @@ pub fn qwen_layer_linear_attention_first_token(
     })
 }
 
+pub fn qwen_layer_linear_attention_sequence(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let projections = QwenLinearAttentionProjectionSequence {
+        qkv: store.bf16_matvecs_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_qkv.weight"),
+            hidden_states,
+        )?,
+        z: store.bf16_matvecs_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_z.weight"),
+            hidden_states,
+        )?,
+        b: store.bf16_matvecs_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_b.weight"),
+            hidden_states,
+        )?,
+        a: store.bf16_matvecs_row_major_f32(
+            &qwen_linear_attn_tensor(layer_idx, "in_proj_a.weight"),
+            hidden_states,
+        )?,
+    };
+    let dims = QwenLinearAttentionDims::from_spec(spec);
+    let dt_bias = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "dt_bias"))?;
+    let a_log = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "A_log"))?;
+    let conv1d_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "conv1d.weight"))?;
+    let norm_weight = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "norm.weight"))?;
+    let out_proj_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "out_proj.weight"))?;
+    qwen_linear_attention_sequence_from_parts(
+        &dims,
+        &projections.qkv,
+        &projections.z,
+        &projections.b,
+        &projections.a,
+        &dt_bias,
+        &a_log,
+        &conv1d_weight,
+        &norm_weight,
+        &out_proj_weight,
+    )
+    .map_err(|err| {
+        TensorLoadError::integrity(format!(
+            "Qwen layer{layer_idx} linear attention sequence failed: {err}"
+        ))
+    })
+}
+
 pub fn qwen_layer_full_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
@@ -964,6 +1083,50 @@ pub fn qwen_layer_full_attention_first_token(
             ))
         },
     )
+}
+
+pub fn qwen_layer_full_attention_sequence(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let dims = QwenFullAttentionDims::from_spec(spec);
+    let q_proj = store.bf16_matvecs_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "q_proj.weight"),
+        hidden_states,
+    )?;
+    let k_proj = store.bf16_matvecs_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "k_proj.weight"),
+        hidden_states,
+    )?;
+    let v_proj = store.bf16_matvecs_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "v_proj.weight"),
+        hidden_states,
+    )?;
+    let q_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "q_norm.weight"))?;
+    let k_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "k_norm.weight"))?;
+    let o_proj_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
+    qwen_full_attention_sequence_from_parts(
+        &dims,
+        &q_proj,
+        &k_proj,
+        &v_proj,
+        &q_norm_weight,
+        &k_norm_weight,
+        &o_proj_weight,
+        spec.rms_norm_eps,
+        spec.rope_theta,
+        spec.partial_rotary_factor,
+    )
+    .map_err(|err| {
+        TensorLoadError::integrity(format!(
+            "Qwen layer{layer_idx} full attention sequence failed: {err}"
+        ))
+    })
 }
 
 pub fn qwen_layer0_linear_attention_projections(
@@ -1064,6 +1227,49 @@ pub fn qwen_layer_post_attention_norm(
     qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 post-attention RMSNorm failed: {err}"))
     })
+}
+
+fn qwen_layer_post_attention_norm_sequence(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    residual: &[Vec<f32>],
+    attention_output: &[Vec<f32>],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    if residual.len() != attention_output.len() {
+        return Err(TensorLoadError::integrity(
+            "Qwen post-attention sequence lengths must match",
+        ));
+    }
+    let norm_weight = store.bf16_tensor_f32_range(
+        &qwen_layer_tensor(layer_idx, "post_attention_layernorm.weight"),
+        0,
+        hidden_size,
+    )?;
+    residual
+        .iter()
+        .zip(attention_output)
+        .map(|(residual, attention)| {
+            if residual.len() != hidden_size || attention.len() != hidden_size {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen post-attention residual lengths {}, {} must match hidden size {hidden_size}",
+                    residual.len(),
+                    attention.len()
+                )));
+            }
+            let hidden_states = residual
+                .iter()
+                .zip(attention)
+                .map(|(residual, attention)| residual + attention)
+                .collect::<Vec<_>>();
+            qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
+                TensorLoadError::integrity(format!(
+                    "Qwen post-attention RMSNorm sequence failed: {err}"
+                ))
+            })
+        })
+        .collect()
 }
 
 pub fn qwen_layer0_moe_forward(
@@ -1209,6 +1415,77 @@ pub fn qwen_decoder_layer_first_token(
             "Qwen layer {layer_idx} is outside configured layer count"
         ))),
     }
+}
+
+pub fn qwen_decoder_layer_sequence(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let hidden_size = spec.hidden_size as usize;
+    let input_norm = qwen_layer_input_norm_sequence(
+        store,
+        layer_idx,
+        hidden_states,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let attention_output = match spec.layer_kinds.get(layer_idx) {
+        Some(AttentionKind::LinearAttention) => {
+            qwen_layer_linear_attention_sequence(store, spec, layer_idx, &input_norm)?
+        }
+        Some(AttentionKind::FullAttention) => {
+            qwen_layer_full_attention_sequence(store, spec, layer_idx, &input_norm)?
+        }
+        None => {
+            return Err(TensorLoadError::missing(format!(
+                "Qwen layer {layer_idx} is outside configured layer count"
+            )));
+        }
+    };
+    let post_attention = qwen_layer_post_attention_norm_sequence(
+        store,
+        layer_idx,
+        hidden_states,
+        &attention_output,
+        hidden_size,
+        spec.rms_norm_eps,
+    )?;
+    let moe_dims = QwenMoeDims::from_spec(spec);
+    hidden_states
+        .iter()
+        .zip(attention_output)
+        .zip(post_attention)
+        .map(|((hidden, attention), post_attention)| {
+            let router = qwen_layer_moe_router(
+                store,
+                layer_idx,
+                &post_attention,
+                spec.num_experts_per_tok as usize,
+            )?;
+            let moe_output =
+                qwen_layer_moe_forward(store, layer_idx, &moe_dims, &post_attention, &router)?;
+            Ok(hidden
+                .iter()
+                .zip(attention)
+                .zip(moe_output)
+                .map(|((hidden, attention), moe)| hidden + attention + moe)
+                .collect::<Vec<_>>())
+        })
+        .collect()
+}
+
+pub fn qwen_prefill_sequence(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    token_ids: &[usize],
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let mut hidden_states = qwen_embedding_sequence(store, token_ids, spec.hidden_size as usize)?;
+    for layer_idx in 0..spec.num_hidden_layers as usize {
+        hidden_states = qwen_decoder_layer_sequence(store, spec, layer_idx, &hidden_states)?;
+    }
+    Ok(hidden_states)
 }
 
 pub fn qwen_layer_moe_forward(
@@ -1835,6 +2112,31 @@ impl SafeTensorShardStore {
         let weights = self.bf16_tensor_f32_range(tensor, 0, element_count)?;
         matvec_row_major_f32(input, &weights, rows, columns).map_err(|err| {
             TensorLoadError::integrity(format!("BF16 matvec for tensor `{tensor}` failed: {err}"))
+        })
+    }
+
+    pub fn bf16_matvecs_row_major_f32(
+        &self,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+        let metadata = self.tensor_metadata(tensor)?;
+        if metadata.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{tensor}` batched matvec expects rank 2, got rank {}",
+                metadata.shape.len()
+            )));
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        let element_count = rows.checked_mul(columns).ok_or_else(|| {
+            TensorLoadError::integrity("batched matvec tensor shape overflows usize")
+        })?;
+        let weights = self.bf16_tensor_f32_range(tensor, 0, element_count)?;
+        matvecs_row_major_f32(inputs, &weights, rows, columns).map_err(|err| {
+            TensorLoadError::integrity(format!(
+                "BF16 batched matvec for tensor `{tensor}` failed: {err}"
+            ))
         })
     }
 

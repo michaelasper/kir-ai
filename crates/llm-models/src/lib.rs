@@ -26,6 +26,8 @@ pub struct QwenModelSpec {
     pub hidden_size: u32,
     pub rms_norm_eps: f32,
     pub tie_word_embeddings: bool,
+    pub rope_theta: f32,
+    pub partial_rotary_factor: f32,
     pub num_hidden_layers: u32,
     pub num_attention_heads: u32,
     pub num_key_value_heads: u32,
@@ -174,6 +176,16 @@ impl QwenModelSpec {
                 .rms_norm_eps
                 .ok_or_else(|| ModelSpecError::unsupported("qwen config missing rms_norm_eps"))?,
             tie_word_embeddings: text.tie_word_embeddings.unwrap_or(false),
+            rope_theta: text
+                .rope_parameters
+                .as_ref()
+                .ok_or_else(|| ModelSpecError::unsupported("qwen config missing rope_parameters"))?
+                .rope_theta,
+            partial_rotary_factor: text
+                .rope_parameters
+                .as_ref()
+                .and_then(|rope| rope.partial_rotary_factor)
+                .unwrap_or(1.0),
             num_hidden_layers: text.num_hidden_layers,
             num_attention_heads: text.num_attention_heads,
             num_key_value_heads: text.num_key_value_heads,
@@ -207,6 +219,7 @@ struct RawQwenTextConfig {
     hidden_size: u32,
     rms_norm_eps: Option<f32>,
     tie_word_embeddings: Option<bool>,
+    rope_parameters: Option<RawRopeParameters>,
     num_hidden_layers: u32,
     num_attention_heads: u32,
     num_key_value_heads: u32,
@@ -223,6 +236,12 @@ struct RawQwenTextConfig {
     max_position_embeddings: u32,
     vocab_size: u32,
     layer_types: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRopeParameters {
+    rope_theta: f32,
+    partial_rotary_factor: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
