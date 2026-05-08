@@ -53,7 +53,7 @@ where
                 max_tokens: request.max_tokens.unwrap_or(4096),
             })
             .await?;
-        let parsed = QwenParser::default().parse_complete(&output.text)?;
+        let parsed = QwenParser.parse_complete(&output.text)?;
         let required_tool_pending = matches!(
             request.tool_choice,
             Some(ToolChoice::Required | ToolChoice::Function { .. })
