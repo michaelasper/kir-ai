@@ -1,5 +1,6 @@
 use metal::{
-    CommandQueue, CompileOptions, ComputePipelineState, Device, MTLResourceOptions, MTLSize,
+    CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState, Device,
+    MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
 };
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -26,6 +27,30 @@ pub struct MetalDevice {
 struct MetalKernel {
     pipeline: ComputePipelineState,
     queue: CommandQueue,
+}
+
+fn finish_command_buffer(
+    command_buffer: &CommandBufferRef,
+    kernel_name: &str,
+) -> Result<(), MetalError> {
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    command_buffer_status_result(command_buffer.status(), kernel_name)
+}
+
+fn command_buffer_status_result(
+    status: MTLCommandBufferStatus,
+    kernel_name: &str,
+) -> Result<(), MetalError> {
+    match status {
+        MTLCommandBufferStatus::Completed => Ok(()),
+        MTLCommandBufferStatus::Error => Err(MetalError::Execution(format!(
+            "{kernel_name} command buffer failed with status {status:?}"
+        ))),
+        other => Err(MetalError::Execution(format!(
+            "{kernel_name} command buffer finished with unexpected status {other:?}"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,8 +176,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "vector_add")?;
 
         // SAFETY: output_buffer is a StorageModeShared Metal buffer allocated with
         // byte_len bytes above. The command buffer has completed, and the buffer
@@ -235,8 +259,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "qwen_rms_norm")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input slice.
@@ -296,8 +319,7 @@ impl MetalDevice {
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "softmax_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input scores.
@@ -395,8 +417,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "linear_attention_conv1d_silu_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per convolution channel.
@@ -487,8 +508,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "weighted_sum_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per output column.
@@ -630,8 +650,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "linear_attention_recurrent_update_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per recurrent-state element.
@@ -738,8 +757,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "select_head_rows_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per selected row element.
@@ -837,8 +855,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "matvec_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -936,8 +953,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "matvec_bf16_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -1050,8 +1066,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "batched_matvec_bf16_f32")?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing vector_count * rows f32 values in input-major order.
@@ -1130,8 +1145,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "argmax_f32")?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly chunk_count values. The command buffer has completed.
@@ -1243,8 +1257,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        finish_command_buffer(command_buffer, "top_k_f32")?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly candidate_count values. The command buffer has completed.
@@ -1275,6 +1288,37 @@ impl MetalDevice {
         });
         candidates.truncate(final_k);
         Ok(candidates)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metal::MTLCommandBufferStatus;
+
+    #[test]
+    fn command_buffer_status_result_accepts_completed_status() {
+        assert!(
+            command_buffer_status_result(MTLCommandBufferStatus::Completed, "matvec_f32").is_ok()
+        );
+    }
+
+    #[test]
+    fn command_buffer_status_result_rejects_error_status() {
+        let err = command_buffer_status_result(MTLCommandBufferStatus::Error, "softmax_f32")
+            .expect_err("error status should fail");
+
+        assert!(matches!(err, MetalError::Execution(_)));
+        assert!(err.to_string().contains("softmax_f32"));
+    }
+
+    #[test]
+    fn command_buffer_status_result_rejects_unfinished_status() {
+        let err = command_buffer_status_result(MTLCommandBufferStatus::Scheduled, "top_k_f32")
+            .expect_err("unfinished status should fail");
+
+        assert!(matches!(err, MetalError::Execution(_)));
+        assert!(err.to_string().contains("unexpected status"));
     }
 }
 
