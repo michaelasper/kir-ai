@@ -540,6 +540,55 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 .or_else(|_| Self::cpu().weighted_sum_f32(values, weights, vector_len)),
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attention_recurrent_update_f32(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().linear_attention_recurrent_update_f32(
+                state,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+            ),
+            Self::Metal(device) => device
+                .linear_attention_recurrent_update_f32(
+                    state,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                )
+                .or_else(|_| {
+                    Self::cpu().linear_attention_recurrent_update_f32(
+                        state,
+                        key,
+                        value,
+                        memory,
+                        beta,
+                        decay,
+                        key_head_dim,
+                        value_head_dim,
+                    )
+                }),
+        }
+    }
 }
 
 fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {

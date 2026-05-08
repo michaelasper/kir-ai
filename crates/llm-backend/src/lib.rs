@@ -575,6 +575,55 @@ fn weighted_sum_f32(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn linear_attention_recurrent_update_f32(
+    state: &[f32],
+    key: &[f32],
+    value: &[f32],
+    memory: &[f32],
+    beta: f32,
+    decay: f32,
+    key_head_dim: usize,
+    value_head_dim: usize,
+) -> Result<Vec<f32>, MathError> {
+    if key_head_dim == 0 || value_head_dim == 0 {
+        return Err(MathError::InvalidShape(
+            "linear attention recurrent update dimensions must be non-zero".to_owned(),
+        ));
+    }
+    let element_count = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
+        MathError::InvalidShape(
+            "linear attention recurrent update shape overflows usize".to_owned(),
+        )
+    })?;
+    require_len(
+        "linear attention recurrent state",
+        state.len(),
+        element_count,
+    )?;
+    require_len("linear attention recurrent key", key.len(), key_head_dim)?;
+    require_len(
+        "linear attention recurrent value",
+        value.len(),
+        value_head_dim,
+    )?;
+    require_len(
+        "linear attention recurrent memory",
+        memory.len(),
+        value_head_dim,
+    )?;
+    let mut output = vec![0.0; element_count];
+    for (key_offset, key_value) in key.iter().enumerate().take(key_head_dim) {
+        let row_start = key_offset * value_head_dim;
+        for value_offset in 0..value_head_dim {
+            let delta = (value[value_offset] - memory[value_offset]) * beta;
+            output[row_start + value_offset] =
+                state[row_start + value_offset] * decay + key_value * delta;
+        }
+    }
+    Ok(output)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TopKWeight {
     pub index: usize,
@@ -667,6 +716,30 @@ pub trait QwenMatvecBackend {
         vector_len: usize,
     ) -> Result<Vec<f32>, MathError> {
         weighted_sum_f32(values, weights, vector_len)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attention_recurrent_update_f32(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        linear_attention_recurrent_update_f32(
+            state,
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+        )
     }
 
     fn softmax_top_k_f32(
@@ -1487,17 +1560,18 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                 dims.key_head_dim,
             )?;
 
-            let mut delta = vec![0.0; dims.value_head_dim];
-            for value_offset in 0..dims.value_head_dim {
-                delta[value_offset] =
-                    (value[value_start + value_offset] - memory[value_offset]) * beta;
-            }
-            for (key_offset, key_value) in key_head_values.iter().enumerate() {
-                let state_row = state_start + key_offset * dims.value_head_dim;
-                for value_offset in 0..dims.value_head_dim {
-                    recurrent_state[state_row + value_offset] += key_value * delta[value_offset];
-                }
-            }
+            let state_end = state_start + dims.key_head_dim * dims.value_head_dim;
+            let updated_state = matvec.linear_attention_recurrent_update_f32(
+                &recurrent_state[state_start..state_end],
+                &key_head_values,
+                &value[value_start..value_start + dims.value_head_dim],
+                &memory,
+                beta,
+                1.0,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            )?;
+            recurrent_state[state_start..state_end].copy_from_slice(&updated_state);
 
             value_major_state = linear_attention_value_major_state_rows(
                 &recurrent_state,

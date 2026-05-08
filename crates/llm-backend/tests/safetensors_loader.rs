@@ -1545,6 +1545,46 @@ fn qwen_linear_attention_recurrent_matvecs_use_configured_backend() {
 }
 
 #[test]
+fn qwen_linear_attention_recurrent_update_uses_configured_backend() {
+    let root = temp_snapshot_dir("qwen-linear-attn-recurrent-update");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let mut expected_cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("expected cache");
+    let expected = qwen_layer_linear_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("cpu cached sequence");
+    let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording cached sequence");
+
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
+    assert_eq!(matvec.recurrent_update_calls.get(), 2);
+    assert_close(
+        cache.recurrent_state(),
+        expected_cache.recurrent_state(),
+        1e-6,
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_linear_attention_convolution_uses_configured_backend() {
     let root = temp_snapshot_dir("qwen-linear-attn-conv-backend");
     write_tiny_linear_decoder_snapshot(&root);
@@ -1969,6 +2009,7 @@ struct RecordingMatvecBackend {
     conv1d_calls: Cell<usize>,
     softmax_top_k_calls: Cell<usize>,
     weighted_sum_calls: Cell<usize>,
+    recurrent_update_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -2077,6 +2118,31 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
         self.weighted_sum_calls
             .set(self.weighted_sum_calls.get() + 1);
         CpuQwenMatvecBackend.weighted_sum_f32(values, weights, vector_len)
+    }
+
+    fn linear_attention_recurrent_update_f32(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.recurrent_update_calls
+            .set(self.recurrent_update_calls.get() + 1);
+        CpuQwenMatvecBackend.linear_attention_recurrent_update_f32(
+            state,
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+        )
     }
 }
 

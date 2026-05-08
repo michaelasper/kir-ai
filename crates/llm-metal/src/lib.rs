@@ -13,6 +13,7 @@ pub struct MetalDevice {
     softmax_f32: Arc<MetalKernel>,
     linear_attention_conv1d_silu_f32: Arc<MetalKernel>,
     weighted_sum_f32: Arc<MetalKernel>,
+    linear_attention_recurrent_update_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
@@ -61,6 +62,8 @@ impl MetalDevice {
         let linear_attention_conv1d_silu_f32 =
             Self::kernel(&device, &library, "linear_attention_conv1d_silu_f32")?;
         let weighted_sum_f32 = Self::kernel(&device, &library, "weighted_sum_f32")?;
+        let linear_attention_recurrent_update_f32 =
+            Self::kernel(&device, &library, "linear_attention_recurrent_update_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
@@ -73,6 +76,7 @@ impl MetalDevice {
             softmax_f32,
             linear_attention_conv1d_silu_f32,
             weighted_sum_f32,
+            linear_attention_recurrent_update_f32,
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
@@ -488,6 +492,149 @@ impl MetalDevice {
         let output = unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
             std::slice::from_raw_parts(ptr, vector_len).to_vec()
+        };
+        Ok(output)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn linear_attention_recurrent_update_f32(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        if key_head_dim == 0 || value_head_dim == 0 {
+            return Err(MetalError::InvalidShape(
+                "linear attention recurrent update dimensions must be non-zero".to_owned(),
+            ));
+        }
+        let element_count = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "linear attention recurrent update shape overflows usize".to_owned(),
+            )
+        })?;
+        if state.len() != element_count {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent state length {} does not match key_head_dim {key_head_dim} * value_head_dim {value_head_dim}",
+                state.len()
+            )));
+        }
+        if key.len() != key_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent key length {} does not match key_head_dim {key_head_dim}",
+                key.len()
+            )));
+        }
+        if value.len() != value_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent value length {} does not match value_head_dim {value_head_dim}",
+                value.len()
+            )));
+        }
+        if memory.len() != value_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent memory length {} does not match value_head_dim {value_head_dim}",
+                memory.len()
+            )));
+        }
+        let value_head_dim_u32 = u32::try_from(value_head_dim).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "linear attention recurrent value head dimension does not fit u32: {err}"
+            ))
+        })?;
+        let element_count_u32 = u32::try_from(element_count).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "linear attention recurrent element count does not fit u32: {err}"
+            ))
+        })?;
+        let state_byte_len = std::mem::size_of_val(state) as u64;
+        let key_byte_len = std::mem::size_of_val(key) as u64;
+        let value_byte_len = std::mem::size_of_val(value) as u64;
+        let state_buffer = self.device.new_buffer_with_data(
+            state.as_ptr().cast::<c_void>(),
+            state_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let key_buffer = self.device.new_buffer_with_data(
+            key.as_ptr().cast::<c_void>(),
+            key_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let value_buffer = self.device.new_buffer_with_data(
+            value.as_ptr().cast::<c_void>(),
+            value_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let memory_buffer = self.device.new_buffer_with_data(
+            memory.as_ptr().cast::<c_void>(),
+            value_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(state_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self
+            .linear_attention_recurrent_update_f32
+            .queue
+            .new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.linear_attention_recurrent_update_f32.pipeline);
+        encoder.set_buffer(0, Some(&state_buffer), 0);
+        encoder.set_buffer(1, Some(&key_buffer), 0);
+        encoder.set_buffer(2, Some(&value_buffer), 0);
+        encoder.set_buffer(3, Some(&memory_buffer), 0);
+        encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&beta) as u64,
+            (&beta as *const f32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            5,
+            std::mem::size_of_val(&decay) as u64,
+            (&decay as *const f32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            6,
+            std::mem::size_of_val(&value_head_dim_u32) as u64,
+            (&value_head_dim_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            7,
+            std::mem::size_of_val(&element_count_u32) as u64,
+            (&element_count_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(8, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: element_count as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .linear_attention_recurrent_update_f32
+            .pipeline
+            .thread_execution_width()
+            .min(element_count as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per recurrent-state element.
+        let output = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, element_count).to_vec()
         };
         Ok(output)
     }
@@ -1112,6 +1259,27 @@ kernel void weighted_sum_f32(
         sum += values[(row * vector_len) + column] * weights[row];
     }
     output[column] = sum;
+}
+
+kernel void linear_attention_recurrent_update_f32(
+    device const float* state [[buffer(0)]],
+    device const float* key [[buffer(1)]],
+    device const float* value [[buffer(2)]],
+    device const float* memory [[buffer(3)]],
+    constant float& beta [[buffer(4)]],
+    constant float& decay [[buffer(5)]],
+    constant uint& value_head_dim [[buffer(6)]],
+    constant uint& element_count [[buffer(7)]],
+    device float* output [[buffer(8)]],
+    uint index [[thread_position_in_grid]]
+) {
+    if (index >= element_count) {
+        return;
+    }
+    uint key_index = index / value_head_dim;
+    uint value_index = index % value_head_dim;
+    float delta = (value[value_index] - memory[value_index]) * beta;
+    output[index] = (state[index] * decay) + (key[key_index] * delta);
 }
 
 kernel void matvec_f32(
