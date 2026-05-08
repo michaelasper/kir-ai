@@ -55,6 +55,7 @@ Current commits:
 - `87d560d` - Runtime parser construction now satisfies strict clippy checks.
 - `a3120e5` - OpenAI chat completions can now return native SSE text chunks with `[DONE]` while streaming tool calls fail closed until delta assembly is implemented.
 - `986f580` - Streaming Qwen tool calls now emit structured OpenAI tool-call deltas with JSON argument strings and final `tool_calls` finish reason.
+- `24fca9c` - JSON object response mode is now enforced for non-streaming and streaming completions, and parsed tool-call arguments must be JSON objects.
 
 Current verified state:
 
@@ -74,13 +75,14 @@ Current verified state:
 - The sequence path has unit coverage for Gated DeltaNet recurrent state updates, full-attention RoPE plus causal softmax, and indexed BF16 batched matvecs. Workspace `fmt-check`, `test`, and `clippy` pass after the bounded-prefill backend change.
 - GitHub issues #1 through #13 have local fixes committed. The fixes cover hub artifact path sanitization, SHA-256 verification, metadata-only cache isolation, optional tool semantics, generated tool-call parsing, fail-closed streaming behavior before native SSE support, backend error status mapping, Metal kernel reuse, placeholder crate replacement, dependency pruning, Qwen full-attention norm/key usage, Gated DeltaNet A/dt usage, and safetensors shard reuse/chunked matvecs. Workspace `mise run fmt-check`, `mise run test`, and `mise run clippy` pass after the issue pass.
 - `/v1/chat/completions` now supports `stream: true` through native Rust SSE for text completions and parsed Qwen tool calls. The stream emits OpenAI-compatible `chat.completion.chunk` events, preserves a stable completion ID across role/content/tool/final chunks, emits tool-call deltas with JSON argument strings, and emits `data: [DONE]` exactly once.
+- `response_format: {"type":"json_object"}` is now validated in the Rust runtime before non-streaming responses or SSE streams are returned. Assistant content must parse as a JSON object, and parsed tool-call arguments must be JSON objects.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Efficient decode cache updates, sampling controls, and robust stop handling are not complete.
-- Text and parsed tool-call SSE are implemented, but streaming JSON-mode validation, stream heartbeats during long prefill, stream metrics, stream stall detection, and disconnect cancellation are not complete.
+- Text and parsed tool-call SSE are implemented, but stream heartbeats during long prefill, stream metrics, stream stall detection, and disconnect cancellation are not complete.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
