@@ -204,7 +204,7 @@ pub fn build_router_with_backend_and_options(
     let hub_client = options
         .hub_endpoint
         .as_deref()
-        .map(parse_hub_client)
+        .map(|endpoint| parse_hub_client(endpoint, options.hf_token.as_deref()))
         .transpose()?
         .unwrap_or_default();
     let runtime = Runtime::new(backend);
@@ -253,6 +253,14 @@ impl EngineConfigError {
             message: format!("invalid hub endpoint `{endpoint}`: {source}"),
         }
     }
+
+    fn insecure_hub_token_endpoint(endpoint: &url::Url) -> Self {
+        Self {
+            message: format!(
+                "refusing to send HF_TOKEN to non-HTTPS hub endpoint `{endpoint}`; use HTTPS or a loopback endpoint for local development"
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for EngineConfigError {
@@ -263,10 +271,25 @@ impl std::fmt::Display for EngineConfigError {
 
 impl std::error::Error for EngineConfigError {}
 
-fn parse_hub_client(endpoint: &str) -> Result<HubClient, EngineConfigError> {
+fn parse_hub_client(
+    endpoint: &str,
+    hf_token: Option<&str>,
+) -> Result<HubClient, EngineConfigError> {
     let endpoint = url::Url::parse(endpoint)
         .map_err(|err| EngineConfigError::invalid_hub_endpoint(endpoint, err))?;
+    if hf_token.is_some() && endpoint.scheme() != "https" && !is_loopback_endpoint(&endpoint) {
+        return Err(EngineConfigError::insecure_hub_token_endpoint(&endpoint));
+    }
     Ok(HubClient::new(endpoint))
+}
+
+fn is_loopback_endpoint(endpoint: &url::Url) -> bool {
+    match endpoint.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    }
 }
 
 fn default_backend() -> DeterministicBackend {
