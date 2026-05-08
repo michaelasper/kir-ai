@@ -2098,24 +2098,23 @@ fn qwen_full_attention_sequence_from_parts_impl(
             );
         }
     }
-    if let Some(cache) = cache.as_deref_mut() {
-        for token_idx in 0..seq_len {
-            cache
-                .append(&keys[token_idx], &v_proj[token_idx])
-                .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
-        }
-    }
-
     let groups = dims.num_attention_heads / dims.num_key_value_heads;
     let scale = (dims.head_dim as f32).sqrt().recip();
     let mut outputs = Vec::with_capacity(seq_len);
     for token_idx in 0..seq_len {
+        if let Some(cache) = cache.as_deref_mut() {
+            cache
+                .append_sliding(&keys[token_idx], &v_proj[token_idx])
+                .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
+        }
+        let source_count = cache
+            .as_deref()
+            .map_or(token_idx + 1, LayerKvCache::token_count);
         let mut attended = vec![0.0; attention_dim];
         for head in 0..dims.num_attention_heads {
             let kv_head = head / groups;
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
-            let source_count = token_idx + 1;
             let key_rows = if let Some(cache) = cache.as_deref() {
                 matvec.select_head_rows_f32(
                     cache.keys(),
