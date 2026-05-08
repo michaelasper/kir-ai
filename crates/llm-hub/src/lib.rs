@@ -5,7 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,15 +191,20 @@ impl HubClient {
         path: &str,
         destination: &Path,
         expected_size: u64,
+        expected_sha256: Option<&str>,
         token: Option<&str>,
     ) -> Result<(), HubError> {
+        validate_artifact_path(path)?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(HubError::io)?;
         }
         let existing_len = match tokio::fs::metadata(destination).await {
-            Ok(metadata) if metadata.len() == expected_size => return Ok(()),
+            Ok(metadata) if metadata.len() == expected_size => {
+                verify_file_sha256(destination, expected_sha256).await?;
+                return Ok(());
+            }
             Ok(metadata) if metadata.len() < expected_size => metadata.len(),
             Ok(_) => {
                 tokio::fs::remove_file(destination)
@@ -257,6 +262,7 @@ impl HubClient {
                 "downloaded `{path}` size {final_len} did not match expected {expected_size}"
             )));
         }
+        verify_file_sha256(destination, expected_sha256).await?;
         Ok(())
     }
 }
@@ -343,6 +349,7 @@ pub struct PlannedFile {
     pub path: String,
     pub size: u64,
     pub etag: Option<String>,
+    pub sha256: Option<String>,
     pub class: ArtifactClass,
     pub cached: bool,
 }
@@ -357,6 +364,7 @@ pub struct DownloadPlan {
     pub skipped_files: Vec<String>,
     pub total_bytes_to_download: u64,
     pub total_final_disk_bytes: u64,
+    pub metadata_only: bool,
 }
 
 impl DownloadPlan {
@@ -364,6 +372,7 @@ impl DownloadPlan {
         let mut plan = self.clone();
         plan.files_to_download
             .retain(|file| file.class != ArtifactClass::Weights);
+        plan.metadata_only = true;
         plan.recompute_totals();
         plan
     }
@@ -420,6 +429,7 @@ impl SnapshotManifest {
                     path: file.path.clone(),
                     size: file.size,
                     etag: file.etag.clone(),
+                    sha256: file.sha256.clone(),
                     class: file.class,
                 })
                 .collect(),
@@ -439,6 +449,7 @@ pub struct ManifestFile {
     pub path: String,
     pub size: u64,
     pub etag: Option<String>,
+    pub sha256: Option<String>,
     pub class: ArtifactClass,
 }
 
@@ -457,7 +468,11 @@ impl ModelStore {
     pub fn snapshot_path(&self, plan: &DownloadPlan) -> PathBuf {
         self.repo_root(&plan.repo_id)
             .join("snapshots")
-            .join(&plan.resolved_commit)
+            .join(if plan.metadata_only {
+                format!("{}.metadata-only", plan.resolved_commit)
+            } else {
+                plan.resolved_commit.clone()
+            })
     }
 
     pub async fn create_staging_dir(&self, plan: &DownloadPlan) -> Result<PathBuf, HubError> {
@@ -541,6 +556,7 @@ impl ModelStore {
                     &file.path,
                     &staging.join(&file.path),
                     file.size,
+                    file.sha256.as_deref(),
                     token,
                 )
                 .await?;
@@ -575,6 +591,7 @@ impl ModelStore {
                     file.size
                 )));
             }
+            verify_file_sha256(&path, file.sha256.as_deref()).await?;
         }
         Ok(())
     }
@@ -631,6 +648,7 @@ pub fn build_download_plan(
     let mut selected = Vec::new();
     let mut skipped = Vec::new();
     for file in files {
+        validate_artifact_path(&file.path)?;
         if matches_any(&profile.ignore_patterns, &file.path)
             || !matches_any(&profile.allow_patterns, &file.path)
         {
@@ -642,6 +660,7 @@ pub fn build_download_plan(
             class: classify_artifact(&file.path),
             path: file.path,
             size: file.size,
+            sha256: file.etag.as_deref().and_then(normalize_sha256),
             etag: file.etag,
             cached,
         });
@@ -667,6 +686,7 @@ pub fn build_download_plan(
         skipped_files: skipped,
         total_bytes_to_download,
         total_final_disk_bytes,
+        metadata_only: false,
     })
 }
 
@@ -741,6 +761,52 @@ impl HubError {
 
 fn is_commit_hash(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn normalize_sha256(value: &str) -> Option<String> {
+    let trimmed = value.trim_matches('"');
+    (trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| trimmed.to_ascii_lowercase())
+}
+
+fn validate_artifact_path(path: &str) -> Result<(), HubError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.bytes().any(|byte| byte == 0)
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(HubError::invalid_request(format!(
+            "unsafe Hugging Face artifact path `{path}`"
+        )));
+    }
+    Ok(())
+}
+
+async fn verify_file_sha256(path: &Path, expected_sha256: Option<&str>) -> Result<(), HubError> {
+    let Some(expected_sha256) = expected_sha256 else {
+        return Ok(());
+    };
+    let mut file = tokio::fs::File::open(path).await.map_err(HubError::io)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await.map_err(HubError::io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = hex::encode(hasher.finalize());
+    if actual != expected_sha256 {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot file `{}` has sha256 {actual}, expected {expected_sha256}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn matches_any(patterns: &[String], path: &str) -> bool {

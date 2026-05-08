@@ -69,3 +69,59 @@ async fn verifies_existing_snapshot_and_refreshes_manifest_profile() {
     .expect("manifest json");
     assert_eq!(manifest["profile"], "qwen36-safetensors-bf16");
 }
+
+#[tokio::test]
+async fn rejects_existing_snapshot_with_wrong_sha256_digest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new(
+            "config.json",
+            2,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        )],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+
+    let err = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect_err("digest mismatch fails");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+}
+
+#[test]
+fn metadata_only_snapshot_path_does_not_collide_with_full_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let full = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![
+            HubFile::new("config.json", 2, Some("\"cfg\"")),
+            HubFile::new("model.safetensors", 2, Some("\"weights\"")),
+        ],
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_ne!(
+        store.snapshot_path(&full),
+        store.snapshot_path(&full.metadata_only())
+    );
+}

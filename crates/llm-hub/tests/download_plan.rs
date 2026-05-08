@@ -117,3 +117,43 @@ fn metadata_only_plan_excludes_weight_files() {
     assert_eq!(metadata.files_to_download[0].path, "config.json");
     assert_eq!(metadata.total_bytes_to_download, 100);
 }
+
+#[test]
+fn plan_rejects_unsafe_hub_artifact_paths() {
+    for path in [
+        "../config.json",
+        "/tmp/config.json",
+        "nested/../config.json",
+        "",
+    ] {
+        let err = build_download_plan(
+            HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+            "main",
+            "0123456789abcdef0123456789abcdef01234567",
+            ModelProfile::qwen36_mlx_4bit(),
+            vec![HubFile::new(path, 100, Some("\"cfg\""))],
+            &[],
+        )
+        .expect_err("unsafe artifact path fails closed");
+
+        assert_eq!(err.code(), "invalid_request");
+    }
+}
+
+#[test]
+fn manifest_records_lfs_sha256_identity() {
+    let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        vec![HubFile::new("config.json", 2, Some(sha))],
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_eq!(plan.files_to_download[0].sha256.as_deref(), Some(sha));
+    let manifest = SnapshotManifest::from_plan(&plan, "/snapshot");
+    assert_eq!(manifest.files[0].sha256.as_deref(), Some(sha));
+}
