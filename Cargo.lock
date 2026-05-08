@@ -1044,6 +1044,7 @@ dependencies = [
  "llm-hub",
  "llm-models",
  "llm-runtime",
+ "llm-tokenizer",
  "serde",
  "serde_json",
  "tokio",

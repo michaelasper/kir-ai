@@ -13,6 +13,7 @@ llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
 llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
+llm-tokenizer = { path = "../llm-tokenizer" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

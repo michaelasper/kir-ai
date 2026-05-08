@@ -9,6 +9,7 @@ use llm_backend::{
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
+use llm_tokenizer::HuggingFaceTokenizer;
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -151,6 +152,20 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 std::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json"))?;
             let spec = QwenModelSpec::from_config_json(&config_json)?;
             let store = SafeTensorShardStore::open(snapshot_path)?;
+            let lm_head_top_k = flag_value(&args, "--lm-head-top-k")
+                .map(str::parse::<usize>)
+                .transpose()?;
+            let chunk_rows = flag_value(&args, "--chunk-rows")
+                .map(str::parse::<usize>)
+                .transpose()?
+                .unwrap_or(512);
+            let tokenizer = lm_head_top_k
+                .map(|_| {
+                    HuggingFaceTokenizer::from_file(
+                        std::path::Path::new(snapshot_path).join("tokenizer.json"),
+                    )
+                })
+                .transpose()?;
             let probe = qwen_embedding_and_layer0_norm(
                 &store,
                 token_id,
@@ -189,9 +204,26 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                             "hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>()
                         }));
                     }
+                    let lm_head = lm_head_top_k
+                        .map(|top_k| {
+                            qwen_lm_head_json(
+                                &store,
+                                tokenizer.as_ref(),
+                                &hidden,
+                                QwenLmHeadJsonOptions {
+                                    hidden_size: spec.hidden_size as usize,
+                                    rms_norm_eps: spec.rms_norm_eps,
+                                    top_k,
+                                    chunk_rows,
+                                    limit,
+                                },
+                            )
+                        })
+                        .transpose()?;
                     anyhow::Ok(serde_json::json!({
                         "layers": layers,
-                        "final_hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>()
+                        "final_hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>(),
+                        "lm_head": lm_head
                     }))
                 })
                 .transpose()?;
@@ -285,30 +317,20 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     .zip(&moe_output)
                     .map(|(residual, moe)| residual + moe)
                     .collect::<Vec<_>>();
-                let lm_head = flag_value(&args, "--lm-head-top-k")
+                let lm_head = lm_head_top_k
                     .map(|top_k| {
-                        let top_k = top_k.parse::<usize>()?;
-                        let chunk_rows = flag_value(&args, "--chunk-rows")
-                            .map(str::parse::<usize>)
-                            .transpose()?
-                            .unwrap_or(512);
-                        let final_norm = qwen_final_norm(
+                        qwen_lm_head_json(
                             &store,
+                            tokenizer.as_ref(),
                             &final_hidden,
-                            spec.hidden_size as usize,
-                            spec.rms_norm_eps,
-                        )?;
-                        let top_logits =
-                            qwen_lm_head_top_k(&store, &final_norm, top_k, chunk_rows)?;
-                        anyhow::Ok(serde_json::json!({
-                            "final_norm_prefix": final_norm.iter().copied().take(limit).collect::<Vec<_>>(),
-                            "top_logits": top_logits.iter().map(|item| {
-                                serde_json::json!({
-                                    "index": item.index,
-                                    "logit": item.logit
-                                })
-                            }).collect::<Vec<_>>()
-                        }))
+                            QwenLmHeadJsonOptions {
+                                hidden_size: spec.hidden_size as usize,
+                                rms_norm_eps: spec.rms_norm_eps,
+                                top_k,
+                                chunk_rows,
+                                limit,
+                            },
+                        )
                     })
                     .transpose()?;
                 Some(serde_json::json!({
@@ -401,4 +423,47 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.windows(2)
         .find_map(|window| (window[0] == flag).then_some(window[1].as_str()))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QwenLmHeadJsonOptions {
+    hidden_size: usize,
+    rms_norm_eps: f32,
+    top_k: usize,
+    chunk_rows: usize,
+    limit: usize,
+}
+
+fn qwen_lm_head_json(
+    store: &SafeTensorShardStore,
+    tokenizer: Option<&HuggingFaceTokenizer>,
+    hidden_states: &[f32],
+    options: QwenLmHeadJsonOptions,
+) -> anyhow::Result<serde_json::Value> {
+    let final_norm = qwen_final_norm(
+        store,
+        hidden_states,
+        options.hidden_size,
+        options.rms_norm_eps,
+    )?;
+    let top_logits = qwen_lm_head_top_k(store, &final_norm, options.top_k, options.chunk_rows)?;
+    let mut logits = Vec::with_capacity(top_logits.len());
+    for item in top_logits {
+        let decoded = if let Some(tokenizer) = tokenizer {
+            let token_id = u32::try_from(item.index)?;
+            Some(tokenizer.decode(&[token_id], false)?)
+        } else {
+            None
+        };
+        logits.push(serde_json::json!({
+            "index": item.index,
+            "logit": item.logit,
+            "decoded": decoded
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "final_norm_prefix": final_norm.iter().copied().take(options.limit).collect::<Vec<_>>(),
+        "top_logits": logits
+    }))
 }
