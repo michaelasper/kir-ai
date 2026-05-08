@@ -13,6 +13,8 @@ pub struct QwenPromptOptions {
 pub enum TemplateError {
     #[error("tool serialization failed: {0}")]
     ToolSerialization(#[from] serde_json::Error),
+    #[error("reserved prompt control token `{0}` is not allowed in request text")]
+    ReservedControlToken(&'static str),
     #[error("message role `{0}` cannot be rendered in qwen chatml")]
     UnsupportedRole(String),
 }
@@ -65,19 +67,21 @@ pub fn render_qwen_chatml(
 ) -> Result<String, TemplateError> {
     let mut out = String::new();
     if !tools.is_empty() {
+        let tools_json = serde_json::to_string(tools)?;
+        reject_reserved_prompt_controls(&tools_json)?;
         out.push_str("<|im_start|>system\n");
         out.push_str(
             "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n",
         );
-        out.push_str(&serde_json::to_string(tools)?);
+        out.push_str(&tools_json);
         out.push_str("<|im_end|>\n");
     }
 
     for message in messages {
         match message.role {
-            ChatRole::System => render_plain(&mut out, "system", message),
-            ChatRole::User => render_plain(&mut out, "user", message),
-            ChatRole::Tool => render_plain(&mut out, "tool", message),
+            ChatRole::System => render_plain(&mut out, "system", message)?,
+            ChatRole::User => render_plain(&mut out, "user", message)?,
+            ChatRole::Tool => render_plain(&mut out, "tool", message)?,
             ChatRole::Assistant => render_assistant(&mut out, message)?,
         }
     }
@@ -94,19 +98,22 @@ pub fn render_qwen_chatml(
     Ok(out)
 }
 
-fn render_plain(out: &mut String, role: &str, message: &ChatMessage) {
+fn render_plain(out: &mut String, role: &str, message: &ChatMessage) -> Result<(), TemplateError> {
     out.push_str("<|im_start|>");
     out.push_str(role);
     out.push('\n');
     if let Some(content) = &message.content {
+        reject_reserved_prompt_controls(content)?;
         out.push_str(content);
     }
     out.push_str("<|im_end|>\n");
+    Ok(())
 }
 
 fn render_assistant(out: &mut String, message: &ChatMessage) -> Result<(), TemplateError> {
     out.push_str("<|im_start|>assistant\n");
     if let Some(content) = &message.content {
+        reject_reserved_prompt_controls(content)?;
         out.push_str(content);
     }
     for call in &message.tool_calls {
@@ -114,10 +121,31 @@ fn render_assistant(out: &mut String, message: &ChatMessage) -> Result<(), Templ
             "name": call.function.name,
             "arguments": call.function.arguments,
         });
+        let payload_json = serde_json::to_string(&payload)?;
+        reject_reserved_prompt_controls(&payload_json)?;
         out.push_str("<tool_call>");
-        out.push_str(&serde_json::to_string(&payload)?);
+        out.push_str(&payload_json);
         out.push_str("</tool_call>");
     }
     out.push_str("<|im_end|>\n");
+    Ok(())
+}
+
+fn reject_reserved_prompt_controls(text: &str) -> Result<(), TemplateError> {
+    const RESERVED: [&str; 6] = [
+        "<|im_start|>",
+        "<|im_end|>",
+        "<tool_call>",
+        "</tool_call>",
+        "<think>",
+        "</think>",
+    ];
+    if let Some((_, token)) = RESERVED
+        .iter()
+        .filter_map(|token| text.find(token).map(|index| (index, *token)))
+        .min_by_key(|(index, _)| *index)
+    {
+        return Err(TemplateError::ReservedControlToken(token));
+    }
     Ok(())
 }
