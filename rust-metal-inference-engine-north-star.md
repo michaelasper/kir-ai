@@ -134,6 +134,8 @@ Current commits:
 - `d72c499` - Admin metrics report queue depth and no-progress failures.
 - `56808e9` - Tracker updated with no-progress metrics commit identity.
 - `36acd23` - Admin metrics report request latency summaries and tokens/sec throughput.
+- `a19a5cc` - Tracker updated with latency metrics commit identity.
+- `4f8cddf` - Admin metrics report streaming time-to-first-token summaries.
 
 Current verified state:
 
