@@ -74,6 +74,15 @@ impl SafetensorsIndex {
         self.weight_map.values().collect::<BTreeSet<_>>().len()
     }
 
+    pub fn shard_paths(&self) -> Vec<&str> {
+        self.weight_map
+            .values()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub fn contains(&self, tensor: &str) -> bool {
         self.weight_map.contains_key(tensor)
     }

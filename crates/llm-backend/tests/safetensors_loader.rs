@@ -242,6 +242,54 @@ fn shard_store_materializes_shard_once_and_reuses_it_for_reads() {
 }
 
 #[test]
+fn shard_store_materializes_all_indexed_shards_once() {
+    let root = temp_snapshot_dir("materialized-all-store");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 16 },
+            "weight_map": {
+                "embed.weight": "embed.safetensors",
+                "norm.weight": "norm.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    let embed = tiny_safetensors_bf16("embed.weight", &[2], &[1.0, 2.0]);
+    let norm = tiny_safetensors_bf16("norm.weight", &[2], &[3.0, 4.0]);
+    let expected_bytes = embed.len() + norm.len();
+    std::fs::write(root.join("embed.safetensors"), embed).expect("embed shard");
+    std::fs::write(root.join("norm.safetensors"), norm).expect("norm shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_shard_count(), 0);
+    assert_eq!(store.materialized_shard_count(), 0);
+
+    assert_eq!(
+        store
+            .materialize_all_shards()
+            .expect("all shards materialize"),
+        expected_bytes
+    );
+    assert_eq!(store.cached_shard_count(), 2);
+    assert_eq!(store.materialized_shard_count(), 2);
+    assert_eq!(
+        store
+            .materialize_all_shards()
+            .expect("materialized shards are reused"),
+        expected_bytes
+    );
+    assert_eq!(store.materialized_shard_count(), 2);
+    assert_eq!(
+        store.bf16_tensor_f32("norm.weight").expect("read norm"),
+        vec![3.0, 4.0]
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn shard_store_rejects_unsafe_index_shard_paths_on_open() {
     for shard_path in [
         "../outside.safetensors",

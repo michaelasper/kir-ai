@@ -2391,6 +2391,10 @@ impl SafeTensorShardStore {
         let shard = self.index.shard_for(tensor).ok_or_else(|| {
             TensorLoadError::missing(format!("tensor `{tensor}` not found in safetensors index"))
         })?;
+        self.resolve_shard_path(shard)
+    }
+
+    fn resolve_shard_path(&self, shard: &str) -> Result<PathBuf, TensorLoadError> {
         let root = fs::canonicalize(&self.root).map_err(|err| {
             TensorLoadError::missing(format!(
                 "could not resolve safetensors snapshot root `{}`: {err}",
@@ -2609,8 +2613,24 @@ impl SafeTensorShardStore {
         self.open_tensor_file(tensor)?.materialize()
     }
 
+    pub fn materialize_all_shards(&self) -> Result<usize, TensorLoadError> {
+        let mut total_bytes = 0_usize;
+        for shard in self.index.shard_paths() {
+            let shard_path = self.resolve_shard_path(shard)?;
+            let file = self.open_shard_file(shard_path)?;
+            total_bytes = total_bytes
+                .checked_add(file.materialize()?)
+                .ok_or_else(|| TensorLoadError::integrity("materialized shard bytes overflow"))?;
+        }
+        Ok(total_bytes)
+    }
+
     fn open_tensor_file(&self, tensor: &str) -> Result<Arc<SafeTensorFile>, TensorLoadError> {
         let shard_path = self.tensor_shard_path(tensor)?;
+        self.open_shard_file(shard_path)
+    }
+
+    fn open_shard_file(&self, shard_path: PathBuf) -> Result<Arc<SafeTensorFile>, TensorLoadError> {
         {
             let shards = self.shards.lock().map_err(|err| {
                 TensorLoadError::integrity(format!("shard cache lock poisoned: {err}"))
