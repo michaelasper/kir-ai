@@ -118,6 +118,7 @@ Current commits:
 - `5cfb4b0` - Qwen bounded prefill can run through typed per-layer caches.
 - `c1dbb12` - Shard-backed linear-attention layer decode can step with `LinearAttentionCache`.
 - `79352bc` - Shard-backed full-attention layer decode can step with `LayerKvCache`.
+- `1d111cb` - Qwen token decode can step typed per-layer caches after cached prefill.
 
 Current verified state:
 
@@ -206,14 +207,15 @@ Current verified state:
 - Shard-backed linear-attention single-token decode now has a cache-aware layer path that reads indexed safetensors projections, consumes existing `LinearAttentionCache`, and matches the corresponding token from full cached layer prefill.
 - Shard-backed full-attention single-token decode now has a cache-aware layer path that reads indexed safetensors projections, consumes existing `LayerKvCache`, and matches the corresponding token from full cached layer prefill.
 - Qwen single-token decode now has a cache-aware decoder loop that embeds a new token, steps typed per-layer caches, and matches the corresponding suffix from full cached prefill on a tiny shard-backed fixture.
+- Native Qwen generation now pre-fills the retained prompt window once into typed per-layer caches, samples from the current hidden state, and steps those caches between generated tokens. Omitted native token limits resolve to the configured `max_new_tokens`, and explicit requests only fail closed above that cap.
 
 Known incomplete items:
 
-- The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens; a cache-aware prefill primitive now exists, but the server path is not yet reusing those caches for multi-token decode.
-- Native Qwen multi-token decode is fail-closed until the server path is wired to reuse the cache-aware prefill and token-decode primitives. Non-greedy top-p sampling is wired over full lm-head logits, but token-level stop handling across incremental native decode is not complete.
+- The native Qwen server path currently tokenizes the rendered prompt, keeps a configurable tail window, and reuses typed per-layer caches across bounded CPU multi-token decode. It defaults to 32 retained prompt tokens and still needs longer-context cache paging or sliding-window eviction.
+- Native Qwen multi-token decode is wired through backend caches, but it remains CPU-bound and the remaining Qwen Metal kernels are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
-- Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but native Qwen server multi-token decode is not wired to use them yet.
-- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but native Qwen server multi-token decode is not wired to use them yet.
+- Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
+- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
 - Direct Metal smoke compute and a Qwen RMSNorm kernel are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.

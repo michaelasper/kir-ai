@@ -19,8 +19,9 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    DeterministicBackend, ModelBackend, SafeTensorShardStore, SamplingConfig, qwen_final_norm,
-    qwen_lm_head_logits, qwen_lm_head_top_k, qwen_prefill_sequence,
+    DeterministicBackend, ModelBackend, QwenLayerCache, SafeTensorShardStore, SamplingConfig,
+    qwen_decode_token_with_cache, qwen_final_norm, qwen_layer_caches_for_spec, qwen_lm_head_logits,
+    qwen_lm_head_top_k, qwen_prefill_sequence_with_cache,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -247,7 +248,7 @@ impl NativeQwenBackend {
             .tokenizer
             .encode(&request.prompt, false)
             .map_err(|err| BackendError::Other(err.to_string()))?;
-        let mut context_tokens = prompt_tokens
+        let context_tokens = prompt_tokens
             .iter()
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
@@ -263,20 +264,25 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
+        let mut decode = self.start_decode_session(&context_tokens, requested)?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Other(
+                "native Qwen generation cancelled".to_owned(),
+            ));
+        }
 
-        for _ in 0..requested {
+        for step_idx in 0..requested {
             if cancellation.is_cancelled() {
                 return Err(BackendError::Other(
                     "native Qwen generation cancelled".to_owned(),
                 ));
             }
-            let candidate = self.next_token(&context_tokens, request.sampling)?;
+            let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Other(
                     "native Qwen generation cancelled".to_owned(),
                 ));
             }
-            context_tokens.push(candidate.token_id);
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
                 break;
@@ -284,6 +290,9 @@ impl NativeQwenBackend {
             output_ids.push(u32::try_from(candidate.token_id).map_err(|err| {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?);
+            if step_idx + 1 < requested {
+                decode.step(&self.store, &self.spec, candidate.token_id)?;
+            }
         }
 
         let text = self
@@ -320,7 +329,7 @@ impl NativeQwenBackend {
             .tokenizer
             .encode(&request.prompt, false)
             .map_err(|err| BackendError::Other(err.to_string()))?;
-        let mut context_tokens = prompt_tokens
+        let context_tokens = prompt_tokens
             .iter()
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
@@ -337,16 +346,19 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
+        let mut decode = self.start_decode_session(&context_tokens, requested)?;
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
 
-        for _ in 0..requested {
+        for step_idx in 0..requested {
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            let candidate = self.next_token(&context_tokens, request.sampling)?;
+            let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            context_tokens.push(candidate.token_id);
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
                 break;
@@ -375,6 +387,12 @@ impl NativeQwenBackend {
                     finish_reason: None,
                 },
             )?;
+            if step_idx + 1 < requested {
+                if cancellation.is_cancelled() {
+                    return Ok(());
+                }
+                decode.step(&self.store, &self.spec, candidate.token_id)?;
+            }
         }
 
         if cancellation.is_cancelled() {
@@ -391,18 +409,33 @@ impl NativeQwenBackend {
         )
     }
 
-    fn next_token(
+    fn start_decode_session(
         &self,
         context_tokens: &[usize],
-        sampling: SamplingConfig,
-    ) -> Result<NativeQwenCandidate, BackendError> {
+        max_new_tokens: u32,
+    ) -> Result<NativeQwenDecodeSession, BackendError> {
         let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
+        let prefill_tokens = &context_tokens[start..];
+        let cache_tokens = prefill_tokens
+            .len()
+            .checked_add(max_new_tokens as usize)
+            .ok_or_else(|| BackendError::Other("Qwen cache token capacity overflow".to_owned()))?;
+        let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
         let hidden_states =
-            qwen_prefill_sequence(&self.store, &self.spec, &context_tokens[start..])
+            qwen_prefill_sequence_with_cache(&self.store, &self.spec, prefill_tokens, &mut caches)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
-        let hidden = hidden_states.last().ok_or_else(|| {
+        let hidden = hidden_states.last().cloned().ok_or_else(|| {
             BackendError::Other("Qwen prefill returned no hidden states".to_owned())
         })?;
+        Ok(NativeQwenDecodeSession { hidden, caches })
+    }
+
+    fn next_token_from_hidden(
+        &self,
+        hidden: &[f32],
+        sampling: SamplingConfig,
+    ) -> Result<NativeQwenCandidate, BackendError> {
         let final_norm = qwen_final_norm(
             &self.store,
             hidden,
@@ -455,21 +488,41 @@ impl NativeQwenBackend {
     }
 }
 
+struct NativeQwenDecodeSession {
+    hidden: Vec<f32>,
+    caches: Vec<QwenLayerCache>,
+}
+
+impl NativeQwenDecodeSession {
+    fn hidden(&self) -> &[f32] {
+        &self.hidden
+    }
+
+    fn step(
+        &mut self,
+        store: &SafeTensorShardStore,
+        spec: &QwenModelSpec,
+        token_id: usize,
+    ) -> Result<(), BackendError> {
+        self.hidden = qwen_decode_token_with_cache(store, spec, token_id, &mut self.caches)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+        Ok(())
+    }
+}
+
 fn resolve_native_max_tokens(
     requested: Option<u32>,
-    _configured_max: u32,
+    configured_max: u32,
 ) -> Result<u32, BackendError> {
-    const UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS: u32 = 1;
+    let configured_max = configured_max.max(1);
     match requested {
-        None => Ok(UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS),
+        None => Ok(configured_max),
         Some(0) => Err(BackendError::UnsupportedRequest(
             "max_tokens must be greater than 0".to_owned(),
         )),
-        Some(value) if value > UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS => {
-            Err(BackendError::UnsupportedRequest(format!(
-                "native Qwen multi-token decode requires reusable KV/recurrent cache; requested max_tokens {value}, current uncached limit is {UNCACHED_NATIVE_QWEN_MAX_NEW_TOKENS}"
-            )))
-        }
+        Some(value) if value > configured_max => Err(BackendError::UnsupportedRequest(format!(
+            "requested max_tokens {value} exceeds configured native Qwen limit {configured_max}"
+        ))),
         Some(value) => Ok(value),
     }
 }
@@ -1132,20 +1185,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_max_tokens_defaults_to_single_token_until_decode_cache_exists() {
+    fn native_max_tokens_defaults_to_configured_cache_limit() {
         assert_eq!(
-            resolve_native_max_tokens(None, 4).expect("omitted max tokens uses uncached cap"),
-            1
+            resolve_native_max_tokens(None, 4).expect("omitted max tokens uses configured cap"),
+            4
         );
     }
 
     #[test]
-    fn native_max_tokens_rejects_multi_token_decode_until_cache_exists() {
-        let err =
-            resolve_native_max_tokens(Some(2), 4).expect_err("multi-token decode fails closed");
+    fn native_max_tokens_accepts_multi_token_decode_with_cache() {
+        assert_eq!(
+            resolve_native_max_tokens(Some(2), 4).expect("multi-token decode uses cache"),
+            2
+        );
+    }
+
+    #[test]
+    fn native_max_tokens_rejects_requests_above_configured_limit() {
+        let err = resolve_native_max_tokens(Some(5), 4)
+            .expect_err("request above configured limit fails closed");
 
         assert!(matches!(err, BackendError::UnsupportedRequest(_)));
-        assert!(err.to_string().contains("multi-token"));
+        assert!(err.to_string().contains("configured native Qwen limit"));
     }
 
     #[test]
