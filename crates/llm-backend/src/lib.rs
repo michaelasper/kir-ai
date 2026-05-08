@@ -2204,7 +2204,27 @@ impl SafeTensorShardStore {
         let shard = self.index.shard_for(tensor).ok_or_else(|| {
             TensorLoadError::missing(format!("tensor `{tensor}` not found in safetensors index"))
         })?;
-        Ok(self.root.join(shard))
+        let root = fs::canonicalize(&self.root).map_err(|err| {
+            TensorLoadError::missing(format!(
+                "could not resolve safetensors snapshot root `{}`: {err}",
+                self.root.display()
+            ))
+        })?;
+        let path = root.join(shard);
+        let path = fs::canonicalize(&path).map_err(|err| {
+            TensorLoadError::missing(format!(
+                "could not resolve safetensors shard `{}`: {err}",
+                path.display()
+            ))
+        })?;
+        if !path.starts_with(&root) {
+            return Err(TensorLoadError::integrity(format!(
+                "safetensors shard `{}` escapes snapshot root `{}`",
+                path.display(),
+                root.display()
+            )));
+        }
+        Ok(path)
     }
 
     pub fn tensor_metadata(&self, tensor: &str) -> Result<TensorMetadata, TensorLoadError> {

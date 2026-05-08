@@ -56,6 +56,9 @@ impl SafetensorsIndex {
     pub fn from_json(json: &str) -> Result<Self, ModelSpecError> {
         let raw: RawSafetensorsIndex = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid index JSON: {err}")))?;
+        for shard_path in raw.weight_map.values() {
+            validate_safetensors_shard_path(shard_path)?;
+        }
         let total_size_bytes = raw.metadata.total_size.round() as u64;
         Ok(Self {
             total_size_bytes,
@@ -129,6 +132,22 @@ impl SafetensorsIndex {
             )))
         }
     }
+}
+
+fn validate_safetensors_shard_path(path: &str) -> Result<(), ModelSpecError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.bytes().any(|byte| byte == 0)
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(ModelSpecError::invalid_request(format!(
+            "unsafe safetensors shard path `{path}`"
+        )));
+    }
+    Ok(())
 }
 
 impl QwenModelSpec {

@@ -198,6 +198,67 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
 }
 
 #[test]
+fn shard_store_rejects_unsafe_index_shard_paths_on_open() {
+    for shard_path in [
+        "../outside.safetensors",
+        "/tmp/outside.safetensors",
+        "nested\\outside.safetensors",
+    ] {
+        let root = temp_snapshot_dir(&format!("unsafe-index-{}", shard_path.len()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("snapshot dir");
+        std::fs::write(
+            root.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": 2 },
+                "weight_map": { "embed.weight": shard_path }
+            })
+            .to_string(),
+        )
+        .expect("index");
+
+        let err = SafeTensorShardStore::open(&root).expect_err("unsafe index fails closed");
+
+        assert_eq!(err.code(), "model_integrity_failed");
+        std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn shard_store_rejects_symlink_that_escapes_snapshot_root() {
+    let root = temp_snapshot_dir("symlink-escape");
+    let outside = temp_safetensors_path("symlink-outside");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_file(&outside).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 2 },
+            "weight_map": { "embed.weight": "linked.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        &outside,
+        tiny_safetensors_bf16("embed.weight", &[1], &[1.0]),
+    )
+    .expect("outside shard");
+    std::os::unix::fs::symlink(&outside, root.join("linked.safetensors")).expect("escape symlink");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let err = store
+        .bf16_tensor_f32("embed.weight")
+        .expect_err("escaped symlink fails closed");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_file(outside).ok();
+}
+
+#[test]
 fn qwen_embedding_probe_reads_and_normalizes_token() {
     let root = temp_snapshot_dir("qwen-embed");
     std::fs::create_dir_all(&root).expect("snapshot dir");

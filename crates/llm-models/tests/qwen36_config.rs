@@ -74,3 +74,26 @@ fn validates_official_qwen36_safetensors_index_against_spec() {
         .validate_qwen_text_weights(&spec)
         .expect("official qwen index satisfies text loader requirements");
 }
+
+#[test]
+fn rejects_unsafe_safetensors_index_shard_paths() {
+    for shard_path in [
+        "../outside.safetensors",
+        "/tmp/outside.safetensors",
+        "nested\\outside.safetensors",
+        "nested//outside.safetensors",
+        "bad\u{0}path.safetensors",
+        "",
+    ] {
+        let err = SafetensorsIndex::from_json(
+            &serde_json::json!({
+                "metadata": { "total_size": 1 },
+                "weight_map": { "tensor.weight": shard_path }
+            })
+            .to_string(),
+        )
+        .expect_err("unsafe shard path fails closed");
+
+        assert_eq!(err.code(), "invalid_request");
+    }
+}
