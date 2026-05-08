@@ -408,6 +408,18 @@ impl<T: Clone> Bf16MatrixBufferCache<T> {
         self.used_bytes
     }
 
+    fn resident_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    fn resident_buffers(&self) -> u64 {
+        self.entries.len() as u64
+    }
+
+    fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
     fn next_access(&mut self) -> u64 {
         let access = self.next_access;
         self.next_access = self.next_access.saturating_add(1);
@@ -434,6 +446,7 @@ impl std::fmt::Display for NativeQwenMetalBufferError {
 
 impl NativeQwenMetalState {
     fn new(device: llm_metal::MetalDevice, weight_cache_bytes: u64) -> Self {
+        native_qwen_metal_metrics().record_bf16_matrix_cache_residency(0, 0, weight_cache_bytes);
         Self {
             device,
             bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(weight_cache_bytes)),
@@ -490,6 +503,11 @@ impl NativeQwenMetalState {
         if insert.evicted_count > 0 {
             metrics.record_bf16_matrix_cache_eviction(insert.evicted_count, insert.evicted_bytes);
         }
+        metrics.record_bf16_matrix_cache_residency(
+            matrices.resident_bytes(),
+            matrices.resident_buffers(),
+            matrices.max_bytes(),
+        );
         Ok(buffer)
     }
 }
@@ -509,6 +527,9 @@ struct MetalBf16MatrixCacheCounters {
     bytes_uploaded: u64,
     evictions: u64,
     bytes_evicted: u64,
+    resident_bytes: u64,
+    resident_buffers: u64,
+    budget_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -595,6 +616,21 @@ impl MetalBackendMetrics {
         cache.bytes_evicted += byte_len;
     }
 
+    fn record_bf16_matrix_cache_residency(
+        &self,
+        resident_bytes: u64,
+        resident_buffers: u64,
+        budget_bytes: u64,
+    ) {
+        let mut cache = self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        cache.resident_bytes = resident_bytes;
+        cache.resident_buffers = resident_buffers;
+        cache.budget_bytes = budget_bytes;
+    }
+
     fn snapshot(&self) -> Value {
         let counters = self
             .counters
@@ -627,6 +663,9 @@ impl MetalBackendMetrics {
                 "bytes_uploaded": bf16_matrix_cache.bytes_uploaded,
                 "evictions": bf16_matrix_cache.evictions,
                 "bytes_evicted": bf16_matrix_cache.bytes_evicted,
+                "resident_bytes": bf16_matrix_cache.resident_bytes,
+                "resident_buffers": bf16_matrix_cache.resident_buffers,
+                "budget_bytes": bf16_matrix_cache.budget_bytes,
             }
         })
     }
@@ -2874,6 +2913,7 @@ mod tests {
         metrics.record_bf16_matrix_cache_miss();
         metrics.record_bf16_matrix_cache_upload(12);
         metrics.record_bf16_matrix_cache_eviction(2, 8);
+        metrics.record_bf16_matrix_cache_residency(10, 3, 16);
         metrics.record_bf16_matrix_cache_hit();
 
         let snapshot = metrics.snapshot();
@@ -2884,6 +2924,9 @@ mod tests {
         assert_eq!(cache["bytes_uploaded"], 12);
         assert_eq!(cache["evictions"], 2);
         assert_eq!(cache["bytes_evicted"], 8);
+        assert_eq!(cache["resident_bytes"], 10);
+        assert_eq!(cache["resident_buffers"], 3);
+        assert_eq!(cache["budget_bytes"], 16);
     }
 
     #[test]
