@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, State, rejection::JsonRejection},
     http::StatusCode,
     response::{
         IntoResponse, Response,
@@ -11,7 +11,7 @@ use axum::{
 };
 use futures::stream;
 use llm_api::{
-    ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
+    ApiError, ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
@@ -323,8 +323,9 @@ async fn admin_metrics(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn chat_completions(
     State(state): State<AppState>,
-    Json(request): Json<ChatCompletionRequest>,
+    request: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
+    let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
     if request.stream {
         let response = match state.runtime.chat_stream(request).await {
@@ -360,8 +361,9 @@ async fn chat_completions(
 
 async fn completions(
     State(state): State<AppState>,
-    Json(request): Json<CompletionRequest>,
+    request: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
+    let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
     if request.stream {
         let response = match state.runtime.completion_stream(request).await {
@@ -412,6 +414,22 @@ fn record_failure_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_failure();
+}
+
+fn parse_json_request<T>(
+    request: Result<Json<T>, JsonRejection>,
+    state: &AppState,
+) -> Result<T, EngineError> {
+    match request {
+        Ok(Json(request)) => Ok(request),
+        Err(err) => {
+            record_failure_metrics(state);
+            Err(RuntimeError::Api(ApiError::invalid_request(format!(
+                "invalid JSON request body: {err}"
+            )))
+            .into())
+        }
+    }
 }
 
 #[derive(Debug)]
