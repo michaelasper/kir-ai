@@ -70,6 +70,7 @@ Current commits:
 - `358196e` - Backends now expose model metadata, and admin model status reports artifact identity when native snapshots are serving.
 - `3991363` - Legacy text completions now fail closed for unsupported non-greedy `temperature` and `top_p` sampling controls.
 - `3dc2083` - Chat and text completions now reject unsupported `n` values instead of silently ignoring multiple-choice requests.
+- `1b76a55` - Chat requests now support `max_completion_tokens` as the OpenAI token-limit alias and reject conflicting token limit fields.
 
 Current verified state:
 
@@ -104,6 +105,7 @@ Current verified state:
 - Backend model metadata is now part of the Rust backend contract. Native Qwen serving reads `llm-engine-manifest.json` at startup and surfaces repo ID, resolved commit, profile, family, loader, quantization, snapshot path, and manifest digest through admin model status.
 - Legacy `/v1/completions` sampling controls now match chat validation: explicit greedy `temperature: 0` and `top_p: 1` are accepted, while unsupported non-greedy values return `unsupported_capability`.
 - Chat and text completions accept `n: 1`, reject `n: 0` as `invalid_request`, and reject multiple-choice requests as `unsupported_capability` until multi-choice generation is implemented.
+- Chat completions accept `max_completion_tokens` as an alias for `max_tokens`, reject zero values, and reject conflicting `max_tokens`/`max_completion_tokens` values before backend execution.
 
 Known incomplete items:
 
