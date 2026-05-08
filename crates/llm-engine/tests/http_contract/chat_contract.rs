@@ -66,7 +66,62 @@ async fn chat_completions_returns_openai_shape() {
         body["choices"][0]["message"]["content"]
             .as_str()
             .unwrap()
+            .to_ascii_lowercase()
             .contains("rust")
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_default_backend_answers_adversarial_multi_turn_facts() {
+    let first = default_chat_content(json!([
+        {
+            "role": "user",
+            "content": "Use codename Saffron-42 and build color teal. What codename and color should you remember?"
+        }
+    ]))
+    .await;
+    assert!(first.contains("Saffron-42"));
+    assert!(first.to_ascii_lowercase().contains("teal"));
+    assert!(!first.contains("hello from rust native backend"));
+
+    let critique = default_chat_content(json!([
+        {
+            "role": "user",
+            "content": "Use codename Saffron-42 and build color teal. What codename and color should you remember?"
+        },
+        {"role": "assistant", "content": first.clone()},
+        {
+            "role": "user",
+            "content": "Critique your prior answer, mention Saffron-42, and do not repeat the same sentence."
+        }
+    ]))
+    .await;
+    assert_ne!(critique, first);
+    assert!(critique.contains("Saffron-42"));
+    assert!(critique.to_ascii_lowercase().contains("feedback"));
+
+    let rewrite = default_chat_content(json!([
+        {
+            "role": "user",
+            "content": "Use codename Saffron-42 and build color teal. What codename and color should you remember?"
+        },
+        {"role": "assistant", "content": first.clone()},
+        {
+            "role": "user",
+            "content": "Critique your prior answer, mention Saffron-42, and do not repeat the same sentence."
+        },
+        {"role": "assistant", "content": critique.clone()},
+        {"role": "user", "content": "Rewrite the answer as two bullets and include teal."}
+    ]))
+    .await;
+    assert_ne!(rewrite, critique);
+    assert!(rewrite.to_ascii_lowercase().contains("teal"));
+    assert!(
+        rewrite
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .count()
+            >= 2
     );
 }
 
@@ -747,7 +802,8 @@ async fn chat_completions_streams_openai_sse_chunks() {
     assert!(body.contains("data: {\"id\":\"chatcmpl-"));
     assert!(body.contains("\"object\":\"chat.completion.chunk\""));
     assert!(body.contains("\"delta\":{\"role\":\"assistant\"}"));
-    assert!(body.contains("\"content\":\"hello from rust native backend\""));
+    assert!(body.to_ascii_lowercase().contains("rust"));
+    assert!(!body.contains("hello from rust native backend"));
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 

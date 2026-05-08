@@ -437,8 +437,11 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["failed_requests"], 0);
     assert_eq!(body["streamed_requests"], 0);
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
-    assert_eq!(body["tokens"]["completion_tokens"], 5);
-    assert_eq!(body["tokens"]["total_tokens"], 6);
+    let completion_tokens = body["tokens"]["completion_tokens"]
+        .as_u64()
+        .expect("completion tokens are numeric");
+    assert!(completion_tokens > 0);
+    assert_eq!(body["tokens"]["total_tokens"], completion_tokens + 1);
     assert_eq!(body["request_latency_ms"]["count"], 1);
     assert!(
         body["request_latency_ms"]["max"]
@@ -543,7 +546,8 @@ async fn admin_metrics_report_stream_time_to_first_token() {
         .expect("chat stream response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_text(response.into_body()).await;
-    assert!(body.contains("\"content\":\"hello from rust native backend\""));
+    assert!(body.to_ascii_lowercase().contains("rust"));
+    assert!(!body.contains("hello from rust native backend"));
 
     let response = app
         .oneshot(

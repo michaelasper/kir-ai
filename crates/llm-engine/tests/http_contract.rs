@@ -600,6 +600,33 @@ async fn protocol_chat_content(messages: Value) -> String {
         .to_owned()
 }
 
+async fn default_chat_content(messages: Value) -> String {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": messages
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    body["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("assistant content")
+        .to_owned()
+}
+
 fn scripted_chat_response(prompt: &str) -> String {
     let current = last_user_message(prompt).to_ascii_lowercase();
     let prompt = prompt.to_ascii_lowercase();

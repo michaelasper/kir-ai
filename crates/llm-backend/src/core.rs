@@ -249,6 +249,7 @@ pub struct DeterministicBackend {
     text: String,
     required_tool_protocol: bool,
     json_object_protocol: bool,
+    adaptive_chat_protocol: bool,
 }
 
 impl DeterministicBackend {
@@ -258,6 +259,7 @@ impl DeterministicBackend {
             text: text.into(),
             required_tool_protocol: false,
             json_object_protocol: false,
+            adaptive_chat_protocol: false,
         }
     }
 
@@ -268,6 +270,11 @@ impl DeterministicBackend {
 
     pub fn with_json_object_protocol(mut self) -> Self {
         self.json_object_protocol = true;
+        self
+    }
+
+    pub fn with_adaptive_chat_protocol(mut self) -> Self {
+        self.adaptive_chat_protocol = true;
         self
     }
 }
@@ -314,6 +321,11 @@ impl ModelBackend for DeterministicBackend {
                 .to_string(),
                 FinishReason::Stop,
             )
+        } else if self.adaptive_chat_protocol && request.conversation_mode {
+            (
+                deterministic_chat_response(&request.prompt, &self.text),
+                FinishReason::Stop,
+            )
         } else {
             (self.text.clone(), FinishReason::Stop)
         };
@@ -358,6 +370,247 @@ fn deterministic_tool_call(
         tool.function.name.clone(),
         deterministic_tool_arguments(prompt, tool),
     ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedChatMessage {
+    role: String,
+    content: String,
+}
+
+fn deterministic_chat_response(prompt: &str, fallback: &str) -> String {
+    let messages = rendered_chat_messages(prompt);
+    let Some(last_user) = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.as_str())
+    else {
+        return fallback.to_owned();
+    };
+    let last_user_lower = last_user.to_ascii_lowercase();
+    let user_turns = messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .count()
+        .max(1);
+    let current_terms = deterministic_chat_terms(last_user);
+    let transcript_terms = deterministic_transcript_terms(&messages);
+    let focus = joined_chat_terms(
+        current_terms
+            .iter()
+            .chain(transcript_terms.iter())
+            .map(String::as_str),
+        8,
+    );
+    let request = compact_chat_text(last_user, 180);
+    let previous_assistant = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
+    let mut response = if asks_for_memory(&last_user_lower)
+        || asks_direct_question(&last_user_lower)
+    {
+        format!(
+            "Rust deterministic chat answer {user_turns}: {focus}. I am carrying those details forward from the transcript."
+        )
+    } else if asks_for_bullets(&last_user_lower) {
+        format!(
+            "- Kept the active request: {request}\n- Carried forward the transcript details: {focus}"
+        )
+    } else if asks_for_critique(&last_user_lower) {
+        format!(
+            "Feedback: the previous answer should be more specific about {focus}; it should answer the latest request directly and avoid repeating the same wording."
+        )
+    } else if asks_for_rewrite(&last_user_lower) {
+        format!(
+            "Revised response {user_turns}: {focus}. This version follows the new instruction: {request}."
+        )
+    } else {
+        format!(
+            "Rust deterministic chat turn {user_turns}: I will answer the request using these details: {focus}. Latest request: {request}."
+        )
+    };
+    if response == previous_assistant {
+        response.push_str(&format!(" Turn {user_turns} adds: {request}."));
+    }
+    response
+}
+
+fn rendered_chat_messages(prompt: &str) -> Vec<RenderedChatMessage> {
+    const START: &str = "<|im_start|>";
+    const END: &str = "<|im_end|>";
+    let mut messages = Vec::new();
+    let mut rest = prompt;
+    while let Some(start) = rest.find(START) {
+        rest = &rest[start + START.len()..];
+        let Some((role, body)) = rest.split_once('\n') else {
+            break;
+        };
+        let Some(end) = body.find(END) else {
+            break;
+        };
+        let role = role.trim();
+        let content = body[..end].trim();
+        if !role.is_empty() && !content.is_empty() {
+            messages.push(RenderedChatMessage {
+                role: role.to_owned(),
+                content: content.to_owned(),
+            });
+        }
+        rest = &body[end + END.len()..];
+    }
+    messages
+}
+
+fn deterministic_transcript_terms(messages: &[RenderedChatMessage]) -> Vec<String> {
+    let mut terms = Vec::new();
+    for message in messages {
+        if message.role == "system" {
+            continue;
+        }
+        for term in deterministic_chat_terms(&message.content) {
+            push_chat_term(&mut terms, term);
+        }
+    }
+    terms
+}
+
+fn deterministic_chat_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for phrase in double_quoted_phrases(text) {
+        push_chat_term(&mut terms, phrase);
+    }
+    for token in argument_tokens(text) {
+        let lower = token.to_ascii_lowercase();
+        if is_chat_stop_word(&lower) {
+            continue;
+        }
+        if token.len() < 3 && !token.chars().any(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        push_chat_term(&mut terms, token);
+    }
+    terms
+}
+
+fn double_quoted_phrases(text: &str) -> Vec<String> {
+    let mut phrases = Vec::new();
+    let mut pieces = text.split('"');
+    let _ = pieces.next();
+    while let Some(phrase) = pieces.next() {
+        let phrase = phrase.trim();
+        if !phrase.is_empty() {
+            phrases.push(phrase.to_owned());
+        }
+        let _ = pieces.next();
+    }
+    phrases
+}
+
+fn joined_chat_terms<'a>(terms: impl Iterator<Item = &'a str>, limit: usize) -> String {
+    let mut selected = Vec::new();
+    for term in terms {
+        push_chat_term(&mut selected, term.to_owned());
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        "the latest user request".to_owned()
+    } else {
+        selected.join(", ")
+    }
+}
+
+fn push_chat_term(terms: &mut Vec<String>, term: String) {
+    let term = term.trim_matches(|ch: char| ch == ',' || ch == ';' || ch == ':');
+    if !term.is_empty() && !terms.iter().any(|existing| existing == term) {
+        terms.push(term.to_owned());
+    }
+}
+
+fn compact_chat_text(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut compact = normalized.chars().take(max_chars).collect::<String>();
+    compact = compact.trim_end().to_owned();
+    compact.push_str("...");
+    compact
+}
+
+fn asks_for_memory(text: &str) -> bool {
+    text.contains("remember")
+        || text.contains("memory check")
+        || text.contains("carry forward")
+        || text.contains("what did")
+        || text.contains("what is")
+}
+
+fn asks_direct_question(text: &str) -> bool {
+    text.trim_end().ends_with('?')
+}
+
+fn asks_for_bullets(text: &str) -> bool {
+    text.contains("bullet") || text.contains("list")
+}
+
+fn asks_for_critique(text: &str) -> bool {
+    text.contains("critique") || text.contains("feedback")
+}
+
+fn asks_for_rewrite(text: &str) -> bool {
+    text.contains("rewrite")
+        || text.contains("revise")
+        || text.contains("reword")
+        || text.contains("improve")
+}
+
+fn is_chat_stop_word(term: &str) -> bool {
+    matches!(
+        term,
+        "about"
+            | "across"
+            | "again"
+            | "answer"
+            | "assistant"
+            | "carry"
+            | "content"
+            | "could"
+            | "directly"
+            | "does"
+            | "each"
+            | "exact"
+            | "forward"
+            | "from"
+            | "into"
+            | "latest"
+            | "mention"
+            | "message"
+            | "please"
+            | "previous"
+            | "request"
+            | "response"
+            | "same"
+            | "should"
+            | "that"
+            | "these"
+            | "this"
+            | "turn"
+            | "using"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "while"
+            | "with"
+            | "would"
+            | "your"
+    )
 }
 
 fn rendered_tool_definitions(prompt: &str) -> Option<Vec<ToolDefinition>> {

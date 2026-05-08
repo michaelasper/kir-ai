@@ -297,6 +297,7 @@ fn default_backend() -> DeterministicBackend {
     DeterministicBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
         .with_json_object_protocol()
+        .with_adaptive_chat_protocol()
 }
 
 fn default_model_home() -> PathBuf {
