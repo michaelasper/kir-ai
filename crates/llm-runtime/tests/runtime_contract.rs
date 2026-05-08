@@ -722,6 +722,46 @@ async fn runtime_returns_text_stream_chunks() {
 }
 
 #[tokio::test]
+async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming chat starts");
+
+    let mut emitted_content = String::new();
+    let mut events = stream.into_events();
+    let err = loop {
+        match events.next().await.expect("stream yields validation error") {
+            Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
+                for choice in chunk.choices {
+                    if let Some(content) = choice.delta.content {
+                        emitted_content.push_str(&content);
+                    }
+                }
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                panic!("invalid tool markup should not complete successfully");
+            }
+            Err(err) => break err,
+        }
+    };
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(!emitted_content.contains("<tool_call>"));
+    assert!(!emitted_content.contains("</tool_call>"));
+}
+
+#[tokio::test]
 async fn runtime_appends_chat_stream_usage_when_requested() {
     let backend = DeterministicBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);

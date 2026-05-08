@@ -603,6 +603,7 @@ fn streaming_chat_stream<'a>(
         let mut prompt_tokens = 0;
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
+        let mut stopped_by_sequence = false;
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
@@ -624,9 +625,11 @@ fn streaming_chat_stream<'a>(
                     }
                     emitted_len = stop_at;
                     finish_reason = llm_api::FinishReason::Stop;
+                    stopped_by_sequence = true;
                     break;
                 }
-                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len);
+                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
+                    .min(safe_tool_markup_emit_len(&raw_text));
                 if safe_len > emitted_len {
                     yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                         &completion,
@@ -645,20 +648,27 @@ fn streaming_chat_stream<'a>(
                 break;
             }
         }
-        if finish_reason != llm_api::FinishReason::Stop && emitted_len < raw_text.len() {
+        let visible_len = if stopped_by_sequence {
+            emitted_len
+        } else {
+            raw_text.len()
+        };
+        if !stopped_by_sequence
+            && emitted_len < visible_len
+            && !contains_tool_call_start(&raw_text[..visible_len])
+        {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                 &completion,
                 ChatCompletionDelta {
-                    content: Some(raw_text[emitted_len..].to_owned()),
+                    content: Some(raw_text[emitted_len..visible_len].to_owned()),
                     ..ChatCompletionDelta::default()
                 },
                 None,
                 None,
             ));
-            emitted_len = raw_text.len();
         }
 
-        let visible_text = &raw_text[..emitted_len];
+        let visible_text = &raw_text[..visible_len];
         let parsed = QwenParser.parse_complete(visible_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
@@ -837,6 +847,23 @@ fn safe_stream_emit_len(content: &str, max_stop_len: usize) -> usize {
         return content.len();
     }
     floor_char_boundary(content, content.len().saturating_sub(max_stop_len - 1))
+}
+
+const TOOL_CALL_START_MARKER: &str = "<tool_call>";
+
+fn safe_tool_markup_emit_len(content: &str) -> usize {
+    if let Some(start) = content.find(TOOL_CALL_START_MARKER) {
+        return start;
+    }
+    let withheld_prefix_len = (1..TOOL_CALL_START_MARKER.len())
+        .rev()
+        .find(|prefix_len| content.ends_with(&TOOL_CALL_START_MARKER[..*prefix_len]))
+        .unwrap_or(0);
+    content.len() - withheld_prefix_len
+}
+
+fn contains_tool_call_start(content: &str) -> bool {
+    content.contains(TOOL_CALL_START_MARKER)
 }
 
 fn floor_char_boundary(content: &str, mut index: usize) -> usize {

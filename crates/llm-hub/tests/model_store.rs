@@ -142,6 +142,43 @@ async fn verifies_existing_snapshot_and_refreshes_manifest_profile() {
 }
 
 #[tokio::test]
+async fn verifying_existing_snapshot_twice_preserves_manifest_digest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+
+    let first = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("first verification succeeds")
+        .expect("snapshot exists");
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    let second = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("second verification succeeds")
+        .expect("snapshot exists");
+
+    assert_eq!(first.manifest_digest, second.manifest_digest);
+    assert_eq!(first.manifest.created_at, second.manifest.created_at);
+}
+
+#[tokio::test]
 async fn lists_promoted_snapshots_from_model_store() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());

@@ -569,7 +569,7 @@ impl ModelStore {
         {
             remove_staging_dir(&staging).await?;
             self.verify_snapshot_files(plan, &snapshot).await?;
-            return self.write_snapshot_manifest(plan, snapshot).await;
+            return self.reuse_or_write_snapshot_manifest(plan, snapshot).await;
         }
         let manifest = SnapshotManifest::from_plan(plan, snapshot.display().to_string());
         let manifest_digest = manifest.digest();
@@ -605,7 +605,10 @@ impl ModelStore {
             return Ok(None);
         }
         self.verify_snapshot_files(plan, &snapshot).await?;
-        Ok(Some(self.write_snapshot_manifest(plan, snapshot).await?))
+        Ok(Some(
+            self.reuse_or_write_snapshot_manifest(plan, snapshot)
+                .await?,
+        ))
     }
 
     pub async fn pull_plan(
@@ -618,20 +621,28 @@ impl ModelStore {
             return Ok(snapshot);
         }
         let staging = self.create_staging_dir(plan).await?;
-        for file in &plan.files_to_download {
-            client
-                .download_file_to(HubDownloadFileRequest {
-                    repo_id: &plan.repo_id,
-                    resolved_commit: &plan.resolved_commit,
-                    path: &file.path,
-                    destination: &staging.join(&file.path),
-                    expected_size: file.size,
-                    expected_sha256: file.sha256.as_deref(),
-                    token,
-                })
-                .await?;
+        let result = async {
+            for file in &plan.files_to_download {
+                client
+                    .download_file_to(HubDownloadFileRequest {
+                        repo_id: &plan.repo_id,
+                        resolved_commit: &plan.resolved_commit,
+                        path: &file.path,
+                        destination: &staging.join(&file.path),
+                        expected_size: file.size,
+                        expected_sha256: file.sha256.as_deref(),
+                        token,
+                    })
+                    .await?;
+            }
+            self.promote_staging(plan, staging.clone()).await
         }
-        self.promote_staging(plan, staging).await
+        .await;
+        if let Err(err) = result {
+            let _ = remove_staging_dir(&staging).await;
+            return Err(err);
+        }
+        result
     }
 
     pub async fn list_snapshots(&self) -> Result<Vec<PromotedSnapshot>, HubError> {
@@ -805,6 +816,24 @@ impl ModelStore {
             manifest,
             manifest_digest,
         })
+    }
+
+    async fn reuse_or_write_snapshot_manifest(
+        &self,
+        plan: &DownloadPlan,
+        snapshot: PathBuf,
+    ) -> Result<PromotedSnapshot, HubError> {
+        let manifest_path = snapshot.join("llm-engine-manifest.json");
+        if tokio::fs::try_exists(&manifest_path)
+            .await
+            .map_err(HubError::io)?
+        {
+            let existing = read_promoted_snapshot(snapshot.clone()).await?;
+            if manifest_matches_plan(&existing.manifest, plan, &snapshot) {
+                return Ok(existing);
+            }
+        }
+        self.write_snapshot_manifest(plan, snapshot).await
     }
 
     fn repo_root(&self, repo_id: &HubRepoId) -> PathBuf {
@@ -998,6 +1027,16 @@ fn snapshot_dir_name(plan: &DownloadPlan) -> String {
         name.push_str(".metadata-only");
     }
     name
+}
+
+fn manifest_matches_plan(
+    manifest: &SnapshotManifest,
+    plan: &DownloadPlan,
+    snapshot: &Path,
+) -> bool {
+    let mut expected = SnapshotManifest::from_plan(plan, snapshot.display().to_string());
+    expected.created_at = manifest.created_at;
+    manifest == &expected
 }
 
 fn safe_path_component(value: &str) -> String {

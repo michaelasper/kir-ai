@@ -1,7 +1,7 @@
 # HTTP API Reference
 
-`llm-engine` exposes a small OpenAI-compatible HTTP surface plus read-only admin
-model status endpoints.
+`llm-engine` exposes a small OpenAI-compatible HTTP surface plus admin endpoints
+for model status, metrics, snapshot verification, planning, and pulls.
 
 Base URL in examples:
 
@@ -17,8 +17,16 @@ http://127.0.0.1:3000
 | `GET` | `/v1/models` | OpenAI-compatible model list. |
 | `GET` | `/admin/models` | Read-only status for served model aliases. |
 | `GET` | `/admin/models/{alias}` | Read-only status for one served model alias. |
+| `GET` | `/admin/metrics` | Aggregate inference counters and token totals. |
+| `POST` | `/admin/models/{alias}/verify` | Verify the served snapshot from its manifest. |
+| `POST` | `/admin/models/{alias}/plan` | Build a download plan for the served model alias. |
+| `POST` | `/admin/models/{alias}/pull` | Pull and promote a snapshot into the configured model store. |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions. |
 | `POST` | `/v1/completions` | OpenAI-compatible legacy text completions. |
+
+Admin routes are local operational controls. Use `--admin-token` or
+`LLM_ENGINE_ADMIN_TOKEN` to require `Authorization: Bearer <token>`; non-loopback
+serving refuses to start unless an admin token is configured.
 
 ## `GET /health`
 
@@ -87,6 +95,28 @@ Response for a loaded alias:
 
 Unknown aliases return `404` with `model_not_found`.
 
+## `GET /admin/metrics`
+
+Returns aggregate request, stream, failure, prompt-token, completion-token, and
+total-token counters for the running process.
+
+## `POST /admin/models/{alias}/verify`
+
+Verifies the currently served snapshot against its `llm-engine-manifest.json`
+and returns verified file and byte counts. This endpoint requires the served
+backend to expose snapshot metadata.
+
+## `POST /admin/models/{alias}/plan`
+
+Builds a Hugging Face download plan for the served model alias using the
+configured model profile and hub endpoint. This does not mutate the model store.
+
+## `POST /admin/models/{alias}/pull`
+
+Downloads, verifies, and promotes a snapshot through the configured model store.
+This is a mutating admin operation and should be exposed only behind the admin
+Bearer token.
+
 ## `POST /v1/chat/completions`
 
 Request fields:
@@ -100,8 +130,8 @@ Request fields:
 | `response_format` | object | no | `{"type":"text"}` or `{"type":"json_object"}`. `json_schema` is rejected. |
 | `stream` | boolean | no | Defaults to `false`. |
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
-| `temperature` | number | no | Must be absent or `0`. |
-| `top_p` | number | no | Must be absent or `1`. |
+| `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
+| `top_p` | number | no | Must be finite and in `(0, 1]`. |
 | `max_tokens` | integer | no | Runtime default is `4096`; native backend may cap lower with `--max-new-tokens`. Must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 
@@ -245,8 +275,9 @@ SSE chunks use `data:` lines. The stream emits:
 4. An optional usage-only chunk when `include_usage` is true.
 5. Exactly one `data: [DONE]`.
 
-Streaming is response-shape streaming. Backend generation completes before the
-current runtime assembles chunks.
+Streaming is response-shape streaming. Text paths can forward backend chunks
+incrementally; tool-call and JSON-object validation paths may buffer before
+emitting deltas to preserve fail-closed semantics.
 
 ## `POST /v1/completions`
 
@@ -258,6 +289,8 @@ Request fields:
 | `prompt` | string | yes | Must not be empty. |
 | `stream` | boolean | no | Defaults to `false`. |
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
+| `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
+| `top_p` | number | no | Must be finite and in `(0, 1]`. |
 | `max_tokens` | integer | no | Runtime default is `4096`; must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 

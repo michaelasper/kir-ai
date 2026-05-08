@@ -123,6 +123,7 @@ Current commits:
 - `2e7c802` - Metal includes a row-major `f32` matvec kernel.
 - `86f64ff` - Metal includes a row-major BF16-weight matvec kernel.
 - `60d5328` - Safetensors exposes raw BF16 tensor ranges for acceleration paths.
+- `a316fbb` - Metal includes a batched BF16-weight matvec kernel.
 
 Current verified state:
 
@@ -204,6 +205,10 @@ Current verified state:
 - `llm-metal` now includes a row-major `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - `llm-metal` now includes a row-major BF16-weight to `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - `llm-metal` now includes a batched row-major BF16-weight to `f32` matvec Metal kernel with input-major output coverage against the CPU reference.
+- Unbuffered chat streams now withhold Qwen `<tool_call>` marker spans from content deltas and validate the complete assistant message before returning terminal stream events.
+- Failed model pulls now clean their unique staging directory before returning the original download or integrity error.
+- Existing snapshot verification now reuses a matching manifest instead of rewriting timestamp-only metadata, keeping no-op manifest digests stable.
+- Public docs now describe supported temperature/top-p sampling controls and the full admin endpoint surface, including mutating model-store operations and admin Bearer-token expectations.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.

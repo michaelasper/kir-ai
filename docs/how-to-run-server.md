@@ -93,8 +93,9 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
   }' | jq
 ```
 
-The request `model` must match `--model-id`. Non-greedy sampling is not
-implemented, so omit `temperature` and `top_p` or use exactly `0` and `1`.
+The request `model` must match `--model-id`. `temperature: 0` selects greedy
+decode. Non-greedy native Qwen sampling accepts finite non-negative
+`temperature` and `top_p` in `(0, 1]`.
 
 ## Call Text Completions
 
@@ -139,7 +140,14 @@ curl -s http://127.0.0.1:3000/admin/models | jq
 curl -s http://127.0.0.1:3000/admin/models/local-qwen36 | jq
 ```
 
-The admin model status is read-only and reports the currently served alias.
+`GET /admin/models` and `GET /admin/models/{alias}` are read-only status
+endpoints. The `/admin/*` surface also includes metrics, snapshot verification,
+download planning, and snapshot pulls; `/admin/models/{alias}/pull` mutates the
+configured model store.
+
+Use `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN` to require
+`Authorization: Bearer <token>` on admin routes. The server refuses non-loopback
+binds unless an admin token is configured.
 
 ## Stop The Server
 

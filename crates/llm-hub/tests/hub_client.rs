@@ -70,6 +70,27 @@ async fn pull_plan_returns_network_error_when_download_body_stalls() {
     assert_eq!(err.code(), "model_download_interrupted");
     assert!(err.to_string().contains("stalled"));
     assert!(started.elapsed() < Duration::from_secs(2));
+    let staging_root = temp
+        .path()
+        .join("huggingface")
+        .join("models--Qwen--Qwen3.6-35B-A3B")
+        .join("staging");
+    if tokio::fs::try_exists(&staging_root)
+        .await
+        .expect("check staging root")
+    {
+        let mut entries = tokio::fs::read_dir(&staging_root)
+            .await
+            .expect("read staging root");
+        assert!(
+            entries
+                .next_entry()
+                .await
+                .expect("read staging entry")
+                .is_none(),
+            "failed pull should remove unique staging directories"
+        );
+    }
     server.join().expect("server exits");
 }
 

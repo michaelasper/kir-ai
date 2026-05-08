@@ -102,9 +102,11 @@ The north-star product direction and implementation tracker live in
 - Qwen3.5/Qwen3.6 MoE text loading is the only native model-family path.
 - The server does not execute `generation_config.json` or the downloaded
   `chat_template.jinja`; chat prompts use the Rust Qwen ChatML renderer.
-- Streaming responses are OpenAI-shaped SSE, but chunks are assembled after a
-  backend generation rather than emitted token by token during decode.
-- Non-greedy sampling is rejected. Use `temperature: 0` and `top_p: 1`, or omit
-  those fields.
-- Metal exists as a smoke-tested vector-add crate; Qwen inference kernels are
-  not wired to Metal yet.
+- Streaming responses are OpenAI-shaped SSE. Text paths can forward backend
+  chunks incrementally; tool-call and JSON-object validation paths may buffer to
+  preserve fail-closed response semantics.
+- Native Qwen accepts `temperature` and `top_p` sampling controls. Use
+  `temperature: 0` for greedy decode, or finite non-negative `temperature` with
+  `top_p` in `(0, 1]` for top-p sampling.
+- Metal has smoke-tested vector add, RMSNorm, and row-major matvec kernels, but
+  the Qwen server path still runs layer execution through CPU code.
