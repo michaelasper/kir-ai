@@ -1062,6 +1062,7 @@ dependencies = [
  "llm-api",
  "llm-backend",
  "llm-hub",
+ "llm-metal",
  "llm-models",
  "llm-runtime",
  "llm-sampler",

@@ -14,6 +14,7 @@ futures.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
+llm-metal = { path = "../llm-metal" }
 llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
 llm-sampler = { path = "../llm-sampler" }

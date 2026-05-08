@@ -19,9 +19,11 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    DeterministicBackend, ModelBackend, QwenLayerCache, SafeTensorShardStore, SamplingConfig,
-    qwen_decode_token_with_cache, qwen_final_norm, qwen_layer_caches_for_spec, qwen_lm_head_logits,
-    qwen_lm_head_top_k, qwen_prefill_sequence_with_cache,
+    CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
+    QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
+    qwen_decode_token_with_cache_with_matvec, qwen_final_norm, qwen_layer_caches_for_spec,
+    qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
+    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -189,10 +191,241 @@ pub struct NativeQwenBackend {
     tokenizer: HuggingFaceTokenizer,
     spec: QwenModelSpec,
     store: SafeTensorShardStore,
+    matvec: NativeQwenMatvecBackend,
     max_new_tokens: u32,
     max_prefill_tokens: usize,
     top_k: usize,
     chunk_rows: usize,
+}
+
+#[derive(Clone)]
+enum NativeQwenMatvecBackend {
+    Cpu,
+    Metal(llm_metal::MetalDevice),
+}
+
+impl NativeQwenMatvecBackend {
+    fn system_default() -> Self {
+        match llm_metal::MetalDevice::system_default_result() {
+            Ok(Some(device)) => Self::Metal(device),
+            Ok(None) => Self::Cpu,
+            Err(err) => {
+                tracing::warn!("Metal Qwen matvec backend unavailable: {err}");
+                Self::Cpu
+            }
+        }
+    }
+
+    fn cpu() -> CpuQwenMatvecBackend {
+        CpuQwenMatvecBackend
+    }
+
+    fn bf16_matrix_shape(
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+    ) -> Option<(usize, usize)> {
+        let metadata = store.tensor_metadata(tensor).ok()?;
+        if metadata.dtype != "BF16" || metadata.shape.len() != 2 {
+            return None;
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        (input.len() == columns).then_some((rows, columns))
+    }
+
+    fn flattened_inputs(inputs: &[Vec<f32>], columns: usize) -> Option<Vec<f32>> {
+        let mut flattened = Vec::with_capacity(inputs.len().checked_mul(columns)?);
+        for input in inputs {
+            if input.len() != columns {
+                return None;
+            }
+            flattened.extend_from_slice(input);
+        }
+        Some(flattened)
+    }
+}
+
+impl QwenMatvecBackend for NativeQwenMatvecBackend {
+    fn bf16_matvec_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        let Self::Metal(device) = self else {
+            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+        };
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
+            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+        };
+        let element_count = rows.checked_mul(columns);
+        let Some(element_count) = element_count else {
+            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+        };
+        let Ok(weights) = store.bf16_tensor_bits_range(tensor, 0, element_count) else {
+            return Self::cpu().bf16_matvec_row_major_f32(store, tensor, input);
+        };
+        device
+            .matvec_bf16_f32(&weights, rows, columns, input)
+            .or_else(|_| Self::cpu().bf16_matvec_row_major_f32(store, tensor, input))
+    }
+
+    fn bf16_matvecs_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+        let Self::Metal(device) = self else {
+            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        };
+        let Some(first_input) = inputs.first() else {
+            return Ok(Vec::new());
+        };
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, first_input) else {
+            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        };
+        let Some(flattened) = Self::flattened_inputs(inputs, columns) else {
+            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        };
+        let Some(element_count) = rows.checked_mul(columns) else {
+            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        };
+        let Ok(weights) = store.bf16_tensor_bits_range(tensor, 0, element_count) else {
+            return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs);
+        };
+        let values =
+            match device.batched_matvec_bf16_f32(&weights, rows, columns, &flattened, inputs.len())
+            {
+                Ok(values) => values,
+                Err(_) => return Self::cpu().bf16_matvecs_row_major_f32(store, tensor, inputs),
+            };
+        Ok(values
+            .chunks_exact(rows)
+            .map(|chunk| chunk.to_vec())
+            .collect())
+    }
+
+    fn bf16_matvec_rows_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        let Self::Metal(device) = self else {
+            return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+        };
+        if chunk_rows == 0 {
+            return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+        }
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
+            return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+        };
+        let mut output = Vec::with_capacity(rows);
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
+            let Some(element_offset) = row_start.checked_mul(columns) else {
+                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+            };
+            let Some(element_count) = rows_in_chunk.checked_mul(columns) else {
+                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+            };
+            let Ok(weights) = store.bf16_tensor_bits_range(tensor, element_offset, element_count)
+            else {
+                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+            };
+            let logits = match device.matvec_bf16_f32(&weights, rows_in_chunk, columns, input) {
+                Ok(logits) => logits,
+                Err(_) => {
+                    return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows);
+                }
+            };
+            output.extend(logits);
+        }
+        Ok(output)
+    }
+
+    fn bf16_matvec_top_k_rows_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        top_k: usize,
+        chunk_rows: usize,
+    ) -> Result<Vec<TopKLogit>, TensorLoadError> {
+        let Self::Metal(device) = self else {
+            return Self::cpu().bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+        };
+        if chunk_rows == 0 {
+            return Self::cpu().bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+        }
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
+            return Self::cpu().bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+        };
+        if top_k == 0 || top_k > rows {
+            return Self::cpu().bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+        }
+        let mut top = Vec::new();
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
+            let Some(element_offset) = row_start.checked_mul(columns) else {
+                return Self::cpu()
+                    .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+            };
+            let Some(element_count) = rows_in_chunk.checked_mul(columns) else {
+                return Self::cpu()
+                    .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+            };
+            let Ok(weights) = store.bf16_tensor_bits_range(tensor, element_offset, element_count)
+            else {
+                return Self::cpu()
+                    .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+            };
+            let logits = match device.matvec_bf16_f32(&weights, rows_in_chunk, columns, input) {
+                Ok(logits) => logits,
+                Err(_) => {
+                    return Self::cpu()
+                        .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+                }
+            };
+            let chunk_top = match device.top_k_f32(&logits, top_k.min(rows_in_chunk)) {
+                Ok(chunk_top) => chunk_top,
+                Err(_) => {
+                    return Self::cpu()
+                        .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows);
+                }
+            };
+            top.extend(chunk_top.into_iter().map(|item| TopKLogit {
+                index: row_start + item.index,
+                logit: item.value,
+            }));
+        }
+        top.sort_by(|left, right| {
+            right
+                .logit
+                .total_cmp(&left.logit)
+                .then_with(|| left.index.cmp(&right.index))
+        });
+        top.truncate(top_k);
+        Ok(top)
+    }
+
+    fn matvec_row_major_f32(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().matvec_row_major_f32(input, weights, rows, columns),
+            Self::Metal(device) => device
+                .matvec_f32(weights, rows, columns, input)
+                .or_else(|_| Self::cpu().matvec_row_major_f32(input, weights, rows, columns)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -231,6 +464,7 @@ impl NativeQwenBackend {
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store,
+            matvec: NativeQwenMatvecBackend::system_default(),
             max_new_tokens: 1,
             max_prefill_tokens: 32,
             top_k: 16,
@@ -306,7 +540,7 @@ impl NativeQwenBackend {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?);
             if step_idx + 1 < requested {
-                decode.step(&self.store, &self.spec, candidate.token_id)?;
+                decode.step(&self.store, &self.spec, &self.matvec, candidate.token_id)?;
             }
         }
 
@@ -406,7 +640,7 @@ impl NativeQwenBackend {
                 if cancellation.is_cancelled() {
                     return Ok(());
                 }
-                decode.step(&self.store, &self.spec, candidate.token_id)?;
+                decode.step(&self.store, &self.spec, &self.matvec, candidate.token_id)?;
             }
         }
 
@@ -437,9 +671,14 @@ impl NativeQwenBackend {
             .ok_or_else(|| BackendError::Other("Qwen cache token capacity overflow".to_owned()))?;
         let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
             .map_err(|err| BackendError::Other(err.to_string()))?;
-        let hidden_states =
-            qwen_prefill_sequence_with_cache(&self.store, &self.spec, prefill_tokens, &mut caches)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
+        let hidden_states = qwen_prefill_sequence_with_cache_with_matvec(
+            &self.store,
+            &self.spec,
+            prefill_tokens,
+            &mut caches,
+            &self.matvec,
+        )
+        .map_err(|err| BackendError::Other(err.to_string()))?;
         let hidden = hidden_states.last().cloned().ok_or_else(|| {
             BackendError::Other("Qwen prefill returned no hidden states".to_owned())
         })?;
@@ -459,8 +698,13 @@ impl NativeQwenBackend {
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
-            let logits = qwen_lm_head_logits(&self.store, &final_norm, self.chunk_rows)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
+            let logits = qwen_lm_head_logits_with_matvec(
+                &self.store,
+                &final_norm,
+                self.chunk_rows,
+                &self.matvec,
+            )
+            .map_err(|err| BackendError::Other(err.to_string()))?;
             let sampled_token_id =
                 sample_token_id_with_draw(&logits, sampling, native_sampling_draw())?;
             let token_id = u32::try_from(sampled_token_id).map_err(|err| {
@@ -476,8 +720,14 @@ impl NativeQwenBackend {
             });
         }
 
-        let top_logits = qwen_lm_head_top_k(&self.store, &final_norm, self.top_k, self.chunk_rows)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+        let top_logits = qwen_lm_head_top_k_with_matvec(
+            &self.store,
+            &final_norm,
+            self.top_k,
+            self.chunk_rows,
+            &self.matvec,
+        )
+        .map_err(|err| BackendError::Other(err.to_string()))?;
 
         let mut fallback = None;
         for item in top_logits {
@@ -517,10 +767,17 @@ impl NativeQwenDecodeSession {
         &mut self,
         store: &SafeTensorShardStore,
         spec: &QwenModelSpec,
+        matvec: &impl QwenMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        self.hidden = qwen_decode_token_with_cache(store, spec, token_id, &mut self.caches)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+        self.hidden = qwen_decode_token_with_cache_with_matvec(
+            store,
+            spec,
+            token_id,
+            &mut self.caches,
+            matvec,
+        )
+        .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
     }
 }

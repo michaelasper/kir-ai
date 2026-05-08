@@ -1,18 +1,22 @@
 use llm_backend::{
-    QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_decode_token_with_cache, qwen_embedding_and_layer0_norm, qwen_final_norm,
-    qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
-    qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
-    qwen_layer_full_attention_step_with_cache, qwen_layer_linear_attention_first_token,
-    qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
-    qwen_layer_linear_attention_sequence_with_cache, qwen_layer_linear_attention_step_with_cache,
-    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_top_k,
-    qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
+    CpuQwenMatvecBackend, MathError, QwenLayerCache, QwenMatvecBackend, SafeTensorArchive,
+    SafeTensorFile, SafeTensorHeader, SafeTensorShardStore, TensorLoadError, TopKLogit,
+    qwen_decode_token_with_cache, qwen_decode_token_with_cache_with_matvec,
+    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_caches_for_spec,
+    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
+    qwen_layer_full_attention_sequence_with_cache, qwen_layer_full_attention_step_with_cache,
+    qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
+    qwen_layer_linear_attention_sequence, qwen_layer_linear_attention_sequence_with_cache,
+    qwen_layer_linear_attention_step_with_cache, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
+    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
+    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
+use std::cell::Cell;
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -1479,6 +1483,146 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
     }
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_prefill_and_decode_use_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-custom-matvec-cache");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let matvec = RecordingMatvecBackend::default();
+    let expected =
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches_for_spec(&spec, 3))
+            .expect("cpu cached prefill");
+    let mut recording_caches = qwen_layer_caches_for_spec(&spec, 3).expect("recording caches");
+
+    let output = qwen_prefill_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        &[0, 1],
+        &mut recording_caches,
+        &matvec,
+    )
+    .expect("recording cached prefill");
+    let decoded =
+        qwen_decode_token_with_cache_with_matvec(&store, &spec, 0, &mut recording_caches, &matvec)
+            .expect("recording cached decode");
+
+    assert_eq!(output.len(), expected.len());
+    assert_close(&output[0], &expected[0], 1e-5);
+    assert_close(&output[1], &expected[1], 1e-5);
+    assert_eq!(decoded.len(), spec.hidden_size as usize);
+    assert!(matvec.batched_bf16_calls.get() > 0);
+    assert!(matvec.single_bf16_calls.get() > 0);
+    assert!(matvec.dense_f32_calls.get() > 0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_lm_head_uses_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-lm-head-custom-matvec");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 12 },
+            "weight_map": { "lm_head.weight": "lm_head.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("lm_head.safetensors"),
+        tiny_safetensors_bf16("lm_head.weight", &[3, 2], &[1.0, 0.0, 0.0, 2.0, -1.0, 1.0]),
+    )
+    .expect("lm head");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let matvec = RecordingMatvecBackend::default();
+
+    let top = qwen_lm_head_top_k_with_matvec(&store, &[1.0, 2.0], 2, 2, &matvec)
+        .expect("top-k uses recording matvec");
+    let logits = qwen_lm_head_logits_with_matvec(&store, &[1.0, 2.0], 2, &matvec)
+        .expect("full logits use recording matvec");
+
+    assert_eq!(top[0].index, 1);
+    assert_eq!(top[0].logit, 4.0);
+    assert_eq!(top[1].index, 0);
+    assert_eq!(top[1].logit, 1.0);
+    assert_eq!(logits, vec![1.0, 4.0, 1.0]);
+    assert_eq!(matvec.top_k_bf16_calls.get(), 1);
+    assert_eq!(matvec.rows_bf16_calls.get(), 1);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[derive(Default)]
+struct RecordingMatvecBackend {
+    single_bf16_calls: Cell<usize>,
+    batched_bf16_calls: Cell<usize>,
+    rows_bf16_calls: Cell<usize>,
+    top_k_bf16_calls: Cell<usize>,
+    dense_f32_calls: Cell<usize>,
+}
+
+impl QwenMatvecBackend for RecordingMatvecBackend {
+    fn bf16_matvec_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        self.single_bf16_calls.set(self.single_bf16_calls.get() + 1);
+        CpuQwenMatvecBackend.bf16_matvec_row_major_f32(store, tensor, input)
+    }
+
+    fn bf16_matvecs_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+        self.batched_bf16_calls
+            .set(self.batched_bf16_calls.get() + 1);
+        CpuQwenMatvecBackend.bf16_matvecs_row_major_f32(store, tensor, inputs)
+    }
+
+    fn bf16_matvec_rows_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        self.rows_bf16_calls.set(self.rows_bf16_calls.get() + 1);
+        CpuQwenMatvecBackend.bf16_matvec_rows_f32(store, tensor, input, chunk_rows)
+    }
+
+    fn bf16_matvec_top_k_rows_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        top_k: usize,
+        chunk_rows: usize,
+    ) -> Result<Vec<TopKLogit>, TensorLoadError> {
+        self.top_k_bf16_calls.set(self.top_k_bf16_calls.get() + 1);
+        CpuQwenMatvecBackend.bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows)
+    }
+
+    fn matvec_row_major_f32(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.dense_f32_calls.set(self.dense_f32_calls.get() + 1);
+        CpuQwenMatvecBackend.matvec_row_major_f32(input, weights, rows, columns)
+    }
+}
+
+fn caches_for_spec(spec: &QwenModelSpec, capacity: usize) -> Vec<QwenLayerCache> {
+    qwen_layer_caches_for_spec(spec, capacity).expect("temporary caches")
 }
 
 fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
