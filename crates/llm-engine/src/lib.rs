@@ -433,12 +433,10 @@ impl std::fmt::Display for NativeQwenMetalBufferError {
 }
 
 impl NativeQwenMetalState {
-    fn new(device: llm_metal::MetalDevice) -> Self {
+    fn new(device: llm_metal::MetalDevice, weight_cache_bytes: u64) -> Self {
         Self {
             device,
-            bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(
-                DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES,
-            )),
+            bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(weight_cache_bytes)),
         }
     }
 
@@ -648,9 +646,12 @@ fn native_qwen_metal_metrics() -> &'static MetalBackendMetrics {
 }
 
 impl NativeQwenMatvecBackend {
-    fn system_default() -> Self {
+    fn system_default(weight_cache_bytes: u64) -> Self {
         match llm_metal::MetalDevice::system_default_result() {
-            Ok(Some(device)) => Self::Metal(Arc::new(NativeQwenMetalState::new(device))),
+            Ok(Some(device)) => Self::Metal(Arc::new(NativeQwenMetalState::new(
+                device,
+                weight_cache_bytes,
+            ))),
             Ok(None) => Self::Cpu,
             Err(err) => {
                 tracing::warn!("Metal Qwen matvec backend unavailable: {err}");
@@ -1317,6 +1318,7 @@ fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeQwenLoadOptions {
     pub eager_materialize_shards: bool,
+    pub metal_weight_cache_bytes: Option<u64>,
 }
 
 impl NativeQwenBackend {
@@ -1350,7 +1352,9 @@ impl NativeQwenBackend {
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store,
-            matvec: NativeQwenMatvecBackend::system_default(),
+            matvec: NativeQwenMatvecBackend::system_default(native_qwen_metal_weight_cache_bytes(
+                options.metal_weight_cache_bytes,
+            )),
             max_new_tokens: 1,
             max_prefill_tokens: 32,
             top_k: 16,
@@ -1705,6 +1709,10 @@ fn resolve_native_max_tokens(
 
 fn native_qwen_cache_token_capacity(max_prefill_tokens: usize, _max_new_tokens: u32) -> usize {
     max_prefill_tokens.max(1)
+}
+
+fn native_qwen_metal_weight_cache_bytes(configured: Option<u64>) -> u64 {
+    configured.unwrap_or(DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES)
 }
 
 #[derive(Debug, Clone)]
@@ -2935,6 +2943,16 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_metal_weight_cache_bytes_uses_default_or_configured_value() {
+        assert_eq!(
+            native_qwen_metal_weight_cache_bytes(None),
+            DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES
+        );
+        assert_eq!(native_qwen_metal_weight_cache_bytes(Some(0)), 0);
+        assert_eq!(native_qwen_metal_weight_cache_bytes(Some(4096)), 4096);
+    }
+
+    #[test]
     fn native_max_tokens_defaults_to_configured_cache_limit() {
         assert_eq!(
             resolve_native_max_tokens(None, 4).expect("omitted max tokens uses configured cap"),
@@ -3143,6 +3161,7 @@ mod tests {
             &snapshot,
             NativeQwenLoadOptions {
                 eager_materialize_shards: true,
+                ..NativeQwenLoadOptions::default()
             },
         )
         .expect("backend opens and materializes shards");

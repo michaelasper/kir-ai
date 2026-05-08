@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>]
+llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--native-metal-weight-cache-bytes <bytes>]
 llm-engine model <subcommand> ...
 ```
 
@@ -31,7 +31,8 @@ llm-engine serve \
   --snapshot <snapshot-path> \
   --model-id local-qwen36 \
   --max-new-tokens 1 \
-  --max-prefill-tokens 32
+  --max-prefill-tokens 32 \
+  --native-metal-weight-cache-bytes 8589934592
 ```
 
 | Flag | Default | Description |
@@ -42,6 +43,7 @@ llm-engine serve \
 | `--model-id <id>` | `local-qwen36` | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `1` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Number of recent prompt tokens retained for native Qwen prefill. Values below `1` are clamped to `1`. |
+| `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 
 Without `--snapshot`, `serve` exits unless `--deterministic-test-backend` is
 present. Implicit no-snapshot deterministic serving was removed.

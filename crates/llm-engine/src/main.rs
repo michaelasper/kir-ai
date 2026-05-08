@@ -62,6 +62,10 @@ async fn main() -> anyhow::Result<()> {
                     .map(str::parse::<usize>)
                     .transpose()?
                     .unwrap_or(32);
+                let native_metal_weight_cache_bytes =
+                    flag_value(&serve_args, "--native-metal-weight-cache-bytes")
+                        .map(str::parse::<u64>)
+                        .transpose()?;
                 let backend = NativeQwenBackend::open_with_options(
                     model_id,
                     snapshot_path,
@@ -70,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
                             &serve_args,
                             "--eager-materialize-shards",
                         ),
+                        metal_weight_cache_bytes: native_metal_weight_cache_bytes,
                     },
                 )?
                 .with_max_new_tokens(max_new_tokens)

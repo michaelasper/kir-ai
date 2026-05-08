@@ -51,7 +51,8 @@ cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36 \
   --max-new-tokens 1 \
-  --max-prefill-tokens 32
+  --max-prefill-tokens 32 \
+  --native-metal-weight-cache-bytes 8589934592
 ```
 
 The native path tokenises the rendered prompt, keeps a bounded tail of prompt
@@ -65,6 +66,10 @@ clamped to at least `1`.
 
 `--max-prefill-tokens` controls how many recent prompt tokens are retained for
 native prefill. It defaults to `32` and is clamped to at least `1`.
+
+`--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
+uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
+set to `0` to disable weight-buffer caching.
 
 Use small values while probing correctness:
 
