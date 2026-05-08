@@ -145,7 +145,8 @@ If a model pull fails with `model_auth_failed`, set `HF_TOKEN` and retry.
 
 If a model verify command reports `model_integrity_failed`, treat the snapshot
 as untrusted. Re-run `model pull` for the same repo, revision, profile, and
-model home. Existing valid files are reused when their size and SHA-256 match.
+model home. Existing valid files are reused when their size and SHA-256 match,
+and corrupt existing snapshots encountered by pull are moved to quarantine.
 
 If the server returns `model_not_found`, check that the request `model` matches
 the served `--model-id`. The default alias is `local-qwen36`.

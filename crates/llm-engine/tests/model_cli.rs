@@ -335,3 +335,187 @@ async fn model_prune_dry_run_outputs_snapshot_usage_without_deleting() {
     assert_eq!(value["reclaimable_bytes"], 0);
     assert!(snapshot_path.join("config.json").is_file());
 }
+
+#[tokio::test]
+async fn model_prune_confirm_deletes_same_candidates_as_dry_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+    let old = chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
+        .expect("fixed time")
+        .with_timezone(&chrono::Utc);
+    ModelStore::mark_snapshot_used_at(&snapshot_path, old)
+        .await
+        .expect("usage recorded");
+
+    let dry_run = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "model",
+            "prune",
+            "--dry-run",
+            "--older-than-days",
+            "7",
+            "--keep-min-per-profile",
+            "0",
+            "--now",
+            "2026-05-08T00:00:00Z",
+            "--model-home",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("run model prune dry-run");
+
+    assert!(
+        dry_run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let dry_run_value: Value = serde_json::from_slice(&dry_run.stdout).expect("json output");
+    let dry_run_candidates = dry_run_value["candidates"]
+        .as_array()
+        .expect("candidate array");
+    assert_eq!(dry_run_value["dry_run"], true);
+    assert_eq!(dry_run_candidates.len(), 1);
+    assert_eq!(
+        dry_run_candidates[0]["path"],
+        snapshot_path.display().to_string()
+    );
+    assert!(snapshot_path.join("config.json").is_file());
+
+    let destructive = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "model",
+            "prune",
+            "--confirm-delete",
+            "--older-than-days",
+            "7",
+            "--keep-min-per-profile",
+            "0",
+            "--now",
+            "2026-05-08T00:00:00Z",
+            "--model-home",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("run model prune destructive");
+
+    assert!(
+        destructive.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&destructive.stderr)
+    );
+    let destructive_value: Value =
+        serde_json::from_slice(&destructive.stdout).expect("json output");
+    let destructive_candidates = destructive_value["candidates"]
+        .as_array()
+        .expect("candidate array");
+    assert_eq!(destructive_value["dry_run"], false);
+    assert_eq!(destructive_candidates.len(), dry_run_candidates.len());
+    assert_eq!(
+        destructive_candidates[0]["path"],
+        dry_run_candidates[0]["path"]
+    );
+    assert_eq!(
+        destructive_value["deleted"]
+            .as_array()
+            .expect("deleted")
+            .len(),
+        1
+    );
+    assert!(!snapshot_path.exists());
+}
+
+#[tokio::test]
+async fn model_list_and_inspect_show_quarantined_snapshots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+    let quarantined = store
+        .quarantine_snapshot(&snapshot_path, "test corruption")
+        .await
+        .expect("quarantined");
+
+    let list = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["model", "list", "--model-home"])
+        .arg(temp.path())
+        .output()
+        .expect("run model list");
+
+    assert!(
+        list.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_value: Value = serde_json::from_slice(&list.stdout).expect("json output");
+    assert_eq!(
+        list_value["snapshots"].as_array().expect("snapshots").len(),
+        0
+    );
+    assert_eq!(
+        list_value["quarantined_snapshots"]
+            .as_array()
+            .expect("quarantined")
+            .len(),
+        1
+    );
+    assert_eq!(
+        list_value["quarantined_snapshots"][0]["path"],
+        quarantined.path.display().to_string()
+    );
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["model", "inspect"])
+        .arg(&quarantined.path)
+        .output()
+        .expect("run model inspect");
+
+    assert!(
+        inspect.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let inspect_value: Value = serde_json::from_slice(&inspect.stdout).expect("json output");
+    assert_eq!(inspect_value["status"], "quarantined");
+    assert_eq!(
+        inspect_value["original_path"],
+        snapshot_path.display().to_string()
+    );
+}

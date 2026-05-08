@@ -107,9 +107,11 @@ cumulative admin-triggered `cancelled_requests`, cumulative `no_progress_failure
 `tokens_per_second`. Model-store pull counters are reported separately as
 `model_pull_operations`, `model_pull_successes`, `model_pull_failures`, and
 `model_pull_bytes`. The response also reports manifest-backed model-store usage
-as `model_store_snapshots` and `model_store_bytes`, plus cumulative
-`artifact_verification_failures` from failed admin snapshot verification. Process
-resident memory is exposed as `process_rss_bytes` when supported by the host OS.
+as `model_store_snapshots` and `model_store_bytes`, quarantined usage as
+`model_store_quarantined_snapshots` and `model_store_quarantined_bytes`, plus
+cumulative `artifact_verification_failures` from failed admin snapshot
+verification. Process resident memory is exposed as `process_rss_bytes` when
+supported by the host OS.
 
 ## `POST /admin/models/{alias}/verify`
 

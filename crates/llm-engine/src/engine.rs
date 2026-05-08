@@ -3576,6 +3576,9 @@ async fn admin_model_verify(
             return Err(EngineError::ModelStore(err));
         }
     };
+    ModelStore::mark_snapshot_used(&snapshot_path)
+        .await
+        .map_err(EngineError::ModelStore)?;
     Ok(Json(json!({
         "status": "ok",
         "snapshot_path": verification.snapshot.path,
@@ -3605,7 +3608,7 @@ async fn admin_model_plan(
     request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
 ) -> Result<Json<DownloadPlan>, EngineError> {
     require_admin(&state, &headers)?;
-    require_model_alias(&state, alias)?;
+    require_model_alias(&state, &alias)?;
     let request = parse_json_request(request, &state)?;
     let plan = build_admin_download_plan(&state, request).await?;
     Ok(Json(plan))
@@ -3618,7 +3621,7 @@ async fn admin_model_pull(
     request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
 ) -> Result<Json<Value>, EngineError> {
     require_admin(&state, &headers)?;
-    require_model_alias(&state, alias)?;
+    require_model_alias(&state, &alias)?;
     let request = parse_json_request(request, &state)?;
     let plan = match build_admin_download_plan(&state, request).await {
         Ok(plan) => plan,
@@ -3638,6 +3641,13 @@ async fn admin_model_pull(
         }
     };
     let model_pull_bytes = snapshot.manifest.files.iter().map(|file| file.size).sum();
+    ModelStore::mark_snapshot_used(&snapshot.path)
+        .await
+        .map_err(EngineError::ModelStore)?;
+    ModelStore::new(&state.model_home)
+        .record_snapshot_alias(&alias, &snapshot.path)
+        .await
+        .map_err(EngineError::ModelStore)?;
     record_model_pull_success_metrics(&state, model_pull_bytes);
     invalidate_model_store_usage_cache(&state);
     Ok(Json(json!({
@@ -3682,13 +3692,13 @@ fn model_profile(name: &str) -> Result<ModelProfile, EngineError> {
     }
 }
 
-fn require_model_alias(state: &AppState, alias: String) -> Result<(), EngineError> {
+fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError> {
     let model_id = state.runtime.model_id();
     if alias == model_id {
         return Ok(());
     }
     Err(RuntimeError::Backend(BackendError::ModelNotFound {
-        requested: alias,
+        requested: alias.to_owned(),
         available: model_id.to_owned(),
     })
     .into())
@@ -3780,6 +3790,8 @@ async fn admin_metrics(
         "model_pull_bytes": metrics.model_pull_bytes(),
         "model_store_snapshots": model_store_usage.snapshots,
         "model_store_bytes": model_store_usage.bytes,
+        "model_store_quarantined_snapshots": model_store_usage.quarantined_snapshots,
+        "model_store_quarantined_bytes": model_store_usage.quarantined_bytes,
         "artifact_verification_failures": metrics.artifact_verification_failures(),
         "process_rss_bytes": process_rss_bytes(),
         "tokens_per_second": metrics.tokens_per_second(),
@@ -3809,6 +3821,8 @@ async fn admin_metrics(
 struct ModelStoreUsage {
     snapshots: usize,
     bytes: u64,
+    quarantined_snapshots: usize,
+    quarantined_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -3865,14 +3879,21 @@ async fn scan_model_store_usage(model_home: &Path) -> Result<ModelStoreUsage, En
         .list_snapshots()
         .await
         .map_err(EngineError::ModelStore)?;
+    let quarantined = ModelStore::new(model_home)
+        .list_quarantined_snapshots()
+        .await
+        .map_err(EngineError::ModelStore)?;
     let bytes = snapshots
         .iter()
         .flat_map(|snapshot| &snapshot.manifest.files)
         .map(|file| file.size)
         .sum();
+    let quarantined_bytes = quarantined.iter().map(|snapshot| snapshot.bytes).sum();
     Ok(ModelStoreUsage {
         snapshots: snapshots.len(),
         bytes,
+        quarantined_snapshots: quarantined.len(),
+        quarantined_bytes,
     })
 }
 

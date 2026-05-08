@@ -92,7 +92,8 @@ cargo run -p llm-engine -- model list --model-home "$LLM_MODEL_HOME"
 
 The command prints promoted snapshots with repo identity, requested revision,
 resolved commit, profile, family, loader, quantisation, manifest digest, and file
-count.
+count. It also prints quarantined snapshots separately with the quarantine
+reason and original path.
 
 ## Inspect A Snapshot
 
@@ -120,6 +121,36 @@ Verification checks every manifest file for:
 
 Treat `model_integrity_failed` as a signal to pull or restore the snapshot
 again.
+
+## Prune Old Snapshots
+
+Always inspect the candidate set first:
+
+```sh
+cargo run -p llm-engine -- model prune \
+  --dry-run \
+  --older-than-days 14 \
+  --keep-min-per-profile 1 \
+  --model-home "$LLM_MODEL_HOME"
+```
+
+Then apply the exact same policy with explicit confirmation:
+
+```sh
+cargo run -p llm-engine -- model prune \
+  --confirm-delete \
+  --older-than-days 14 \
+  --keep-min-per-profile 1 \
+  --model-home "$LLM_MODEL_HOME"
+```
+
+Prune never deletes snapshots protected by a recorded alias, snapshots used
+within the retention window, or the minimum retained snapshots for each profile.
+If a destructive prune candidate fails manifest verification, it is moved to the
+model store quarantine instead of being deleted.
+
+Use `--alias <model-id>` with `model pull`, or serve a snapshot with
+`--model-id`, to record alias protection.
 
 ## Inspect Safetensors Metadata
 

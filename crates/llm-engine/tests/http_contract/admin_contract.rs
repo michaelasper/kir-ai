@@ -378,6 +378,42 @@ async fn admin_metrics_report_model_store_usage() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_quarantined_model_store_usage() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_test_snapshot(temp.path()).await;
+    ModelStore::new(temp.path())
+        .quarantine_snapshot(&snapshot_path, "test corruption")
+        .await
+        .expect("snapshot quarantined");
+    let app = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["model_store_snapshots"], 0);
+    assert_eq!(body["model_store_bytes"], 0);
+    assert_eq!(body["model_store_quarantined_snapshots"], 1);
+    assert_eq!(body["model_store_quarantined_bytes"], 2);
+}
+
+#[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
     let response = build_router()
         .oneshot(

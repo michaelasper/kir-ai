@@ -81,21 +81,24 @@ Output shape:
       "loader": "native-metal",
       "quantization": "bf16",
       "manifest_digest": "...",
-      "files": 39
+      "files": 39,
+      "aliases": ["local-qwen36"]
     }
-  ]
+  ],
+  "quarantined_snapshots": []
 }
 ```
 
 ## `model inspect`
 
-Reads a promoted snapshot manifest and prints a summary.
+Reads a promoted or quarantined snapshot manifest and prints a summary.
 
 ```sh
 llm-engine model inspect <snapshot-path>
 ```
 
-The snapshot path must contain `llm-engine-manifest.json`.
+Promoted snapshots contain `llm-engine-manifest.json`. Quarantined snapshots
+contain `llm-engine-quarantine.json` and report `status: "quarantined"`.
 
 Output fields:
 
@@ -134,6 +137,8 @@ Output shape:
 ```
 
 Verification checks file presence, file type, size, and SHA-256 when available.
+Successful verification records the snapshot as recently used for prune
+retention.
 
 ## `model plan`
 
@@ -169,11 +174,13 @@ llm-engine model pull <repo> \
   [--revision <rev>] \
   [--profile <profile>] \
   [--metadata-only] \
+  [--alias <model-id>] \
   [--model-home <path>]
 ```
 
 `model pull` uses the same planning flags as `model plan`, plus model home
-resolution.
+resolution. `--alias` records an active model alias that protects the pulled
+snapshot from prune.
 
 Output shape:
 
@@ -203,6 +210,40 @@ Metadata-only snapshots promote to:
 ```text
 snapshots/<commit>.metadata-only
 ```
+
+## `model prune`
+
+Plans or applies snapshot deletion using the model-store retention policy.
+
+```sh
+llm-engine model prune --dry-run \
+  [--older-than-days <days>] \
+  [--keep-min-per-profile <n>] \
+  [--profile <profile>] \
+  [--model-home <path>]
+
+llm-engine model prune --confirm-delete \
+  [--older-than-days <days>] \
+  [--keep-min-per-profile <n>] \
+  [--profile <profile>] \
+  [--model-home <path>]
+```
+
+`--dry-run` and `--confirm-delete` use the same candidate planner. Destructive
+mode requires the explicit `--confirm-delete` flag and reports the candidate set
+that was computed before deletion.
+
+Retention protects:
+
+- snapshots referenced by recorded aliases
+- snapshots used within `--older-than-days`
+- the newest `--keep-min-per-profile` snapshots per profile
+
+Before deleting a candidate, destructive mode verifies the manifest files. A
+candidate that fails verification is moved to quarantine instead of deleted.
+
+Output includes `candidates`, `protected`, `deleted`, `quarantined`,
+`reclaimable_bytes`, and `deleted_bytes`.
 
 ## `model inspect-safetensors`
 

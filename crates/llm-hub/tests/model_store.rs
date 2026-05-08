@@ -1,6 +1,8 @@
 use llm_hub::{
-    HubFile, HubRepoId, ModelProfile, ModelStore, SnapshotManifest, build_download_plan,
+    HubFile, HubRepoId, ModelProfile, ModelStore, PrunePolicy, SnapshotManifest,
+    build_download_plan,
 };
+use std::time::Duration;
 
 #[tokio::test]
 async fn promotes_staged_snapshot_with_manifest() {
@@ -382,13 +384,23 @@ async fn rejects_existing_snapshot_with_nested_symlinked_artifact() {
     std::os::unix::fs::symlink(&outside, snapshot_path.join("nested/config.json"))
         .expect("nested symlink config");
 
-    let err = store
+    let snapshot = store
         .verify_existing_snapshot(&plan)
         .await
-        .expect_err("nested symlink fails");
+        .expect("nested symlink is quarantined");
 
-    assert_eq!(err.code(), "model_integrity_failed");
-    assert!(err.to_string().contains("symlink"), "err: {err}");
+    assert!(snapshot.is_none());
+    assert!(!snapshot_path.exists());
+    let quarantined = store
+        .list_quarantined_snapshots()
+        .await
+        .expect("quarantine list");
+    assert_eq!(quarantined.len(), 1);
+    assert!(
+        quarantined[0].metadata.reason.contains("symlink"),
+        "reason: {}",
+        quarantined[0].metadata.reason
+    );
 }
 
 #[tokio::test]
@@ -416,12 +428,146 @@ async fn rejects_existing_snapshot_with_wrong_sha256_digest() {
         .await
         .expect("existing config");
 
-    let err = store
+    let snapshot = store
         .verify_existing_snapshot(&plan)
         .await
-        .expect_err("digest mismatch fails");
+        .expect("digest mismatch is quarantined");
 
-    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(snapshot.is_none());
+    assert!(!snapshot_path.exists());
+    assert_eq!(
+        store
+            .list_quarantined_snapshots()
+            .await
+            .expect("quarantine list")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn corrupt_existing_snapshot_is_quarantined_before_redownload() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "bad")
+        .await
+        .expect("corrupt config");
+
+    let snapshot = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("corrupt snapshot is quarantined");
+
+    assert!(snapshot.is_none());
+    assert!(!snapshot_path.exists());
+    let quarantined = store
+        .list_quarantined_snapshots()
+        .await
+        .expect("quarantine list");
+    assert_eq!(quarantined.len(), 1);
+    assert_eq!(quarantined[0].metadata.original_path, snapshot_path);
+    assert!(
+        quarantined[0].metadata.reason.contains("size"),
+        "reason: {}",
+        quarantined[0].metadata.reason
+    );
+}
+
+#[tokio::test]
+async fn prune_plan_protects_aliases_recent_usage_and_minimum_per_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let now = chrono::DateTime::parse_from_rfc3339("2026-05-08T00:00:00Z")
+        .expect("fixed time")
+        .with_timezone(&chrono::Utc);
+    let old = now - chrono::Duration::days(30);
+    let recent = now - chrono::Duration::days(1);
+
+    let candidate = write_verified_snapshot(
+        &store,
+        "1111111111111111111111111111111111111111",
+        ModelProfile::qwen36_safetensors_bf16(),
+        old,
+    )
+    .await;
+    let aliased = write_verified_snapshot(
+        &store,
+        "2222222222222222222222222222222222222222",
+        ModelProfile::qwen36_safetensors_bf16(),
+        old,
+    )
+    .await;
+    let recent_path = write_verified_snapshot(
+        &store,
+        "3333333333333333333333333333333333333333",
+        ModelProfile::qwen36_safetensors_bf16(),
+        recent,
+    )
+    .await;
+    let minimum_profile = write_verified_snapshot(
+        &store,
+        "4444444444444444444444444444444444444444",
+        ModelProfile::qwen36_mlx_4bit(),
+        old,
+    )
+    .await;
+    store
+        .record_snapshot_alias("local-qwen36", &aliased)
+        .await
+        .expect("alias recorded");
+
+    let plan = store
+        .prune_plan(PrunePolicy {
+            now,
+            keep_recent: Some(Duration::from_secs(7 * 24 * 60 * 60)),
+            keep_min_per_profile: 1,
+            profile: None,
+        })
+        .await
+        .expect("prune plan");
+
+    assert_eq!(plan.candidates.len(), 1);
+    assert_eq!(plan.candidates[0].path, candidate);
+    assert!(plan.protected.iter().any(|entry| {
+        entry.path == aliased
+            && entry
+                .reasons
+                .iter()
+                .any(|reason| reason == "active_alias:local-qwen36")
+    }));
+    assert!(plan.protected.iter().any(|entry| {
+        entry.path == recent_path && entry.reasons.iter().any(|reason| reason == "recently_used")
+    }));
+    assert!(plan.protected.iter().any(|entry| {
+        entry.path == minimum_profile
+            && entry
+                .reasons
+                .iter()
+                .any(|reason| reason == "minimum_retained_for_profile")
+    }));
+
+    let report = store.apply_prune_plan(&plan).await.expect("apply prune");
+
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].path, candidate);
+    assert_eq!(report.deleted.len(), 1);
+    assert!(!candidate.exists());
+    assert!(aliased.exists());
+    assert!(recent_path.exists());
+    assert!(minimum_profile.exists());
 }
 
 #[test]
@@ -473,4 +619,37 @@ fn full_snapshot_paths_do_not_collide_across_profiles() {
     .expect("native plan builds");
 
     assert_ne!(store.snapshot_path(&mlx), store.snapshot_path(&native));
+}
+
+async fn write_verified_snapshot(
+    store: &ModelStore,
+    commit: &str,
+    profile: ModelProfile,
+    last_used_at: chrono::DateTime<chrono::Utc>,
+) -> std::path::PathBuf {
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        commit,
+        profile,
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+    ModelStore::mark_snapshot_used_at(&snapshot_path, last_used_at)
+        .await
+        .expect("usage recorded");
+    snapshot_path
 }

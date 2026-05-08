@@ -120,6 +120,13 @@ The store root defaults to `.llm-models`.
           tokenizer.json
           model.safetensors.index.json
           ...
+      quarantine/
+        <snapshot>.quarantined.<timestamp>.<counter>/
+          llm-engine-quarantine.json
+          llm-engine-manifest.json
+          ...
+  aliases/
+    <alias>.<digest>.json
 ```
 
 Repository ids must be `org/name`. Snapshot commit ids must be 40-character
