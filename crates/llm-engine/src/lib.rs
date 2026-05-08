@@ -1309,10 +1309,8 @@ impl NativeQwenBackend {
         }
         let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
         let prefill_tokens = &context_tokens[start..];
-        let cache_tokens = prefill_tokens
-            .len()
-            .checked_add(max_new_tokens as usize)
-            .ok_or_else(|| BackendError::Other("Qwen cache token capacity overflow".to_owned()))?;
+        let cache_tokens =
+            native_qwen_cache_token_capacity(self.max_prefill_tokens, max_new_tokens);
         let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
             .map_err(|err| BackendError::Other(err.to_string()))?;
         if cancellation.is_cancelled() {
@@ -1447,6 +1445,10 @@ fn resolve_native_max_tokens(
         ))),
         Some(value) => Ok(value),
     }
+}
+
+fn native_qwen_cache_token_capacity(max_prefill_tokens: usize, _max_new_tokens: u32) -> usize {
+    max_prefill_tokens.max(1)
 }
 
 #[derive(Debug, Clone)]
@@ -2566,6 +2568,44 @@ mod tests {
 
         assert!(matches!(err, BackendError::UnsupportedRequest(_)));
         assert!(err.to_string().contains("configured native Qwen limit"));
+    }
+
+    #[test]
+    fn native_qwen_cache_capacity_uses_retained_window_not_generation_limit() {
+        let capacity = native_qwen_cache_token_capacity(32, 1024);
+        let spec = QwenModelSpec {
+            family: llm_models::ModelFamily::Qwen,
+            architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+            model_type: "qwen3_5_moe".to_owned(),
+            text_model_type: "qwen3_5_moe_text".to_owned(),
+            hidden_size: 2,
+            rms_norm_eps: 0.0,
+            tie_word_embeddings: false,
+            rope_theta: 1_000_000.0,
+            partial_rotary_factor: 1.0,
+            num_hidden_layers: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 2,
+            linear_num_key_heads: 1,
+            linear_num_value_heads: 1,
+            linear_key_head_dim: 1,
+            linear_value_head_dim: 1,
+            linear_conv_kernel_dim: 1,
+            num_experts: 1,
+            num_experts_per_tok: 1,
+            moe_intermediate_size: 1,
+            shared_expert_intermediate_size: 1,
+            max_position_embeddings: 32,
+            vocab_size: 16,
+            layer_kinds: vec![llm_models::AttentionKind::FullAttention],
+        };
+
+        let caches = qwen_layer_caches_for_spec(&spec, capacity).expect("cache allocates");
+        match &caches[0] {
+            QwenLayerCache::Full(cache) => assert_eq!(cache.max_tokens(), 32),
+            QwenLayerCache::Linear(_) => panic!("expected full-attention cache"),
+        }
     }
 
     #[test]
