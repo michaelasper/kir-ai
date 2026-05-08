@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,87 @@ pub struct QwenModelSpec {
     pub max_position_embeddings: u32,
     pub vocab_size: u32,
     pub layer_kinds: Vec<AttentionKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SafetensorsIndex {
+    pub total_size_bytes: u64,
+    weight_map: BTreeMap<String, String>,
+}
+
+impl SafetensorsIndex {
+    pub fn from_json(json: &str) -> Result<Self, ModelSpecError> {
+        let raw: RawSafetensorsIndex = serde_json::from_str(json)
+            .map_err(|err| ModelSpecError::invalid_request(format!("invalid index JSON: {err}")))?;
+        let total_size_bytes = raw.metadata.total_size.round() as u64;
+        Ok(Self {
+            total_size_bytes,
+            weight_map: raw.weight_map,
+        })
+    }
+
+    pub fn tensor_count(&self) -> usize {
+        self.weight_map.len()
+    }
+
+    pub fn shard_count(&self) -> usize {
+        self.weight_map.values().collect::<BTreeSet<_>>().len()
+    }
+
+    pub fn contains(&self, tensor: &str) -> bool {
+        self.weight_map.contains_key(tensor)
+    }
+
+    pub fn validate_qwen_text_weights(&self, spec: &QwenModelSpec) -> Result<(), ModelSpecError> {
+        self.require("model.language_model.embed_tokens.weight")?;
+        self.require("model.language_model.norm.weight")?;
+        self.require("lm_head.weight")?;
+        for (layer, kind) in spec.layer_kinds.iter().enumerate() {
+            let prefix = format!("model.language_model.layers.{layer}");
+            self.require(format!("{prefix}.input_layernorm.weight"))?;
+            self.require(format!("{prefix}.post_attention_layernorm.weight"))?;
+            self.require(format!("{prefix}.mlp.gate.weight"))?;
+            self.require(format!("{prefix}.mlp.experts.down_proj"))?;
+            self.require(format!("{prefix}.mlp.experts.gate_up_proj"))?;
+            self.require(format!("{prefix}.mlp.shared_expert.down_proj.weight"))?;
+            self.require(format!("{prefix}.mlp.shared_expert.gate_proj.weight"))?;
+            self.require(format!("{prefix}.mlp.shared_expert.up_proj.weight"))?;
+            self.require(format!("{prefix}.mlp.shared_expert_gate.weight"))?;
+            match kind {
+                AttentionKind::LinearAttention => {
+                    self.require(format!("{prefix}.linear_attn.in_proj_qkv.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.in_proj_z.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.out_proj.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.in_proj_a.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.in_proj_b.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.dt_bias"))?;
+                    self.require(format!("{prefix}.linear_attn.A_log"))?;
+                    self.require(format!("{prefix}.linear_attn.conv1d.weight"))?;
+                    self.require(format!("{prefix}.linear_attn.norm.weight"))?;
+                }
+                AttentionKind::FullAttention => {
+                    self.require(format!("{prefix}.self_attn.q_proj.weight"))?;
+                    self.require(format!("{prefix}.self_attn.k_proj.weight"))?;
+                    self.require(format!("{prefix}.self_attn.v_proj.weight"))?;
+                    self.require(format!("{prefix}.self_attn.o_proj.weight"))?;
+                    self.require(format!("{prefix}.self_attn.q_norm.weight"))?;
+                    self.require(format!("{prefix}.self_attn.k_norm.weight"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn require(&self, tensor: impl AsRef<str>) -> Result<(), ModelSpecError> {
+        let tensor = tensor.as_ref();
+        if self.contains(tensor) {
+            Ok(())
+        } else {
+            Err(ModelSpecError::invalid_request(format!(
+                "safetensors index missing required tensor `{tensor}`"
+            )))
+        }
+    }
 }
 
 impl QwenModelSpec {
@@ -126,6 +208,17 @@ struct RawQwenTextConfig {
     max_position_embeddings: u32,
     vocab_size: u32,
     layer_types: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSafetensorsIndex {
+    metadata: RawSafetensorsMetadata,
+    weight_map: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSafetensorsMetadata {
+    total_size: f64,
 }
 
 #[derive(Debug, Error)]

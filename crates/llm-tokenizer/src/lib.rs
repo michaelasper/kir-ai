@@ -29,11 +29,7 @@ impl HuggingFaceTokenizer {
         Ok(Self { inner })
     }
 
-    pub fn encode(
-        &self,
-        text: &str,
-        add_special_tokens: bool,
-    ) -> Result<Vec<u32>, TokenizerError> {
+    pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>, TokenizerError> {
         let encoding = self
             .inner
             .encode(text, add_special_tokens)

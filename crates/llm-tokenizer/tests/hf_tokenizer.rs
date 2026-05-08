@@ -1,10 +1,14 @@
 use llm_tokenizer::HuggingFaceTokenizer;
 
-const TOKENIZER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/qwen36/tokenizer.json");
+const TOKENIZER_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/qwen36/tokenizer.json"
+);
 
 #[test]
 fn official_qwen36_tokenizer_round_trips_text() {
-    let tokenizer = HuggingFaceTokenizer::from_file(TOKENIZER_PATH).expect("official tokenizer loads");
+    let tokenizer =
+        HuggingFaceTokenizer::from_file(TOKENIZER_PATH).expect("official tokenizer loads");
 
     let ids = tokenizer
         .encode("hello rust tokenizer", false)
@@ -17,7 +21,8 @@ fn official_qwen36_tokenizer_round_trips_text() {
 
 #[test]
 fn official_qwen36_tokenizer_preserves_chatml_special_tokens() {
-    let tokenizer = HuggingFaceTokenizer::from_file(TOKENIZER_PATH).expect("official tokenizer loads");
+    let tokenizer =
+        HuggingFaceTokenizer::from_file(TOKENIZER_PATH).expect("official tokenizer loads");
 
     assert_eq!(tokenizer.token_to_id("<|im_start|>"), Some(248_045));
     assert_eq!(tokenizer.token_to_id("<|im_end|>"), Some(248_046));

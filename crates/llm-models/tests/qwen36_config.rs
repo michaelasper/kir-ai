@@ -1,4 +1,4 @@
-use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
+use llm_models::{AttentionKind, ModelFamily, QwenModelSpec, SafetensorsIndex};
 
 #[test]
 fn parses_official_qwen36_config_as_hybrid_deltanet_moe() {
@@ -41,4 +41,27 @@ fn rejects_non_qwen_architecture_for_qwen_spec() {
     .expect_err("wrong architecture fails closed");
 
     assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn validates_official_qwen36_safetensors_index_against_spec() {
+    let spec =
+        QwenModelSpec::from_config_json(include_str!("../../../fixtures/qwen36/config.json"))
+            .expect("official qwen3.6 config parses");
+    let index = SafetensorsIndex::from_json(include_str!(
+        "../../../fixtures/qwen36/model.safetensors.index.json"
+    ))
+    .expect("official index parses");
+
+    assert_eq!(index.total_size_bytes, 71_903_645_408);
+    assert_eq!(index.tensor_count(), 1045);
+    assert_eq!(index.shard_count(), 26);
+    assert!(index.contains("model.language_model.layers.0.linear_attn.in_proj_qkv.weight"));
+    assert!(!index.contains("model.language_model.layers.0.self_attn.q_proj.weight"));
+    assert!(index.contains("model.language_model.layers.3.self_attn.q_proj.weight"));
+    assert!(!index.contains("model.language_model.layers.3.linear_attn.in_proj_qkv.weight"));
+
+    index
+        .validate_qwen_text_weights(&spec)
+        .expect("official qwen index satisfies text loader requirements");
 }
