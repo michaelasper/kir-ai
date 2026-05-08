@@ -43,6 +43,44 @@ fn qwen_bf16_profile_records_official_safetensors_identity() {
 }
 
 #[test]
+fn gemma_text_profile_skips_multimodal_artifacts() {
+    let files = vec![
+        HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
+        HubFile::new("model-00001-of-00002.safetensors", 1_000, Some("\"w1\"")),
+        HubFile::new("vision_tower.safetensors", 2_000, Some("\"vision\"")),
+        HubFile::new("mm_projector.safetensors", 3_000, Some("\"projector\"")),
+        HubFile::new("image_processor_config.json", 400, Some("\"image\"")),
+        HubFile::new("preprocessor_config.json", 500, Some("\"pre\"")),
+    ];
+
+    let plan = build_download_plan(
+        HubRepoId::model("google/gemma-4-31b-it").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::gemma4_text_safetensors_bf16(),
+        files,
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_eq!(plan.profile.family, "gemma");
+    assert_eq!(plan.profile.loader, "native-metal");
+    assert_eq!(plan.profile.quantization, "bf16");
+    assert_eq!(plan.files_to_download.len(), 3);
+    assert_eq!(plan.total_bytes_to_download, 1_300);
+    assert_eq!(
+        plan.skipped_files,
+        vec![
+            "image_processor_config.json",
+            "mm_projector.safetensors",
+            "preprocessor_config.json",
+            "vision_tower.safetensors",
+        ]
+    );
+}
+
+#[test]
 fn repo_id_rejects_ambiguous_or_unsafe_components() {
     for repo_id in [
         "Qwen//Qwen3.6-35B-A3B",

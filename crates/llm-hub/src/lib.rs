@@ -510,6 +510,17 @@ impl ModelProfile {
             ignore_patterns: qwen_ignore_patterns(),
         }
     }
+
+    pub fn gemma4_text_safetensors_bf16() -> Self {
+        Self {
+            name: "gemma4-text-safetensors-bf16".to_owned(),
+            family: "gemma".to_owned(),
+            loader: "native-metal".to_owned(),
+            quantization: "bf16".to_owned(),
+            allow_patterns: gemma_text_static_and_safetensors_patterns(),
+            ignore_patterns: gemma_text_ignore_patterns(),
+        }
+    }
 }
 
 fn qwen_static_and_safetensors_patterns() -> Vec<String> {
@@ -531,6 +542,35 @@ fn qwen_ignore_patterns() -> Vec<String> {
         "*.pt".to_owned(),
         "optimizer*".to_owned(),
         "training_args.bin".to_owned(),
+    ]
+}
+
+fn gemma_text_static_and_safetensors_patterns() -> Vec<String> {
+    vec![
+        "*.json".to_owned(),
+        "*.model".to_owned(),
+        "*.txt".to_owned(),
+        "tokenizer*".to_owned(),
+        "README.md".to_owned(),
+        "LICENSE*".to_owned(),
+        "*.safetensors".to_owned(),
+        "*.safetensors.index.json".to_owned(),
+    ]
+}
+
+fn gemma_text_ignore_patterns() -> Vec<String> {
+    vec![
+        "*.bin".to_owned(),
+        "*.pt".to_owned(),
+        "optimizer*".to_owned(),
+        "training_args.bin".to_owned(),
+        "image_*".to_owned(),
+        "preprocessor_config.json".to_owned(),
+        "processor_config.json".to_owned(),
+        "vision*".to_owned(),
+        "mm_projector*".to_owned(),
+        "multi_modal_projector*".to_owned(),
+        "projector*".to_owned(),
     ]
 }
 

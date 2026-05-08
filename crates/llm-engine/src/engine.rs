@@ -3682,6 +3682,7 @@ async fn build_admin_download_plan(
 
 fn model_profile(name: &str) -> Result<ModelProfile, EngineError> {
     match name {
+        "gemma4-text-safetensors-bf16" => Ok(ModelProfile::gemma4_text_safetensors_bf16()),
         "qwen36-mlx-4bit" => Ok(ModelProfile::qwen36_mlx_4bit()),
         "qwen36-safetensors-bf16" => Ok(ModelProfile::qwen36_safetensors_bf16()),
         other => Err(RuntimeError::Api(ApiError::invalid_request(format!(

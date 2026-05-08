@@ -71,10 +71,11 @@ Built-in profiles:
 
 | Profile | Family | Loader | Quantisation |
 | --- | --- | --- | --- |
+| `gemma4-text-safetensors-bf16` | `gemma` | `native-metal` | `bf16` |
 | `qwen36-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-mlx-4bit` | `qwen` | `mlx` | `4bit` |
 
-Both built-ins allow:
+Qwen built-ins allow:
 
 - `*.json`
 - `*.jinja`
@@ -85,12 +86,15 @@ Both built-ins allow:
 - `*.safetensors`
 - `*.safetensors.index.json`
 
-Both built-ins ignore:
+All built-ins ignore:
 
 - `*.bin`
 - `*.pt`
 - `optimizer*`
 - `training_args.bin`
+
+The Gemma text-only profile also ignores image processor, preprocessor,
+vision-tower, and projector artifacts.
 
 Pattern matching is simple exact matching, suffix matching for patterns that
 start with `*`, and prefix matching for patterns that end with `*`. It is not a

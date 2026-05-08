@@ -162,8 +162,12 @@ llm-engine model plan <repo> \
 
 Supported profiles:
 
+- `gemma4-text-safetensors-bf16`
 - `qwen36-safetensors-bf16`
 - `qwen36-mlx-4bit`
+
+`gemma4-text-safetensors-bf16` is an acquisition-planning profile only until a
+Gemma backend is implemented. It excludes vision and projector artifacts.
 
 ## `model pull`
 

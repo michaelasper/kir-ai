@@ -1,0 +1,4 @@
+<|channel|>commentary to=read_file
+{"path":"Cargo.toml"}
+<|channel|>final
+Read the manifest.

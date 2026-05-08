@@ -31,6 +31,8 @@ pub struct FamilyCapabilityFlags {
     pub tool_calls: bool,
     pub dsml_tools: bool,
     pub raw_completion: bool,
+    pub reasoning_channels: bool,
+    pub multimodal_artifacts: bool,
     pub backend_execution: bool,
 }
 
@@ -70,6 +72,8 @@ impl ModelFamilyAdapter for QwenFamilyAdapter {
             tool_calls: true,
             dsml_tools: false,
             raw_completion: true,
+            reasoning_channels: false,
+            multimodal_artifacts: false,
             backend_execution: true,
         }
     }
@@ -106,6 +110,46 @@ impl ModelFamilyAdapter for DeepSeekFamilyAdapter {
             tool_calls: true,
             dsml_tools: true,
             raw_completion: true,
+            reasoning_channels: false,
+            multimodal_artifacts: false,
+            backend_execution: false,
+        }
+    }
+
+    fn promotion_stage(&self) -> PromotionStage {
+        PromotionStage::DeferredUntilQwenParity
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GemmaFamilyAdapter;
+
+impl ModelFamilyAdapter for GemmaFamilyAdapter {
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Gemma
+    }
+
+    fn production_backends(&self) -> &'static [BackendKind] {
+        &[BackendKind::Mlx]
+    }
+
+    fn cache_template_id(&self) -> &'static str {
+        "gemma/text-it/v1"
+    }
+
+    fn tensor_namespace(&self) -> &'static str {
+        "gemma4_text"
+    }
+
+    fn capabilities(&self) -> FamilyCapabilityFlags {
+        FamilyCapabilityFlags {
+            text: true,
+            reasoning: true,
+            tool_calls: true,
+            dsml_tools: false,
+            raw_completion: true,
+            reasoning_channels: true,
+            multimodal_artifacts: false,
             backend_execution: false,
         }
     }
