@@ -4,12 +4,13 @@ use llm_backend::{
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
     qwen_full_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
+    qwen_linear_attention_sequence_with_cache_from_parts,
 };
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
     swiglu_mlp_f32,
 };
-use llm_kv_cache::LayerKvCache;
+use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -143,6 +144,65 @@ fn qwen_linear_attention_sequence_updates_recurrent_state() {
 
     assert_close(&output[0], &expected[0], 1e-6);
     assert_close(&output[1], &expected[1], 1e-6);
+}
+
+#[test]
+fn qwen_linear_attention_sequence_updates_linear_cache() {
+    let dims = QwenLinearAttentionDims {
+        hidden_size: 2,
+        num_key_heads: 1,
+        num_value_heads: 1,
+        key_head_dim: 1,
+        value_head_dim: 2,
+        conv_kernel_size: 1,
+        rms_norm_eps: 0.0,
+    };
+    let qkv = vec![vec![1.0, 1.0, 2.0, 4.0], vec![1.0, 1.0, 10.0, 0.0]];
+    let z = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+    let b = vec![vec![0.0], vec![0.0]];
+    let a = vec![vec![0.0], vec![0.0]];
+    let dt_bias = vec![0.0];
+    let a_log = vec![0.0];
+    let conv1d_weight = vec![1.0, 1.0, 1.0, 1.0];
+    let norm_weight = vec![1.0, 1.0];
+    let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+    let parts = QwenLinearAttentionSequenceParts {
+        qkv: &qkv,
+        z: &z,
+        b: &b,
+        a: &a,
+        dt_bias: &dt_bias,
+        a_log: &a_log,
+        conv1d_weight: &conv1d_weight,
+        norm_weight: &norm_weight,
+        out_proj_weight: &out_proj_weight,
+    };
+    let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
+
+    let output = qwen_linear_attention_sequence_with_cache_from_parts(&dims, &parts, &mut cache)
+        .expect("linear attention sequence with cache");
+    let expected = qwen_linear_attention_sequence_from_parts(&dims, &parts)
+        .expect("linear attention sequence");
+    let k0 = l2_scalar(silu_f32(1.0));
+    let v0 = [silu_f32(2.0), silu_f32(4.0)];
+    let k1 = l2_scalar(silu_f32(1.0));
+    let v1 = [silu_f32(10.0), silu_f32(0.0)];
+    let beta = 0.5;
+    let decay = (-std::f32::consts::LN_2).exp();
+    let state0 = [k0 * v0[0] * beta, k0 * v0[1] * beta];
+    let state1_before = [state0[0] * decay, state0[1] * decay];
+    let memory1 = [state1_before[0] * k1, state1_before[1] * k1];
+    let delta1 = [(v1[0] - memory1[0]) * beta, (v1[1] - memory1[1]) * beta];
+    let state1 = [
+        state1_before[0] + k1 * delta1[0],
+        state1_before[1] + k1 * delta1[1],
+    ];
+
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
+    assert_eq!(cache.token_count(), 2);
+    assert_close(cache.conv_window(), &[1.0, 1.0, 10.0, 0.0], 1e-6);
+    assert_close(cache.recurrent_state(), &state1, 1e-6);
 }
 
 #[test]

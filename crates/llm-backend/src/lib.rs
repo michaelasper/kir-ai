@@ -4,7 +4,7 @@ use futures::{
     stream::{self, BoxStream},
 };
 use llm_api::FinishReason;
-use llm_kv_cache::LayerKvCache;
+use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
@@ -876,6 +876,27 @@ pub fn qwen_linear_attention_sequence_from_parts(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionSequenceParts<'_>,
 ) -> Result<Vec<Vec<f32>>, MathError> {
+    qwen_linear_attention_sequence_from_parts_impl(dims, parts, None)
+}
+
+pub fn qwen_linear_attention_sequence_with_cache_from_parts(
+    dims: &QwenLinearAttentionDims,
+    parts: &QwenLinearAttentionSequenceParts<'_>,
+    cache: &mut LinearAttentionCache,
+) -> Result<Vec<Vec<f32>>, MathError> {
+    if cache.token_count() != 0 {
+        return Err(MathError::InvalidShape(
+            "Qwen linear attention prefill cache must be empty".to_owned(),
+        ));
+    }
+    qwen_linear_attention_sequence_from_parts_impl(dims, parts, Some(cache))
+}
+
+fn qwen_linear_attention_sequence_from_parts_impl(
+    dims: &QwenLinearAttentionDims,
+    parts: &QwenLinearAttentionSequenceParts<'_>,
+    mut cache: Option<&mut LinearAttentionCache>,
+) -> Result<Vec<Vec<f32>>, MathError> {
     let qkv = parts.qkv;
     let z = parts.z;
     let b = parts.b;
@@ -907,6 +928,9 @@ pub fn qwen_linear_attention_sequence_from_parts(
     let key_dim = dims.key_dim()?;
     let value_dim = dims.value_dim()?;
     let conv_dim = dims.conv_dim()?;
+    if let Some(cache) = cache.as_ref() {
+        require_linear_attention_cache_shape(dims, conv_dim, cache)?;
+    }
     require_len("dt bias", parts.dt_bias.len(), dims.num_value_heads)?;
     require_len("A log", parts.a_log.len(), dims.num_value_heads)?;
     require_len("norm weight", parts.norm_weight.len(), dims.value_head_dim)?;
@@ -933,23 +957,42 @@ pub fn qwen_linear_attention_sequence_from_parts(
 
     let mut mixed_tokens = vec![vec![0.0; conv_dim]; seq_len];
     for token_idx in 0..seq_len {
-        for channel in 0..conv_dim {
-            let mut mixed = 0.0;
-            for kernel_idx in 0..dims.conv_kernel_size {
-                let lookback = dims.conv_kernel_size - 1 - kernel_idx;
-                if token_idx >= lookback {
-                    mixed += qkv[token_idx - lookback][channel]
+        let mixed_token = &mut mixed_tokens[token_idx];
+        if let Some(cache) = cache.as_mut() {
+            cache.push_conv_input(&qkv[token_idx]).map_err(|err| {
+                MathError::InvalidShape(format!("linear attention cache update failed: {err}"))
+            })?;
+            for (channel, mixed_value) in mixed_token.iter_mut().enumerate() {
+                let mut mixed = 0.0;
+                for kernel_idx in 0..dims.conv_kernel_size {
+                    mixed += cache.conv_window()[kernel_idx * conv_dim + channel]
                         * parts.conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
                 }
+                *mixed_value = silu_f32(mixed);
             }
-            mixed_tokens[token_idx][channel] = silu_f32(mixed);
+        } else {
+            for (channel, mixed_value) in mixed_token.iter_mut().enumerate() {
+                let mut mixed = 0.0;
+                for kernel_idx in 0..dims.conv_kernel_size {
+                    let lookback = dims.conv_kernel_size - 1 - kernel_idx;
+                    if token_idx >= lookback {
+                        mixed += qkv[token_idx - lookback][channel]
+                            * parts.conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
+                    }
+                }
+                *mixed_value = silu_f32(mixed);
+            }
         }
     }
 
     let repeat = dims.num_value_heads / dims.num_key_heads;
     let scale = (dims.key_head_dim as f32).sqrt().recip();
-    let mut recurrent_state =
-        vec![0.0; dims.num_value_heads * dims.key_head_dim * dims.value_head_dim];
+    let mut recurrent_state = cache
+        .as_ref()
+        .map(|cache| cache.recurrent_state().to_vec())
+        .unwrap_or_else(|| {
+            vec![0.0; dims.num_value_heads * dims.key_head_dim * dims.value_head_dim]
+        });
     let mut outputs = Vec::with_capacity(seq_len);
 
     for token_idx in 0..seq_len {
@@ -1025,7 +1068,43 @@ pub fn qwen_linear_attention_sequence_from_parts(
         )?);
     }
 
+    if let Some(cache) = cache {
+        cache
+            .replace_recurrent_state(&recurrent_state)
+            .map_err(|err| {
+                MathError::InvalidShape(format!("linear attention cache update failed: {err}"))
+            })?;
+    }
+
     Ok(outputs)
+}
+
+fn require_linear_attention_cache_shape(
+    dims: &QwenLinearAttentionDims,
+    conv_dim: usize,
+    cache: &LinearAttentionCache,
+) -> Result<(), MathError> {
+    if cache.conv_kernel_size() != dims.conv_kernel_size
+        || cache.conv_dim() != conv_dim
+        || cache.num_value_heads() != dims.num_value_heads
+        || cache.key_head_dim() != dims.key_head_dim
+        || cache.value_head_dim() != dims.value_head_dim
+    {
+        return Err(MathError::InvalidShape(format!(
+            "Qwen linear attention cache shape does not match dims: cache conv_kernel_size={}, conv_dim={}, value_heads={}, key_head_dim={}, value_head_dim={}; dims conv_kernel_size={}, conv_dim={}, value_heads={}, key_head_dim={}, value_head_dim={}",
+            cache.conv_kernel_size(),
+            cache.conv_dim(),
+            cache.num_value_heads(),
+            cache.key_head_dim(),
+            cache.value_head_dim(),
+            dims.conv_kernel_size,
+            conv_dim,
+            dims.num_value_heads,
+            dims.key_head_dim,
+            dims.value_head_dim
+        )));
+    }
+    Ok(())
 }
 
 pub fn qwen_full_attention_first_token_from_parts(
