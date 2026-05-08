@@ -1,6 +1,11 @@
 [package]
 name = "llm-backend"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+llm-api = { path = "../llm-api" }
+thiserror.workspace = true

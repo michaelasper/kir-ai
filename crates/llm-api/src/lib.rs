@@ -258,6 +258,24 @@ pub struct CompletionRequest {
     pub max_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChatCompletionChoice>,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatCompletionChoice {
+    pub index: u32,
+    pub message: ChatMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
+}
+
 pub trait ValidateRequest {
     fn validate(&self) -> Result<(), ApiError>;
 }
