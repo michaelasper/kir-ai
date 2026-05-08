@@ -170,6 +170,8 @@ Current commits:
 - `de0c3fd` - Cache-backed full-attention single-token decode now uses the sliding KV append path and preserves logical RoPE positions after eviction.
 - `eebcb63` - Native Qwen decode-session cache allocation is now bounded by the retained prefill window instead of requested generation length.
 - `c3e79e5` - Native Qwen decode-session startup now pre-fills the full prompt through typed caches instead of truncating to the tail window.
+- `1beb1e1` - Admin metrics cache model-store usage between scrapes and invalidate the cache after successful admin pulls, fixing GitHub issue #51.
+- `5fca19b` - Qwen linear-attention decode reuses per-head scratch buffers instead of reallocating state transposes and L2 weights, fixing GitHub issue #52.
 
 Current verified state:
 
@@ -276,13 +278,14 @@ Current verified state:
 - `GET /admin/metrics` now records streamed time-to-first-token summaries from the first real content/tool/text delta.
 - `GET /admin/metrics` now exposes explicit prefill and decode phase gauges for active generation work. Streaming requests enter prefill before the first real delta, transition to decode after the first content/tool/text delta, and clear the gauge when the stream completes or is dropped.
 - `GET /admin/metrics` now reports model pull operation counts, success/failure counts, and promoted manifest bytes for admin pull operations.
-- `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from the configured model home.
+- `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from a short-lived in-memory cache instead of rescanning snapshot manifests on every scrape. Successful admin pulls invalidate the cache so the next scrape refreshes usage.
 - `GET /admin/metrics` now reports cumulative artifact verification failures from failed admin snapshot verification.
 - `GET /admin/metrics` now reports process resident memory as `process_rss_bytes` on macOS and Linux.
 - `GET /admin/metrics` now exposes native Qwen Metal per-kernel attempts, successes, and CPU fallback counters under `native_qwen_metal`.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
+- Linear-attention cached sequence/decode now reuses scratch buffers for synthetic L2 weights, zero-memory recurrent updates, query scaling, and value-major recurrent-state rows inside the per-token/per-value-head loop.
 - Full-attention single-token decode now has a cache-backed CPU primitive that uses the logical `LayerKvCache::next_position()` for RoPE position, appends the normalized key/value through strict or sliding KV storage, attends across the retained `LayerKvCache`, and matches full cached sequence prefill.
 - `LayerKvCache` now supports strict appends for fixed-capacity prefill/decode and sliding appends that evict the oldest stored key/value row when full, giving the long-context path a tested local eviction primitive.
 - Hybrid Qwen layer cache allocation now derives one cache per parsed layer kind, using `LinearAttentionCache` for Gated DeltaNet layers and fixed-capacity `LayerKvCache` for full-attention layers.
