@@ -153,6 +153,45 @@ async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_artifact_verification_failures() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_test_snapshot(temp.path()).await;
+    tokio::fs::write(snapshot_path.join("config.json"), "bad")
+        .await
+        .expect("corrupt config");
+    let app = build_router_with_backend(Box::new(SnapshotMetadataBackend { snapshot_path }));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/models/local-qwen36/verify")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin model verify response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "model_integrity_failed");
+    assert_eq!(body["error"]["phase"], "model_artifact_verification");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["artifact_verification_failures"], 1);
+}
+
+#[tokio::test]
 async fn admin_model_plan_endpoint_returns_download_plan() {
     let (endpoint, server) = spawn_fake_hub_server(1);
     let response = build_router_with_backend_and_options(

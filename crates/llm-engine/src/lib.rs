@@ -712,9 +712,13 @@ async fn admin_model_verify(
             "model verification requires snapshot metadata",
         ))
     })?;
-    let verification = ModelStore::verify_snapshot(&snapshot_path)
-        .await
-        .map_err(EngineError::ModelStore)?;
+    let verification = match ModelStore::verify_snapshot(&snapshot_path).await {
+        Ok(verification) => verification,
+        Err(err) => {
+            record_artifact_verification_failure_metrics(&state);
+            return Err(EngineError::ModelStore(err));
+        }
+    };
     Ok(Json(json!({
         "status": "ok",
         "snapshot_path": verification.snapshot.path,
@@ -906,6 +910,7 @@ async fn admin_metrics(
         "model_pull_bytes": metrics.model_pull_bytes(),
         "model_store_snapshots": model_store_usage.snapshots,
         "model_store_bytes": model_store_usage.bytes,
+        "artifact_verification_failures": metrics.artifact_verification_failures(),
         "tokens_per_second": metrics.tokens_per_second(),
         "request_latency_ms": {
             "count": request_latency.count(),
@@ -1344,6 +1349,14 @@ fn record_model_pull_failure_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_model_pull_failure();
+}
+
+fn record_artifact_verification_failure_metrics(state: &AppState) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_artifact_verification_failure();
 }
 
 fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {

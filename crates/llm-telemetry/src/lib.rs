@@ -124,6 +124,7 @@ pub struct ServerMetrics {
     model_pull_successes: u64,
     model_pull_failures: u64,
     model_pull_bytes: u64,
+    artifact_verification_failures: u64,
     request_latency: LatencyMetrics,
     time_to_first_token: LatencyMetrics,
     tokens: TokenCounters,
@@ -164,6 +165,10 @@ impl ServerMetrics {
     pub fn record_model_pull_failure(&mut self) {
         self.model_pull_operations += 1;
         self.model_pull_failures += 1;
+    }
+
+    pub fn record_artifact_verification_failure(&mut self) {
+        self.artifact_verification_failures += 1;
     }
 
     pub fn record_time_to_first_token(&mut self, latency: Duration) {
@@ -208,6 +213,10 @@ impl ServerMetrics {
 
     pub fn model_pull_bytes(&self) -> u64 {
         self.model_pull_bytes
+    }
+
+    pub fn artifact_verification_failures(&self) -> u64 {
+        self.artifact_verification_failures
     }
 
     pub fn request_latency(&self) -> LatencyMetrics {
@@ -277,6 +286,7 @@ mod tests {
         assert_eq!(metrics.model_pull_successes(), 0);
         assert_eq!(metrics.model_pull_failures(), 0);
         assert_eq!(metrics.model_pull_bytes(), 0);
+        assert_eq!(metrics.artifact_verification_failures(), 0);
         assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
         assert_eq!(metrics.request_latency().count(), 2);
         assert_eq!(metrics.request_latency().min_ms(), 10.0);
@@ -298,5 +308,7 @@ mod tests {
         assert_eq!(metrics.model_pull_successes(), 1);
         assert_eq!(metrics.model_pull_failures(), 1);
         assert_eq!(metrics.model_pull_bytes(), 17);
+        metrics.record_artifact_verification_failure();
+        assert_eq!(metrics.artifact_verification_failures(), 1);
     }
 }
