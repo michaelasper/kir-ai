@@ -63,6 +63,7 @@ Current commits:
 - `bf5ac3e` - The model store can list promoted local snapshots, and `llm-engine model list --model-home <path>` reports snapshot identity, profile, manifest digest, and file counts.
 - `45bf64a` - Chat requests now fail closed for unsupported non-greedy `temperature`/`top_p` values instead of silently ignoring sampling controls.
 - `4cf4cf6` - Engine error bodies now include failure phase and retryability metadata alongside stable error codes.
+- `fdafefd` - Chat and text-completion streams honor `stream_options.include_usage` by emitting a usage-only chunk before `[DONE]`.
 
 Current verified state:
 
@@ -90,13 +91,14 @@ Current verified state:
 - `llm-engine model list --model-home <path>` enumerates promoted engine-owned snapshots from local manifests, including repo ID, resolved commit, profile, family, loader, quantization, manifest digest, and file count.
 - Chat sampling controls are fail-closed: explicit greedy settings `temperature: 0` and `top_p: 1` are accepted, while unsupported non-greedy sampling settings return an `unsupported_capability` validation error.
 - HTTP failure bodies now include `error.phase` and `error.retryable` in addition to `error.code`, covering request validation, model resolution, prompt rendering, decode, response parsing, response validation, and serialization phases.
+- Streaming chat and legacy text completions accept OpenAI `stream_options.include_usage` and append a final usage-only chunk with `choices: []` before the single `[DONE]` terminator.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, but stream heartbeats during long prefill, stream metrics, stream stall detection, and disconnect cancellation are not complete.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks, but stream heartbeats during long prefill, stream metrics, stream stall detection, and disconnect cancellation are not complete.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
