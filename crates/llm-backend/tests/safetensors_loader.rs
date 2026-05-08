@@ -11,11 +11,12 @@ use llm_backend::{
     qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
     qwen_layer_linear_attention_sequence_with_cache,
     qwen_layer_linear_attention_sequence_with_cache_with_matvec,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
-    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
-    qwen_prefill_sequence_with_cache_with_matvec, qwen_rms_norm_f32,
+    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_router_with_matvec,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_logits_with_matvec,
+    qwen_lm_head_top_k, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence,
+    qwen_prefill_sequence_with_cache, qwen_prefill_sequence_with_cache_with_matvec,
+    qwen_rms_norm_f32,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -518,6 +519,51 @@ fn qwen_moe_router_probe_selects_top_experts() {
 
     assert_eq!(router.selected[0].index, 1);
     assert_eq!(router.selected[1].index, 2);
+    assert_close(
+        &[router.selected[0].weight, router.selected[1].weight],
+        &[0.7310586, 0.26894143],
+        1e-6,
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_moe_router_uses_configured_top_k_backend() {
+    let root = temp_snapshot_dir("qwen-router-custom-top-k");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 24 },
+            "weight_map": {
+                "model.language_model.layers.0.mlp.gate.weight": "router.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("router.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.mlp.gate.weight",
+            &[3, 2],
+            &[
+                1.0, 0.0, //
+                0.0, 2.0, //
+                1.0, 1.0,
+            ],
+        ),
+    )
+    .expect("router");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let matvec = RecordingMatvecBackend::default();
+
+    let router =
+        qwen_layer_moe_router_with_matvec(&store, 0, &[2.0, 3.0], 2, &matvec).expect("router");
+
+    assert_eq!(router.selected[0].index, 1);
+    assert_eq!(router.selected[1].index, 2);
+    assert_eq!(matvec.softmax_top_k_calls.get(), 1);
     assert_close(
         &[router.selected[0].weight, router.selected[1].weight],
         &[0.7310586, 0.26894143],
@@ -1848,6 +1894,7 @@ struct RecordingMatvecBackend {
     rms_norm_calls: Cell<usize>,
     softmax_calls: Cell<usize>,
     conv1d_calls: Cell<usize>,
+    softmax_top_k_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -1935,6 +1982,16 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
             conv_dim,
             kernel_size,
         )
+    }
+
+    fn softmax_top_k_f32(
+        &self,
+        logits: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<TopKWeight>, MathError> {
+        self.softmax_top_k_calls
+            .set(self.softmax_top_k_calls.get() + 1);
+        CpuQwenMatvecBackend.softmax_top_k_f32(logits, top_k)
     }
 }
 

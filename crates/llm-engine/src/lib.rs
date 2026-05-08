@@ -21,9 +21,10 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
-    qwen_decode_token_with_cache_with_matvec, qwen_decoder_layer_sequence_with_cache_with_matvec,
-    qwen_embedding_sequence, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
-    qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
+    TopKWeight, qwen_decode_token_with_cache_with_matvec,
+    qwen_decoder_layer_sequence_with_cache_with_matvec, qwen_embedding_sequence,
+    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec,
+    qwen_lm_head_top_k_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -502,6 +503,52 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 }),
         }
     }
+
+    fn softmax_top_k_f32(
+        &self,
+        logits: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<TopKWeight>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().softmax_top_k_f32(logits, top_k),
+            Self::Metal(device) => {
+                if top_k == 0
+                    || top_k > logits.len()
+                    || logits.iter().any(|value| !value.is_finite())
+                {
+                    return Self::cpu().softmax_top_k_f32(logits, top_k);
+                }
+                device
+                    .top_k_f32(logits, top_k)
+                    .map_err(|_| ())
+                    .and_then(softmax_metal_top_k)
+                    .or_else(|_| Self::cpu().softmax_top_k_f32(logits, top_k))
+            }
+        }
+    }
+}
+
+fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {
+    let max = top
+        .iter()
+        .map(|item| item.value)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut exp_values = top
+        .iter()
+        .map(|item| (item.value - max).exp())
+        .collect::<Vec<_>>();
+    let sum = exp_values.iter().sum::<f32>();
+    if sum == 0.0 || !sum.is_finite() {
+        return Err(());
+    }
+    Ok(top
+        .iter()
+        .zip(exp_values.iter_mut())
+        .map(|(item, value)| TopKWeight {
+            index: item.index,
+            weight: *value / sum,
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1437,55 +1484,56 @@ async fn chat_completions(
         }
         let request_started = Instant::now();
         let events = async_stream::stream! {
-            let _permit = permit;
-            let _active_request = active_request;
-            match state
-                .runtime
-                .chat_stream_with_cancel(request, _active_request.cancellation.clone())
-                .await
-            {
-                Ok(response) => {
-                    let mut events = response.into_events();
-                    let mut ttft_recorded = false;
-                    loop {
-                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
-                            Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
-                                if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
-                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
-                                    ttft_recorded = true;
-                                }
-                                yield sse_json_event(chunk);
-                            }
-                            Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
-                                yield Ok(Event::default().data("[DONE]"));
-                            }
-                            Ok(Some(Err(err))) => {
-                                record_runtime_error_metrics(&state, &err);
-                                for event in runtime_error_stream_events(err) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            Ok(None) => break,
-                            Err(StreamStalled) => {
-                                record_failure_metrics(&state);
-                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    record_runtime_error_metrics(&state, &err);
-                    for event in runtime_error_stream_events(err) {
-                        yield event;
+                    let _permit = permit;
+                    let _active_request = active_request;
+                    match state
+                        .runtime
+                        .chat_stream_with_cancel(request, _active_request.cancellation.clone())
+                        .await
+                    {
+                        Ok(response) => {
+                            let mut events = response.into_events();
+                            let mut ttft_recorded = false;
+                            loop {
+                                match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                                    Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                                        if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                            record_time_to_first_token_metrics(&state, request_started.elapsed());
+                                            ttft_recorded = true;
+                                        }
+                                        yield sse_json_event(chunk);
+                                    }
+                                    Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
+                                        record_success_metrics(&state, &usage, streamed, request_started.elapsed());
+                                        yield Ok(Event::default().data("[DONE]"));
+                                    }
+                                    Ok(Some(Err(err))) => {
+                                        record_runtime_error_metrics(&state, &err);
+                                        for event in runtime_error_stream_events(err) {
+                                            yield event;
+                                        }
+                                        return;
+                                    }
+                                    Ok(None) => break,
+                                    Err(StreamStalled) => {
+                                        record_failure_metrics(&state);
+                                        for event in stream_stalled_stream_events(state.stream_stall_timeout) {
+                                            yield event;
+                                        }
+                                        return;
                     }
                 }
             }
-        };
+        }
+
+                        Err(err) => {
+                            record_runtime_error_metrics(&state, &err);
+                            for event in runtime_error_stream_events(err) {
+                                yield event;
+                            }
+                        }
+                    }
+                };
         let mut response = Sse::new(events)
             .keep_alive(engine_sse_keep_alive())
             .into_response();

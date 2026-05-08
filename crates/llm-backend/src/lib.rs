@@ -636,6 +636,14 @@ pub trait QwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
     }
+
+    fn softmax_top_k_f32(
+        &self,
+        logits: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<TopKWeight>, MathError> {
+        softmax_top_k_f32(logits, top_k)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2580,7 +2588,8 @@ pub fn qwen_layer_moe_router_with_matvec(
         &qwen_mlp_tensor(layer_idx, "gate.weight"),
         hidden_states,
     )?;
-    let selected = softmax_top_k_f32(&logits, top_k)
+    let selected = matvec
+        .softmax_top_k_f32(&logits, top_k)
         .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
     Ok(QwenMoeRouterProbe { logits, selected })
 }
