@@ -1,10 +1,12 @@
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_backend::{
     SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_top_k,
+    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_full_attention_first_token,
+    qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_top_k,
 };
+use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -159,11 +161,13 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
     .expect("shard");
 
     let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_shard_count(), 0);
 
     assert_eq!(
         store.bf16_row_f32("embed.weight", 1).expect("row"),
         vec![4.0, 5.0, 6.0]
     );
+    assert_eq!(store.cached_shard_count(), 1);
     assert_eq!(
         store
             .bf16_matvec_row_major_f32("embed.weight", &[1.0, 2.0, 3.0])
@@ -189,6 +193,7 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
             .and_then(|name| name.to_str()),
         Some("model-00001-of-00001.safetensors")
     );
+    assert_eq!(store.cached_shard_count(), 1);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -478,6 +483,154 @@ fn qwen_moe_forward_reads_selected_expert_slices() {
 }
 
 #[test]
+fn qwen_full_attention_first_token_requires_key_and_norm_weights() {
+    let root = temp_snapshot_dir("qwen-full-attn-required");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 48 },
+            "weight_map": {
+                "model.language_model.layers.0.self_attn.q_proj.weight": "q.safetensors",
+                "model.language_model.layers.0.self_attn.v_proj.weight": "v.safetensors",
+                "model.language_model.layers.0.self_attn.o_proj.weight": "o.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("q.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+            &[4, 2],
+            &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        ),
+    )
+    .expect("q");
+    std::fs::write(
+        root.join("v.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.self_attn.v_proj.weight",
+            &[2, 2],
+            &[1.0, 0.0, 0.0, 1.0],
+        ),
+    )
+    .expect("v");
+    std::fs::write(
+        root.join("o.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.self_attn.o_proj.weight",
+            &[2, 2],
+            &[1.0, 0.0, 0.0, 1.0],
+        ),
+    )
+    .expect("o");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let err = qwen_layer_full_attention_first_token(
+        &store,
+        &tiny_qwen_spec(AttentionKind::FullAttention),
+        0,
+        &[1.0, 1.0],
+    )
+    .expect_err("full attention requires k_proj/q_norm/k_norm");
+
+    assert_eq!(err.code(), "model_artifact_missing");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_linear_attention_first_token_requires_delta_parameters() {
+    let root = temp_snapshot_dir("qwen-linear-delta-required");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 96 },
+            "weight_map": {
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight": "qkv.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight": "z.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight": "b.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight": "a.safetensors",
+                "model.language_model.layers.0.linear_attn.conv1d.weight": "conv.safetensors",
+                "model.language_model.layers.0.linear_attn.norm.weight": "norm.safetensors",
+                "model.language_model.layers.0.linear_attn.out_proj.weight": "out.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("qkv.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+            &[4, 2],
+            &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0],
+        ),
+    )
+    .expect("qkv");
+    for (filename, tensor, shape, values) in [
+        (
+            "z.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "b.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+            vec![1, 2],
+            vec![1.0, 0.0],
+        ),
+        (
+            "a.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+            vec![1, 2],
+            vec![1.0, 0.0],
+        ),
+        (
+            "conv.safetensors",
+            "model.language_model.layers.0.linear_attn.conv1d.weight",
+            vec![4, 1],
+            vec![1.0, 1.0, 1.0, 1.0],
+        ),
+        (
+            "norm.safetensors",
+            "model.language_model.layers.0.linear_attn.norm.weight",
+            vec![2],
+            vec![1.0, 1.0],
+        ),
+        (
+            "out.safetensors",
+            "model.language_model.layers.0.linear_attn.out_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let projections =
+        qwen_layer_linear_attention_projections(&store, 0, &[1.0, 1.0]).expect("projections");
+
+    let err = qwen_layer_linear_attention_first_token(
+        &store,
+        &tiny_qwen_spec(AttentionKind::LinearAttention),
+        0,
+        &projections,
+    )
+    .expect_err("linear attention requires A_log and dt_bias");
+
+    assert_eq!(err.code(), "model_artifact_missing");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
     let root = temp_snapshot_dir("qwen-lm-head");
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -563,6 +716,36 @@ fn temp_safetensors_path(label: &str) -> std::path::PathBuf {
 
 fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("llm-backend-{label}-{}", std::process::id()))
+}
+
+fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
+    QwenModelSpec {
+        family: ModelFamily::Qwen,
+        architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+        model_type: "qwen3_5_moe".to_owned(),
+        text_model_type: "qwen3_5_moe_text".to_owned(),
+        hidden_size: 2,
+        rms_norm_eps: 1e-6,
+        tie_word_embeddings: false,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+        num_hidden_layers: 1,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+        linear_num_key_heads: 1,
+        linear_num_value_heads: 1,
+        linear_key_head_dim: 1,
+        linear_value_head_dim: 2,
+        linear_conv_kernel_dim: 1,
+        num_experts: 1,
+        num_experts_per_tok: 1,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 1,
+        max_position_embeddings: 128,
+        vocab_size: 8,
+        layer_kinds: vec![kind],
+    }
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {

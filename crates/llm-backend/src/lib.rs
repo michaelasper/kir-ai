@@ -8,10 +8,12 @@ use std::{
     io::{Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use thiserror::Error;
 
 const MAX_SAFETENSORS_HEADER_LEN: u64 = 64 * 1024 * 1024;
+const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendRequest {
@@ -1008,20 +1010,32 @@ pub fn qwen_layer_linear_attention_first_token(
     projections: &QwenLinearAttentionProjectionProbe,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let dims = QwenLinearAttentionDims::from_spec(spec);
+    let dt_bias = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "dt_bias"))?;
+    let a_log = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "A_log"))?;
     let conv1d_weight =
         store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "conv1d.weight"))?;
     let norm_weight = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "norm.weight"))?;
     let out_proj_weight =
         store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "out_proj.weight"))?;
-    qwen_linear_attention_first_token_from_parts(
+    let qkv = vec![projections.qkv.clone()];
+    let z = vec![projections.z.clone()];
+    let b = vec![projections.b.clone()];
+    let a = vec![projections.a.clone()];
+    qwen_linear_attention_sequence_from_parts(
         &dims,
-        &projections.qkv,
-        &projections.z,
-        &projections.b,
-        &conv1d_weight,
-        &norm_weight,
-        &out_proj_weight,
+        &QwenLinearAttentionSequenceParts {
+            qkv: &qkv,
+            z: &z,
+            b: &b,
+            a: &a,
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
     )
+    .map(|mut outputs| outputs.remove(0))
     .map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 linear attention failed: {err}"))
     })
@@ -1091,19 +1105,45 @@ pub fn qwen_layer_full_attention_first_token(
         &qwen_self_attn_tensor(layer_idx, "q_proj.weight"),
         hidden_states,
     )?;
+    let k_proj = store.bf16_matvec_row_major_f32(
+        &qwen_self_attn_tensor(layer_idx, "k_proj.weight"),
+        hidden_states,
+    )?;
     let v_proj = store.bf16_matvec_row_major_f32(
         &qwen_self_attn_tensor(layer_idx, "v_proj.weight"),
         hidden_states,
     )?;
+    let q_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "q_norm.weight"))?;
+    let k_norm_weight =
+        store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "k_norm.weight"))?;
     let o_proj_weight =
         store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
-    qwen_full_attention_first_token_from_parts(&dims, &q_proj, &v_proj, &o_proj_weight).map_err(
-        |err| {
-            TensorLoadError::integrity(format!(
-                "Qwen layer{layer_idx} full attention failed: {err}"
-            ))
+    let q_proj = vec![q_proj];
+    let k_proj = vec![k_proj];
+    let v_proj = vec![v_proj];
+    qwen_full_attention_sequence_from_parts(
+        &dims,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        QwenFullAttentionSequenceConfig {
+            rms_norm_eps: spec.rms_norm_eps,
+            rope_theta: spec.rope_theta,
+            partial_rotary_factor: spec.partial_rotary_factor,
         },
     )
+    .map(|mut outputs| outputs.remove(0))
+    .map_err(|err| {
+        TensorLoadError::integrity(format!(
+            "Qwen layer{layer_idx} full attention failed: {err}"
+        ))
+    })
 }
 
 pub fn qwen_layer_full_attention_sequence(
@@ -2062,6 +2102,7 @@ impl SafeTensorFile {
 pub struct SafeTensorShardStore {
     root: PathBuf,
     index: SafetensorsIndex,
+    shards: Arc<Mutex<BTreeMap<PathBuf, Arc<SafeTensorFile>>>>,
 }
 
 impl SafeTensorShardStore {
@@ -2080,7 +2121,11 @@ impl SafeTensorShardStore {
                 index_path.display()
             ))
         })?;
-        Ok(Self { root, index })
+        Ok(Self {
+            root,
+            index,
+            shards: Arc::new(Mutex::new(BTreeMap::new())),
+        })
     }
 
     pub fn tensor_shard_path(&self, tensor: &str) -> Result<PathBuf, TensorLoadError> {
@@ -2122,7 +2167,8 @@ impl SafeTensorShardStore {
         tensor: &str,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let metadata = self.tensor_metadata(tensor)?;
+        let file = self.open_tensor_file(tensor)?;
+        let metadata = file.tensor_metadata(tensor)?;
         if metadata.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` matvec expects rank 2, got rank {}",
@@ -2131,13 +2177,30 @@ impl SafeTensorShardStore {
         }
         let rows = metadata.shape[0];
         let columns = metadata.shape[1];
-        let element_count = rows
-            .checked_mul(columns)
-            .ok_or_else(|| TensorLoadError::integrity("matvec tensor shape overflows usize"))?;
-        let weights = self.bf16_tensor_f32_range(tensor, 0, element_count)?;
-        matvec_row_major_f32(input, &weights, rows, columns).map_err(|err| {
-            TensorLoadError::integrity(format!("BF16 matvec for tensor `{tensor}` failed: {err}"))
-        })
+        if input.len() != columns {
+            return Err(TensorLoadError::integrity(format!(
+                "input length {} does not match tensor `{tensor}` columns {columns}",
+                input.len()
+            )));
+        }
+        let mut output = Vec::with_capacity(rows);
+        for row_start in (0..rows).step_by(BF16_MATVEC_CHUNK_ROWS) {
+            let rows_in_chunk = BF16_MATVEC_CHUNK_ROWS.min(rows - row_start);
+            let element_offset = row_start
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("matvec offset overflow"))?;
+            let element_count = rows_in_chunk
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("matvec chunk overflow"))?;
+            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+            output.extend(weights.chunks_exact(columns).map(|row| {
+                row.iter()
+                    .zip(input)
+                    .map(|(weight, value)| weight * value)
+                    .sum::<f32>()
+            }));
+        }
+        Ok(output)
     }
 
     pub fn bf16_matvecs_row_major_f32(
@@ -2145,7 +2208,8 @@ impl SafeTensorShardStore {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
-        let metadata = self.tensor_metadata(tensor)?;
+        let file = self.open_tensor_file(tensor)?;
+        let metadata = file.tensor_metadata(tensor)?;
         if metadata.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` batched matvec expects rank 2, got rank {}",
@@ -2154,15 +2218,34 @@ impl SafeTensorShardStore {
         }
         let rows = metadata.shape[0];
         let columns = metadata.shape[1];
-        let element_count = rows.checked_mul(columns).ok_or_else(|| {
-            TensorLoadError::integrity("batched matvec tensor shape overflows usize")
-        })?;
-        let weights = self.bf16_tensor_f32_range(tensor, 0, element_count)?;
-        matvecs_row_major_f32(inputs, &weights, rows, columns).map_err(|err| {
-            TensorLoadError::integrity(format!(
-                "BF16 batched matvec for tensor `{tensor}` failed: {err}"
-            ))
-        })
+        for input in inputs {
+            if input.len() != columns {
+                return Err(TensorLoadError::integrity(format!(
+                    "input length {} does not match tensor `{tensor}` columns {columns}",
+                    input.len()
+                )));
+            }
+        }
+        let mut outputs = vec![Vec::with_capacity(rows); inputs.len()];
+        for row_start in (0..rows).step_by(BF16_MATVEC_CHUNK_ROWS) {
+            let rows_in_chunk = BF16_MATVEC_CHUNK_ROWS.min(rows - row_start);
+            let element_offset = row_start
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("batched matvec offset overflow"))?;
+            let element_count = rows_in_chunk
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("batched matvec chunk overflow"))?;
+            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+            for input_idx in 0..inputs.len() {
+                outputs[input_idx].extend(weights.chunks_exact(columns).map(|row| {
+                    row.iter()
+                        .zip(&inputs[input_idx])
+                        .map(|(weight, value)| weight * value)
+                        .sum::<f32>()
+                }));
+            }
+        }
+        Ok(outputs)
     }
 
     pub fn bf16_matvec_top_k_rows_f32(
@@ -2227,8 +2310,29 @@ impl SafeTensorShardStore {
         Ok(top)
     }
 
-    fn open_tensor_file(&self, tensor: &str) -> Result<SafeTensorFile, TensorLoadError> {
-        SafeTensorFile::open(self.tensor_shard_path(tensor)?)
+    pub fn cached_shard_count(&self) -> usize {
+        self.shards.lock().map(|shards| shards.len()).unwrap_or(0)
+    }
+
+    fn open_tensor_file(&self, tensor: &str) -> Result<Arc<SafeTensorFile>, TensorLoadError> {
+        let shard_path = self.tensor_shard_path(tensor)?;
+        {
+            let shards = self.shards.lock().map_err(|err| {
+                TensorLoadError::integrity(format!("shard cache lock poisoned: {err}"))
+            })?;
+            if let Some(file) = shards.get(&shard_path) {
+                return Ok(Arc::clone(file));
+            }
+        }
+        let file = Arc::new(SafeTensorFile::open(&shard_path)?);
+        let mut shards = self.shards.lock().map_err(|err| {
+            TensorLoadError::integrity(format!("shard cache lock poisoned: {err}"))
+        })?;
+        Ok(Arc::clone(
+            shards
+                .entry(shard_path)
+                .or_insert_with(|| Arc::clone(&file)),
+        ))
     }
 }
 
