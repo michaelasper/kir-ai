@@ -88,6 +88,7 @@ Current commits:
 - `33b3954` - Admin endpoints support configured Bearer authentication and non-loopback serving requires an admin token.
 - `07073a1` - Chat messages accept OpenAI text content-part arrays and normalize them to internal text.
 - `12d8cdf` - Deterministic protocol mode now emits structured tool calls for required tool-choice requests.
+- `ded78eb` - Safetensors index shard paths are validated and shard opens are confined to the snapshot root.
 
 Current verified state:
 
@@ -140,6 +141,7 @@ Current verified state:
 - `/admin/*` routes can be protected with `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN`; configured deployments require `Authorization: Bearer <token>` and return `admin_auth_required` otherwise. `serve --addr` refuses non-loopback binds unless an admin token is configured.
 - Chat message deserialization accepts plain string content, `null`, and text-only OpenAI content-part arrays such as `[{"type":"text","text":"hello"}]`; text parts are concatenated before prompt rendering.
 - The default deterministic/protocol backend now threads required tool choice to the backend and emits a valid `<tool_call>` block for declared tools; optional tools still allow text fallback.
+- Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
 
 Known incomplete items:
 
