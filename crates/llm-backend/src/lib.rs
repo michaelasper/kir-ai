@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use llm_api::FinishReason;
+use llm_models::SafetensorsIndex;
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{self, File},
     io::{Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
@@ -418,6 +419,61 @@ impl SafeTensorFile {
             .checked_mul(columns)
             .ok_or_else(|| TensorLoadError::integrity("row offset overflow"))?;
         self.bf16_tensor_f32_range(name, element_offset, columns)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SafeTensorShardStore {
+    root: PathBuf,
+    index: SafetensorsIndex,
+}
+
+impl SafeTensorShardStore {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, TensorLoadError> {
+        let root = root.as_ref().to_path_buf();
+        let index_path = root.join("model.safetensors.index.json");
+        let index_json = fs::read_to_string(&index_path).map_err(|err| {
+            TensorLoadError::missing(format!(
+                "could not read safetensors index `{}`: {err}",
+                index_path.display()
+            ))
+        })?;
+        let index = SafetensorsIndex::from_json(&index_json).map_err(|err| {
+            TensorLoadError::integrity(format!(
+                "invalid safetensors index `{}`: {err}",
+                index_path.display()
+            ))
+        })?;
+        Ok(Self { root, index })
+    }
+
+    pub fn tensor_shard_path(&self, tensor: &str) -> Result<PathBuf, TensorLoadError> {
+        let shard = self.index.shard_for(tensor).ok_or_else(|| {
+            TensorLoadError::missing(format!("tensor `{tensor}` not found in safetensors index"))
+        })?;
+        Ok(self.root.join(shard))
+    }
+
+    pub fn tensor_metadata(&self, tensor: &str) -> Result<TensorMetadata, TensorLoadError> {
+        self.open_tensor_file(tensor)?.tensor_metadata(tensor)
+    }
+
+    pub fn bf16_row_f32(&self, tensor: &str, row: usize) -> Result<Vec<f32>, TensorLoadError> {
+        self.open_tensor_file(tensor)?.bf16_row_f32(tensor, row)
+    }
+
+    pub fn bf16_tensor_f32_range(
+        &self,
+        tensor: &str,
+        element_offset: usize,
+        element_count: usize,
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        self.open_tensor_file(tensor)?
+            .bf16_tensor_f32_range(tensor, element_offset, element_count)
+    }
+
+    fn open_tensor_file(&self, tensor: &str) -> Result<SafeTensorFile, TensorLoadError> {
+        SafeTensorFile::open(self.tensor_shard_path(tensor)?)
     }
 }
 

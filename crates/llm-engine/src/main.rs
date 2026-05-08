@@ -1,4 +1,4 @@
-use llm_backend::SafeTensorFile;
+use llm_backend::{SafeTensorFile, SafeTensorShardStore};
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use std::net::SocketAddr;
@@ -81,6 +81,47 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "tensor_count": header.tensor_count(),
                     "sample_tensors": sample_tensors,
                     "tensor": tensor,
+                    "bf16_row": bf16_row
+                }))?
+            );
+        }
+        "inspect-tensor" => {
+            let snapshot_path = args.get(1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "usage: llm-engine model inspect-tensor <snapshot-path> --tensor <name>"
+                )
+            })?;
+            let tensor_name = flag_value(&args, "--tensor")
+                .ok_or_else(|| anyhow::anyhow!("inspect-tensor requires --tensor <name>"))?;
+            let store = SafeTensorShardStore::open(snapshot_path)?;
+            let shard_path = store.tensor_shard_path(tensor_name)?;
+            let metadata = store.tensor_metadata(tensor_name)?;
+            let bf16_row = flag_value(&args, "--bf16-row")
+                .map(|row| {
+                    let row = row.parse::<usize>()?;
+                    let values = store.bf16_row_f32(tensor_name, row)?;
+                    let limit = flag_value(&args, "--limit")
+                        .map(str::parse::<usize>)
+                        .transpose()?
+                        .unwrap_or(8);
+                    anyhow::Ok(serde_json::json!({
+                        "row": row,
+                        "values_read": values.len(),
+                        "values_prefix": values.into_iter().take(limit).collect::<Vec<_>>()
+                    }))
+                })
+                .transpose()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "snapshot_path": snapshot_path,
+                    "tensor": {
+                        "name": metadata.name,
+                        "dtype": metadata.dtype,
+                        "shape": metadata.shape,
+                        "byte_len": metadata.byte_len,
+                        "shard_path": shard_path
+                    },
                     "bf16_row": bf16_row
                 }))?
             );

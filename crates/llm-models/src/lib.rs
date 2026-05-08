@@ -70,6 +70,10 @@ impl SafetensorsIndex {
         self.weight_map.contains_key(tensor)
     }
 
+    pub fn shard_for(&self, tensor: &str) -> Option<&str> {
+        self.weight_map.get(tensor).map(String::as_str)
+    }
+
     pub fn validate_qwen_text_weights(&self, spec: &QwenModelSpec) -> Result<(), ModelSpecError> {
         self.require("model.language_model.embed_tokens.weight")?;
         self.require("model.language_model.norm.weight")?;

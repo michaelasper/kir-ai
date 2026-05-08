@@ -1,4 +1,4 @@
-use llm_backend::{SafeTensorArchive, SafeTensorFile, SafeTensorHeader};
+use llm_backend::{SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore};
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -133,6 +133,42 @@ fn rejects_bf16_range_outside_tensor() {
     std::fs::remove_file(path).ok();
 }
 
+#[test]
+fn shard_store_reads_bf16_row_by_tensor_name() {
+    let root = temp_snapshot_dir("indexed-store");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 12 },
+            "weight_map": { "embed.weight": "model-00001-of-00001.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("model-00001-of-00001.safetensors"),
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    assert_eq!(
+        store.bf16_row_f32("embed.weight", 1).expect("row"),
+        vec![4.0, 5.0, 6.0]
+    );
+    assert_eq!(
+        store
+            .tensor_shard_path("embed.weight")
+            .expect("shard path")
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("model-00001-of-00001.safetensors")
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
@@ -171,4 +207,8 @@ fn temp_safetensors_path(label: &str) -> std::path::PathBuf {
         "llm-backend-{label}-{}.safetensors",
         std::process::id()
     ))
+}
+
+fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("llm-backend-{label}-{}", std::process::id()))
 }

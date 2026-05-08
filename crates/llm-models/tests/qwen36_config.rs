@@ -56,6 +56,10 @@ fn validates_official_qwen36_safetensors_index_against_spec() {
     assert_eq!(index.total_size_bytes, 71_903_645_408);
     assert_eq!(index.tensor_count(), 1045);
     assert_eq!(index.shard_count(), 26);
+    assert_eq!(
+        index.shard_for("model.language_model.embed_tokens.weight"),
+        Some("model-00001-of-00026.safetensors")
+    );
     assert!(index.contains("model.language_model.layers.0.linear_attn.in_proj_qkv.weight"));
     assert!(!index.contains("model.language_model.layers.0.self_attn.q_proj.weight"));
     assert!(index.contains("model.language_model.layers.3.self_attn.q_proj.weight"));
