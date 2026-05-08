@@ -1,11 +1,12 @@
 use chrono::Utc;
 use llm_api::{
-    ApiError, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
+    ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
     ChatRole, ToolChoice, Usage, ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
-use llm_tool_parser::{ParserError, QwenParser};
+use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,13 +31,77 @@ where
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, RuntimeError> {
-        request.validate()?;
         if request.stream {
             return Err(ApiError::unsupported_capability(
-                "streaming chat completions are not implemented yet",
+                "streaming chat requests must use Runtime::chat_stream",
             )
             .into());
         }
+        let completion = self.complete_chat(request).await?;
+        let message = ChatMessage {
+            role: ChatRole::Assistant,
+            content: (!completion.parsed.content.is_empty()).then_some(completion.parsed.content),
+            name: None,
+            tool_call_id: None,
+            tool_calls: completion.parsed.tool_calls,
+        };
+        Ok(ChatCompletionResponse {
+            id: completion.id,
+            object: "chat.completion".to_owned(),
+            created: completion.created,
+            model: completion.model,
+            choices: vec![ChatCompletionChoice {
+                index: 0,
+                message,
+                finish_reason: Some(completion.finish_reason),
+            }],
+            usage: completion.usage,
+        })
+    }
+
+    pub async fn chat_stream(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<ChatCompletionStream, RuntimeError> {
+        let completion = self.complete_chat(request).await?;
+        if !completion.parsed.tool_calls.is_empty() {
+            return Err(ApiError::unsupported_capability(
+                "streaming tool-call deltas are not implemented yet",
+            )
+            .into());
+        }
+        let mut chunks = Vec::new();
+        chunks.push(stream_chunk(
+            &completion,
+            ChatCompletionDelta {
+                role: Some(ChatRole::Assistant),
+                ..ChatCompletionDelta::default()
+            },
+            None,
+        ));
+        if !completion.parsed.content.is_empty() {
+            chunks.push(stream_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    content: Some(completion.parsed.content.clone()),
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+            ));
+        }
+        chunks.push(stream_chunk(
+            &completion,
+            ChatCompletionDelta::default(),
+            Some(completion.finish_reason.clone()),
+        ));
+        Ok(ChatCompletionStream { chunks })
+    }
+
+    async fn complete_chat(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> Result<RuntimeChatCompletion, RuntimeError> {
+        request.validate()?;
         let prompt = render_qwen_chatml(
             &request.messages,
             &request.tools,
@@ -71,30 +136,52 @@ where
         } else {
             llm_api::FinishReason::ToolCalls
         };
-        let message = ChatMessage {
-            role: ChatRole::Assistant,
-            content: (!parsed.content.is_empty()).then_some(parsed.content),
-            name: None,
-            tool_call_id: None,
-            tool_calls: parsed.tool_calls,
-        };
         let usage = Usage {
             prompt_tokens: output.prompt_tokens,
             completion_tokens: output.completion_tokens,
             total_tokens: output.prompt_tokens + output.completion_tokens,
         };
-        Ok(ChatCompletionResponse {
+        Ok(RuntimeChatCompletion {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
-            object: "chat.completion".to_owned(),
             created: Utc::now().timestamp(),
             model: request.model,
-            choices: vec![ChatCompletionChoice {
-                index: 0,
-                message,
-                finish_reason: Some(finish_reason),
-            }],
+            parsed,
+            finish_reason,
             usage,
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatCompletionStream {
+    pub chunks: Vec<ChatCompletionStreamResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RuntimeChatCompletion {
+    id: String,
+    created: i64,
+    model: String,
+    parsed: ParsedAssistant,
+    finish_reason: llm_api::FinishReason,
+    usage: Usage,
+}
+
+fn stream_chunk(
+    completion: &RuntimeChatCompletion,
+    delta: ChatCompletionDelta,
+    finish_reason: Option<llm_api::FinishReason>,
+) -> ChatCompletionStreamResponse {
+    ChatCompletionStreamResponse {
+        id: completion.id.clone(),
+        object: "chat.completion.chunk".to_owned(),
+        created: completion.created,
+        model: completion.model.clone(),
+        choices: vec![ChatCompletionStreamChoice {
+            index: 0,
+            delta,
+            finish_reason,
+        }],
     }
 }
 

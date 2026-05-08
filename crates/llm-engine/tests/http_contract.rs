@@ -78,6 +78,45 @@ async fn chat_completions_returns_openai_shape() {
 }
 
 #[tokio::test]
+async fn chat_completions_streams_openai_sse_chunks() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true,
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .expect("content type")
+            .starts_with("text/event-stream")
+    );
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("data: {\"id\":\"chatcmpl-"));
+    assert!(body.contains("\"object\":\"chat.completion.chunk\""));
+    assert!(body.contains("\"delta\":{\"role\":\"assistant\"}"));
+    assert!(body.contains("\"content\":\"hello from rust native backend\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn backend_execution_errors_are_not_reported_as_missing_model() {
     let response = build_router_with_backend(Box::new(FailingBackend))
         .oneshot(
@@ -116,4 +155,9 @@ impl ModelBackend for FailingBackend {
 async fn body_json(body: Body) -> Value {
     let bytes = to_bytes(body, usize::MAX).await.expect("body bytes");
     serde_json::from_slice(&bytes).expect("json body")
+}
+
+async fn body_text(body: Body) -> String {
+    let bytes = to_bytes(body, usize::MAX).await.expect("body bytes");
+    String::from_utf8(bytes.to_vec()).expect("utf8 body")
 }

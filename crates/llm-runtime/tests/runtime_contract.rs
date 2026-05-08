@@ -100,18 +100,53 @@ async fn parses_generated_tool_calls_into_openai_message() {
 }
 
 #[tokio::test]
-async fn rejects_streaming_until_sse_is_implemented() {
+async fn runtime_returns_text_stream_chunks() {
     let backend = DeterministicBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
-    let err = runtime
-        .chat(ChatCompletionRequest {
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
             model: "local-qwen36".to_owned(),
             messages: vec![ChatMessage::user("say hi")],
             stream: true,
             ..ChatCompletionRequest::default()
         })
         .await
-        .expect_err("streaming is explicit unsupported capability");
+        .expect("streaming text succeeds");
+
+    assert_eq!(stream.chunks.len(), 3);
+    assert_eq!(stream.chunks[0].object, "chat.completion.chunk");
+    assert_eq!(
+        stream.chunks[0].choices[0].delta.role,
+        Some(llm_api::ChatRole::Assistant)
+    );
+    assert_eq!(
+        stream.chunks[1].choices[0].delta.content.as_deref(),
+        Some("hello")
+    );
+    assert_eq!(
+        stream.chunks[2].choices[0].finish_reason,
+        Some(FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
+async fn streaming_tool_calls_fail_closed_until_delta_assembly_exists() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("streaming tool calls are not silently flattened");
 
     assert!(matches!(err, RuntimeError::Api(_)));
 }

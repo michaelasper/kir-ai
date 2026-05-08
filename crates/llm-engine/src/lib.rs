@@ -1,5 +1,15 @@
 use async_trait::async_trait;
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{
+        IntoResponse, Response,
+        sse::{Event, Sse},
+    },
+    routing::get,
+};
+use futures::stream;
 use llm_api::{ChatCompletionRequest, FinishReason, ModelCard, ModelList};
 use llm_backend::{
     BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
@@ -9,7 +19,7 @@ use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::json;
-use std::{path::Path, sync::Arc};
+use std::{convert::Infallible, path::Path, sync::Arc};
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -216,33 +226,57 @@ async fn models(State(state): State<AppState>) -> impl IntoResponse {
 async fn chat_completions(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<Json<llm_api::ChatCompletionResponse>, EngineError> {
+) -> Result<Response, EngineError> {
+    if request.stream {
+        let response = state.runtime.chat_stream(request).await?;
+        let mut events: Vec<Result<Event, Infallible>> =
+            Vec::with_capacity(response.chunks.len() + 1);
+        for chunk in response.chunks {
+            let data = serde_json::to_string(&chunk).map_err(EngineError::Serialize)?;
+            events.push(Ok(Event::default().data(data)));
+        }
+        events.push(Ok(Event::default().data("[DONE]")));
+        return Ok(Sse::new(stream::iter(events)).into_response());
+    }
     let response = state.runtime.chat(request).await?;
-    Ok(Json(response))
+    Ok(Json(response).into_response())
 }
 
 #[derive(Debug)]
-struct EngineError(RuntimeError);
+enum EngineError {
+    Runtime(RuntimeError),
+    Serialize(serde_json::Error),
+}
 
 impl From<RuntimeError> for EngineError {
     fn from(value: RuntimeError) -> Self {
-        Self(value)
+        Self::Runtime(value)
     }
 }
 
 impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
-        let status = match &self.0 {
-            RuntimeError::Api(_) => StatusCode::BAD_REQUEST,
-            RuntimeError::Backend(BackendError::ModelNotFound { .. }) => StatusCode::NOT_FOUND,
-            RuntimeError::Backend(BackendError::Other(_)) => StatusCode::INTERNAL_SERVER_ERROR,
-            RuntimeError::Template(_) | RuntimeError::Parser(_) | RuntimeError::NoProgress(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
+        let (status, message) = match self {
+            Self::Runtime(err) => {
+                let status = match &err {
+                    RuntimeError::Api(_) => StatusCode::BAD_REQUEST,
+                    RuntimeError::Backend(BackendError::ModelNotFound { .. }) => {
+                        StatusCode::NOT_FOUND
+                    }
+                    RuntimeError::Backend(BackendError::Other(_)) => {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                    RuntimeError::Template(_)
+                    | RuntimeError::Parser(_)
+                    | RuntimeError::NoProgress(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                };
+                (status, err.to_string())
             }
+            Self::Serialize(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         };
         let body = Json(json!({
             "error": {
-                "message": self.0.to_string(),
+                "message": message,
                 "type": "llm_engine_error"
             }
         }));
