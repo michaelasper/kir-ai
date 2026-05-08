@@ -1846,16 +1846,16 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
             matvec,
         )?;
         let weights = matvec.softmax_f32(&scores)?;
-        for (source_idx, weight) in weights.into_iter().enumerate() {
+        let mut value_rows = Vec::with_capacity(token_count * dims.head_dim);
+        for source_idx in 0..token_count {
             let value_token = cache
                 .value(source_idx)
                 .ok_or_else(|| MathError::InvalidShape("KV cache value missing".to_owned()))?;
-            for offset in 0..dims.head_dim {
-                attended[q_start + offset] += weight * value_token[kv_start + offset];
-            }
+            value_rows.extend_from_slice(&value_token[kv_start..kv_start + dims.head_dim]);
         }
+        let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
         for offset in 0..dims.head_dim {
-            attended[q_start + offset] *= sigmoid_f32(gate[q_start + offset]);
+            attended[q_start + offset] = mixed[offset] * sigmoid_f32(gate[q_start + offset]);
         }
     }
 
@@ -2005,17 +2005,18 @@ fn qwen_full_attention_sequence_from_parts_impl(
                 matvec,
             )?;
             let weights = matvec.softmax_f32(&scores)?;
-            for (source_idx, weight) in weights.into_iter().enumerate() {
+            let mut value_rows = Vec::with_capacity(source_count * dims.head_dim);
+            for (source_idx, local_value) in v_proj.iter().enumerate().take(source_count) {
                 let value_token = cache
                     .as_deref()
                     .and_then(|cache| cache.value(source_idx))
-                    .unwrap_or(&v_proj[source_idx]);
-                for offset in 0..dims.head_dim {
-                    attended[q_start + offset] += weight * value_token[kv_start + offset];
-                }
+                    .unwrap_or(local_value);
+                value_rows.extend_from_slice(&value_token[kv_start..kv_start + dims.head_dim]);
             }
+            let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
             for offset in 0..dims.head_dim {
-                attended[q_start + offset] *= sigmoid_f32(gates[token_idx][q_start + offset]);
+                attended[q_start + offset] =
+                    mixed[offset] * sigmoid_f32(gates[token_idx][q_start + offset]);
             }
         }
         outputs.push(matvec.matvec_row_major_f32(
