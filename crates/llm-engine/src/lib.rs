@@ -328,6 +328,13 @@ struct WarmableBf16MatrixTensor {
     byte_len: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeQwenWeightWarmOrder {
+    stage: u8,
+    layer: usize,
+    item: u8,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NativeQwenMetalWarmup {
     candidates: u64,
@@ -1859,7 +1866,67 @@ fn native_qwen_warmable_bf16_matrix_tensors(
             });
         }
     }
+    tensors.sort_by(|left, right| {
+        native_qwen_bf16_matrix_warm_order(&left.name)
+            .cmp(&native_qwen_bf16_matrix_warm_order(&right.name))
+            .then_with(|| left.name.cmp(&right.name))
+    });
     Ok(tensors)
+}
+
+fn native_qwen_bf16_matrix_warm_order(name: &str) -> NativeQwenWeightWarmOrder {
+    if name == "model.language_model.embed_tokens.weight" {
+        return NativeQwenWeightWarmOrder {
+            stage: 0,
+            layer: 0,
+            item: 0,
+        };
+    }
+    if name == "lm_head.weight" {
+        return NativeQwenWeightWarmOrder {
+            stage: 3,
+            layer: 0,
+            item: 0,
+        };
+    }
+    let Some(layer_suffix) = name.strip_prefix("model.language_model.layers.") else {
+        return native_qwen_unknown_weight_warm_order();
+    };
+    let Some((layer, suffix)) = layer_suffix.split_once('.') else {
+        return native_qwen_unknown_weight_warm_order();
+    };
+    let Ok(layer) = layer.parse::<usize>() else {
+        return native_qwen_unknown_weight_warm_order();
+    };
+    let Some((stage, item)) = native_qwen_layer_bf16_matrix_warm_order(suffix) else {
+        return native_qwen_unknown_weight_warm_order();
+    };
+    NativeQwenWeightWarmOrder { stage, layer, item }
+}
+
+fn native_qwen_layer_bf16_matrix_warm_order(suffix: &str) -> Option<(u8, u8)> {
+    let item = match suffix {
+        "self_attn.q_proj.weight" | "linear_attn.in_proj_qkv.weight" => 0,
+        "self_attn.k_proj.weight" | "linear_attn.in_proj_z.weight" => 1,
+        "self_attn.v_proj.weight" | "linear_attn.in_proj_b.weight" => 2,
+        "self_attn.o_proj.weight" | "linear_attn.in_proj_a.weight" => 3,
+        "linear_attn.out_proj.weight" => 4,
+        "mlp.gate.weight" => 10,
+        "mlp.shared_expert.gate_proj.weight" => 11,
+        "mlp.shared_expert.up_proj.weight" => 12,
+        "mlp.shared_expert.down_proj.weight" => 13,
+        "mlp.shared_expert_gate.weight" => 14,
+        _ => return None,
+    };
+    Some((1, item))
+}
+
+fn native_qwen_unknown_weight_warm_order() -> NativeQwenWeightWarmOrder {
+    NativeQwenWeightWarmOrder {
+        stage: 4,
+        layer: usize::MAX,
+        item: u8::MAX,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3143,6 +3210,87 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![("a.weight", 1, 2, 4), ("b.weight", 2, 1, 4)]
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_warmable_bf16_matrix_tensors_orders_qwen_execution_weights() {
+        let snapshot = temp_snapshot_dir("warmable-qwen-order");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        let tensors = vec![
+            ("zz.unclassified.weight", vec![1, 1], vec![1.0]),
+            ("lm_head.weight", vec![1, 1], vec![2.0]),
+            (
+                "model.language_model.layers.10.self_attn.o_proj.weight",
+                vec![1, 1],
+                vec![3.0],
+            ),
+            (
+                "model.language_model.layers.2.mlp.shared_expert.down_proj.weight",
+                vec![1, 1],
+                vec![4.0],
+            ),
+            (
+                "model.language_model.layers.2.self_attn.q_proj.weight",
+                vec![1, 1],
+                vec![5.0],
+            ),
+            (
+                "model.language_model.embed_tokens.weight",
+                vec![1, 1],
+                vec![6.0],
+            ),
+            (
+                "model.language_model.layers.2.self_attn.k_proj.weight",
+                vec![1, 1],
+                vec![7.0],
+            ),
+            (
+                "model.language_model.layers.2.mlp.gate.weight",
+                vec![1, 1],
+                vec![8.0],
+            ),
+        ];
+        let safetensors = tiny_owned_multi_safetensors_bf16(&tensors);
+        std::fs::write(snapshot.join("model.safetensors"), &safetensors).expect("write shard");
+        std::fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": safetensors.len() },
+                "weight_map": tensors
+                    .iter()
+                    .map(|(name, _, _)| {
+                        (
+                            (*name).to_owned(),
+                            serde_json::Value::String("model.safetensors".to_owned()),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>()
+            })
+            .to_string(),
+        )
+        .expect("write index");
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+
+        let warmable = native_qwen_warmable_bf16_matrix_tensors(&store).expect("warmable tensors");
+
+        assert_eq!(
+            warmable
+                .iter()
+                .map(|tensor| tensor.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "model.language_model.embed_tokens.weight",
+                "model.language_model.layers.2.self_attn.q_proj.weight",
+                "model.language_model.layers.2.self_attn.k_proj.weight",
+                "model.language_model.layers.2.mlp.gate.weight",
+                "model.language_model.layers.2.mlp.shared_expert.down_proj.weight",
+                "model.language_model.layers.10.self_attn.o_proj.weight",
+                "lm_head.weight",
+                "zz.unclassified.weight",
+            ]
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
