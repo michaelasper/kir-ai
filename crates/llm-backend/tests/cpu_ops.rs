@@ -354,6 +354,8 @@ fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
             rms_norm_eps: 0.0,
             rope_theta: 10_000.0,
             partial_rotary_factor: 1.0,
+            q_projection_gate: true,
+            one_centered_rms_norm: true,
         },
     )
     .expect("full attention sequence");
@@ -389,6 +391,8 @@ fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
         rms_norm_eps: 0.0,
         rope_theta: 10_000.0,
         partial_rotary_factor: 1.0,
+        q_projection_gate: true,
+        one_centered_rms_norm: true,
     };
     let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
 
@@ -449,6 +453,8 @@ fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
         rms_norm_eps: 0.0,
         rope_theta: 10_000.0,
         partial_rotary_factor: 0.0,
+        q_projection_gate: true,
+        one_centered_rms_norm: true,
     };
     let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
 
@@ -488,6 +494,8 @@ fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
         rms_norm_eps: 0.0,
         rope_theta: 10_000.0,
         partial_rotary_factor: 0.0,
+        q_projection_gate: true,
+        one_centered_rms_norm: true,
     };
     let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
     let prefill_q_proj = [vec![1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]];
@@ -551,6 +559,8 @@ fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         rms_norm_eps: 0.0,
         rope_theta: 10_000.0,
         partial_rotary_factor: 1.0,
+        q_projection_gate: true,
+        one_centered_rms_norm: true,
     };
     let expected_parts = QwenFullAttentionSequenceParts {
         q_proj: &q_proj,

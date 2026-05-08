@@ -639,12 +639,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let revision = flag_value(&args, "--revision").unwrap_or("main");
             let profile_name = flag_value(&args, "--profile").unwrap_or("qwen36-safetensors-bf16");
             let metadata_only = args.iter().any(|arg| arg == "--metadata-only");
-            let profile = match profile_name {
-                "gemma4-text-safetensors-bf16" => ModelProfile::gemma4_text_safetensors_bf16(),
-                "qwen36-mlx-4bit" => ModelProfile::qwen36_mlx_4bit(),
-                "qwen36-safetensors-bf16" => ModelProfile::qwen36_safetensors_bf16(),
-                other => anyhow::bail!("unknown model profile `{other}`"),
-            };
+            let profile = ModelProfile::builtin(profile_name)
+                .ok_or_else(|| anyhow::anyhow!("unknown model profile `{profile_name}`"))?;
             let repo_id = HubRepoId::model(repo)?;
             let token = std::env::var("HF_TOKEN").ok();
             let client = HubClient::default();

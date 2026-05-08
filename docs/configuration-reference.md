@@ -71,7 +71,8 @@ Built-in profiles:
 
 | Profile | Family | Loader | Quantisation |
 | --- | --- | --- | --- |
-| `gemma4-text-safetensors-bf16` | `gemma` | `native-metal` | `bf16` |
+| `gemma4-text-safetensors-bf16` | `gemma` | `mlx` | `bf16` |
+| `qwen3-dense-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-mlx-4bit` | `qwen` | `mlx` | `4bit` |
 
@@ -193,9 +194,22 @@ Supported root fields:
 
 | Field | Requirement |
 | --- | --- |
-| `architectures` | First item must be `Qwen3_5MoeForConditionalGeneration`. |
-| `model_type` | Must be `qwen3_5_moe`. |
-| `text_config` | Required. |
+| `architectures` | First item must be `Qwen3ForCausalLM` or `Qwen3_5MoeForConditionalGeneration`. |
+| `model_type` | Must be `qwen3` or `qwen3_5_moe`. |
+| `text_config` | Required for `qwen3_5_moe`; absent for standard dense `qwen3`. |
+
+Required dense `qwen3` root fields:
+
+- `hidden_size`
+- `intermediate_size`
+- `rms_norm_eps`
+- `rope_theta`
+- `num_hidden_layers`
+- `num_attention_heads`
+- `num_key_value_heads`
+- `head_dim`
+- `max_position_embeddings`
+- `vocab_size`
 
 Required `text_config` fields:
 
@@ -341,11 +355,12 @@ The Qwen parser recognises:
 - XML-style `<tool_call><function=name><parameter=key>value</parameter></function></tool_call>` blocks
 
 Reasoning is parsed but not returned in the OpenAI message body. Assistant
-content is trimmed. Malformed tool markup returns `malformed_tool_call`.
+content outside recognized reasoning and tool-call tags is preserved. Malformed
+tool markup returns `malformed_tool_call`.
 
 ## Current Limits
 
-- Only Qwen3.5/Qwen3.6 MoE text loading is supported.
+- Dense Qwen3 and Qwen3.5/Qwen3.6 MoE text loading are supported.
 - `generation_config.json` sampling settings are ignored.
 - Non-greedy sampling is not implemented.
 - Streaming chunks are assembled after backend generation.

@@ -43,6 +43,32 @@ fn qwen_bf16_profile_records_official_safetensors_identity() {
 }
 
 #[test]
+fn qwen3_dense_bf16_profile_selects_small_native_snapshots() {
+    let files = vec![
+        HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
+        HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        HubFile::new("optimizer.pt", 10_000, Some("\"opt\"")),
+    ];
+
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3-0.6B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen3_dense_safetensors_bf16(),
+        files,
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_eq!(plan.profile.name, "qwen3-dense-safetensors-bf16");
+    assert_eq!(plan.profile.loader, "native-metal");
+    assert_eq!(plan.profile.quantization, "bf16");
+    assert_eq!(plan.files_to_download.len(), 3);
+    assert_eq!(plan.skipped_files, vec!["optimizer.pt"]);
+}
+
+#[test]
 fn gemma_text_profile_skips_multimodal_artifacts() {
     let files = vec![
         HubFile::new("config.json", 100, Some("\"cfg\"")),
@@ -65,7 +91,7 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
     .expect("plan builds");
 
     assert_eq!(plan.profile.family, "gemma");
-    assert_eq!(plan.profile.loader, "native-metal");
+    assert_eq!(plan.profile.loader, "mlx");
     assert_eq!(plan.profile.quantization, "bf16");
     assert_eq!(plan.files_to_download.len(), 3);
     assert_eq!(plan.total_bytes_to_download, 1_300);
@@ -78,6 +104,31 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
             "vision_tower.safetensors",
         ]
     );
+}
+
+#[test]
+fn gemma_text_profile_uses_deferred_mlx_loader_metadata() {
+    let profile = ModelProfile::gemma4_text_safetensors_bf16();
+
+    assert_eq!(profile.family, "gemma");
+    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.quantization, "bf16");
+}
+
+#[test]
+fn builtin_profile_lookup_includes_all_supported_profiles() {
+    for name in [
+        "gemma4-text-safetensors-bf16",
+        "qwen3-dense-safetensors-bf16",
+        "qwen36-safetensors-bf16",
+        "qwen36-mlx-4bit",
+    ] {
+        let profile = ModelProfile::builtin(name).expect("profile exists");
+
+        assert_eq!(profile.name, name);
+    }
+
+    assert!(ModelProfile::builtin("missing-profile").is_none());
 }
 
 #[test]

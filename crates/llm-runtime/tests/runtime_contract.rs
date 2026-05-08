@@ -4,8 +4,8 @@ use llm_api::{
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendError, BackendOutput, BackendRequest, BackendStreamChunk, DeterministicBackend,
-    ModelBackend, SamplingConfig,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    DeterministicBackend, ModelBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
@@ -404,6 +404,45 @@ async fn optional_tools_allow_text_completion() {
         Some("plain text")
     );
     assert!(response.choices[0].message.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn chat_preserves_assistant_text_whitespace() {
+    let backend =
+        DeterministicBackend::new("local-qwen36", "  keep leading space\n    indented line\n");
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("preserve whitespace")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("  keep leading space\n    indented line\n")
+    );
+}
+
+#[tokio::test]
+async fn chat_rejects_unsupported_model_family_before_generation() {
+    let runtime = Runtime::new(FamilyMetadataBackend {
+        family: Some("gemma".to_owned()),
+    });
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("unsupported family should fail before generation");
+
+    assert!(err.to_string().contains("Gemma"));
 }
 
 #[tokio::test]
@@ -1140,6 +1179,10 @@ struct ReplayBackend {
     output: BackendOutput,
 }
 
+struct FamilyMetadataBackend {
+    family: Option<String>,
+}
+
 #[async_trait::async_trait]
 impl ModelBackend for RecordingBackend {
     fn model_id(&self) -> &str {
@@ -1185,6 +1228,31 @@ impl ModelBackend for RecordingSamplingBackend {
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for FamilyMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(self.model_id(), "metadata-test");
+        metadata.family = self.family.clone();
+        metadata
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        panic!("unsupported family should fail before backend generation")
     }
 
     async fn generate_with_cancel(

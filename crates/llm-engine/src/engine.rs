@@ -19,9 +19,9 @@ use llm_backend::{
     BackendStreamChunk, CpuQwenMatvecBackend, DeterministicBackend, LayerKvCache,
     LinearAttentionCache, MathError, ModelBackend, QwenKvCacheTensor, QwenLayerCache,
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
-    TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
-    qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
-    qwen_prefill_sequence_with_cache_with_matvec,
+    TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
+    qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
+    qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -41,7 +41,7 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -50,6 +50,22 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
+
+trait RecoverPoisonedMutex<T> {
+    fn lock_or_recover(&self, name: &'static str) -> MutexGuard<'_, T>;
+}
+
+impl<T> RecoverPoisonedMutex<T> for Mutex<T> {
+    fn lock_or_recover(&self, name: &'static str) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!(lock = name, "recovering poisoned mutex");
+                poisoned.into_inner()
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -284,8 +300,7 @@ impl SchedulerPermit {
         }
         self.scheduler
             .state
-            .lock()
-            .expect("scheduler lock is not poisoned")
+            .lock_or_recover("scheduler")
             .transition_to_decode();
         self.phase = GenerationPhase::Decode;
     }
@@ -303,8 +318,7 @@ impl Drop for SchedulerPermit {
     fn drop(&mut self) {
         self.scheduler
             .state
-            .lock()
-            .expect("scheduler lock is not poisoned")
+            .lock_or_recover("scheduler")
             .finish_active(self.phase, self.outcome);
         self.scheduler.notify.notify_waiters();
     }
@@ -334,11 +348,7 @@ impl Drop for QueuedSchedulerTicket {
         if self.admitted {
             return;
         }
-        let mut state = self
-            .scheduler
-            .state
-            .lock()
-            .expect("scheduler lock is not poisoned");
+        let mut state = self.scheduler.state.lock_or_recover("scheduler");
         let queue = state.queue_mut(self.class);
         if let Some(index) = queue.iter().position(|ticket| *ticket == self.id) {
             queue.remove(index);
@@ -455,7 +465,7 @@ impl ModelScheduler {
         admission_class: SchedulerClass,
         initial_phase: GenerationPhase,
     ) -> Option<SchedulerPermit> {
-        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        let mut state = self.state.lock_or_recover("scheduler");
         if state.active_total() >= self.options.concurrency_limit || state.queued_total() > 0 {
             return None;
         }
@@ -471,7 +481,7 @@ impl ModelScheduler {
         self: &Arc<Self>,
         class: SchedulerClass,
     ) -> Result<QueuedSchedulerTicket, SchedulerAcquireError> {
-        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        let mut state = self.state.lock_or_recover("scheduler");
         if state.queued_total() >= self.options.queue_limit {
             return Err(SchedulerAcquireError::QueueFull);
         }
@@ -495,7 +505,7 @@ impl ModelScheduler {
         admission_class: SchedulerClass,
         initial_phase: GenerationPhase,
     ) -> Option<SchedulerPermit> {
-        let mut state = self.state.lock().expect("scheduler lock is not poisoned");
+        let mut state = self.state.lock_or_recover("scheduler");
         if state.active_total() >= self.options.concurrency_limit {
             return None;
         }
@@ -515,7 +525,7 @@ impl ModelScheduler {
     }
 
     fn snapshot(&self) -> ModelSchedulerSnapshot {
-        let state = self.state.lock().expect("scheduler lock is not poisoned");
+        let state = self.state.lock_or_recover("scheduler");
         ModelSchedulerSnapshot {
             queued_prefill: state.queued_prefill.len(),
             queued_decode: state.queued_decode.len(),
@@ -542,8 +552,7 @@ struct ActiveRequest {
 impl Drop for ActiveRequest {
     fn drop(&mut self) {
         self.active_requests
-            .lock()
-            .expect("active request lock is not poisoned")
+            .lock_or_recover("active request")
             .remove(&self.id);
     }
 }
@@ -845,10 +854,7 @@ impl NativeQwenPrefixCache {
         namespace: &NativeQwenPrefixCacheNamespace,
         tokens: &[usize],
     ) -> Option<NativeQwenPrefixCacheHit> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("native Qwen prefix cache lock is not poisoned");
+        let mut inner = self.inner.lock_or_recover("native Qwen prefix cache");
         let mut best_key = None;
         let mut best_len = 0;
         for key in inner.entries.keys() {
@@ -897,10 +903,7 @@ impl NativeQwenPrefixCache {
             namespace,
             tokens: tokens.to_vec(),
         };
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("native Qwen prefix cache lock is not poisoned");
+        let mut inner = self.inner.lock_or_recover("native Qwen prefix cache");
         if let Some(existing) = inner.entries.remove(&key) {
             inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
         }
@@ -984,8 +987,7 @@ impl NativeQwenPrefixCacheMetrics {
     fn snapshot(&self) -> Value {
         let counters = *self
             .counters
-            .lock()
-            .expect("native Qwen prefix cache metrics lock is not poisoned");
+            .lock_or_recover("native Qwen prefix cache metrics");
         json!({
             "hits": counters.hits,
             "misses": counters.misses,
@@ -1003,8 +1005,7 @@ impl NativeQwenPrefixCacheMetrics {
     fn update(&self, update: impl FnOnce(&mut NativeQwenPrefixCacheCounters)) {
         let mut counters = self
             .counters
-            .lock()
-            .expect("native Qwen prefix cache metrics lock is not poisoned");
+            .lock_or_recover("native Qwen prefix cache metrics");
         update(&mut counters);
     }
 }
@@ -1299,8 +1300,7 @@ impl NativeQwenMetalState {
         };
         if let Some(buffer) = self
             .bf16_matrices
-            .lock()
-            .expect("BF16 matrix buffer cache lock is not poisoned")
+            .lock_or_recover("BF16 matrix buffer cache")
             .get(&key)
         {
             native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
@@ -1320,8 +1320,7 @@ impl NativeQwenMetalState {
         );
         let mut matrices = self
             .bf16_matrices
-            .lock()
-            .expect("BF16 matrix buffer cache lock is not poisoned");
+            .lock_or_recover("BF16 matrix buffer cache");
         if let Some(existing) = matrices.get(&key) {
             native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
             return Ok(existing);
@@ -1361,8 +1360,7 @@ impl NativeQwenMetalState {
             {
                 let mut matrices = self
                     .bf16_matrices
-                    .lock()
-                    .expect("BF16 matrix buffer cache lock is not poisoned");
+                    .lock_or_recover("BF16 matrix buffer cache");
                 if matrices.get(&key).is_some() {
                     warmup.already_resident += 1;
                     continue;
@@ -1381,10 +1379,7 @@ impl NativeQwenMetalState {
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
         let byte_len =
             cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())?;
-        let mut caches = self
-            .kv_caches
-            .lock()
-            .expect("Metal KV cache mirror lock is not poisoned");
+        let mut caches = self.kv_caches.lock_or_recover("Metal KV cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror) if mirror.revision == cache.revision() => Ok(()),
             Some(mirror) => {
@@ -1423,10 +1418,7 @@ impl NativeQwenMetalState {
         head_len: usize,
     ) -> Result<Vec<f32>, llm_metal::MetalError> {
         self.sync_kv_cache(cache)?;
-        let caches = self
-            .kv_caches
-            .lock()
-            .expect("Metal KV cache mirror lock is not poisoned");
+        let caches = self.kv_caches.lock_or_recover("Metal KV cache mirror");
         let mirror = caches.get(&cache.id()).ok_or_else(|| {
             llm_metal::MetalError::InvalidShape(format!(
                 "missing Metal KV cache mirror for cache {}",
@@ -1450,8 +1442,7 @@ impl NativeQwenMetalState {
         let byte_len = cache_resident_byte_len(cache.recurrent_state().len())?;
         let mut caches = self
             .linear_caches
-            .lock()
-            .expect("Metal linear attention cache mirror lock is not poisoned");
+            .lock_or_recover("Metal linear attention cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror) if mirror.revision == cache.revision() => Ok(()),
             Some(mirror) => {
@@ -1493,8 +1484,7 @@ impl NativeQwenMetalState {
         self.sync_linear_cache(cache)?;
         let mut caches = self
             .linear_caches
-            .lock()
-            .expect("Metal linear attention cache mirror lock is not poisoned");
+            .lock_or_recover("Metal linear attention cache mirror");
         let mirror = caches.get_mut(&cache.id()).ok_or_else(|| {
             llm_metal::MetalError::InvalidShape(format!(
                 "missing Metal linear attention cache mirror for cache {}",
@@ -1528,10 +1518,7 @@ impl NativeQwenMetalState {
             }
         }
         if !kv_removed.is_empty() {
-            let mut mirrors = self
-                .kv_caches
-                .lock()
-                .expect("Metal KV cache mirror lock is not poisoned");
+            let mut mirrors = self.kv_caches.lock_or_recover("Metal KV cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
             for id in kv_removed {
@@ -1549,8 +1536,7 @@ impl NativeQwenMetalState {
         if !linear_removed.is_empty() {
             let mut mirrors = self
                 .linear_caches
-                .lock()
-                .expect("Metal linear attention cache mirror lock is not poisoned");
+                .lock_or_recover("Metal linear attention cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
             for id in linear_removed {
@@ -1660,8 +1646,7 @@ impl MetalBackendMetrics {
         let warning_key = format!("{kernel}:{bucket}");
         let should_warn = self
             .warned_fallbacks
-            .lock()
-            .expect("Metal fallback warning lock is not poisoned")
+            .lock_or_recover("Metal fallback warning")
             .insert(warning_key);
         if should_warn {
             tracing::warn!(
@@ -1685,24 +1670,21 @@ impl MetalBackendMetrics {
     fn record_bf16_matrix_cache_hit(&self) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
         cache.hits += 1;
     }
 
     fn record_bf16_matrix_cache_miss(&self) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
         cache.misses += 1;
     }
 
     fn record_bf16_matrix_cache_upload(&self, byte_len: u64) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
         cache.uploads += 1;
         cache.bytes_uploaded += byte_len;
     }
@@ -1710,8 +1692,7 @@ impl MetalBackendMetrics {
     fn record_bf16_matrix_cache_eviction(&self, count: u64, byte_len: u64) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
         cache.evictions += count;
         cache.bytes_evicted += byte_len;
     }
@@ -1724,8 +1705,7 @@ impl MetalBackendMetrics {
     ) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
         cache.resident_bytes = resident_bytes;
         cache.resident_buffers = resident_buffers;
         cache.budget_bytes = budget_bytes;
@@ -1788,22 +1768,14 @@ impl MetalBackendMetrics {
     }
 
     fn snapshot(&self) -> Value {
-        let counters = self
-            .counters
-            .lock()
-            .expect("Metal metrics lock is not poisoned");
+        let counters = self.counters.lock_or_recover("Metal metrics");
         let bf16_matrix_cache = *self
             .bf16_matrix_cache
-            .lock()
-            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
-        let kv_cache = *self
-            .kv_cache
-            .lock()
-            .expect("Metal KV cache metrics lock is not poisoned");
+            .lock_or_recover("Metal BF16 matrix cache metrics");
+        let kv_cache = *self.kv_cache.lock_or_recover("Metal KV cache metrics");
         let linear_cache = *self
             .linear_cache
-            .lock()
-            .expect("Metal linear cache metrics lock is not poisoned");
+            .lock_or_recover("Metal linear cache metrics");
         let mut kernels = serde_json::Map::new();
         let mut kernel_names = counters.keys().copied().collect::<Vec<_>>();
         kernel_names.sort_unstable();
@@ -1845,17 +1817,12 @@ impl MetalBackendMetrics {
             CacheMetricKind::Kv => &self.kv_cache,
             CacheMetricKind::Linear => &self.linear_cache,
         };
-        let mut cache = cache
-            .lock()
-            .expect("Metal resident cache metrics lock is not poisoned");
+        let mut cache = cache.lock_or_recover("Metal resident cache metrics");
         update(&mut cache);
     }
 
     fn update_counter(&self, kernel: &'static str, update: impl FnOnce(&mut MetalKernelCounters)) {
-        let mut counters = self
-            .counters
-            .lock()
-            .expect("Metal metrics lock is not poisoned");
+        let mut counters = self.counters.lock_or_recover("Metal metrics");
         update(counters.entry(kernel).or_default());
     }
 }
@@ -1898,8 +1865,7 @@ fn native_qwen_shared_metal_state(
     };
     let registry = native_qwen_metal_state_registry();
     if let Some(state) = registry
-        .lock()
-        .expect("native Qwen Metal state registry lock is not poisoned")
+        .lock_or_recover("native Qwen Metal state registry")
         .get(&key)
         .cloned()
     {
@@ -1908,9 +1874,7 @@ fn native_qwen_shared_metal_state(
     let Some(device) = llm_metal::MetalDevice::system_default_result()? else {
         return Ok(None);
     };
-    let mut states = registry
-        .lock()
-        .expect("native Qwen Metal state registry lock is not poisoned");
+    let mut states = registry.lock_or_recover("native Qwen Metal state registry");
     if let Some(state) = states.get(&key).cloned() {
         return Ok(Some(state));
     }
@@ -3107,17 +3071,13 @@ impl NativeQwenBackend {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
-        let final_norm = qwen_final_norm_with_matvec(
-            &self.store,
-            hidden,
-            self.spec.hidden_size as usize,
-            self.spec.rms_norm_eps,
-            &self.matvec,
-        )
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        let final_norm =
+            qwen_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
-            let logits = qwen_lm_head_logits_with_matvec(
+            let logits = qwen_lm_head_logits_for_spec_with_matvec(
                 &self.store,
+                &self.spec,
                 &final_norm,
                 self.chunk_rows,
                 &self.matvec,
@@ -3133,8 +3093,9 @@ impl NativeQwenBackend {
             });
         }
 
-        let top_logits = qwen_lm_head_top_k_with_matvec(
+        let top_logits = qwen_lm_head_top_k_for_spec_with_matvec(
             &self.store,
+            &self.spec,
             &final_norm,
             self.top_k,
             self.chunk_rows,
@@ -3699,15 +3660,12 @@ async fn build_admin_download_plan(
 }
 
 fn model_profile(name: &str) -> Result<ModelProfile, EngineError> {
-    match name {
-        "gemma4-text-safetensors-bf16" => Ok(ModelProfile::gemma4_text_safetensors_bf16()),
-        "qwen36-mlx-4bit" => Ok(ModelProfile::qwen36_mlx_4bit()),
-        "qwen36-safetensors-bf16" => Ok(ModelProfile::qwen36_safetensors_bf16()),
-        other => Err(RuntimeError::Api(ApiError::invalid_request(format!(
-            "unknown model profile `{other}`"
+    ModelProfile::builtin(name).ok_or_else(|| {
+        RuntimeError::Api(ApiError::invalid_request(format!(
+            "unknown model profile `{name}`"
         )))
-        .into()),
-    }
+        .into()
+    })
 }
 
 fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError> {
@@ -3769,7 +3727,7 @@ async fn admin_metrics(
     headers: HeaderMap,
 ) -> Result<Json<Value>, EngineError> {
     require_admin(&state, &headers)?;
-    let metrics = *state.metrics.lock().expect("metrics lock is not poisoned");
+    let metrics = *state.metrics.lock_or_recover("metrics");
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
     let time_to_first_token = metrics.time_to_first_token();
@@ -3777,8 +3735,7 @@ async fn admin_metrics(
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state
         .active_requests
-        .lock()
-        .expect("active request lock is not poisoned")
+        .lock_or_recover("active request")
         .len();
     Ok(Json(json!({
         "requests_total": metrics.requests_total(),
@@ -3877,8 +3834,7 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
     let now = Instant::now();
     if let Some(usage) = state
         .model_store_usage
-        .lock()
-        .expect("model store usage cache lock is not poisoned")
+        .lock_or_recover("model store usage cache")
         .current(now)
     {
         return Ok(usage);
@@ -3886,8 +3842,7 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
     let usage = scan_model_store_usage(&state.model_home).await?;
     state
         .model_store_usage
-        .lock()
-        .expect("model store usage cache lock is not poisoned")
+        .lock_or_recover("model store usage cache")
         .store(usage, Instant::now());
     Ok(usage)
 }
@@ -3918,8 +3873,7 @@ async fn scan_model_store_usage(model_home: &Path) -> Result<ModelStoreUsage, En
 fn invalidate_model_store_usage_cache(state: &AppState) {
     state
         .model_store_usage
-        .lock()
-        .expect("model store usage cache lock is not poisoned")
+        .lock_or_recover("model store usage cache")
         .invalidate();
 }
 
@@ -3975,8 +3929,7 @@ async fn admin_cancel_request(
     require_admin(&state, &headers)?;
     let cancellation = state
         .active_requests
-        .lock()
-        .expect("active request lock is not poisoned")
+        .lock_or_recover("active request")
         .get(&request_id)
         .cloned()
         .ok_or_else(|| EngineError::RequestNotFound(request_id.clone()))?;
@@ -4444,27 +4397,19 @@ fn completion_chunk_has_real_delta(chunk: &CompletionStreamResponse) -> bool {
 }
 
 fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool, latency: Duration) {
-    state
-        .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
-        .record_success(
-            TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
-            streamed,
-            latency,
-        );
+    state.metrics.lock_or_recover("metrics").record_success(
+        TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
+        streamed,
+        latency,
+    );
 }
 
 fn record_failure_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
-        .record_failure();
+    state.metrics.lock_or_recover("metrics").record_failure();
 }
 
 fn record_runtime_error_metrics(state: &AppState, err: &RuntimeError) {
-    let mut metrics = state.metrics.lock().expect("metrics lock is not poisoned");
+    let mut metrics = state.metrics.lock_or_recover("metrics");
     if matches!(err, RuntimeError::NoProgress(_)) {
         metrics.record_no_progress_failure();
     }
@@ -4474,40 +4419,35 @@ fn record_runtime_error_metrics(state: &AppState, err: &RuntimeError) {
 fn record_cancellation_metrics(state: &AppState) {
     state
         .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
+        .lock_or_recover("metrics")
         .record_cancellation();
 }
 
 fn record_model_pull_success_metrics(state: &AppState, bytes: u64) {
     state
         .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
+        .lock_or_recover("metrics")
         .record_model_pull_success(bytes);
 }
 
 fn record_model_pull_failure_metrics(state: &AppState) {
     state
         .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
+        .lock_or_recover("metrics")
         .record_model_pull_failure();
 }
 
 fn record_artifact_verification_failure_metrics(state: &AppState) {
     state
         .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
+        .lock_or_recover("metrics")
         .record_artifact_verification_failure();
 }
 
 fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
-        .lock()
-        .expect("metrics lock is not poisoned")
+        .lock_or_recover("metrics")
         .record_time_to_first_token(latency);
 }
 
@@ -4584,10 +4524,7 @@ fn register_active_request(
         }
     };
     let cancellation = CancellationToken::new();
-    let mut active_requests = state
-        .active_requests
-        .lock()
-        .expect("active request lock is not poisoned");
+    let mut active_requests = state.active_requests.lock_or_recover("active request");
     if active_requests.contains_key(&id) {
         record_failure_metrics(state);
         return Err(EngineError::RequestConflict(id));
@@ -4678,6 +4615,29 @@ fn validate_api_request<T: ValidateRequest>(
 mod tests {
     use super::*;
     use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
+
+    #[test]
+    fn poisoned_mutex_lock_recovers_inner_state() {
+        let mutex = Mutex::new(7_u32);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().expect("test lock");
+            panic!("poison test mutex");
+        });
+
+        *mutex.lock_or_recover("test") += 1;
+
+        assert_eq!(*mutex.lock_or_recover("test"), 8);
+    }
+
+    #[test]
+    fn admin_model_profile_accepts_qwen3_dense_native_profile() {
+        let profile = model_profile("qwen3-dense-safetensors-bf16")
+            .expect("admin profile matcher accepts dense Qwen3");
+
+        assert_eq!(profile.name, "qwen3-dense-safetensors-bf16");
+        assert_eq!(profile.family, "qwen");
+        assert_eq!(profile.loader, "native-metal");
+    }
 
     #[test]
     fn metal_backend_metrics_records_attempt_success_and_fallback_by_kernel() {
@@ -4805,10 +4765,7 @@ mod tests {
             cache.lookup(&namespace, &[2]).is_some(),
             "newest entry should remain resident"
         );
-        let inner = cache
-            .inner
-            .lock()
-            .expect("native Qwen prefix cache lock is not poisoned");
+        let inner = cache.inner.lock_or_recover("native Qwen prefix cache");
         assert_eq!(inner.entries.len(), 1);
         assert_eq!(inner.used_bytes, 32);
     }
@@ -5368,6 +5325,38 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
+        let snapshot = temp_snapshot_dir("qwen3-dense-single-file");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+
+        let mut backend =
+            NativeQwenBackend::open("local-qwen3", &snapshot).expect("backend opens snapshot");
+        backend.top_k = 2;
+        let decode = backend
+            .start_decode_session(
+                &[0, 1],
+                4,
+                &native_qwen_test_request("local-qwen3"),
+                &CancellationToken::new(),
+            )
+            .expect("dense single-file prefill runs");
+        let candidate = backend
+            .next_token_from_hidden(decode.hidden(), SamplingConfig::Greedy)
+            .expect("dense tied lm head can select a token");
+
+        assert!(backend.spec.is_qwen3_dense());
+        assert!(candidate.token_id < 2);
+        match &decode.caches[0] {
+            QwenLayerCache::Full(cache) => assert_eq!(cache.token_count(), 2),
+            QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
     fn native_qwen_backend_can_eagerly_materialize_indexed_shards_on_open() {
         let snapshot = temp_snapshot_dir("eager-materialize");
         std::fs::remove_dir_all(&snapshot).ok();
@@ -5686,6 +5675,73 @@ mod tests {
             .join("../../fixtures/qwen36")
             .join(name);
         std::fs::copy(&source, destination).expect("copy fixture");
+    }
+
+    fn write_tiny_qwen3_dense_single_file_decoder_snapshot(root: &Path) {
+        std::fs::write(
+            root.join("config.json"),
+            serde_json::json!({
+                "architectures": ["Qwen3ForCausalLM"],
+                "model_type": "qwen3",
+                "attention_bias": false,
+                "hidden_act": "silu",
+                "hidden_size": 2,
+                "intermediate_size": 1,
+                "max_position_embeddings": 16,
+                "num_attention_heads": 1,
+                "num_hidden_layers": 1,
+                "num_key_value_heads": 1,
+                "head_dim": 2,
+                "rms_norm_eps": 1e-6,
+                "rope_scaling": null,
+                "rope_theta": 1_000_000,
+                "sliding_window": null,
+                "tie_word_embeddings": true,
+                "use_sliding_window": false,
+                "vocab_size": 2
+            })
+            .to_string(),
+        )
+        .expect("config");
+        std::fs::write(
+            root.join("model.safetensors"),
+            tiny_multi_safetensors_bf16(&[
+                ("model.embed_tokens.weight", &[2, 2], &[1.0, 0.0, 0.0, 1.0]),
+                ("model.norm.weight", &[2], &[1.0, 1.0]),
+                ("model.layers.0.input_layernorm.weight", &[2], &[1.0, 1.0]),
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    &[2, 2],
+                    &[1.0, 0.0, 0.0, 1.0],
+                ),
+                (
+                    "model.layers.0.self_attn.k_proj.weight",
+                    &[2, 2],
+                    &[1.0, 0.0, 0.0, 1.0],
+                ),
+                (
+                    "model.layers.0.self_attn.v_proj.weight",
+                    &[2, 2],
+                    &[1.0, 0.0, 0.0, 1.0],
+                ),
+                ("model.layers.0.self_attn.q_norm.weight", &[2], &[1.0, 1.0]),
+                ("model.layers.0.self_attn.k_norm.weight", &[2], &[1.0, 1.0]),
+                (
+                    "model.layers.0.self_attn.o_proj.weight",
+                    &[2, 2],
+                    &[1.0, 0.0, 0.0, 1.0],
+                ),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    &[2],
+                    &[1.0, 1.0],
+                ),
+                ("model.layers.0.mlp.gate_proj.weight", &[1, 2], &[0.0, 0.0]),
+                ("model.layers.0.mlp.up_proj.weight", &[1, 2], &[0.0, 0.0]),
+                ("model.layers.0.mlp.down_proj.weight", &[2, 1], &[0.0, 0.0]),
+            ]),
+        )
+        .expect("single safetensors");
     }
 
     fn tiny_multi_safetensors_bf16(tensors: &[(&str, &[usize], &[f32])]) -> Vec<u8> {

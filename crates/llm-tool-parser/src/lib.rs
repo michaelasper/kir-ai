@@ -47,7 +47,7 @@ impl QwenParser {
         }
         Ok(ParsedAssistant {
             reasoning,
-            content: rest.trim().to_owned(),
+            content: rest,
             tool_calls: Vec::new(),
         })
     }
@@ -104,8 +104,8 @@ fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> 
     let end = body_start + end_rel;
     let reasoning = text[body_start..end].to_owned();
     let mut rest = String::new();
-    rest.push_str(text[..start].trim());
-    rest.push_str(text[end + "</think>".len()..].trim());
+    rest.push_str(&text[..start]);
+    rest.push_str(&text[end + "</think>".len()..]);
     Ok((Some(reasoning), rest))
 }
 
@@ -117,7 +117,7 @@ fn parse_tool_calls(
     let mut content = String::new();
 
     while let Some(start) = rest.find("<tool_call>") {
-        content.push_str(rest[..start].trim());
+        content.push_str(&rest[..start]);
         let inner_start = start + "<tool_call>".len();
         let Some(end_rel) = rest[inner_start..].find("</tool_call>") else {
             return Err(ParserError::malformed_tool(
@@ -134,7 +134,7 @@ fn parse_tool_calls(
         calls.push(call);
         rest = &rest[inner_end + "</tool_call>".len()..];
     }
-    content.push_str(rest.trim());
+    content.push_str(rest);
 
     Ok(ParsedAssistant {
         reasoning,

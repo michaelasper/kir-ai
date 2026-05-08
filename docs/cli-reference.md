@@ -163,11 +163,14 @@ llm-engine model plan <repo> \
 Supported profiles:
 
 - `gemma4-text-safetensors-bf16`
+- `qwen3-dense-safetensors-bf16`
 - `qwen36-safetensors-bf16`
 - `qwen36-mlx-4bit`
 
 `gemma4-text-safetensors-bf16` is an acquisition-planning profile only until a
 Gemma backend is implemented. It excludes vision and projector artifacts.
+`qwen3-dense-safetensors-bf16` targets standard dense Qwen3 text checkpoints
+such as `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-4B`.
 
 ## `model pull`
 

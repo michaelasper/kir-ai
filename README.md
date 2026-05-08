@@ -55,7 +55,15 @@ deterministic Rust backend.
 
 ## Native Qwen Snapshot Flow
 
-Plan the default Qwen BF16 native profile before downloading it:
+Plan a practical dense Qwen3 BF16 native profile before downloading it:
+
+```sh
+cargo run -p llm-engine -- model plan Qwen/Qwen3-0.6B \
+  --revision main \
+  --profile qwen3-dense-safetensors-bf16
+```
+
+The larger Qwen3.6 MoE profile is still available when you need that family:
 
 ```sh
 cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B \
@@ -104,7 +112,8 @@ The north-star product direction and implementation tracker live in
 
 ## Current Limitations
 
-- Qwen3.5/Qwen3.6 MoE text loading is the only native model-family path.
+- Dense Qwen3 and Qwen3.5/Qwen3.6 MoE text loading are the native
+  model-family paths.
 - The server does not execute `generation_config.json` or the downloaded
   `chat_template.jinja`; chat prompts use the Rust Qwen ChatML renderer.
 - Streaming responses are OpenAI-shaped SSE. Text paths can forward backend

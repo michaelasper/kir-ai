@@ -489,6 +489,16 @@ pub struct ModelProfile {
 }
 
 impl ModelProfile {
+    pub fn builtin(name: &str) -> Option<Self> {
+        match name {
+            "gemma4-text-safetensors-bf16" => Some(Self::gemma4_text_safetensors_bf16()),
+            "qwen3-dense-safetensors-bf16" => Some(Self::qwen3_dense_safetensors_bf16()),
+            "qwen36-mlx-4bit" => Some(Self::qwen36_mlx_4bit()),
+            "qwen36-safetensors-bf16" => Some(Self::qwen36_safetensors_bf16()),
+            _ => None,
+        }
+    }
+
     pub fn qwen36_mlx_4bit() -> Self {
         Self {
             name: "qwen36-mlx-4bit".to_owned(),
@@ -511,11 +521,22 @@ impl ModelProfile {
         }
     }
 
+    pub fn qwen3_dense_safetensors_bf16() -> Self {
+        Self {
+            name: "qwen3-dense-safetensors-bf16".to_owned(),
+            family: "qwen".to_owned(),
+            loader: "native-metal".to_owned(),
+            quantization: "bf16".to_owned(),
+            allow_patterns: qwen_static_and_safetensors_patterns(),
+            ignore_patterns: qwen_ignore_patterns(),
+        }
+    }
+
     pub fn gemma4_text_safetensors_bf16() -> Self {
         Self {
             name: "gemma4-text-safetensors-bf16".to_owned(),
             family: "gemma".to_owned(),
-            loader: "native-metal".to_owned(),
+            loader: "mlx".to_owned(),
             quantization: "bf16".to_owned(),
             allow_patterns: gemma_text_static_and_safetensors_patterns(),
             ignore_patterns: gemma_text_ignore_patterns(),

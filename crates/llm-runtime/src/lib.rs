@@ -15,7 +15,7 @@ use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
 };
-use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
+use llm_models::{ModelFamily, ModelFamilyAdapter, QwenFamilyAdapter};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
@@ -184,7 +184,7 @@ where
         }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
-        let adapter = QwenChatAdapter;
+        let adapter = self.chat_adapter()?;
         let cache_context = adapter.cache_context(&request.tools)?;
         let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
         let completion = RuntimeCompletionSeed {
@@ -211,6 +211,7 @@ where
         Ok(streaming_chat_stream(
             completion,
             request,
+            adapter,
             backend_stream,
             include_usage,
             cancellation,
@@ -241,7 +242,7 @@ where
         cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
         request.validate()?;
-        let adapter = QwenChatAdapter;
+        let adapter = self.chat_adapter()?;
         let cache_context = adapter.cache_context(&request.tools)?;
         let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
         let required_tool_choice = required_backend_tool_choice(&request);
@@ -310,6 +311,10 @@ where
             finish_reason,
             usage,
         })
+    }
+
+    fn chat_adapter(&self) -> Result<SelectedChatAdapter, RuntimeError> {
+        chat_adapter_for_metadata(&self.backend.model_metadata())
     }
 
     async fn complete_text(
@@ -625,6 +630,7 @@ fn buffered_chat_stream(
 fn streaming_chat_stream<'a>(
     completion: RuntimeCompletionSeed,
     request: ChatCompletionRequest,
+    adapter: SelectedChatAdapter,
     backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
     include_usage: bool,
     cancellation: CancellationToken,
@@ -694,8 +700,7 @@ fn streaming_chat_stream<'a>(
                 if let Some(tool_prefix_len) = completed_tool_prefix_len(&raw_text)
                     && tool_prefix_len > emitted_len
                 {
-                    let parsed_prefix =
-                        QwenChatAdapter.parse_complete(&raw_text[..tool_prefix_len])?;
+                    let parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
                     validate_tool_call_arguments(&parsed_prefix)?;
                     validate_tool_calls_against_request(&parsed_prefix, &request)?;
                     for (index, tool_call) in parsed_prefix
@@ -746,7 +751,7 @@ fn streaming_chat_stream<'a>(
         }
 
         let visible_text = &raw_text[..visible_len];
-        let parsed = QwenChatAdapter.parse_complete(visible_text)?;
+        let parsed = adapter.parse_complete(visible_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if json_object_mode {
@@ -1043,7 +1048,46 @@ fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<Backe
 #[derive(Debug, Clone, Copy)]
 struct QwenChatAdapter;
 
-impl QwenChatAdapter {
+#[derive(Debug, Clone, Copy)]
+enum SelectedChatAdapter {
+    Qwen(QwenChatAdapter),
+}
+
+trait ChatAdapter {
+    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError>;
+    fn render_prompt(
+        self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<String, RuntimeError>;
+    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError>;
+}
+
+impl ChatAdapter for SelectedChatAdapter {
+    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
+        match self {
+            Self::Qwen(adapter) => adapter.cache_context(tools),
+        }
+    }
+
+    fn render_prompt(
+        self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<String, RuntimeError> {
+        match self {
+            Self::Qwen(adapter) => adapter.render_prompt(messages, tools),
+        }
+    }
+
+    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
+        match self {
+            Self::Qwen(adapter) => adapter.parse_complete(text),
+        }
+    }
+}
+
+impl ChatAdapter for QwenChatAdapter {
     fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
         let tool_schema = if tools.is_empty() {
             None
@@ -1060,20 +1104,60 @@ impl QwenChatAdapter {
         self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> Result<String, TemplateError> {
-        render_qwen_chatml(
+    ) -> Result<String, RuntimeError> {
+        Ok(render_qwen_chatml(
             messages,
             tools,
             &QwenPromptOptions {
                 enable_thinking: false,
                 add_generation_prompt: true,
             },
-        )
+        )?)
     }
 
-    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, ParserError> {
-        QwenParser.parse_complete(text)
+    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
+        Ok(QwenParser.parse_complete(text)?)
     }
+}
+
+fn chat_adapter_for_metadata(
+    metadata: &BackendModelMetadata,
+) -> Result<SelectedChatAdapter, RuntimeError> {
+    let Some(family) = metadata.family.as_deref() else {
+        return match metadata.backend.as_str() {
+            "deterministic" | "native-qwen" | "unknown" => {
+                Ok(SelectedChatAdapter::Qwen(QwenChatAdapter))
+            }
+            backend => Err(ApiError::unsupported_capability(format!(
+                "backend `{backend}` did not declare a model family for chat rendering"
+            ))
+            .into()),
+        };
+    };
+    match parse_metadata_family(family)? {
+        ModelFamily::Qwen => Ok(SelectedChatAdapter::Qwen(QwenChatAdapter)),
+        ModelFamily::DeepSeek => Err(unsupported_chat_family("DeepSeek")),
+        ModelFamily::Gemma => Err(unsupported_chat_family("Gemma")),
+    }
+}
+
+fn parse_metadata_family(family: &str) -> Result<ModelFamily, RuntimeError> {
+    match family {
+        "qwen" => Ok(ModelFamily::Qwen),
+        "deep_seek" | "deepseek" => Ok(ModelFamily::DeepSeek),
+        "gemma" => Ok(ModelFamily::Gemma),
+        other => Err(ApiError::unsupported_capability(format!(
+            "unknown model family `{other}` for chat rendering"
+        ))
+        .into()),
+    }
+}
+
+fn unsupported_chat_family(family: &'static str) -> RuntimeError {
+    ApiError::unsupported_capability(format!(
+        "{family} chat adapter support is deferred until Qwen production parity"
+    ))
+    .into()
 }
 
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

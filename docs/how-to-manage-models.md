@@ -27,7 +27,15 @@ requests.
 
 ## Plan A Download
 
-Plan the default native BF16 profile:
+Plan a practical dense Qwen3 native BF16 profile:
+
+```sh
+cargo run -p llm-engine -- model plan Qwen/Qwen3-0.6B \
+  --revision main \
+  --profile qwen3-dense-safetensors-bf16
+```
+
+Plan the larger Qwen3.6 MoE native BF16 profile when you need that family:
 
 ```sh
 cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B \

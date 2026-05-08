@@ -33,6 +33,30 @@ fn parses_qwen_coder_xml_tool_call() {
 }
 
 #[test]
+fn preserves_plain_assistant_whitespace() {
+    let parsed = QwenParser
+        .parse_complete("  keep leading space\n    indented line\n")
+        .expect("plain text parses");
+
+    assert_eq!(parsed.content, "  keep leading space\n    indented line\n");
+    assert!(parsed.tool_calls.is_empty());
+}
+
+#[test]
+fn preserves_content_around_reasoning_and_tool_tags() {
+    let parsed = QwenParser
+        .parse_complete(
+            "  before\n<think>private chain</think>\ninside\n<tool_call>{\"name\":\"lookup\",\"arguments\":{\"query\":\"rust\"}}</tool_call>\n  after\n",
+        )
+        .expect("tagged output parses");
+
+    assert_eq!(parsed.reasoning.as_deref(), Some("private chain"));
+    assert_eq!(parsed.content, "  before\n\ninside\n\n  after\n");
+    assert_eq!(parsed.tool_calls.len(), 1);
+    assert_eq!(parsed.tool_calls[0].function.name, "lookup");
+}
+
+#[test]
 fn fails_when_tool_markup_is_malformed() {
     let err = QwenParser
         .parse_complete("<tool_call>{\"name\":\"read_file\",\"arguments\":")

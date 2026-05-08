@@ -1,3 +1,4 @@
+use llm_backend::qwen_final_norm_for_spec;
 use llm_backend::{
     CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenKvCacheTensor, QwenLayerCache,
     QwenMatvecBackend, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
@@ -14,8 +15,9 @@ use llm_backend::{
     qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_forward_with_matvec,
     qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_projections,
     qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
-    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
+    qwen_lm_head_logits, qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec,
+    qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec,
+    qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
     qwen_prefill_sequence_with_cache_with_matvec, qwen_rms_norm_f32,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
@@ -1989,6 +1991,94 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
 }
 
 #[test]
+fn shard_store_opens_single_model_safetensors_without_index() {
+    let root = temp_snapshot_dir("single-file-store");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors"),
+        tiny_safetensors_bf16("model.embed_tokens.weight", &[2, 2], &[1.0, 2.0, 3.0, 4.0]),
+    )
+    .expect("single safetensors");
+
+    let store = SafeTensorShardStore::open(&root).expect("single-file store opens");
+
+    assert_eq!(
+        store
+            .bf16_row_f32("model.embed_tokens.weight", 1)
+            .expect("row loads"),
+        vec![3.0, 4.0]
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
+    let root = temp_snapshot_dir("qwen3-dense-prefill");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_qwen3_dense_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen3_dense_spec();
+    let mut caches = caches_for_spec(&spec, 4);
+
+    let hidden =
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).expect("prefill");
+
+    assert_eq!(hidden.len(), 2);
+    assert_eq!(hidden[0].len(), 2);
+    match &caches[0] {
+        QwenLayerCache::Full(cache) => assert_eq!(cache.token_count(), 2),
+        QwenLayerCache::Linear(_) => panic!("Qwen3 dense should use full attention cache"),
+    }
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
+    let root = temp_snapshot_dir("qwen3-dense-bad-down-proj");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_qwen3_dense_decoder_snapshot(&root);
+    std::fs::write(
+        root.join("down.safetensors"),
+        tiny_safetensors_bf16("model.layers.0.mlp.down_proj.weight", &[1, 1], &[0.0]),
+    )
+    .expect("bad down tensor");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen3_dense_spec();
+    let mut caches = caches_for_spec(&spec, 4);
+
+    let err = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .expect_err("bad down projection width must fail closed");
+
+    assert!(
+        err.to_string().contains("down output length"),
+        "error should name down output length: {err}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
+    let root = temp_snapshot_dir("qwen3-dense-lm-head");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_qwen3_dense_lm_head_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen3_dense_spec();
+
+    let normalized =
+        qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0]).expect("final norm uses model.norm");
+    let top =
+        qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2).expect("tied top-k works");
+    let logits =
+        qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2).expect("tied logits work");
+
+    assert_close(&normalized, &[std::f32::consts::SQRT_2, 0.0], 1e-5);
+    assert_eq!(top[0].index, 0);
+    assert_eq!(logits.len(), 2);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
     let root = temp_snapshot_dir("qwen-linear-prefill-cache-chunk");
     write_tiny_linear_decoder_snapshot(&root);
@@ -2628,6 +2718,148 @@ fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
     }
 }
 
+fn write_tiny_qwen3_dense_decoder_snapshot(root: &std::path::Path) {
+    std::fs::create_dir_all(root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 128 },
+            "weight_map": {
+                "model.embed_tokens.weight": "embed.safetensors",
+                "model.layers.0.input_layernorm.weight": "input_norm.safetensors",
+                "model.layers.0.self_attn.q_proj.weight": "q.safetensors",
+                "model.layers.0.self_attn.k_proj.weight": "k.safetensors",
+                "model.layers.0.self_attn.v_proj.weight": "v.safetensors",
+                "model.layers.0.self_attn.q_norm.weight": "q_norm.safetensors",
+                "model.layers.0.self_attn.k_norm.weight": "k_norm.safetensors",
+                "model.layers.0.self_attn.o_proj.weight": "o.safetensors",
+                "model.layers.0.post_attention_layernorm.weight": "post_norm.safetensors",
+                "model.layers.0.mlp.gate_proj.weight": "gate.safetensors",
+                "model.layers.0.mlp.up_proj.weight": "up.safetensors",
+                "model.layers.0.mlp.down_proj.weight": "down.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "embed.safetensors",
+            "model.embed_tokens.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "input_norm.safetensors",
+            "model.layers.0.input_layernorm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "q.safetensors",
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "k.safetensors",
+            "model.layers.0.self_attn.k_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "v.safetensors",
+            "model.layers.0.self_attn.v_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "q_norm.safetensors",
+            "model.layers.0.self_attn.q_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "k_norm.safetensors",
+            "model.layers.0.self_attn.k_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "o.safetensors",
+            "model.layers.0.self_attn.o_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "post_norm.safetensors",
+            "model.layers.0.post_attention_layernorm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "gate.safetensors",
+            "model.layers.0.mlp.gate_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "up.safetensors",
+            "model.layers.0.mlp.up_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "down.safetensors",
+            "model.layers.0.mlp.down_proj.weight",
+            vec![2, 1],
+            vec![0.0, 0.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
+}
+
+fn write_tiny_qwen3_dense_lm_head_snapshot(root: &std::path::Path) {
+    std::fs::create_dir_all(root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 16 },
+            "weight_map": {
+                "model.embed_tokens.weight": "embed.safetensors",
+                "model.norm.weight": "norm.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "embed.safetensors",
+            "model.embed_tokens.weight",
+            vec![2, 2],
+            vec![2.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "norm.safetensors",
+            "model.norm.weight",
+            vec![2],
+            vec![1.0, 1.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
+}
+
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
@@ -2703,6 +2935,36 @@ fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
         max_position_embeddings: 128,
         vocab_size: 8,
         layer_kinds: vec![kind],
+    }
+}
+
+fn tiny_qwen3_dense_spec() -> QwenModelSpec {
+    QwenModelSpec {
+        family: ModelFamily::Qwen,
+        architecture: "Qwen3ForCausalLM".to_owned(),
+        model_type: "qwen3".to_owned(),
+        text_model_type: "qwen3".to_owned(),
+        hidden_size: 2,
+        rms_norm_eps: 1e-6,
+        tie_word_embeddings: true,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+        num_hidden_layers: 1,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+        linear_num_key_heads: 0,
+        linear_num_value_heads: 0,
+        linear_key_head_dim: 0,
+        linear_value_head_dim: 0,
+        linear_conv_kernel_dim: 0,
+        num_experts: 0,
+        num_experts_per_tok: 0,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 0,
+        max_position_embeddings: 128,
+        vocab_size: 8,
+        layer_kinds: vec![AttentionKind::FullAttention],
     }
 }
 

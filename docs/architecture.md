@@ -56,7 +56,7 @@ responses.
 | `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen text chat and tools. DeepSeek and Gemma template selection is explicit and fails closed until Qwen production parity. |
 | `llm-tool-parser` | Family assistant output parser selection. | Supports Qwen reasoning tags and JSON/XML tool-call forms. DeepSeek and Gemma fixtures exist for family-specific text, reasoning/tool, and unsupported probes, but parser execution fails closed until Qwen production parity. |
-| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports Qwen3.5/Qwen3.6 MoE text config, declares Qwen production backends as native Metal plus MLX, and declares DeepSeek/Gemma as deferred first-class families. |
+| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports dense Qwen3 plus Qwen3.5/Qwen3.6 MoE text config, declares Qwen production backends as native Metal plus MLX, and declares DeepSeek/Gemma as deferred first-class families. |
 | `llm-hub` | Hugging Face planning, download, snapshot promotion, and verification. | Requires immutable resolved commits, validates paths, supports resumable downloads, writes engine manifests, and includes a Gemma text-only acquisition profile that skips vision/projector artifacts. |
 | `llm-metal` | Metal device and kernel experiments. | Smoke-tested vector add only. Not wired into Qwen inference yet. |
 | `llm-sampler` | Greedy argmax sampler. | Standalone and tested. Native backend currently chooses from LM-head top-k directly. |
@@ -144,7 +144,9 @@ probes to Metal kernels without changing API or model-store semantics.
 
 ## Current Design Constraints
 
-- The runtime is Qwen-specific for chat rendering and parser behaviour.
+- The runtime selects chat rendering and parser behaviour from backend model
+  metadata; Qwen is implemented, while non-Qwen families fail closed until their
+  adapters exist.
 - Native model execution is BF16 safetensors-oriented.
 - Prompt context is bounded by `--max-prefill-tokens`.
 - Multi-token decode recomputes bounded context instead of maintaining reusable

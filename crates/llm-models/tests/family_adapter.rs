@@ -12,7 +12,7 @@ fn qwen_family_declares_mlx_as_required_production_backend() {
     assert!(backends.contains(&BackendKind::Mlx));
     assert!(backends.contains(&BackendKind::NativeMetal));
     assert_eq!(adapter.cache_template_id(), "chatml/qwen/v1");
-    assert_eq!(adapter.tensor_namespace(), "qwen3_5_moe");
+    assert_eq!(adapter.tensor_namespace(), "qwen");
     assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
     assert!(adapter.capabilities().backend_execution);
 }
