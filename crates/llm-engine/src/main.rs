@@ -58,6 +58,36 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         );
     };
     match subcommand.as_str() {
+        "list" => {
+            let root = flag_value(&args, "--model-home")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("LLM_MODEL_HOME").map(std::path::PathBuf::from))
+                .unwrap_or_else(|| std::path::PathBuf::from(".llm-models"));
+            let snapshots = ModelStore::new(root).list_snapshots().await?;
+            let snapshots = snapshots
+                .into_iter()
+                .map(|snapshot| {
+                    serde_json::json!({
+                        "path": snapshot.path,
+                        "repo_id": snapshot.manifest.repo_id,
+                        "requested_revision": snapshot.manifest.requested_revision,
+                        "resolved_commit": snapshot.manifest.resolved_commit,
+                        "profile": snapshot.manifest.profile,
+                        "family": snapshot.manifest.family,
+                        "loader": snapshot.manifest.loader,
+                        "quantization": snapshot.manifest.quantization,
+                        "manifest_digest": snapshot.manifest_digest,
+                        "files": snapshot.manifest.files.len(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "snapshots": snapshots
+                }))?
+            );
+        }
         "inspect-safetensors" => {
             let path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")

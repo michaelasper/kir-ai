@@ -574,6 +574,82 @@ impl ModelStore {
         self.promote_staging(plan, staging).await
     }
 
+    pub async fn list_snapshots(&self) -> Result<Vec<PromotedSnapshot>, HubError> {
+        if !tokio::fs::try_exists(&self.root)
+            .await
+            .map_err(HubError::io)?
+        {
+            return Ok(Vec::new());
+        }
+        let mut snapshots = Vec::new();
+        let repos_root = self.root.join("huggingface");
+        if !tokio::fs::try_exists(&repos_root)
+            .await
+            .map_err(HubError::io)?
+        {
+            return Ok(snapshots);
+        }
+        let mut repos = tokio::fs::read_dir(&repos_root)
+            .await
+            .map_err(HubError::io)?;
+        while let Some(repo) = repos.next_entry().await.map_err(HubError::io)? {
+            if !repo.file_type().await.map_err(HubError::io)?.is_dir() {
+                continue;
+            }
+            let snapshots_dir = repo.path().join("snapshots");
+            if !tokio::fs::try_exists(&snapshots_dir)
+                .await
+                .map_err(HubError::io)?
+            {
+                continue;
+            }
+            let mut entries = tokio::fs::read_dir(&snapshots_dir)
+                .await
+                .map_err(HubError::io)?;
+            while let Some(entry) = entries.next_entry().await.map_err(HubError::io)? {
+                if !entry.file_type().await.map_err(HubError::io)?.is_dir() {
+                    continue;
+                }
+                let path = entry.path();
+                let manifest_path = path.join("llm-engine-manifest.json");
+                if !tokio::fs::try_exists(&manifest_path)
+                    .await
+                    .map_err(HubError::io)?
+                {
+                    continue;
+                }
+                let bytes = tokio::fs::read(&manifest_path)
+                    .await
+                    .map_err(HubError::io)?;
+                let manifest =
+                    serde_json::from_slice::<SnapshotManifest>(&bytes).map_err(|err| {
+                        HubError::integrity_failed(format!(
+                            "invalid snapshot manifest `{}`: {err}",
+                            manifest_path.display()
+                        ))
+                    })?;
+                let manifest_digest = manifest.digest();
+                snapshots.push(PromotedSnapshot {
+                    path,
+                    manifest,
+                    manifest_digest,
+                });
+            }
+        }
+        snapshots.sort_by(|left, right| {
+            left.manifest
+                .repo_id
+                .cmp(&right.manifest.repo_id)
+                .then_with(|| {
+                    left.manifest
+                        .resolved_commit
+                        .cmp(&right.manifest.resolved_commit)
+                })
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Ok(snapshots)
+    }
+
     async fn verify_snapshot_files(
         &self,
         plan: &DownloadPlan,
