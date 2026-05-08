@@ -269,6 +269,7 @@ impl IntoResponse for EngineError {
                     RuntimeError::Template(_)
                     | RuntimeError::Parser(_)
                     | RuntimeError::Json(_)
+                    | RuntimeError::JsonMode(_)
                     | RuntimeError::NoProgress(_) => StatusCode::UNPROCESSABLE_ENTITY,
                 };
                 (status, err.to_string())

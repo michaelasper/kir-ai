@@ -2,7 +2,8 @@ use chrono::Utc;
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
-    ChatRole, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage, ValidateRequest,
+    ChatRole, ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
+    ValidateRequest,
 };
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
@@ -123,6 +124,10 @@ where
             })
             .await?;
         let parsed = QwenParser.parse_complete(&output.text)?;
+        validate_tool_call_arguments(&parsed)?;
+        if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
+            validate_json_object_response(&parsed)?;
+        }
         let required_tool_pending = matches!(
             request.tool_choice,
             Some(ToolChoice::Required | ToolChoice::Function { .. })
@@ -203,6 +208,39 @@ fn tool_call_delta(index: usize, tool_call: &ToolCall) -> Result<ToolCallDelta, 
     })
 }
 
+fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
+    for tool_call in &parsed.tool_calls {
+        if !tool_call.function.arguments.is_object() {
+            return Err(RuntimeError::JsonMode(format!(
+                "tool call `{}` arguments must be a JSON object",
+                tool_call.function.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
+    if !parsed.content.is_empty() {
+        let value = serde_json::from_str::<serde_json::Value>(&parsed.content).map_err(|err| {
+            RuntimeError::JsonMode(format!(
+                "json_object response_format requires valid JSON object content: {err}"
+            ))
+        })?;
+        if !value.is_object() {
+            return Err(RuntimeError::JsonMode(
+                "json_object response_format requires assistant content to be a JSON object"
+                    .to_owned(),
+            ));
+        }
+    } else if parsed.tool_calls.is_empty() {
+        return Err(RuntimeError::JsonMode(
+            "json_object response_format requires assistant content or tool calls".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
     EmptyCompletion,
@@ -239,6 +277,8 @@ pub enum RuntimeError {
     Parser(#[from] ParserError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    JsonMode(String),
     #[error("no progress classified as {0:?}")]
     NoProgress(NoProgressClass),
 }

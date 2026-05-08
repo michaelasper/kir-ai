@@ -1,4 +1,6 @@
-use llm_api::{ChatCompletionRequest, ChatMessage, FinishReason, ToolChoice, ToolDefinition};
+use llm_api::{
+    ChatCompletionRequest, ChatMessage, FinishReason, ResponseFormat, ToolChoice, ToolDefinition,
+};
 use llm_backend::DeterministicBackend;
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::json;
@@ -69,6 +71,61 @@ async fn required_tool_choice_rejects_text_fallback() {
         err,
         RuntimeError::NoProgress(NoProgressClass::TextFallbackRequiredTool)
     ));
+}
+
+#[tokio::test]
+async fn json_object_response_format_accepts_object_content() {
+    let backend = DeterministicBackend::new("local-qwen36", r#"{"answer":"rust"}"#);
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("json object content is valid");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some(r#"{"answer":"rust"}"#)
+    );
+}
+
+#[tokio::test]
+async fn json_object_response_format_rejects_text_content() {
+    let backend = DeterministicBackend::new("local-qwen36", "not json");
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("json object mode validates assistant content");
+
+    assert!(matches!(err, RuntimeError::JsonMode(_)));
+}
+
+#[tokio::test]
+async fn streaming_json_object_response_format_rejects_text_content() {
+    let backend = DeterministicBackend::new("local-qwen36", "not json");
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("streaming json object mode validates before SSE assembly");
+
+    assert!(matches!(err, RuntimeError::JsonMode(_)));
 }
 
 #[tokio::test]
