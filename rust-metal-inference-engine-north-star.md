@@ -66,6 +66,7 @@ Current commits:
 - `fdafefd` - Chat and text-completion streams honor `stream_options.include_usage` by emitting a usage-only chunk before `[DONE]`.
 - `1c8faef` - Added read-only admin model status endpoints for the currently served model with stable missing-model errors.
 - `ca7c097` - Added offline local snapshot `model inspect` and `model verify` commands backed by engine manifests.
+- `d49ee2b` - Chat and text completion requests now reject `max_tokens: 0` during request validation.
 
 Current verified state:
 
@@ -96,6 +97,7 @@ Current verified state:
 - Streaming chat and legacy text completions accept OpenAI `stream_options.include_usage` and append a final usage-only chunk with `choices: []` before the single `[DONE]` terminator.
 - `GET /admin/models` and `GET /admin/models/{alias}` report read-only status for the currently served Rust model. Unknown aliases return the same stable `model_not_found` error metadata as inference requests.
 - `llm-engine model inspect <snapshot-path>` reads the engine manifest without network access and reports artifact identity, profile, manifest digest, file count, and total manifest bytes. `llm-engine model verify <snapshot-path>` rechecks manifest file sizes and recorded SHA-256 digests and reports verified file/byte counts.
+- Chat and text completion request validation now rejects `max_tokens: 0` with a stable `invalid_request` error before backend execution.
 
 Known incomplete items:
 
