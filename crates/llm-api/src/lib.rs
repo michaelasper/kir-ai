@@ -228,6 +228,10 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
@@ -259,6 +263,10 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -423,6 +431,8 @@ impl ValidateRequest for ChatCompletionRequest {
                 "top_p sampling is not supported yet; use top_p 1",
             ));
         }
+        validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
+        validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
                 "max_tokens must be greater than 0",
@@ -473,6 +483,8 @@ impl ValidateRequest for CompletionRequest {
                 "top_p sampling is not supported yet; use top_p 1",
             ));
         }
+        validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
+        validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
                 "max_tokens must be greater than 0",
@@ -496,6 +508,17 @@ fn validate_choice_count(n: Option<u32>) -> Result<(), ApiError> {
             "multiple choices are not supported yet; use n 1",
         )),
     }
+}
+
+fn validate_neutral_penalty(name: &str, value: Option<f32>) -> Result<(), ApiError> {
+    if let Some(value) = value
+        && (!value.is_finite() || value != 0.0)
+    {
+        return Err(ApiError::unsupported_capability(format!(
+            "{name} is not supported yet; use {name} 0"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -43,6 +43,8 @@ async fn runtime_returns_text_completion() {
             stream_options: llm_api::StreamOptions::default(),
             temperature: None,
             top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
             n: None,
         })
         .await
@@ -68,6 +70,8 @@ async fn runtime_returns_streaming_text_completion_chunks() {
             stream_options: llm_api::StreamOptions::default(),
             temperature: None,
             top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
             n: None,
         })
         .await

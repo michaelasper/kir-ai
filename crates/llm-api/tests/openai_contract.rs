@@ -109,6 +109,46 @@ fn accepts_explicit_greedy_sampling_controls() {
 }
 
 #[test]
+fn rejects_unsupported_chat_penalty_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        presence_penalty: Some(0.5),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("presence penalty is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        frequency_penalty: Some(0.5),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("frequency penalty is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn accepts_neutral_chat_penalty_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        presence_penalty: Some(0.0),
+        frequency_penalty: Some(0.0),
+        ..ChatCompletionRequest::default()
+    };
+
+    request.validate().expect("neutral penalties are no-ops");
+}
+
+#[test]
 fn completion_rejects_unsupported_non_greedy_sampling_controls() {
     let request = CompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -146,6 +186,33 @@ fn completion_accepts_explicit_greedy_sampling_controls() {
     };
 
     request.validate().expect("greedy controls are supported");
+}
+
+#[test]
+fn completion_rejects_unsupported_penalty_controls() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        presence_penalty: Some(0.5),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("presence penalty is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        frequency_penalty: Some(0.5),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("frequency penalty is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
 }
 
 #[test]
