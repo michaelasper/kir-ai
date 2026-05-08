@@ -37,6 +37,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let metadata_only = args.iter().any(|arg| arg == "--metadata-only");
             let profile = match profile_name {
                 "qwen36-mlx-4bit" => ModelProfile::qwen36_mlx_4bit(),
+                "qwen36-safetensors-bf16" => ModelProfile::qwen36_safetensors_bf16(),
                 other => anyhow::bail!("unknown model profile `{other}`"),
             };
             let repo_id = HubRepoId::model(repo)?;

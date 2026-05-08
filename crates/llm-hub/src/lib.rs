@@ -286,26 +286,45 @@ impl ModelProfile {
         Self {
             name: "qwen36-mlx-4bit".to_owned(),
             family: "qwen".to_owned(),
-            loader: "native-metal".to_owned(),
+            loader: "mlx".to_owned(),
             quantization: "4bit".to_owned(),
-            allow_patterns: vec![
-                "*.json".to_owned(),
-                "*.jinja".to_owned(),
-                "*.txt".to_owned(),
-                "tokenizer*".to_owned(),
-                "README.md".to_owned(),
-                "LICENSE*".to_owned(),
-                "*.safetensors".to_owned(),
-                "*.safetensors.index.json".to_owned(),
-            ],
-            ignore_patterns: vec![
-                "*.bin".to_owned(),
-                "*.pt".to_owned(),
-                "optimizer*".to_owned(),
-                "training_args.bin".to_owned(),
-            ],
+            allow_patterns: qwen_static_and_safetensors_patterns(),
+            ignore_patterns: qwen_ignore_patterns(),
         }
     }
+
+    pub fn qwen36_safetensors_bf16() -> Self {
+        Self {
+            name: "qwen36-safetensors-bf16".to_owned(),
+            family: "qwen".to_owned(),
+            loader: "native-metal".to_owned(),
+            quantization: "bf16".to_owned(),
+            allow_patterns: qwen_static_and_safetensors_patterns(),
+            ignore_patterns: qwen_ignore_patterns(),
+        }
+    }
+}
+
+fn qwen_static_and_safetensors_patterns() -> Vec<String> {
+    vec![
+        "*.json".to_owned(),
+        "*.jinja".to_owned(),
+        "*.txt".to_owned(),
+        "tokenizer*".to_owned(),
+        "README.md".to_owned(),
+        "LICENSE*".to_owned(),
+        "*.safetensors".to_owned(),
+        "*.safetensors.index.json".to_owned(),
+    ]
+}
+
+fn qwen_ignore_patterns() -> Vec<String> {
+    vec![
+        "*.bin".to_owned(),
+        "*.pt".to_owned(),
+        "optimizer*".to_owned(),
+        "training_args.bin".to_owned(),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

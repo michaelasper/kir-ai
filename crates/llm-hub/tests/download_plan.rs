@@ -33,6 +33,16 @@ fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
 }
 
 #[test]
+fn qwen_bf16_profile_records_official_safetensors_identity() {
+    let profile = ModelProfile::qwen36_safetensors_bf16();
+
+    assert_eq!(profile.name, "qwen36-safetensors-bf16");
+    assert_eq!(profile.loader, "native-metal");
+    assert_eq!(profile.quantization, "bf16");
+    assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+}
+
+#[test]
 fn plan_rejects_mutable_revision_without_resolved_commit() {
     let err = build_download_plan(
         HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
