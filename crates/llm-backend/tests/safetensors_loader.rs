@@ -11,12 +11,12 @@ use llm_backend::{
     qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
     qwen_layer_linear_attention_sequence_with_cache,
     qwen_layer_linear_attention_sequence_with_cache_with_matvec,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_router_with_matvec,
-    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_logits_with_matvec,
-    qwen_lm_head_top_k, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence,
-    qwen_prefill_sequence_with_cache, qwen_prefill_sequence_with_cache_with_matvec,
-    qwen_rms_norm_f32,
+    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_forward_with_matvec,
+    qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
+    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
+    qwen_prefill_sequence_with_cache_with_matvec, qwen_rms_norm_f32,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -703,6 +703,36 @@ fn qwen_moe_forward_reads_selected_expert_slices() {
     let output = qwen_layer0_moe_forward(&store, &dims, &[1.0, 2.0], &router).expect("moe");
 
     assert_close(&output, &[1.4621172, 2.9242344], 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_moe_forward_accumulation_uses_configured_backend() {
+    let root = temp_snapshot_dir("qwen-moe-forward-accum-backend");
+    write_tiny_moe_forward_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let dims = QwenMoeDims {
+        hidden_size: 2,
+        num_experts: 2,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 1,
+    };
+    let router = QwenMoeRouterProbe {
+        logits: vec![0.0, 0.0],
+        selected: vec![TopKWeight {
+            index: 0,
+            weight: 1.0,
+        }],
+    };
+    let expected = qwen_layer0_moe_forward(&store, &dims, &[1.0, 2.0], &router).expect("cpu moe");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output =
+        qwen_layer_moe_forward_with_matvec(&store, 0, &dims, &[1.0, 2.0], &router, &matvec)
+            .expect("recording moe");
+
+    assert_close(&output, &expected, 1e-6);
+    assert_eq!(matvec.weighted_sum_calls.get(), 2);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -1895,6 +1925,7 @@ struct RecordingMatvecBackend {
     softmax_calls: Cell<usize>,
     conv1d_calls: Cell<usize>,
     softmax_top_k_calls: Cell<usize>,
+    weighted_sum_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -1993,10 +2024,85 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
             .set(self.softmax_top_k_calls.get() + 1);
         CpuQwenMatvecBackend.softmax_top_k_f32(logits, top_k)
     }
+
+    fn weighted_sum_f32(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.weighted_sum_calls
+            .set(self.weighted_sum_calls.get() + 1);
+        CpuQwenMatvecBackend.weighted_sum_f32(values, weights, vector_len)
+    }
 }
 
 fn caches_for_spec(spec: &QwenModelSpec, capacity: usize) -> Vec<QwenLayerCache> {
     qwen_layer_caches_for_spec(spec, capacity).expect("temporary caches")
+}
+
+fn write_tiny_moe_forward_snapshot(root: &std::path::Path) {
+    std::fs::create_dir_all(root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 80 },
+            "weight_map": {
+                "model.language_model.layers.0.mlp.experts.gate_up_proj": "gate_up.safetensors",
+                "model.language_model.layers.0.mlp.experts.down_proj": "down.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight": "shared_gate.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.up_proj.weight": "shared_up.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert.down_proj.weight": "shared_down.safetensors",
+                "model.language_model.layers.0.mlp.shared_expert_gate.weight": "shared_expert_gate.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "gate_up.safetensors",
+            "model.language_model.layers.0.mlp.experts.gate_up_proj",
+            vec![2, 2, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        ),
+        (
+            "down.safetensors",
+            "model.language_model.layers.0.mlp.experts.down_proj",
+            vec![2, 2, 1],
+            vec![1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            "shared_gate.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_up.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_down.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+            vec![2, 1],
+            vec![0.0, 0.0],
+        ),
+        (
+            "shared_expert_gate.safetensors",
+            "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
 }
 
 fn write_tiny_full_attention_snapshot(root: &std::path::Path) {

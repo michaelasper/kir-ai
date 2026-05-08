@@ -75,6 +75,21 @@ fn metal_linear_attention_conv1d_silu_f32_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_weighted_sum_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let output = device
+        .weighted_sum_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0.25, -0.5], 3)
+        .expect("metal weighted sum succeeds");
+
+    assert_close(&output, &[-1.75, -2.0, -2.25], 1e-6);
+}
+
+#[test]
 fn metal_matvec_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

@@ -12,6 +12,7 @@ pub struct MetalDevice {
     qwen_rms_norm: Arc<MetalKernel>,
     softmax_f32: Arc<MetalKernel>,
     linear_attention_conv1d_silu_f32: Arc<MetalKernel>,
+    weighted_sum_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
@@ -59,6 +60,7 @@ impl MetalDevice {
         let softmax_f32 = Self::kernel(&device, &library, "softmax_f32")?;
         let linear_attention_conv1d_silu_f32 =
             Self::kernel(&device, &library, "linear_attention_conv1d_silu_f32")?;
+        let weighted_sum_f32 = Self::kernel(&device, &library, "weighted_sum_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
@@ -70,6 +72,7 @@ impl MetalDevice {
             qwen_rms_norm,
             softmax_f32,
             linear_attention_conv1d_silu_f32,
+            weighted_sum_f32,
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
@@ -395,6 +398,98 @@ impl MetalDevice {
             std::slice::from_raw_parts(ptr, conv_dim).to_vec()
         };
         Ok(values)
+    }
+
+    pub fn weighted_sum_f32(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        let expected_values = weights.len().checked_mul(vector_len).ok_or_else(|| {
+            MetalError::InvalidShape("weighted sum shape overflows usize".to_owned())
+        })?;
+        if values.len() != expected_values {
+            return Err(MetalError::InvalidShape(format!(
+                "weighted sum value length {} does not match weights {} * vector_len {vector_len}",
+                values.len(),
+                weights.len()
+            )));
+        }
+        if vector_len == 0 {
+            return Ok(Vec::new());
+        }
+        if weights.is_empty() {
+            return Ok(vec![0.0; vector_len]);
+        }
+        let row_count_u32 = u32::try_from(weights.len()).map_err(|err| {
+            MetalError::InvalidShape(format!("weighted sum row count does not fit u32: {err}"))
+        })?;
+        let vector_len_u32 = u32::try_from(vector_len).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "weighted sum vector length does not fit u32: {err}"
+            ))
+        })?;
+        let values_byte_len = std::mem::size_of_val(values) as u64;
+        let weights_byte_len = std::mem::size_of_val(weights) as u64;
+        let output_byte_len = (vector_len * std::mem::size_of::<f32>()) as u64;
+        let values_buffer = self.device.new_buffer_with_data(
+            values.as_ptr().cast::<c_void>(),
+            values_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr().cast::<c_void>(),
+            weights_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.weighted_sum_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.weighted_sum_f32.pipeline);
+        encoder.set_buffer(0, Some(&values_buffer), 0);
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&row_count_u32) as u64,
+            (&row_count_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&vector_len_u32) as u64,
+            (&vector_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(4, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: vector_len as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .weighted_sum_f32
+            .pipeline
+            .thread_execution_width()
+            .min(vector_len as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per output column.
+        let output = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, vector_len).to_vec()
+        };
+        Ok(output)
     }
 
     pub fn matvec_f32(
@@ -999,6 +1094,24 @@ kernel void linear_attention_conv1d_silu_f32(
             * weights[(channel * kernel_size) + kernel_index];
     }
     output[channel] = mixed / (1.0 + exp(-mixed));
+}
+
+kernel void weighted_sum_f32(
+    device const float* values [[buffer(0)]],
+    device const float* weights [[buffer(1)]],
+    constant uint& row_count [[buffer(2)]],
+    constant uint& vector_len [[buffer(3)]],
+    device float* output [[buffer(4)]],
+    uint column [[thread_position_in_grid]]
+) {
+    if (column >= vector_len) {
+        return;
+    }
+    float sum = 0.0;
+    for (uint row = 0; row < row_count; row++) {
+        sum += values[(row * vector_len) + column] * weights[row];
+    }
+    output[column] = sum;
 }
 
 kernel void matvec_f32(

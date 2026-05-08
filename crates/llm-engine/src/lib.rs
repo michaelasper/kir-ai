@@ -526,6 +526,20 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             }
         }
     }
+
+    fn weighted_sum_f32(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().weighted_sum_f32(values, weights, vector_len),
+            Self::Metal(device) => device
+                .weighted_sum_f32(values, weights, vector_len)
+                .or_else(|_| Self::cpu().weighted_sum_f32(values, weights, vector_len)),
+        }
+    }
 }
 
 fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {

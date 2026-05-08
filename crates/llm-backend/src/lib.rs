@@ -552,6 +552,29 @@ fn linear_attention_conv1d_silu_f32(
     Ok(output)
 }
 
+fn weighted_sum_f32(
+    values: &[f32],
+    weights: &[f32],
+    vector_len: usize,
+) -> Result<Vec<f32>, MathError> {
+    let row_count = weights.len();
+    let expected_len = row_count
+        .checked_mul(vector_len)
+        .ok_or_else(|| MathError::InvalidShape("weighted sum shape overflows usize".to_owned()))?;
+    require_len("weighted sum values", values.len(), expected_len)?;
+    if vector_len == 0 {
+        return Ok(Vec::new());
+    }
+    let mut output = vec![0.0; vector_len];
+    for (row_idx, weight) in weights.iter().enumerate() {
+        let row_start = row_idx * vector_len;
+        for offset in 0..vector_len {
+            output[offset] += values[row_start + offset] * weight;
+        }
+    }
+    Ok(output)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TopKWeight {
     pub index: usize,
@@ -635,6 +658,15 @@ pub trait QwenMatvecBackend {
         kernel_size: usize,
     ) -> Result<Vec<f32>, MathError> {
         linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
+    }
+
+    fn weighted_sum_f32(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        weighted_sum_f32(values, weights, vector_len)
     }
 
     fn softmax_top_k_f32(
@@ -3323,7 +3355,13 @@ pub fn qwen_layer_moe_forward_with_matvec(
             dims.hidden_size
         )));
     }
-    let mut output = vec![0.0; dims.hidden_size];
+    let selected_capacity = router
+        .selected
+        .len()
+        .checked_mul(dims.hidden_size)
+        .ok_or_else(|| TensorLoadError::integrity("Qwen selected expert shape overflow"))?;
+    let mut selected_outputs = Vec::with_capacity(selected_capacity);
+    let mut selected_weights = Vec::with_capacity(router.selected.len());
     let gate_up_expert_elements = dims
         .moe_intermediate_size
         .checked_mul(2)
@@ -3365,10 +3403,14 @@ pub fn qwen_layer_moe_forward_with_matvec(
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen selected expert MLP failed: {err}"))
         })?;
-        for (output, expert) in output.iter_mut().zip(expert_output) {
-            *output += expert * selected.weight;
-        }
+        selected_outputs.extend_from_slice(&expert_output);
+        selected_weights.push(selected.weight);
     }
+    let selected_output = matvec
+        .weighted_sum_f32(&selected_outputs, &selected_weights, dims.hidden_size)
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen selected expert accumulation failed: {err}"))
+        })?;
 
     let shared_gate = store.bf16_tensor_f32(&qwen_mlp_tensor(
         layer_idx,
@@ -3400,10 +3442,18 @@ pub fn qwen_layer_moe_forward_with_matvec(
         .next()
         .ok_or_else(|| TensorLoadError::integrity("Qwen shared expert gate returned no value"))?;
     let shared_gate = sigmoid_f32(shared_gate);
-    for (output, shared) in output.iter_mut().zip(shared_output) {
-        *output += shared_gate * shared;
-    }
-    Ok(output)
+    let combined_capacity = dims
+        .hidden_size
+        .checked_mul(2)
+        .ok_or_else(|| TensorLoadError::integrity("Qwen shared expert shape overflow"))?;
+    let mut combined_values = Vec::with_capacity(combined_capacity);
+    combined_values.extend_from_slice(&selected_output);
+    combined_values.extend_from_slice(&shared_output);
+    matvec
+        .weighted_sum_f32(&combined_values, &[1.0, shared_gate], dims.hidden_size)
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert accumulation failed: {err}"))
+        })
 }
 
 fn qwen_layer_tensor(layer_idx: usize, suffix: &str) -> String {
