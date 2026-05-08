@@ -1,8 +1,9 @@
 use llm_backend::{
-    QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
-    QwenFullAttentionStepParts, QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
-    QwenLinearAttentionStepParts, qwen_full_attention_first_token_from_parts,
-    qwen_full_attention_sequence_from_parts, qwen_full_attention_sequence_with_cache_from_parts,
+    BackendCacheContext, QwenFullAttentionDims, QwenFullAttentionSequenceConfig,
+    QwenFullAttentionSequenceParts, QwenFullAttentionStepParts, QwenLinearAttentionDims,
+    QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
+    qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
+    qwen_full_attention_sequence_with_cache_from_parts,
     qwen_full_attention_step_with_cache_from_parts, qwen_linear_attention_first_token_from_parts,
     qwen_linear_attention_sequence_from_parts,
     qwen_linear_attention_sequence_with_cache_from_parts,
@@ -49,6 +50,20 @@ fn matvec_row_major_matches_reference_calculation() {
     .expect("matvec");
 
     assert_eq!(output, vec![1.0, 5.0]);
+}
+
+#[test]
+fn backend_cache_context_uses_generic_chat_template_identity() {
+    let context = BackendCacheContext::chat_template(
+        "chatml/qwen/v1",
+        Some(r#"[{"type":"function"}]"#.to_owned()),
+    );
+
+    assert_eq!(context.prompt_template, "chatml/qwen/v1");
+    assert_eq!(
+        context.tool_schema.as_deref(),
+        Some(r#"[{"type":"function"}]"#)
+    );
 }
 
 #[test]

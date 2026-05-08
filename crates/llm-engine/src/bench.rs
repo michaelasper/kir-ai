@@ -2,6 +2,7 @@ use crate::{flag_value, has_flag};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use llm_hub::ModelStore;
+use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Serialize;
 use serde_json::Value;
@@ -429,7 +430,7 @@ impl CachePolicyReport {
         .collect();
         Self {
             cache_layout: CACHE_LAYOUT,
-            prompt_template: "qwen-chatml/v1",
+            prompt_template: QwenFamilyAdapter.cache_template_id(),
             namespace_fields: vec![
                 "model_id",
                 "snapshot_manifest_digest",

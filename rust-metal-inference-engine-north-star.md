@@ -187,7 +187,8 @@ Current commits:
 Current verified state:
 
 - `mise run fmt-check`, `mise run test`, and `mise run clippy` pass for the workspace.
-- `mise run gates-ci` runs the fast north-star protocol/API, runtime agentic, HTTP, model CLI, model acquisition, tokenizer, and tool-parser gates. `mise run gates-nightly` adds no-progress replay, backend, Metal smoke, long-context dry-run, and configured 135K/200K long-context inference gates. Both profiles emit reproducible JSON and Markdown reports plus per-gate logs under `target/north-star-gates/`; the GitHub workflows upload those reports as artifacts and append the Markdown summary to the job summary.
+- `mise run gates-ci` runs the fast north-star protocol/API, runtime agentic, HTTP, model CLI, model acquisition, model-family backend profile, tokenizer, and tool-parser gates. `mise run gates-nightly` adds no-progress replay, backend, Metal smoke, long-context dry-run, and configured 135K/200K long-context inference gates. Both profiles emit reproducible JSON and Markdown reports plus per-gate logs under `target/north-star-gates/`; the GitHub workflows upload those reports as artifacts and append the Markdown summary to the job summary.
+- Model-family boundaries are explicit: Qwen is the first proving family, while generic backend cache identity uses family-provided chat-template IDs rather than Qwen-named backend methods. `llm-models` declares Qwen production backends as both native Metal and MLX, and `model_family_backend_profiles` is a required north-star CI gate.
 - `llm-engine bench qwen-long-context` is the native long-context promotion harness. `mise run bench-qwen-long-context-plan` prints the full dry-run plan, `mise run bench-qwen-135k` runs the release-blocking 135K Qwen gate, and `mise run bench-qwen-200k` runs the non-blocking 200K frontier characterization pass. Runtime tasks require `LLM_BENCH_ENDPOINT` and `LLM_BENCH_SNAPSHOT`; `LLM_BENCH_MODEL`, `LLM_BENCH_BASELINE`, and `LLM_BENCH_OUTPUT` are optional.
 - The 135K promotion profile is release-blocking and covers five scenarios: plain recall, JSON-object recall, required tool-call recall, streamed required tool-call recall, and multi-turn lifecycle recall. Each run generates a Qwen-tokenizer-sized prompt from the supplied snapshot, records the snapshot manifest digest and artifact identity, records OS/architecture/CPU and cache namespace policy, validates the OpenAI response contract, and emits pass/fail JSON.
 - The 200K profile uses the same scenarios and trace schema but is classified as frontier characterization, so failures are recorded without making the profile release-blocking. When `--baseline <trace.json>` is supplied, each case compares current status, latency, and tokens/sec against the frozen trace only when hardware and model class match.
@@ -346,6 +347,8 @@ The reference engines we currently use are:
 
 Those engines are reference points, benchmark baselines, and sources of design lessons. The Rust engine is not a wrapper around any of them. The serving runtime must not import Python, start Python, depend on Python object lifetimes, or delegate request lifecycle decisions to a Python process.
 
+MLX is mandatory production infrastructure, not an optional reference experiment. Every promoted model family must declare its production backend set, and Qwen's set includes both the native Metal path and MLX. Qwen remains the first proving family because it exercises long context, hybrid attention, MoE routing, tool calls, and JSON mode, but Qwen topology, tensor names, prompt rendering, parser behavior, and cache layout must stay behind Qwen family adapters rather than defining the engine-wide architecture.
+
 ## Multi-Agent Orchestration Used For This Spec
 
 This spec was assembled from four independent specialist perspectives and then combined into one implementation direction.
@@ -468,6 +471,8 @@ The engine targets Apple Silicon first. It should exploit:
 - Apple GPU-friendly memory layout.
 - `libmlx.dylib` and MLX C++ APIs where they accelerate bootstrap.
 - Direct Metal kernels where MLX is insufficient or too opaque.
+
+Production validation must include MLX participation. A native-only profile can be useful for kernel development, but release promotion requires an MLX-backed path to be declared for the family and represented in CI/nightly gate output.
 - macOS memory pressure and Metal allocation telemetry.
 
 Cross-platform support is a later concern. Linux/CUDA compatibility is not a launch requirement.
@@ -1953,6 +1958,7 @@ Aggregate score is useful for ranking, but not for launch. A profile cannot laun
 Hard gates:
 
 - no-Python runtime gate.
+- MLX production-backend gate.
 - model acquisition gate.
 - protocol gate.
 - streaming tool-call gate.

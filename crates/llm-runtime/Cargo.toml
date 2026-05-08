@@ -11,6 +11,7 @@ async-stream.workspace = true
 futures.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
+llm-models = { path = "../llm-models" }
 llm-tokenizer = { path = "../llm-tokenizer" }
 llm-tool-parser = { path = "../llm-tool-parser" }
 serde_json.workspace = true

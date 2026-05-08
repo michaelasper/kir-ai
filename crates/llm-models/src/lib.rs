@@ -12,6 +12,41 @@ pub enum ModelFamily {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    NativeMetal,
+    Mlx,
+}
+
+pub trait ModelFamilyAdapter: Send + Sync {
+    fn family(&self) -> ModelFamily;
+    fn production_backends(&self) -> &'static [BackendKind];
+    fn cache_template_id(&self) -> &'static str;
+    fn tensor_namespace(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QwenFamilyAdapter;
+
+impl ModelFamilyAdapter for QwenFamilyAdapter {
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Qwen
+    }
+
+    fn production_backends(&self) -> &'static [BackendKind] {
+        &[BackendKind::NativeMetal, BackendKind::Mlx]
+    }
+
+    fn cache_template_id(&self) -> &'static str {
+        "chatml/qwen/v1"
+    }
+
+    fn tensor_namespace(&self) -> &'static str {
+        "qwen3_5_moe"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AttentionKind {
     LinearAttention,
     FullAttention,

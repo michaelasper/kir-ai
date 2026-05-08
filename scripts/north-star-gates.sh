@@ -161,6 +161,7 @@ run_ci_gates() {
   run_gate "engine_http_contracts" true cargo test -p llm-engine --test http_contract
   run_gate "engine_model_cli_contracts" true cargo test -p llm-engine --test model_cli
   run_gate "model_acquisition_contracts" true cargo test -p llm-hub
+  run_gate "model_family_backend_profiles" true cargo test -p llm-models --test family_adapter
   run_gate "tokenizer_parser_contracts" true bash -lc 'cargo test -p llm-tokenizer && cargo test -p llm-tool-parser'
 }
 

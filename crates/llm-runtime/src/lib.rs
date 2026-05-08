@@ -15,6 +15,7 @@ use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
 };
+use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
@@ -183,15 +184,9 @@ where
         }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
-        let cache_context = qwen_chatml_cache_context(&request.tools)?;
-        let prompt = render_qwen_chatml(
-            &request.messages,
-            &request.tools,
-            &QwenPromptOptions {
-                enable_thinking: false,
-                add_generation_prompt: true,
-            },
-        )?;
+        let adapter = QwenChatAdapter;
+        let cache_context = adapter.cache_context(&request.tools)?;
+        let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
         let completion = RuntimeCompletionSeed {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
@@ -246,15 +241,9 @@ where
         cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
         request.validate()?;
-        let cache_context = qwen_chatml_cache_context(&request.tools)?;
-        let prompt = render_qwen_chatml(
-            &request.messages,
-            &request.tools,
-            &QwenPromptOptions {
-                enable_thinking: false,
-                add_generation_prompt: true,
-            },
-        )?;
+        let adapter = QwenChatAdapter;
+        let cache_context = adapter.cache_context(&request.tools)?;
+        let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
         let required_tool_choice = required_backend_tool_choice(&request);
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
@@ -281,7 +270,7 @@ where
             .await?;
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
-        let parsed = QwenParser.parse_complete(&raw_text)?;
+        let parsed = adapter.parse_complete(&raw_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
@@ -705,7 +694,8 @@ fn streaming_chat_stream<'a>(
                 if let Some(tool_prefix_len) = completed_tool_prefix_len(&raw_text)
                     && tool_prefix_len > emitted_len
                 {
-                    let parsed_prefix = QwenParser.parse_complete(&raw_text[..tool_prefix_len])?;
+                    let parsed_prefix =
+                        QwenChatAdapter.parse_complete(&raw_text[..tool_prefix_len])?;
                     validate_tool_call_arguments(&parsed_prefix)?;
                     validate_tool_calls_against_request(&parsed_prefix, &request)?;
                     for (index, tool_call) in parsed_prefix
@@ -756,7 +746,7 @@ fn streaming_chat_stream<'a>(
         }
 
         let visible_text = &raw_text[..visible_len];
-        let parsed = QwenParser.parse_complete(visible_text)?;
+        let parsed = QwenChatAdapter.parse_complete(visible_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if json_object_mode {
@@ -1050,15 +1040,40 @@ fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<Backe
     }
 }
 
-fn qwen_chatml_cache_context(
-    tools: &[ToolDefinition],
-) -> Result<BackendCacheContext, RuntimeError> {
-    let tool_schema = if tools.is_empty() {
-        None
-    } else {
-        Some(serde_json::to_string(tools)?)
-    };
-    Ok(BackendCacheContext::qwen_chatml(tool_schema))
+#[derive(Debug, Clone, Copy)]
+struct QwenChatAdapter;
+
+impl QwenChatAdapter {
+    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
+        let tool_schema = if tools.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(tools)?)
+        };
+        Ok(BackendCacheContext::chat_template(
+            QwenFamilyAdapter.cache_template_id(),
+            tool_schema,
+        ))
+    }
+
+    fn render_prompt(
+        self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<String, TemplateError> {
+        render_qwen_chatml(
+            messages,
+            tools,
+            &QwenPromptOptions {
+                enable_thinking: false,
+                add_generation_prompt: true,
+            },
+        )
+    }
+
+    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, ParserError> {
+        QwenParser.parse_complete(text)
+    }
 }
 
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

@@ -48,9 +48,9 @@ impl BackendCacheContext {
         }
     }
 
-    pub fn qwen_chatml(tool_schema: Option<String>) -> Self {
+    pub fn chat_template(template_id: impl Into<String>, tool_schema: Option<String>) -> Self {
         Self {
-            prompt_template: "qwen-chatml/v1".to_owned(),
+            prompt_template: template_id.into(),
             tool_schema,
         }
     }

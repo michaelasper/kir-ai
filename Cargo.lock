@@ -1129,6 +1129,7 @@ dependencies = [
  "futures",
  "llm-api",
  "llm-backend",
+ "llm-models",
  "llm-tokenizer",
  "llm-tool-parser",
  "serde_json",

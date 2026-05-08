@@ -4659,6 +4659,7 @@ fn validate_api_request<T: ValidateRequest>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 
     #[test]
     fn metal_backend_metrics_records_attempt_success_and_fallback_by_kernel() {
@@ -5903,7 +5904,7 @@ mod tests {
             resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             profile: Some("qwen-test".to_owned()),
             manifest_digest: Some(format!("digest-{label}")),
-            prompt_template: "qwen-chatml/v1".to_owned(),
+            prompt_template: QwenFamilyAdapter.cache_template_id().to_owned(),
             tool_schema: Some("tool-schema-v1".to_owned()),
             request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
             sampling: "greedy".to_owned(),
