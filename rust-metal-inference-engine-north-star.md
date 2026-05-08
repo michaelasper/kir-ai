@@ -164,6 +164,7 @@ Current commits:
 - `4e2607b` - Native Qwen full-attention cache key/value row gathering routes through a Metal head-row selection kernel with CPU fallback.
 - `d27a0a4` - Metal command-buffer execution status is checked before reading outputs, fixing GitHub issue #49.
 - `e8b2bad` - Native Qwen Metal CPU fallbacks are logged, metered, and exposed through admin metrics, fixing GitHub issue #50.
+- `e476210` - Admin metrics now track active streaming generation prefill/decode phases instead of reporting placeholder gauges.
 
 Current verified state:
 
@@ -268,7 +269,7 @@ Current verified state:
 - `GET /admin/metrics` now also reports explicit queue depth and cumulative no-progress failure count.
 - `GET /admin/metrics` now includes completed-request latency summaries and cumulative tokens/sec throughput.
 - `GET /admin/metrics` now records streamed time-to-first-token summaries from the first real content/tool/text delta.
-- `GET /admin/metrics` now exposes explicit prefill and decode phase gauges for the current single-stage scheduler.
+- `GET /admin/metrics` now exposes explicit prefill and decode phase gauges for active generation work. Streaming requests enter prefill before the first real delta, transition to decode after the first content/tool/text delta, and clear the gauge when the stream completes or is dropped.
 - `GET /admin/metrics` now reports model pull operation counts, success/failure counts, and promoted manifest bytes for admin pull operations.
 - `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from the configured model home.
 - `GET /admin/metrics` now reports cumulative artifact verification failures from failed admin snapshot verification.
