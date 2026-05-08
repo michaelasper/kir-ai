@@ -2,12 +2,14 @@ use llm_backend::{
     QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
     QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
+    qwen_full_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
 };
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
     swiglu_mlp_f32,
 };
+use llm_kv_cache::LayerKvCache;
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -202,6 +204,62 @@ fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
 
     assert_close(&output[0], &[1.0, 0.0], 1e-6);
     assert_close(&output[1], &[w0, 2.0 * w1], 1e-6);
+}
+
+#[test]
+fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
+    let dims = QwenFullAttentionDims {
+        hidden_size: 2,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+    };
+    let q_proj = vec![vec![1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]];
+    let k_proj = vec![vec![1.0, 0.0], vec![1.0, 0.0]];
+    let v_proj = vec![vec![2.0, 0.0], vec![0.0, 4.0]];
+    let q_norm_weight = vec![0.0, 0.0];
+    let k_norm_weight = vec![0.0, 0.0];
+    let o_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+    let config = QwenFullAttentionSequenceConfig {
+        rms_norm_eps: 0.0,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+    };
+    let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
+
+    let output = qwen_full_attention_sequence_with_cache_from_parts(
+        &dims,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        config,
+        &mut cache,
+    )
+    .expect("full attention sequence with cache");
+
+    let expected = qwen_full_attention_sequence_from_parts(
+        &dims,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        config,
+    )
+    .expect("full attention sequence");
+    assert_eq!(cache.token_count(), 2);
+    assert_close(cache.key(0).expect("key 0"), &[2.0_f32.sqrt(), 0.0], 1e-6);
+    assert_close(cache.value(1).expect("value 1"), &[0.0, 4.0], 1e-6);
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
 }
 
 fn rms_pair(values: [f32; 2], gate: f32) -> Vec<f32> {

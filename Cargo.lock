@@ -1040,6 +1040,7 @@ dependencies = [
  "async-trait",
  "futures",
  "llm-api",
+ "llm-kv-cache",
  "llm-models",
  "memmap2",
  "safetensors",

@@ -9,6 +9,7 @@ rust-version.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 llm-api = { path = "../llm-api" }
+llm-kv-cache = { path = "../llm-kv-cache" }
 llm-models = { path = "../llm-models" }
 memmap2.workspace = true
 safetensors.workspace = true

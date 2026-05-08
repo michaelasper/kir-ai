@@ -4,6 +4,7 @@ use futures::{
     stream::{self, BoxStream},
 };
 use llm_api::FinishReason;
+use llm_kv_cache::LayerKvCache;
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
@@ -1084,6 +1085,29 @@ pub fn qwen_full_attention_sequence_from_parts(
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
 ) -> Result<Vec<Vec<f32>>, MathError> {
+    qwen_full_attention_sequence_from_parts_impl(dims, parts, config, None)
+}
+
+pub fn qwen_full_attention_sequence_with_cache_from_parts(
+    dims: &QwenFullAttentionDims,
+    parts: &QwenFullAttentionSequenceParts<'_>,
+    config: QwenFullAttentionSequenceConfig,
+    cache: &mut LayerKvCache,
+) -> Result<Vec<Vec<f32>>, MathError> {
+    if cache.token_count() != 0 {
+        return Err(MathError::InvalidShape(
+            "Qwen full attention prefill cache must be empty".to_owned(),
+        ));
+    }
+    qwen_full_attention_sequence_from_parts_impl(dims, parts, config, Some(cache))
+}
+
+fn qwen_full_attention_sequence_from_parts_impl(
+    dims: &QwenFullAttentionDims,
+    parts: &QwenFullAttentionSequenceParts<'_>,
+    config: QwenFullAttentionSequenceConfig,
+    mut cache: Option<&mut LayerKvCache>,
+) -> Result<Vec<Vec<f32>>, MathError> {
     let q_proj = parts.q_proj;
     let k_proj = parts.k_proj;
     let v_proj = parts.v_proj;
@@ -1181,6 +1205,13 @@ pub fn qwen_full_attention_sequence_from_parts(
             );
         }
     }
+    if let Some(cache) = cache.as_deref_mut() {
+        for token_idx in 0..seq_len {
+            cache
+                .append(&keys[token_idx], &v_proj[token_idx])
+                .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
+        }
+    }
 
     let groups = dims.num_attention_heads / dims.num_key_value_heads;
     let scale = (dims.head_dim as f32).sqrt().recip();
@@ -1192,7 +1223,11 @@ pub fn qwen_full_attention_sequence_from_parts(
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
             let mut scores = Vec::with_capacity(token_idx + 1);
-            for key_token in keys.iter().take(token_idx + 1) {
+            for (source_idx, local_key) in keys.iter().enumerate().take(token_idx + 1) {
+                let key_token = cache
+                    .as_deref()
+                    .and_then(|cache| cache.key(source_idx))
+                    .unwrap_or(local_key);
                 let score = queries[token_idx][q_start..q_start + dims.head_dim]
                     .iter()
                     .zip(&key_token[kv_start..kv_start + dims.head_dim])
@@ -1203,8 +1238,12 @@ pub fn qwen_full_attention_sequence_from_parts(
             }
             let weights = softmax_f32(&scores)?;
             for (source_idx, weight) in weights.into_iter().enumerate() {
+                let value_token = cache
+                    .as_deref()
+                    .and_then(|cache| cache.value(source_idx))
+                    .unwrap_or(&v_proj[source_idx]);
                 for offset in 0..dims.head_dim {
-                    attended[q_start + offset] += weight * v_proj[source_idx][kv_start + offset];
+                    attended[q_start + offset] += weight * value_token[kv_start + offset];
                 }
             }
             for offset in 0..dims.head_dim {
