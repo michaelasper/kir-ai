@@ -69,6 +69,46 @@ fn rejects_json_schema_when_object_mode_is_required() {
 }
 
 #[test]
+fn rejects_unsupported_non_greedy_sampling_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(0.7),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("non-greedy temperature is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        top_p: Some(0.9),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("nucleus sampling is not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn accepts_explicit_greedy_sampling_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(0.0),
+        top_p: Some(1.0),
+        ..ChatCompletionRequest::default()
+    };
+
+    request.validate().expect("greedy controls are supported");
+}
+
+#[test]
 fn streaming_finish_reason_serializes_as_openai_string() {
     let value = serde_json::to_value(FinishReason::ToolCalls).expect("finish reason serializes");
     assert_eq!(value, json!("tool_calls"));

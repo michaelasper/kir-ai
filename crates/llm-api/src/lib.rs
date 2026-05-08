@@ -373,6 +373,20 @@ impl ValidateRequest for ChatCompletionRequest {
                 )));
             }
         }
+        if let Some(temperature) = self.temperature
+            && (!temperature.is_finite() || temperature != 0.0)
+        {
+            return Err(ApiError::unsupported_capability(
+                "non-greedy temperature sampling is not supported yet; use temperature 0",
+            ));
+        }
+        if let Some(top_p) = self.top_p
+            && (!top_p.is_finite() || top_p != 1.0)
+        {
+            return Err(ApiError::unsupported_capability(
+                "top_p sampling is not supported yet; use top_p 1",
+            ));
+        }
         if self.stop.iter().any(String::is_empty) {
             return Err(ApiError::invalid_request(
                 "stop sequences must not be empty",
