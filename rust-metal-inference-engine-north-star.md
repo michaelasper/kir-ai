@@ -91,6 +91,7 @@ Current commits:
 - `ded78eb` - Safetensors index shard paths are validated and shard opens are confined to the snapshot root.
 - `66f1dd2` - Deterministic protocol mode now emits valid JSON objects for `response_format: json_object`.
 - `d6bdd00` - Native Qwen snapshots can be opened for serving without an engine manifest.
+- `bfb20f0` - Deterministic protocol mode can return prompt-conditioned chat responses for multi-turn smoke tests.
 
 Current verified state:
 
@@ -146,6 +147,7 @@ Current verified state:
 - Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
 - The default deterministic/protocol backend now returns valid JSON object content when `response_format.type` is `json_object`, while fixed-text backends still fail response validation if they emit invalid JSON.
 - `NativeQwenBackend::open` treats `llm-engine-manifest.json` as optional for serving. Missing manifests now yield base native metadata with `snapshot_path`, while present manifests still populate artifact identity and digest fields.
+- The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behavior.
 
 Known incomplete items:
 
