@@ -51,6 +51,15 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     assert_eq!(value["hardware"]["os"], std::env::consts::OS);
     assert_eq!(value["hardware"]["arch"], std::env::consts::ARCH);
     assert_eq!(value["cache_policy"]["cache_layout"], "shared-prefix-v1");
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(lanes.len(), 1, "lanes: {lanes:?}");
+    assert_eq!(lanes[0]["name"], "primary");
+    assert_eq!(lanes[0]["status"], "dry_run");
+    assert_eq!(lanes[0]["model"]["id"], "local-qwen36");
+    assert_eq!(
+        lanes[0]["model"]["snapshot_path"],
+        snapshot.display().to_string()
+    );
 
     let profiles = value["profiles"].as_array().expect("profiles array");
     assert_eq!(profiles.len(), 2, "profiles: {profiles:?}");
@@ -83,6 +92,53 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
             "multi-turn-lifecycle"
         ]
     );
+}
+
+#[test]
+fn long_context_bench_dry_run_accepts_named_backend_lanes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let native_snapshot = temp.path().join("native");
+    let mlx_snapshot = temp.path().join("mlx");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-long-context",
+            "--dry-run",
+            "--profile",
+            "135k",
+            "--lane",
+        ])
+        .arg(format!(
+            "name=native-metal,endpoint=http://127.0.0.1:3101,snapshot={},model=local-native",
+            native_snapshot.display()
+        ))
+        .args(["--lane"])
+        .arg(format!(
+            "name=mlx,endpoint=http://127.0.0.1:3102,snapshot={},model=local-mlx",
+            mlx_snapshot.display()
+        ))
+        .output()
+        .expect("run qwen long-context lane dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(lanes.len(), 2, "lanes: {lanes:?}");
+    assert_eq!(lanes[0]["name"], "native-metal");
+    assert_eq!(lanes[0]["model"]["id"], "local-native");
+    assert_eq!(lanes[0]["model"]["endpoint"], "http://127.0.0.1:3101");
+    assert_eq!(
+        lanes[0]["model"]["snapshot_path"],
+        native_snapshot.display().to_string()
+    );
+    assert_eq!(lanes[1]["name"], "mlx");
+    assert_eq!(lanes[1]["model"]["id"], "local-mlx");
+    assert_eq!(value["model"]["id"], "local-native");
 }
 
 #[test]

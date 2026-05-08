@@ -8,6 +8,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 ```sh
 llm-engine [serve]
 llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine model <subcommand> ...
 ```
 
@@ -55,6 +56,48 @@ With a native-metal snapshot, the directory must contain `config.json`,
 files. With an MLX snapshot, the directory must include an
 `llm-engine-manifest.json` whose loader is `mlx`, and an `mlx_lm.server`
 sidecar must already be listening on the configured loopback endpoint.
+
+## `bench qwen-long-context`
+
+Runs or plans the Qwen long-context promotion and characterization benchmark.
+
+Single-lane usage keeps the original flags:
+
+```sh
+llm-engine bench qwen-long-context \
+  --profile 135k \
+  --endpoint http://127.0.0.1:3000 \
+  --model local-qwen36 \
+  --snapshot "$SNAPSHOT"
+```
+
+Named lanes run the same profile and cases against multiple backends and emit
+side-by-side comparison metadata:
+
+```sh
+llm-engine bench qwen-long-context \
+  --profile 135k \
+  --lane name=native-metal,endpoint=http://127.0.0.1:3000,snapshot="$NATIVE_SNAPSHOT",model=local-native \
+  --lane name=mlx,endpoint=http://127.0.0.1:3001,snapshot="$MLX_SNAPSHOT",model=local-mlx
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--endpoint <url>` | none | OpenAI-compatible base URL for the primary single-lane run. |
+| `--snapshot <path>` | none | Snapshot used for tokenizer planning and model identity in a single-lane run. |
+| `--lane <spec>` | none | Adds a named lane. Specs are comma-separated `key=value` pairs: `name`, `endpoint`, `snapshot`, and optional `model`/`model_id`. |
+| `--profile <135k\|200k\|all>` | `135k` | Selects the release-blocking 135K profile, frontier 200K profile, or both. |
+| `--baseline <path>` | none | Previous trace JSON to compare against on matching hardware/model class. |
+| `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
+| `--admin-token <token>` | none | Optional bearer token used when capturing each lane's `/admin/metrics` snapshot. |
+| `--dry-run` | absent | Emits the planned profiles, cases, lanes, model identities, and cache policy without HTTP requests. |
+
+The trace keeps top-level `model` and `profiles` for compatibility with older
+single-lane consumers. New consumers should read `lanes[*].profiles` and
+`comparison`, which includes per-case latency, TTFT, token throughput, pass/fail
+classification, and fastest-lane summaries. Lane comparison reports
+`artifact_identity_mismatch` unless repo, commit, profile, and quantization are
+identical across lanes.
 
 ## `model list`
 

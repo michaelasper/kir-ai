@@ -42,10 +42,12 @@ Options:
   --endpoint <url>                    OpenAI-compatible server base URL
   --model <id>                        Model id to send in requests [default: local-qwen36]
   --snapshot <path>                   Qwen snapshot path with tokenizer.json and manifest
+  --lane <spec>                       Named lane: name=<id>,endpoint=<url>,snapshot=<path>[,model=<id>]
   --profile <135k|200k|all>           Benchmark profile [default: 135k]
   --baseline <path>                   Previous trace JSON for same hardware/model comparison
   --output <path>                     Write the trace JSON to a file as well as stdout
   --max-tokens <n>                    Completion token limit per request [default: 128]
+  --admin-token <token>               Optional bearer token for lane /admin/metrics snapshots
   --timeout-ms <n>                    Whole request timeout [default: 1800000]
   --connect-timeout-ms <n>            HTTP connect timeout [default: 10000]
   --latency-regression-threshold <f>  Allowed latency increase over baseline [default: 0.20]
@@ -68,8 +70,10 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         .to_owned();
     let endpoint = flag_value(args, "--endpoint").map(normalize_endpoint);
     let snapshot_path = flag_value(args, "--snapshot").map(PathBuf::from);
+    let lanes = parse_lane_configs(args, &model_id, endpoint, snapshot_path)?;
     let baseline_path = flag_value(args, "--baseline").map(PathBuf::from);
     let output_path = flag_value(args, "--output").map(PathBuf::from);
+    let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
     let timeout_ms = parse_u64_flag(args, "--timeout-ms", DEFAULT_TIMEOUT_MS)?;
     let connect_timeout_ms =
         parse_u64_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
@@ -80,25 +84,58 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         DEFAULT_LATENCY_REGRESSION_THRESHOLD,
     )?;
 
-    if !dry_run && endpoint.is_none() {
-        anyhow::bail!("qwen long-context benchmark requires --endpoint <url>");
+    if !dry_run {
+        for lane in &lanes {
+            if lane.endpoint.is_none() {
+                anyhow::bail!(
+                    "benchmark lane `{}` requires endpoint=<url> or top-level --endpoint <url>",
+                    lane.name
+                );
+            }
+            if lane.snapshot_path.is_none() {
+                anyhow::bail!(
+                    "benchmark lane `{}` requires snapshot=<path> or top-level --snapshot <path>",
+                    lane.name
+                );
+            }
+        }
     }
-    if !dry_run && snapshot_path.is_none() {
-        anyhow::bail!("qwen long-context benchmark requires --snapshot <path>");
+
+    let mut lane_reports = Vec::with_capacity(lanes.len());
+    for lane in &lanes {
+        lane_reports.push(BenchLaneReport {
+            name: lane.name.clone(),
+            status: if dry_run { "dry_run" } else { "planned" }.to_owned(),
+            model: load_model_identity(
+                &lane.model_id,
+                lane.endpoint.as_deref(),
+                lane.snapshot_path.as_deref(),
+                dry_run,
+            )
+            .await?,
+            profiles: selected_profiles
+                .iter()
+                .map(|profile| profile_report(*profile))
+                .collect(),
+            admin_metrics: None,
+            admin_metrics_error: None,
+        });
     }
+    let primary_model = lane_reports
+        .first()
+        .map(|lane| lane.model.clone())
+        .ok_or_else(|| anyhow!("benchmark requires at least one lane"))?;
+    let primary_profiles = lane_reports
+        .first()
+        .map(|lane| lane.profiles.clone())
+        .unwrap_or_default();
 
     let mut report = BenchReport {
         gate: GATE_NAME,
         status: if dry_run { "dry_run" } else { "running" }.to_owned(),
         generated_at_unix_ms: unix_now_ms(),
         trace_output_path: output_path.as_ref().map(|path| path.display().to_string()),
-        model: load_model_identity(
-            &model_id,
-            endpoint.as_deref(),
-            snapshot_path.as_deref(),
-            dry_run,
-        )
-        .await?,
+        model: primary_model,
         hardware: HardwareReport::detect(),
         cache_policy: CachePolicyReport::from_env(),
         baseline: BaselineReport {
@@ -116,10 +153,9 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
             },
             latency_regression_threshold,
         },
-        profiles: selected_profiles
-            .iter()
-            .map(|profile| profile_report(*profile))
-            .collect(),
+        profiles: primary_profiles,
+        lanes: lane_reports,
+        comparison: None,
     };
 
     if dry_run {
@@ -127,9 +163,6 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let endpoint = endpoint.expect("endpoint is checked above");
-    let snapshot_path = snapshot_path.expect("snapshot is checked above");
-    let tokenizer = load_qwen_tokenizer(&snapshot_path)?;
     let baseline_trace = load_baseline_trace(baseline_path.as_deref()).await?;
     report.baseline.status = baseline_status(&report, baseline_trace.as_ref());
 
@@ -140,7 +173,61 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         .context("build benchmark HTTP client")?;
 
     let mut release_blocking_failed = false;
-    for profile in &mut report.profiles {
+    for (lane_config, lane_report) in lanes.iter().zip(&mut report.lanes) {
+        let endpoint = lane_config
+            .endpoint
+            .as_deref()
+            .expect("lane endpoint is checked above");
+        let snapshot_path = lane_config
+            .snapshot_path
+            .as_deref()
+            .expect("lane snapshot is checked above");
+        let tokenizer = load_qwen_tokenizer(snapshot_path)?;
+        let run_context = BenchExecutionContext {
+            client: &client,
+            baseline_trace: baseline_trace.as_ref(),
+            hardware: &report.hardware,
+            latency_regression_threshold,
+            max_tokens,
+        };
+        let lane_failed = run_lane_profiles(
+            lane_report,
+            endpoint,
+            &lane_config.model_id,
+            &tokenizer,
+            &run_context,
+        )
+        .await?;
+        release_blocking_failed |= lane_failed;
+        capture_lane_admin_metrics(lane_report, &client, endpoint, admin_token.as_deref()).await;
+    }
+    if let Some(primary_lane) = report.lanes.first() {
+        report.model = primary_lane.model.clone();
+        report.profiles = primary_lane.profiles.clone();
+    }
+    report.comparison = Some(compare_bench_lanes(&report.lanes));
+    report.status = if release_blocking_failed {
+        "failed".to_owned()
+    } else {
+        "passed".to_owned()
+    };
+
+    write_and_print_report(&report, output_path.as_deref()).await?;
+    if release_blocking_failed {
+        anyhow::bail!("qwen long-context promotion gate failed");
+    }
+    Ok(())
+}
+
+async fn run_lane_profiles(
+    lane: &mut BenchLaneReport,
+    endpoint: &str,
+    model_id: &str,
+    tokenizer: &HuggingFaceTokenizer,
+    context: &BenchExecutionContext<'_>,
+) -> anyhow::Result<bool> {
+    let mut release_blocking_failed = false;
+    for profile in &mut lane.profiles {
         let profile_kind = BenchProfileKind::from_name(profile.name)
             .ok_or_else(|| anyhow!("unknown profile in report: {}", profile.name))?;
         let mut profile_failed = false;
@@ -148,23 +235,23 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
             let case_kind = BenchCaseKind::from_name(case.name)
                 .ok_or_else(|| anyhow!("unknown case in report: {}", case.name))?;
             let case_run = run_case(
-                &client,
-                &endpoint,
-                &model_id,
-                &tokenizer,
+                context.client,
+                endpoint,
+                model_id,
+                tokenizer,
                 profile_kind,
                 case_kind,
-                max_tokens,
+                context.max_tokens,
             )
             .await;
             apply_case_run(case, case_run);
             apply_baseline_comparison(
                 case,
-                baseline_trace.as_ref(),
+                context.baseline_trace,
                 profile.name,
-                &report.hardware,
-                &report.model,
-                latency_regression_threshold,
+                context.hardware,
+                &lane.model,
+                context.latency_regression_threshold,
             );
             if profile.release_blocking && case.status != "passed" {
                 profile_failed = true;
@@ -181,17 +268,187 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
             "characterized".to_owned()
         };
     }
-    report.status = if release_blocking_failed {
+    lane.status = if release_blocking_failed {
         "failed".to_owned()
     } else {
         "passed".to_owned()
     };
+    Ok(release_blocking_failed)
+}
 
-    write_and_print_report(&report, output_path.as_deref()).await?;
-    if release_blocking_failed {
-        anyhow::bail!("qwen long-context promotion gate failed");
+fn parse_lane_configs(
+    args: &[String],
+    default_model_id: &str,
+    default_endpoint: Option<String>,
+    default_snapshot_path: Option<PathBuf>,
+) -> anyhow::Result<Vec<BenchLaneConfig>> {
+    let lane_specs = flag_values(args, "--lane");
+    if lane_specs.is_empty() {
+        return Ok(vec![BenchLaneConfig {
+            name: "primary".to_owned(),
+            endpoint: default_endpoint,
+            model_id: default_model_id.to_owned(),
+            snapshot_path: default_snapshot_path,
+        }]);
     }
-    Ok(())
+
+    lane_specs
+        .into_iter()
+        .map(|spec| parse_lane_config(spec, default_model_id))
+        .collect()
+}
+
+fn parse_lane_config(spec: &str, default_model_id: &str) -> anyhow::Result<BenchLaneConfig> {
+    let mut values = BTreeMap::new();
+    for part in spec.split(',') {
+        let Some((key, value)) = part.split_once('=') else {
+            anyhow::bail!("invalid --lane spec `{spec}`; expected comma-separated key=value pairs");
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            anyhow::bail!("invalid --lane spec `{spec}`; keys and values must be non-empty");
+        }
+        values.insert(key.to_owned(), value.to_owned());
+    }
+    let name = values
+        .remove("name")
+        .ok_or_else(|| anyhow!("--lane spec `{spec}` is missing name=<id>"))?;
+    let endpoint = values
+        .remove("endpoint")
+        .map(|value| normalize_endpoint(&value));
+    let model_id = values
+        .remove("model")
+        .or_else(|| values.remove("model_id"))
+        .unwrap_or_else(|| default_model_id.to_owned());
+    let snapshot_path = values.remove("snapshot").map(PathBuf::from);
+    if !values.is_empty() {
+        let unknown = values.keys().cloned().collect::<Vec<_>>().join(", ");
+        anyhow::bail!("--lane spec `{spec}` contains unknown keys: {unknown}");
+    }
+    Ok(BenchLaneConfig {
+        name,
+        endpoint,
+        model_id,
+        snapshot_path,
+    })
+}
+
+fn flag_values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
+    args.windows(2)
+        .filter_map(|window| (window[0] == flag).then_some(window[1].as_str()))
+        .collect()
+}
+
+async fn capture_lane_admin_metrics(
+    lane: &mut BenchLaneReport,
+    client: &reqwest::Client,
+    endpoint: &str,
+    admin_token: Option<&str>,
+) {
+    let url = format!("{endpoint}/admin/metrics");
+    let mut request = client.get(url);
+    if let Some(token) = admin_token {
+        request = request.bearer_auth(token);
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+            Ok(metrics) => lane.admin_metrics = Some(metrics),
+            Err(err) => lane.admin_metrics_error = Some(format!("parse admin metrics: {err}")),
+        },
+        Ok(response) => {
+            lane.admin_metrics_error = Some(format!("admin metrics HTTP {}", response.status()));
+        }
+        Err(err) => {
+            lane.admin_metrics_error = Some(format!("admin metrics request failed: {err}"));
+        }
+    }
+}
+
+fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
+    let artifact_identity_match = lane_artifact_identity_matches(lanes);
+    let mut comparisons = Vec::new();
+    let Some(first_lane) = lanes.first() else {
+        return BenchLaneComparisonReport {
+            status: "no_lanes".to_owned(),
+            artifact_identity_match,
+            cases: comparisons,
+        };
+    };
+    for profile in &first_lane.profiles {
+        for case in &profile.cases {
+            let mut lane_metrics = Vec::new();
+            let mut fastest_lane = None;
+            let mut fastest_latency = None;
+            for lane in lanes {
+                let Some(lane_case) = find_lane_case(lane, profile.name, case.name) else {
+                    continue;
+                };
+                if lane_case.status == "passed"
+                    && let Some(latency) = lane_case.latency_ms
+                    && fastest_latency.is_none_or(|fastest| latency < fastest)
+                {
+                    fastest_latency = Some(latency);
+                    fastest_lane = Some(lane.name.clone());
+                }
+                lane_metrics.push(BenchLaneCaseMetricReport {
+                    lane: lane.name.clone(),
+                    status: lane_case.status.clone(),
+                    latency_ms: lane_case.latency_ms,
+                    ttft_ms: lane_case.ttft_ms,
+                    tokens_per_second: lane_case.tokens_per_second,
+                    prompt_tokens: lane_case.prompt_tokens,
+                    completion_tokens: lane_case.completion_tokens,
+                    total_tokens: lane_case.total_tokens,
+                    classification: lane_case.classification.clone(),
+                });
+            }
+            comparisons.push(BenchLaneCaseComparisonReport {
+                profile: profile.name,
+                case: case.name,
+                lanes: lane_metrics,
+                fastest_lane,
+            });
+        }
+    }
+    BenchLaneComparisonReport {
+        status: if lanes.len() > 1 {
+            if artifact_identity_match {
+                "comparable".to_owned()
+            } else {
+                "artifact_identity_mismatch".to_owned()
+            }
+        } else {
+            "single_lane".to_owned()
+        },
+        artifact_identity_match,
+        cases: comparisons,
+    }
+}
+
+fn lane_artifact_identity_matches(lanes: &[BenchLaneReport]) -> bool {
+    let Some(first) = lanes.first() else {
+        return false;
+    };
+    lanes.iter().all(|lane| {
+        lane.model.repo_id == first.model.repo_id
+            && lane.model.resolved_commit == first.model.resolved_commit
+            && lane.model.profile == first.model.profile
+            && lane.model.quantization == first.model.quantization
+    })
+}
+
+fn find_lane_case<'a>(
+    lane: &'a BenchLaneReport,
+    profile_name: &str,
+    case_name: &str,
+) -> Option<&'a BenchCaseReport> {
+    lane.profiles
+        .iter()
+        .find(|profile| profile.name == profile_name)?
+        .cases
+        .iter()
+        .find(|case| case.name == case_name)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -321,6 +578,22 @@ impl BenchCaseKind {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BenchLaneConfig {
+    name: String,
+    endpoint: Option<String>,
+    model_id: String,
+    snapshot_path: Option<PathBuf>,
+}
+
+struct BenchExecutionContext<'a> {
+    client: &'a reqwest::Client,
+    baseline_trace: Option<&'a Value>,
+    hardware: &'a HardwareReport,
+    latency_regression_threshold: f64,
+    max_tokens: u32,
+}
+
 #[derive(Debug, Serialize)]
 struct BenchReport {
     gate: &'static str,
@@ -332,9 +605,52 @@ struct BenchReport {
     cache_policy: CachePolicyReport,
     baseline: BaselineReport,
     profiles: Vec<BenchProfileReport>,
+    lanes: Vec<BenchLaneReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comparison: Option<BenchLaneComparisonReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchLaneReport {
+    name: String,
+    status: String,
+    model: ModelIdentityReport,
+    profiles: Vec<BenchProfileReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admin_metrics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admin_metrics_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+struct BenchLaneComparisonReport {
+    status: String,
+    artifact_identity_match: bool,
+    cases: Vec<BenchLaneCaseComparisonReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchLaneCaseComparisonReport {
+    profile: &'static str,
+    case: &'static str,
+    lanes: Vec<BenchLaneCaseMetricReport>,
+    fastest_lane: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchLaneCaseMetricReport {
+    lane: String,
+    status: String,
+    latency_ms: Option<u128>,
+    ttft_ms: Option<u128>,
+    tokens_per_second: Option<f64>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    classification: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct BenchProfileReport {
     name: &'static str,
     target_tokens: usize,
@@ -343,7 +659,7 @@ struct BenchProfileReport {
     cases: Vec<BenchCaseReport>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BenchCaseReport {
     name: &'static str,
     mode: &'static str,
@@ -377,7 +693,7 @@ struct BenchCaseReport {
     baseline: Option<BaselineComparisonReport>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ModelIdentityReport {
     id: String,
     endpoint: Option<String>,
@@ -392,7 +708,7 @@ struct ModelIdentityReport {
     manifest_digest: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct HardwareReport {
     os: String,
     arch: String,
@@ -409,7 +725,7 @@ impl HardwareReport {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct CachePolicyReport {
     cache_layout: &'static str,
     prompt_template: &'static str,
@@ -446,14 +762,14 @@ impl CachePolicyReport {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BaselineReport {
     path: Option<String>,
     status: String,
     latency_regression_threshold: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BaselineComparisonReport {
     status: String,
     baseline_status: Option<String>,

@@ -19,6 +19,8 @@ The project is intentionally explicit about its current state:
   matvecs with CPU fallbacks.
 - The MLX sidecar path proxies to a loopback `mlx_lm.server` endpoint and is a
   bootstrap comparison path, not the final no-Python production runtime.
+- Long-context benchmarks can run named backend lanes, so native Metal and MLX
+  serving paths can be compared side by side before promotion decisions.
 
 ## Quick Start
 
