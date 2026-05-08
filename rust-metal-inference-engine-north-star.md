@@ -25,6 +25,21 @@ Current commits:
 - `e79e855` - Separate MLX 4-bit profile from native BF16 safetensors profile.
 - `3d46d5a` - Header-only safetensors inspection for multi-GB shards.
 - `c65c892` - Idempotent verified snapshot reuse and native BF16 default profile.
+- `80b4324` - Direct BF16 tensor range reading from file-backed safetensors.
+- `3784a5a` - Indexed safetensor shard resolution by tensor name.
+- `2929990` - Backend dependency lock refresh.
+- `3f74400` - Native Qwen embedding and layer0 input norm probe.
+- `8f9aaa3` - Centered Qwen RMSNorm semantics from the official implementation.
+- `681d02c` - Layer0 linear-attention input projections.
+- `38cc5fd` - Layer0 linear-attention first-token execution.
+- `e4ea9b6` - Layer0 MoE router top-expert selection.
+- `f0cfbfa` - Selected layer0 MoE expert execution.
+- `8c8cd47` - Streaming BF16 matvec top-k over large row matrices.
+- `39e85ae` - Native Qwen final norm plus lm-head top logits.
+- `56f1b0f` - Generic Qwen layer tensor path helpers.
+- `1d52515` - Native linear-attention decoder layer loop.
+- `289c1de` - Native full-attention first-token decoder layers.
+- `d4cb27d` - Decoded top-token candidates after a full native layer pass.
 
 Current verified state:
 
@@ -36,14 +51,19 @@ Current verified state:
 - `llm-engine model pull Qwen/Qwen3.6-35B-A3B --metadata-only --model-home .llm-models` downloads 13 non-weight artifacts through native Rust HTTP, writes a manifest, and promotes snapshot `995ad96eacd98c81ed38be0c5b274b04031597b0` with manifest digest `99e9dbff8de1b239063b12421f276c0b5f67c206844471360a8c69d9a502b825`.
 - `llm-engine model pull Qwen/Qwen3.6-35B-A3B --revision main --model-home .llm-models-full` verifies the full existing 39-file BF16 snapshot through the Rust pull path, rewrites the native manifest, and reports manifest digest `e99b85a85a4a7b2fbd971f8a0be12ea32e35a9a83a9aca075b771273f3be652e`.
 - `llm-engine model inspect-safetensors .llm-models-full/.../model-00001-of-00026.safetensors --tensor model.language_model.embed_tokens.weight` reads the 3,996,199,712-byte shard header without loading payload bytes and validates the embedding tensor as BF16 `[248320, 2048]` over file byte range `2848..1017121568`.
+- `llm-engine model inspect-qwen-input .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --token-id 0 --limit 2 --layers 40` executes all 40 native Qwen decoder layers for a single no-cache token from the real BF16 shards. Layer 39 is full attention and ends with hidden prefix `[0.27011680603027344, -0.20515947043895721]`.
+- `llm-engine model inspect-qwen-input .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --token-id 0 --limit 2 --layers 40 --lm-head-top-k 5 --chunk-rows 2048` applies final norm and streams the full `lm_head.weight`; the current top decoded candidates are token `353` `" I"` at logit `11.456915855407715`, token `49276` `"[]("` at `11.124484062194824`, token `1249` `"[]"` at `10.706412315368652`, token `198` newline at `10.236197471618652`, and token `271` double-newline at `10.230167388916016`.
+- The native Qwen executor now covers embedding lookup, centered RMSNorm, hybrid linear/full attention first-token paths, routed MoE expert slices, final norm, streamed lm-head logits, and tokenizer decode for the first token with no Python or external inference engine.
 
 Known incomplete items:
 
-- No real tensor inference yet; `llm-backend` currently has a deterministic Rust backend for protocol/runtime tests.
-- Full weight download is complete and verified by file size; full Qwen BF16/MoE tensor materialization is not complete.
-- Safetensors metadata, F32 tensor loading, and header-only BF16 shard inspection are implemented; mmap-backed tensor slicing is not complete.
+- The OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests; it is not yet wired to the Qwen executor.
+- The Qwen path is a single-token, no-cache correctness probe. Multi-token prompt prefill, decode state, sampling loops, and stop handling are not complete.
+- Full-attention first-token execution uses the single-key no-cache simplification. Real prefill/decode still needs RoPE, KV-cache reads/writes, grouped query attention over prior tokens, and causal masking.
+- Linear Gated DeltaNet execution uses the first-token zero-state simplification. Recurrent convolution/state cache updates are not complete.
+- Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, and targeted BF16 reads are implemented; mmap-backed tensor caching/materialization is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
-- No Qwen forward pass, KV cache, recurrent Gated DeltaNet state, or sampling over real logits yet.
+- Weight reads are intentionally uncached and slow; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 
 The first-class model families are:
 
