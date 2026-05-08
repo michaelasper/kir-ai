@@ -21,6 +21,14 @@ run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 description = "Run formatting, tests, and clippy"
 depends = ["fmt-check", "test", "clippy"]
 
+[tasks.gates-ci]
+description = "Run fast north-star CI gates with JSON and Markdown reports"
+run = "bash scripts/north-star-gates.sh ci"
+
+[tasks.gates-nightly]
+description = "Run nightly north-star gates with JSON and Markdown reports"
+run = "bash scripts/north-star-gates.sh nightly"
+
 [tasks.run]
 description = "Run the llm-engine server"
 run = "cargo run -p llm-engine -- serve --deterministic-test-backend"

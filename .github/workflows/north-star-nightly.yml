@@ -1,0 +1,62 @@
+name: North Star Nightly
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  north-star-nightly:
+    name: Nightly North-Star Gates
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      LLM_BENCH_ENDPOINT: ${{ vars.LLM_BENCH_ENDPOINT }}
+      LLM_BENCH_MODEL: ${{ vars.LLM_BENCH_MODEL }}
+      LLM_BENCH_SNAPSHOT: ${{ vars.LLM_BENCH_SNAPSHOT }}
+      LLM_BENCH_BASELINE: ${{ vars.LLM_BENCH_BASELINE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run nightly gates
+        run: bash scripts/north-star-gates.sh nightly
+
+      - name: Publish gate summary
+        if: always()
+        run: |
+          if [ -f target/north-star-gates/nightly-report.md ]; then
+            cat target/north-star-gates/nightly-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "North-star nightly report was not produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: north-star-nightly-report
+          path: target/north-star-gates/
+          retention-days: 30

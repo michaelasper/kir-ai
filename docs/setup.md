@@ -63,6 +63,17 @@ Run the full gate:
 mise run check
 ```
 
+Run the north-star promotion gates locally:
+
+```sh
+mise run gates-ci
+mise run gates-nightly
+```
+
+Both gate profiles write JSON, Markdown, and per-gate logs under
+`target/north-star-gates/`. The nightly profile skips real long-context
+inference unless `LLM_BENCH_ENDPOINT` and `LLM_BENCH_SNAPSHOT` are configured.
+
 The equivalent Cargo commands are:
 
 ```sh

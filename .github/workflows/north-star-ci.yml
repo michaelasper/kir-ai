@@ -1,0 +1,58 @@
+name: North Star CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  north-star-ci:
+    name: Fast North-Star Gates
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run fast gates
+        run: bash scripts/north-star-gates.sh ci
+
+      - name: Publish gate summary
+        if: always()
+        run: |
+          if [ -f target/north-star-gates/ci-report.md ]; then
+            cat target/north-star-gates/ci-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "North-star CI report was not produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: north-star-ci-report
+          path: target/north-star-gates/
+          retention-days: 14
