@@ -59,6 +59,7 @@ Current commits:
 - `2c8d4b5` - OpenAI chat `stop` accepts string or array forms and truncates parsed assistant content at the earliest stop sequence.
 - `7b96723` - Added non-streaming `/v1/completions` with OpenAI `text_completion` response shape and stop-sequence support.
 - `4ef489e` - Added streaming `/v1/completions` SSE chunks with `text_completion` objects and `[DONE]` termination.
+- `6907375` - Engine error responses now include stable machine-readable error codes for API, backend, parser, JSON, serialization, and no-progress failures.
 
 Current verified state:
 
@@ -82,6 +83,7 @@ Current verified state:
 - OpenAI chat `stop` supports both string and string-array request forms. The runtime applies the earliest stop sequence to parsed assistant content and reports `finish_reason: stop`.
 - `/v1/completions` now serves non-streaming OpenAI text completions through the Rust runtime, including usage accounting and stop-sequence truncation.
 - `/v1/completions` also supports `stream: true` with native Rust SSE chunks and exactly one `[DONE]` terminator.
+- HTTP error bodies now include a stable `error.code` field, so clients can classify model-not-found, backend execution, parser, JSON validation, serialization, and no-progress failures without parsing human-readable messages.
 
 Known incomplete items:
 
