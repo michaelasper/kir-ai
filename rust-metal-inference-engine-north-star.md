@@ -130,6 +130,8 @@ Current commits:
 - `c48be82` - Admin request cancellation is wired through runtime/backend cancellation tokens.
 - `cbe0ba6` - Tracker updated with admin cancellation commit identity.
 - `838f218` - Admin metrics report active requests and admin-triggered cancellations.
+- `a43547a` - Tracker updated with active/cancellation metrics commit identity.
+- `d72c499` - Admin metrics report queue depth and no-progress failures.
 
 Current verified state:
 
