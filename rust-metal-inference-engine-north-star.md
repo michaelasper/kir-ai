@@ -132,6 +132,8 @@ Current commits:
 - `838f218` - Admin metrics report active requests and admin-triggered cancellations.
 - `a43547a` - Tracker updated with active/cancellation metrics commit identity.
 - `d72c499` - Admin metrics report queue depth and no-progress failures.
+- `56808e9` - Tracker updated with no-progress metrics commit identity.
+- `36acd23` - Admin metrics report request latency summaries and tokens/sec throughput.
 
 Current verified state:
 
