@@ -461,6 +461,10 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
             .expect("tokens per second is numeric")
             > 0.0
     );
+    assert!(
+        body["native_qwen_metal"]["kernels"].is_object(),
+        "native Qwen Metal metrics are exposed"
+    );
 }
 
 #[tokio::test]
