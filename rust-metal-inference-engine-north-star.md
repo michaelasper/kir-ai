@@ -60,6 +60,7 @@ Current commits:
 - `7b96723` - Added non-streaming `/v1/completions` with OpenAI `text_completion` response shape and stop-sequence support.
 - `4ef489e` - Added streaming `/v1/completions` SSE chunks with `text_completion` objects and `[DONE]` termination.
 - `6907375` - Engine error responses now include stable machine-readable error codes for API, backend, parser, JSON, serialization, and no-progress failures.
+- `bf5ac3e` - The model store can list promoted local snapshots, and `llm-engine model list --model-home <path>` reports snapshot identity, profile, manifest digest, and file counts.
 
 Current verified state:
 
@@ -84,6 +85,7 @@ Current verified state:
 - `/v1/completions` now serves non-streaming OpenAI text completions through the Rust runtime, including usage accounting and stop-sequence truncation.
 - `/v1/completions` also supports `stream: true` with native Rust SSE chunks and exactly one `[DONE]` terminator.
 - HTTP error bodies now include a stable `error.code` field, so clients can classify model-not-found, backend execution, parser, JSON validation, serialization, and no-progress failures without parsing human-readable messages.
+- `llm-engine model list --model-home <path>` enumerates promoted engine-owned snapshots from local manifests, including repo ID, resolved commit, profile, family, loader, quantization, manifest digest, and file count.
 
 Known incomplete items:
 
