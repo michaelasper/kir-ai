@@ -144,6 +144,7 @@ Current commits:
 - `392da7b` - Admin metrics report artifact verification failure counts.
 - `a80cd60` - Admin metrics report process RSS bytes on macOS and Linux.
 - `3e50842` - Streaming runtime errors include stable error metadata.
+- `1822a58` - Backend cancellation support is an explicit trait requirement.
 
 Current verified state:
 
