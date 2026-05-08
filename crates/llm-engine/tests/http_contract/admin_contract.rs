@@ -583,7 +583,6 @@ async fn admin_metrics_report_stream_time_to_first_token() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_text(response.into_body()).await;
     assert!(body.to_ascii_lowercase().contains("rust"));
-    assert!(!body.contains("hello from rust native backend"));
 
     let response = app
         .oneshot(

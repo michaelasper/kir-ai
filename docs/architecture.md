@@ -53,7 +53,7 @@ responses.
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
 | `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and native backend construction. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, and native Qwen uses `--snapshot`. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
-| `llm-backend` | Backend trait, deterministic backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
+| `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen text chat and tools. DeepSeek template selection is explicit and fails closed until Qwen production parity. |
 | `llm-tool-parser` | Family assistant output parser selection. | Supports Qwen reasoning tags and JSON/XML tool-call forms. DeepSeek fixtures exist for text, reasoning, DSML tools, and raw completions, but parser execution fails closed until Qwen production parity. |
 | `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports Qwen3.5/Qwen3.6 MoE text config, declares Qwen production backends as native Metal plus MLX, and declares DeepSeek as a deferred first-class family. |
@@ -63,10 +63,11 @@ responses.
 | `llm-kv-cache` | KV-cache budget accounting. | Placeholder utility. No actual key/value tensor cache yet. |
 | `llm-telemetry` | Token counters and request metrics. | Standalone metrics primitives. Runtime currently constructs API usage directly. |
 
-## Why The Default Backend Is Deterministic
+## Protocol Test Backend
 
-The deterministic backend lets the HTTP contract mature separately from model
-execution. It gives fast, stable responses for:
+The deterministic backend is a protocol test stub, not a chat model and not an
+inference path. It lets the HTTP contract mature separately from model execution
+with fast, stable responses for:
 
 - request validation
 - OpenAI response shape
@@ -74,8 +75,8 @@ execution. It gives fast, stable responses for:
 - error metadata
 - client compatibility tests
 
-This avoids coupling API work to a large model download or slow native decode
-path.
+It must not grow prompt-specific chat behavior. Real generation belongs behind
+snapshot-backed native backends such as `NativeQwenBackend`.
 
 ## Why Native Qwen Is Opt-In
 
