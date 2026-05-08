@@ -1,5 +1,6 @@
 /target/
 /.mise.local.toml
+/.llm-models/
 *.log
 *.trace.jsonl
 *.tmp

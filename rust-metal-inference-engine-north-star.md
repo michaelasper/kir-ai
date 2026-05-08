@@ -23,13 +23,14 @@ Current verified state:
 - Official Qwen3.6 config/template fixtures are stored under `fixtures/qwen36/`.
 - `llm-models` parses the official Qwen3.6 hybrid Gated DeltaNet plus MoE topology: 40 layers, 30 linear-attention layers, 10 full-attention layers, 256 experts, 8 routed experts per token, 262,144 native context.
 - `llm-tokenizer` renders the Qwen no-thinking assistant prefix as `<think>\n\n</think>\n\n`, matching the official template behavior.
+- `llm-engine model pull Qwen/Qwen3.6-35B-A3B --metadata-only --model-home .llm-models` downloads 13 non-weight artifacts through native Rust HTTP, writes a manifest, and promotes snapshot `995ad96eacd98c81ed38be0c5b274b04031597b0` with manifest digest `99e9dbff8de1b239063b12421f276c0b5f67c206844471360a8c69d9a502b825`.
 
 Known incomplete items:
 
 - No real tensor inference yet; `llm-backend` currently has a deterministic Rust backend for protocol/runtime tests.
-- No weight download/pull command yet.
-- No safetensors tensor loader yet.
-- No Metal kernels beyond crate scaffolding.
+- Full weight download is not yet complete; metadata-only pull is verified.
+- Safetensors metadata and F32 tensor loading are implemented; full Qwen BF16/MoE tensor materialization is not complete.
+- Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - No Qwen forward pass, KV cache, recurrent Gated DeltaNet state, or sampling over real logits yet.
 
 The first-class model families are:

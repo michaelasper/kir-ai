@@ -86,3 +86,24 @@ fn manifest_digest_changes_with_artifact_identity() {
     assert_eq!(manifest.files.len(), 1);
     assert_eq!(manifest.digest().len(), 64);
 }
+
+#[test]
+fn metadata_only_plan_excludes_weight_files() {
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        vec![
+            HubFile::new("config.json", 100, Some("\"cfg\"")),
+            HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        ],
+        &[],
+    )
+    .expect("plan builds");
+
+    let metadata = plan.metadata_only();
+    assert_eq!(metadata.files_to_download.len(), 1);
+    assert_eq!(metadata.files_to_download[0].path, "config.json");
+    assert_eq!(metadata.total_bytes_to_download, 100);
+}

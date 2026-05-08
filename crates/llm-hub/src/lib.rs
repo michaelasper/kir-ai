@@ -1,8 +1,11 @@
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +183,49 @@ impl HubClient {
             &[],
         )
     }
+
+    pub async fn download_file_to(
+        &self,
+        repo_id: &HubRepoId,
+        resolved_commit: &str,
+        path: &str,
+        destination: &Path,
+        token: Option<&str>,
+    ) -> Result<(), HubError> {
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(HubError::io)?;
+        }
+        let mut url = self.endpoint.clone();
+        url.set_path(&format!(
+            "/{}/resolve/{}/{}",
+            repo_id.as_str(),
+            resolved_commit,
+            path
+        ));
+        let mut request = self.client.get(url);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(HubError::network)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(HubError::network(format!(
+                "download for `{path}` returned HTTP {status}"
+            )));
+        }
+        let mut file = tokio::fs::File::create(destination)
+            .await
+            .map_err(HubError::io)?;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(HubError::network)?;
+            file.write_all(&chunk).await.map_err(HubError::io)?;
+        }
+        file.flush().await.map_err(HubError::io)?;
+        Ok(())
+    }
 }
 
 impl HubFile {
@@ -261,6 +307,26 @@ pub struct DownloadPlan {
     pub total_final_disk_bytes: u64,
 }
 
+impl DownloadPlan {
+    pub fn metadata_only(&self) -> Self {
+        let mut plan = self.clone();
+        plan.files_to_download
+            .retain(|file| file.class != ArtifactClass::Weights);
+        plan.recompute_totals();
+        plan
+    }
+
+    fn recompute_totals(&mut self) {
+        self.total_bytes_to_download = self
+            .files_to_download
+            .iter()
+            .filter(|file| !file.cached)
+            .map(|file| file.size)
+            .sum();
+        self.total_final_disk_bytes = self.files_to_download.iter().map(|file| file.size).sum();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotManifest {
     pub schema_version: u32,
@@ -322,6 +388,115 @@ pub struct ManifestFile {
     pub size: u64,
     pub etag: Option<String>,
     pub class: ArtifactClass,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelStore {
+    root: PathBuf,
+}
+
+impl ModelStore {
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+        }
+    }
+
+    pub fn snapshot_path(&self, plan: &DownloadPlan) -> PathBuf {
+        self.repo_root(&plan.repo_id)
+            .join("snapshots")
+            .join(&plan.resolved_commit)
+    }
+
+    pub async fn create_staging_dir(&self, plan: &DownloadPlan) -> Result<PathBuf, HubError> {
+        let staging = self
+            .repo_root(&plan.repo_id)
+            .join("staging")
+            .join(format!("{}.partial", plan.resolved_commit));
+        if tokio::fs::try_exists(&staging)
+            .await
+            .map_err(HubError::io)?
+        {
+            tokio::fs::remove_dir_all(&staging)
+                .await
+                .map_err(HubError::io)?;
+        }
+        tokio::fs::create_dir_all(&staging)
+            .await
+            .map_err(HubError::io)?;
+        Ok(staging)
+    }
+
+    pub async fn promote_staging(
+        &self,
+        plan: &DownloadPlan,
+        staging: PathBuf,
+    ) -> Result<PromotedSnapshot, HubError> {
+        let snapshot = self.snapshot_path(plan);
+        if tokio::fs::try_exists(&snapshot)
+            .await
+            .map_err(HubError::io)?
+        {
+            return Err(HubError::invalid_request(format!(
+                "snapshot already exists at {}",
+                snapshot.display()
+            )));
+        }
+        let manifest = SnapshotManifest::from_plan(plan, snapshot.display().to_string());
+        let manifest_digest = manifest.digest();
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|err| HubError::invalid_response(format!("manifest JSON failed: {err}")))?;
+        tokio::fs::write(staging.join("llm-engine-manifest.json"), manifest_bytes)
+            .await
+            .map_err(HubError::io)?;
+        if let Some(parent) = snapshot.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(HubError::io)?;
+        }
+        tokio::fs::rename(&staging, &snapshot)
+            .await
+            .map_err(HubError::io)?;
+        Ok(PromotedSnapshot {
+            path: snapshot,
+            manifest,
+            manifest_digest,
+        })
+    }
+
+    pub async fn pull_plan(
+        &self,
+        client: &HubClient,
+        plan: &DownloadPlan,
+        token: Option<&str>,
+    ) -> Result<PromotedSnapshot, HubError> {
+        let staging = self.create_staging_dir(plan).await?;
+        for file in &plan.files_to_download {
+            client
+                .download_file_to(
+                    &plan.repo_id,
+                    &plan.resolved_commit,
+                    &file.path,
+                    &staging.join(&file.path),
+                    token,
+                )
+                .await?;
+        }
+        self.promote_staging(plan, staging).await
+    }
+
+    fn repo_root(&self, repo_id: &HubRepoId) -> PathBuf {
+        self.root
+            .join("huggingface")
+            .join(format!("models--{}", repo_id.as_str().replace('/', "--")))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PromotedSnapshot {
+    pub path: PathBuf,
+    pub manifest: SnapshotManifest,
+    pub manifest_digest: String,
 }
 
 pub fn build_download_plan(
@@ -423,6 +598,13 @@ impl HubError {
     }
 
     fn network(message: impl ToString) -> Self {
+        Self {
+            code: "model_download_interrupted",
+            message: message.to_string(),
+        }
+    }
+
+    fn io(message: impl ToString) -> Self {
         Self {
             code: "model_download_interrupted",
             message: message.to_string(),
