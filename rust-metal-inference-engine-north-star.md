@@ -40,6 +40,8 @@ Current commits:
 - `1d52515` - Native linear-attention decoder layer loop.
 - `289c1de` - Native full-attention first-token decoder layers.
 - `d4cb27d` - Decoded top-token candidates after a full native layer pass.
+- `3804e42` - Tracker update for the native Qwen full-pass milestone.
+- `26ed009` - OpenAI server path for a constrained native Qwen token.
 
 Current verified state:
 
@@ -54,11 +56,12 @@ Current verified state:
 - `llm-engine model inspect-qwen-input .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --token-id 0 --limit 2 --layers 40` executes all 40 native Qwen decoder layers for a single no-cache token from the real BF16 shards. Layer 39 is full attention and ends with hidden prefix `[0.27011680603027344, -0.20515947043895721]`.
 - `llm-engine model inspect-qwen-input .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --token-id 0 --limit 2 --layers 40 --lm-head-top-k 5 --chunk-rows 2048` applies final norm and streams the full `lm_head.weight`; the current top decoded candidates are token `353` `" I"` at logit `11.456915855407715`, token `49276` `"[]("` at `11.124484062194824`, token `1249` `"[]"` at `10.706412315368652`, token `198` newline at `10.236197471618652`, and token `271` double-newline at `10.230167388916016`.
 - The native Qwen executor now covers embedding lookup, centered RMSNorm, hybrid linear/full attention first-token paths, routed MoE expert slices, final norm, streamed lm-head logits, and tokenizer decode for the first token with no Python or external inference engine.
+- `llm-engine serve --addr 127.0.0.1:3017 --snapshot .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --model-id local-qwen36 --max-new-tokens 1` starts an OpenAI-compatible server backed by the native Qwen executor. `GET /health` reports `python_runtime: false`, `GET /v1/models` lists `local-qwen36`, and `POST /v1/chat/completions` for `Say the word test.` returns a real Qwen-decoded one-token assistant response with usage `{prompt_tokens: 17, completion_tokens: 1, total_tokens: 18}`.
 
 Known incomplete items:
 
-- The OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests; it is not yet wired to the Qwen executor.
-- The Qwen path is a single-token, no-cache correctness probe. Multi-token prompt prefill, decode state, sampling loops, and stop handling are not complete.
+- The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
+- The native Qwen server path currently tokenizes the rendered prompt, takes the last prompt token, and generates one no-cache token. Full prompt prefill, multi-token decode state, sampling loops, and robust stop handling are not complete.
 - Full-attention first-token execution uses the single-key no-cache simplification. Real prefill/decode still needs RoPE, KV-cache reads/writes, grouped query attention over prior tokens, and causal masking.
 - Linear Gated DeltaNet execution uses the first-token zero-state simplification. Recurrent convolution/state cache updates are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, and targeted BF16 reads are implemented; mmap-backed tensor caching/materialization is not complete.
