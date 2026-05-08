@@ -126,6 +126,8 @@ Current commits:
 - `a316fbb` - Metal includes a batched BF16-weight matvec kernel.
 - `53e7fcd` - Open GitHub issues #35 through #40 are addressed and documented.
 - `a6f92f3` - Metal includes chunked `f32` argmax and top-k logits kernels.
+- `445c5ff` - Tracker updated with Metal logits kernel commit identity.
+- `c48be82` - Admin request cancellation is wired through runtime/backend cancellation tokens.
 
 Current verified state:
 
