@@ -276,33 +276,59 @@ impl From<RuntimeError> for EngineError {
 
 impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
-        let (status, code, message) = match self {
+        let (status, code, phase, retryable, message) = match self {
             Self::Runtime(err) => {
-                let (status, code) = match &err {
-                    RuntimeError::Api(api) => (StatusCode::BAD_REQUEST, api.code()),
-                    RuntimeError::Backend(BackendError::ModelNotFound { .. }) => {
-                        (StatusCode::NOT_FOUND, "model_not_found")
-                    }
+                let (status, code, phase, retryable) = match &err {
+                    RuntimeError::Api(api) => (
+                        StatusCode::BAD_REQUEST,
+                        api.code(),
+                        "request_validation",
+                        false,
+                    ),
+                    RuntimeError::Backend(BackendError::ModelNotFound { .. }) => (
+                        StatusCode::NOT_FOUND,
+                        "model_not_found",
+                        "model_resolution",
+                        false,
+                    ),
                     RuntimeError::Backend(BackendError::Other(_)) => (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "backend_execution_failed",
+                        "decode",
+                        true,
                     ),
-                    RuntimeError::Template(_) => {
-                        (StatusCode::UNPROCESSABLE_ENTITY, "chat_template_failed")
-                    }
-                    RuntimeError::Parser(err) => (StatusCode::UNPROCESSABLE_ENTITY, err.code()),
-                    RuntimeError::Json(_) | RuntimeError::JsonMode(_) => {
-                        (StatusCode::UNPROCESSABLE_ENTITY, "json_validation_failed")
-                    }
-                    RuntimeError::NoProgress(_) => {
-                        (StatusCode::UNPROCESSABLE_ENTITY, "no_progress")
-                    }
+                    RuntimeError::Template(_) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "chat_template_failed",
+                        "prompt_rendering",
+                        false,
+                    ),
+                    RuntimeError::Parser(err) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        err.code(),
+                        "response_parsing",
+                        false,
+                    ),
+                    RuntimeError::Json(_) | RuntimeError::JsonMode(_) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "json_validation_failed",
+                        "response_validation",
+                        false,
+                    ),
+                    RuntimeError::NoProgress(_) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "no_progress",
+                        "response_validation",
+                        false,
+                    ),
                 };
-                (status, code, err.to_string())
+                (status, code, phase, retryable, err.to_string())
             }
             Self::Serialize(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "response_serialization_failed",
+                "response_serialization",
+                true,
                 err.to_string(),
             ),
         };
@@ -310,6 +336,8 @@ impl IntoResponse for EngineError {
             "error": {
                 "message": message,
                 "code": code,
+                "phase": phase,
+                "retryable": retryable,
                 "type": "llm_engine_error"
             }
         }));
