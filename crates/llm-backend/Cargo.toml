@@ -10,6 +10,7 @@ async-trait.workspace = true
 futures.workspace = true
 llm-api = { path = "../llm-api" }
 llm-models = { path = "../llm-models" }
+memmap2.workspace = true
 safetensors.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

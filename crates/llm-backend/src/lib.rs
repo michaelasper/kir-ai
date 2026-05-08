@@ -5,6 +5,7 @@ use futures::{
 };
 use llm_api::FinishReason;
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
+use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
     collections::BTreeMap,
@@ -2142,6 +2143,7 @@ impl SafeTensorHeader {
 pub struct SafeTensorFile {
     header: SafeTensorHeader,
     file: File,
+    mapped: Mutex<Option<Arc<Mmap>>>,
 }
 
 impl SafeTensorFile {
@@ -2154,7 +2156,11 @@ impl SafeTensorFile {
                 path.display()
             ))
         })?;
-        Ok(Self { header, file })
+        Ok(Self {
+            header,
+            file,
+            mapped: Mutex::new(None),
+        })
     }
 
     pub fn header(&self) -> &SafeTensorHeader {
@@ -2165,12 +2171,51 @@ impl SafeTensorFile {
         self.header.tensor_metadata(name)
     }
 
+    pub fn materialize(&self) -> Result<usize, TensorLoadError> {
+        let mapped = self.materialized_file()?;
+        Ok(mapped.len())
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.mapped
+            .lock()
+            .map(|mapped| mapped.is_some())
+            .unwrap_or(false)
+    }
+
     pub fn tensor_bytes_range(
         &self,
         name: &str,
         tensor_byte_offset: u64,
         byte_len: usize,
     ) -> Result<Vec<u8>, TensorLoadError> {
+        let file_range = self.tensor_file_byte_range(name, tensor_byte_offset, byte_len)?;
+        if let Some(mapped) = self.materialized_file_if_present()? {
+            let bytes = mapped.get(file_range.clone()).ok_or_else(|| {
+                TensorLoadError::integrity(format!("tensor `{name}` mapped range is invalid"))
+            })?;
+            return Ok(bytes.to_vec());
+        }
+        let mut bytes = vec![0_u8; byte_len];
+        let mut file = self.file.try_clone().map_err(|err| {
+            TensorLoadError::integrity(format!("could not clone safetensors file handle: {err}"))
+        })?;
+        file.seek(SeekFrom::Start(file_range.start as u64))
+            .map_err(|err| {
+                TensorLoadError::integrity(format!("could not seek tensor `{name}`: {err}"))
+            })?;
+        file.read_exact(&mut bytes).map_err(|err| {
+            TensorLoadError::integrity(format!("could not read tensor `{name}` bytes: {err}"))
+        })?;
+        Ok(bytes)
+    }
+
+    fn tensor_file_byte_range(
+        &self,
+        name: &str,
+        tensor_byte_offset: u64,
+        byte_len: usize,
+    ) -> Result<Range<usize>, TensorLoadError> {
         let metadata = self.header.tensor_metadata(name)?;
         let tensor_byte_len = u64_from_usize(
             metadata.byte_len,
@@ -2194,17 +2239,57 @@ impl SafeTensorFile {
             .ok_or_else(|| {
                 TensorLoadError::integrity(format!("tensor `{name}` offset overflow"))
             })?;
-        let mut bytes = vec![0_u8; byte_len];
-        let mut file = self.file.try_clone().map_err(|err| {
-            TensorLoadError::integrity(format!("could not clone safetensors file handle: {err}"))
+        let file_end = file_offset
+            .checked_add(u64_from_usize(
+                byte_len,
+                "requested byte length does not fit in u64",
+            )?)
+            .ok_or_else(|| TensorLoadError::integrity(format!("tensor `{name}` range overflow")))?;
+        Ok(
+            usize_from_u64(file_offset, "tensor file offset does not fit in usize")?
+                ..usize_from_u64(file_end, "tensor file end does not fit in usize")?,
+        )
+    }
+
+    fn materialized_file(&self) -> Result<Arc<Mmap>, TensorLoadError> {
+        if let Some(mapped) = self.materialized_file_if_present()? {
+            return Ok(mapped);
+        }
+        let expected_len = usize_from_u64(
+            self.header.file_len(),
+            "safetensors file length does not fit in usize for mmap",
+        )?;
+        // SAFETY: promoted safetensors snapshots are treated as immutable by the
+        // store. This read-only mapping is used only after header/range validation,
+        // and callers copy bytes out before decoding.
+        let mapped = Arc::new(
+            unsafe { MmapOptions::new().map(&self.file) }.map_err(|err| {
+                TensorLoadError::integrity(format!("could not mmap safetensors file: {err}"))
+            })?,
+        );
+        if mapped.len() != expected_len {
+            return Err(TensorLoadError::integrity(format!(
+                "mmap length {} does not match safetensors header length {expected_len}",
+                mapped.len()
+            )));
+        }
+        let mut cached = self.mapped.lock().map_err(|err| {
+            TensorLoadError::integrity(format!("mmap cache lock poisoned: {err}"))
         })?;
-        file.seek(SeekFrom::Start(file_offset)).map_err(|err| {
-            TensorLoadError::integrity(format!("could not seek tensor `{name}`: {err}"))
-        })?;
-        file.read_exact(&mut bytes).map_err(|err| {
-            TensorLoadError::integrity(format!("could not read tensor `{name}` bytes: {err}"))
-        })?;
-        Ok(bytes)
+        if cached.is_none() {
+            *cached = Some(Arc::clone(&mapped));
+        }
+        cached
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| TensorLoadError::integrity("mmap cache was not populated"))
+    }
+
+    fn materialized_file_if_present(&self) -> Result<Option<Arc<Mmap>>, TensorLoadError> {
+        self.mapped
+            .lock()
+            .map(|mapped| mapped.as_ref().map(Arc::clone))
+            .map_err(|err| TensorLoadError::integrity(format!("mmap cache lock poisoned: {err}")))
     }
 
     pub fn bf16_tensor_f32_range(
@@ -2489,6 +2574,22 @@ impl SafeTensorShardStore {
 
     pub fn cached_shard_count(&self) -> usize {
         self.shards.lock().map(|shards| shards.len()).unwrap_or(0)
+    }
+
+    pub fn materialized_shard_count(&self) -> usize {
+        self.shards
+            .lock()
+            .map(|shards| {
+                shards
+                    .values()
+                    .filter(|shard| shard.is_materialized())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn materialize_shard_for_tensor(&self, tensor: &str) -> Result<usize, TensorLoadError> {
+        self.open_tensor_file(tensor)?.materialize()
     }
 
     fn open_tensor_file(&self, tensor: &str) -> Result<Arc<SafeTensorFile>, TensorLoadError> {

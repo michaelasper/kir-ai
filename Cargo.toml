@@ -31,6 +31,7 @@ futures = "0.3.31"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 metal = "0.33.0"
+memmap2 = "0.9.10"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 schemars = { version = "1.1.0", features = ["chrono04", "uuid1"] }
 safetensors = "0.7.0"
