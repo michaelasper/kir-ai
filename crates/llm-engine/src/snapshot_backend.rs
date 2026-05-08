@@ -6,8 +6,46 @@ use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotBackendLoader {
+    NativeMetal,
+    Mlx,
+}
+
+impl SnapshotBackendLoader {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "native-metal" => Ok(Self::NativeMetal),
+            "mlx" => Ok(Self::Mlx),
+            other => Err(anyhow::anyhow!(
+                "unsupported snapshot loader `{other}`; expected `native-metal` or `mlx`"
+            )),
+        }
+    }
+
+    fn as_manifest_label(self) -> &'static str {
+        match self {
+            Self::NativeMetal => "native-metal",
+            Self::Mlx => "mlx",
+        }
+    }
+}
+
+pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<String> {
+    match value {
+        "qwen" => Ok("qwen".to_owned()),
+        "deep_seek" | "deepseek" => Ok("deep_seek".to_owned()),
+        "gemma" => Ok("gemma".to_owned()),
+        other => Err(anyhow::anyhow!(
+            "unsupported snapshot family `{other}`; expected `qwen`, `deep_seek`, or `gemma`"
+        )),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotBackendOptions {
+    pub loader: Option<SnapshotBackendLoader>,
+    pub family: Option<String>,
     pub native_qwen: NativeQwenLoadOptions,
     pub mlx: MlxBackendOptions,
     pub max_new_tokens: u32,
@@ -17,6 +55,8 @@ pub struct SnapshotBackendOptions {
 impl Default for SnapshotBackendOptions {
     fn default() -> Self {
         Self {
+            loader: None,
+            family: None,
             native_qwen: NativeQwenLoadOptions::default(),
             mlx: MlxBackendOptions::default(),
             max_new_tokens: DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
@@ -32,24 +72,89 @@ pub fn open_snapshot_backend(
 ) -> anyhow::Result<Box<dyn ModelBackend>> {
     let model_id = model_id.into();
     let snapshot_path = snapshot_path.as_ref();
-    match snapshot_backend_loader(snapshot_path)?.as_deref() {
-        Some("mlx") => Ok(Box::new(MlxBackend::open_with_options(
-            model_id,
-            snapshot_path,
-            options.mlx,
-        )?)),
-        Some("native-metal") | None => Ok(Box::new(
+    let manifest = snapshot_manifest(snapshot_path)?;
+    let requested_family = options
+        .family
+        .clone()
+        .or_else(|| options.mlx.family.clone());
+    let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
+    validate_snapshot_family(manifest.as_ref(), requested_family.as_deref())?;
+    validate_snapshot_loader_family(loader, manifest.as_ref(), requested_family.as_deref())?;
+    match loader {
+        SnapshotBackendLoader::Mlx => {
+            let mut mlx_options = options.mlx;
+            mlx_options.family = requested_family;
+            Ok(Box::new(MlxBackend::open_with_options(
+                model_id,
+                snapshot_path,
+                mlx_options,
+            )?))
+        }
+        SnapshotBackendLoader::NativeMetal => Ok(Box::new(
             NativeQwenBackend::open_with_options(model_id, snapshot_path, options.native_qwen)?
                 .with_max_new_tokens(options.max_new_tokens)
                 .with_max_prefill_tokens(options.max_prefill_tokens),
         )),
+    }
+}
+
+fn select_snapshot_backend_loader(
+    manifest: Option<&SnapshotManifest>,
+    requested: Option<SnapshotBackendLoader>,
+) -> anyhow::Result<SnapshotBackendLoader> {
+    let manifest_loader = manifest.map(|manifest| manifest.loader.as_str());
+    if let (Some(requested), Some(manifest_loader)) = (requested, manifest_loader)
+        && manifest_loader != requested.as_manifest_label()
+    {
+        anyhow::bail!(
+            "requested snapshot loader `{}` does not match manifest loader `{manifest_loader}`",
+            requested.as_manifest_label()
+        );
+    }
+    if let Some(requested) = requested {
+        return Ok(requested);
+    }
+    match manifest_loader {
+        Some("mlx") => Ok(SnapshotBackendLoader::Mlx),
+        Some("native-metal") | None => Ok(SnapshotBackendLoader::NativeMetal),
         Some(other) => Err(anyhow::anyhow!(
             "unsupported snapshot loader `{other}` in llm-engine manifest"
         )),
     }
 }
 
-fn snapshot_backend_loader(snapshot_path: &Path) -> anyhow::Result<Option<String>> {
+fn validate_snapshot_family(
+    manifest: Option<&SnapshotManifest>,
+    requested_family: Option<&str>,
+) -> anyhow::Result<()> {
+    if let (Some(manifest), Some(requested_family)) = (manifest, requested_family)
+        && manifest.family != requested_family
+    {
+        anyhow::bail!(
+            "requested snapshot family `{requested_family}` does not match manifest family `{}`",
+            manifest.family
+        );
+    }
+    Ok(())
+}
+
+fn validate_snapshot_loader_family(
+    loader: SnapshotBackendLoader,
+    manifest: Option<&SnapshotManifest>,
+    requested_family: Option<&str>,
+) -> anyhow::Result<()> {
+    let effective_family =
+        requested_family.or_else(|| manifest.map(|manifest| manifest.family.as_str()));
+    if loader == SnapshotBackendLoader::NativeMetal
+        && let Some(family) = effective_family
+        && family != "qwen"
+    {
+        anyhow::bail!("snapshot loader `native-metal` only supports family `qwen`, not `{family}`");
+    }
+    Ok(())
+}
+
+fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotManifest>> {
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
     let manifest_bytes = match std::fs::read(&manifest_path) {
         Ok(bytes) => bytes,
@@ -57,7 +162,7 @@ fn snapshot_backend_loader(snapshot_path: &Path) -> anyhow::Result<Option<String
         Err(err) => return Err(err.into()),
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
-    Ok(Some(manifest.loader))
+    Ok(Some(manifest))
 }
 
 #[cfg(test)]
@@ -75,8 +180,10 @@ mod tests {
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
+                family: Some("qwen".to_owned()),
                 mlx: crate::MlxBackendOptions {
                     endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
                 },
                 ..SnapshotBackendOptions::default()
             },
@@ -87,6 +194,132 @@ mod tests {
         assert_eq!(metadata.backend, "mlx");
         assert_eq!(metadata.loader.as_deref(), Some("mlx"));
         assert_eq!(metadata.profile.as_deref(), Some("qwen36-mlx-4bit"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_allows_explicit_mlx_loader_without_manifest() {
+        let snapshot = temp_snapshot_dir("mlx-loader-override");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let backend = open_snapshot_backend(
+            "local-mlx",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                family: Some("qwen".to_owned()),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        )
+        .expect("mlx backend opens");
+        let metadata = backend.model_metadata();
+
+        assert_eq!(metadata.backend, "mlx");
+        assert_eq!(metadata.loader.as_deref(), Some("mlx"));
+        assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_loader_override_manifest_mismatch() {
+        let snapshot = temp_snapshot_dir("loader-selection-mismatch");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest(&snapshot, "native-metal");
+
+        let err = match open_snapshot_backend(
+            "local-mlx",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("loader mismatch should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("does not match manifest loader"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_family_override_manifest_mismatch() {
+        let snapshot = temp_snapshot_dir("family-selection-mismatch");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest(&snapshot, "mlx");
+
+        let err = match open_snapshot_backend(
+            "local-mlx",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                family: Some("gemma".to_owned()),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("family mismatch should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("does not match manifest family"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_non_qwen_family_for_raw_native_metal_snapshot() {
+        let snapshot = temp_snapshot_dir("native-family-override-mismatch");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let err = match open_snapshot_backend(
+            "local-native",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::NativeMetal),
+                family: Some("gemma".to_owned()),
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("native-metal non-Qwen family should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("only supports family `qwen`"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_non_qwen_family_for_native_metal_manifest() {
+        let snapshot = temp_snapshot_dir("native-family-manifest-mismatch");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest_with_family(&snapshot, "native-metal", "gemma");
+
+        let err = match open_snapshot_backend(
+            "local-native",
+            &snapshot,
+            SnapshotBackendOptions::default(),
+        ) {
+            Ok(_) => panic!("native-metal Gemma manifest should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("only supports family `qwen`"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -111,6 +344,10 @@ mod tests {
     }
 
     fn write_manifest(root: &Path, loader: &str) {
+        write_manifest_with_family(root, loader, "qwen");
+    }
+
+    fn write_manifest_with_family(root: &Path, loader: &str, family: &str) {
         std::fs::write(
             root.join("llm-engine-manifest.json"),
             serde_json::json!({
@@ -121,7 +358,7 @@ mod tests {
                 "requested_revision": "main",
                 "resolved_commit": "0123456789abcdef0123456789abcdef01234567",
                 "profile": "qwen36-mlx-4bit",
-                "family": "qwen",
+                "family": family,
                 "loader": loader,
                 "quantization": "4bit",
                 "created_at": "2026-05-08T00:00:00Z",

@@ -55,6 +55,15 @@ cargo run -p llm-engine -- serve \
   --native-metal-weight-cache-bytes 8589934592
 ```
 
+You can also serve a model-store alias created by `model pull --alias`:
+
+```sh
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot-alias local-qwen36 \
+  --model-home .llm-models
+```
+
 The native path tokenises the rendered prompt, keeps a bounded tail of prompt
 tokens, runs Qwen prefill, applies final norm and LM-head top-k, then returns
 decoded text.
@@ -79,6 +88,21 @@ cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
+select the MLX loader and model family explicitly:
+
+```sh
+SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>
+mlx_lm.server --model "$SNAPSHOT" --chat-template-args '{"enable_thinking":false}'
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family qwen \
+  --model-id local-qwen35-4b \
   --mlx-endpoint http://127.0.0.1:8080/v1
 ```
 

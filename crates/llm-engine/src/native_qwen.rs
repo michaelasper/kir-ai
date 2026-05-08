@@ -2807,7 +2807,9 @@ fn native_qwen_metadata(
     snapshot_path: &Path,
 ) -> anyhow::Result<BackendModelMetadata> {
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "native-qwen");
+    let mut metadata =
+        BackendModelMetadata::new(model_id.to_owned(), "native-qwen").with_family("qwen");
+    metadata.loader = Some("native-metal".to_owned());
     metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
     let manifest_bytes = match std::fs::read(&manifest_path) {
         Ok(bytes) => bytes,
@@ -2815,6 +2817,18 @@ fn native_qwen_metadata(
         Err(err) => return Err(err.into()),
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
+    if manifest.family != "qwen" {
+        anyhow::bail!(
+            "native Qwen backend only supports family `qwen`, not `{}`",
+            manifest.family
+        );
+    }
+    if manifest.loader != "native-metal" {
+        anyhow::bail!(
+            "native Qwen backend only supports loader `native-metal`, not `{}`",
+            manifest.loader
+        );
+    }
     metadata.family = Some(manifest.family.clone());
     metadata.loader = Some(manifest.loader.clone());
     metadata.quantization = Some(manifest.quantization.clone());

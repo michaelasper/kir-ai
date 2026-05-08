@@ -13,6 +13,7 @@ use url::Url;
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
     pub endpoint: Url,
+    pub family: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +50,7 @@ impl MlxBackend {
         let completions_url = mlx_endpoint_url(&options.endpoint, "completions");
         Ok(Self {
             model_id: model_id.clone(),
-            metadata: mlx_metadata(&model_id, snapshot_path)?,
+            metadata: mlx_metadata(&model_id, snapshot_path, options.family.as_deref())?,
             upstream_model,
             completions_url,
             client: reqwest::Client::new(),
@@ -177,6 +178,7 @@ impl Default for MlxBackendOptions {
     fn default() -> Self {
         Self {
             endpoint: Url::parse("http://127.0.0.1:8080/v1").expect("valid default MLX endpoint"),
+            family: None,
         }
     }
 }
@@ -433,7 +435,11 @@ fn is_loopback_endpoint(endpoint: &Url) -> bool {
     }
 }
 
-fn mlx_metadata(model_id: &str, snapshot_path: &Path) -> anyhow::Result<BackendModelMetadata> {
+fn mlx_metadata(
+    model_id: &str,
+    snapshot_path: &Path,
+    requested_family: Option<&str>,
+) -> anyhow::Result<BackendModelMetadata> {
     let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "mlx");
     metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
@@ -441,11 +447,20 @@ fn mlx_metadata(model_id: &str, snapshot_path: &Path) -> anyhow::Result<BackendM
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             metadata.loader = Some("mlx".to_owned());
+            metadata.family = requested_family.map(str::to_owned);
             return Ok(metadata);
         }
         Err(err) => return Err(err.into()),
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
+    if let Some(requested_family) = requested_family
+        && manifest.family != requested_family
+    {
+        anyhow::bail!(
+            "requested snapshot family `{requested_family}` does not match manifest family `{}`",
+            manifest.family
+        );
+    }
     metadata.family = Some(manifest.family.clone());
     metadata.loader = Some(manifest.loader.clone());
     metadata.quantization = Some(manifest.quantization.clone());
@@ -479,6 +494,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
+                ..MlxBackendOptions::default()
             },
         )
         .expect("backend opens");
@@ -530,6 +546,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
+                ..MlxBackendOptions::default()
             },
         )
         .expect("backend opens");
@@ -597,6 +614,7 @@ mod tests {
             snapshot.path(),
             MlxBackendOptions {
                 endpoint: Url::parse("https://example.com/v1").expect("url"),
+                ..MlxBackendOptions::default()
             },
         )
         .expect_err("remote MLX endpoint is rejected");
@@ -614,6 +632,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
+                ..MlxBackendOptions::default()
             },
         )
         .expect("backend opens");

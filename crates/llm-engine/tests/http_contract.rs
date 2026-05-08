@@ -52,10 +52,18 @@ fn public_router_builder_requires_explicit_backend() {
 
 struct FailingBackend;
 
+fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
+    BackendModelMetadata::new(model_id, backend).with_family("qwen")
+}
+
 #[async_trait]
 impl ModelBackend for FailingBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "failing")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -79,6 +87,10 @@ struct StaticBackend {
 impl ModelBackend for StaticBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "static")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -105,6 +117,10 @@ struct ScriptedChatBackend;
 impl ModelBackend for ScriptedChatBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "scripted-chat")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -143,6 +159,10 @@ impl ModelBackend for BlockingBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "blocking")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         self.entered.notify_waiters();
         self.release.notified().await;
@@ -173,6 +193,10 @@ struct FairnessBackend {
 impl ModelBackend for FairnessBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "fairness")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -223,6 +247,10 @@ impl ModelBackend for AdminCancellableBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "admin-cancellable")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::Other(
             "generate_with_cancel should be used".to_owned(),
@@ -247,6 +275,10 @@ struct NoProgressBackend;
 impl ModelBackend for NoProgressBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "no-progress")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -275,6 +307,10 @@ struct DelayedStreamBackend {
 impl ModelBackend for DelayedStreamBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "delayed-stream")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -309,6 +345,10 @@ struct TwoStageStreamBackend {
 impl ModelBackend for TwoStageStreamBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "two-stage-stream")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -377,6 +417,10 @@ impl ModelBackend for CancellableStreamBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cancellable-stream")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: "first".to_owned(),
@@ -423,6 +467,10 @@ struct FailingStreamBackend;
 impl ModelBackend for FailingStreamBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "failing-stream")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {

@@ -1296,15 +1296,11 @@ fn chat_adapter_for_metadata(
     metadata: &BackendModelMetadata,
 ) -> Result<SelectedChatAdapter, RuntimeError> {
     let Some(family) = metadata.family.as_deref() else {
-        return match metadata.backend.as_str() {
-            "deterministic" | "native-qwen" | "unknown" => {
-                Ok(SelectedChatAdapter::Qwen(QwenChatAdapter))
-            }
-            backend => Err(ApiError::unsupported_capability(format!(
-                "backend `{backend}` did not declare a model family for chat rendering"
-            ))
-            .into()),
-        };
+        return Err(ApiError::unsupported_capability(format!(
+            "backend `{}` did not declare a model family for chat rendering",
+            metadata.backend
+        ))
+        .into());
     };
     match parse_metadata_family(family)? {
         ModelFamily::Qwen => Ok(SelectedChatAdapter::Qwen(QwenChatAdapter)),

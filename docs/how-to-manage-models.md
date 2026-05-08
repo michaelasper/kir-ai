@@ -35,6 +35,14 @@ cargo run -p llm-engine -- model plan Qwen/Qwen3-0.6B \
   --profile qwen3-dense-safetensors-bf16
 ```
 
+Plan a small MLX-backed chat profile for local adaptive-chat checks:
+
+```sh
+cargo run -p llm-engine -- model plan mlx-community/Qwen3.5-4B-MLX-4bit \
+  --revision main \
+  --profile qwen35-4b-mlx-4bit
+```
+
 Plan the larger Qwen3.6 MoE native BF16 profile when you need that family:
 
 ```sh

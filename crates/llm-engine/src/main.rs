@@ -8,7 +8,8 @@ use llm_backend::{
 };
 use llm_engine::{
     DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeQwenLoadOptions,
-    SnapshotBackendOptions, build_router_with_backend_and_options, open_snapshot_backend,
+    SnapshotBackendLoader, SnapshotBackendOptions, build_router_with_backend_and_options,
+    open_snapshot_backend, parse_snapshot_model_family,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, ProtectedSnapshot,
@@ -66,9 +67,27 @@ async fn main() -> anyhow::Result<()> {
                 hf_token: std::env::var("HF_TOKEN").ok(),
                 ..EngineOptions::default()
             };
-            let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
-                let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");
-                let snapshot_path = std::path::PathBuf::from(snapshot_path);
+            let snapshot_alias = flag_value(&serve_args, "--snapshot-alias")
+                .or_else(|| flag_value(&serve_args, "--model-alias"));
+            if flag_value(&serve_args, "--snapshot").is_some() && snapshot_alias.is_some() {
+                anyhow::bail!(
+                    "llm-engine serve accepts only one of --snapshot or --snapshot-alias"
+                );
+            }
+            let snapshot_path = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
+                Some(std::path::PathBuf::from(snapshot_path))
+            } else if let Some(alias) = snapshot_alias {
+                let snapshot = ModelStore::new(&model_home_for_records)
+                    .resolve_snapshot_alias(alias)
+                    .await?;
+                Some(snapshot.path)
+            } else {
+                None
+            };
+            let router = if let Some(snapshot_path) = snapshot_path {
+                let model_id = flag_value(&serve_args, "--model-id")
+                    .or(snapshot_alias)
+                    .unwrap_or("local-qwen36");
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
                     .map(str::parse::<u32>)
                     .transpose()?
@@ -89,10 +108,19 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     MlxBackendOptions::default().endpoint
                 };
+                let loader = flag_value(&serve_args, "--loader")
+                    .or_else(|| flag_value(&serve_args, "--backend"))
+                    .map(SnapshotBackendLoader::parse)
+                    .transpose()?;
+                let family = flag_value(&serve_args, "--family")
+                    .map(parse_snapshot_model_family)
+                    .transpose()?;
                 let backend = open_snapshot_backend(
                     model_id,
                     &snapshot_path,
                     SnapshotBackendOptions {
+                        loader,
+                        family,
                         native_qwen: NativeQwenLoadOptions {
                             eager_materialize_shards: has_flag(
                                 &serve_args,
@@ -106,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
                         },
                         mlx: MlxBackendOptions {
                             endpoint: mlx_endpoint,
+                            ..MlxBackendOptions::default()
                         },
                         max_new_tokens,
                         max_prefill_tokens,
@@ -157,7 +186,12 @@ Usage: llm-engine serve [OPTIONS]
 Options:
   --addr <host:port>                         Listen address [default: 127.0.0.1:3000]
   --snapshot <path>                          Native Qwen snapshot path
+  --snapshot-alias <alias>                   Resolve snapshot path from the model store
+  --model-alias <alias>                      Alias for --snapshot-alias
   --model-id <id>                            Served model id [default: local-qwen36]
+  --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
+  --backend <native-metal|mlx>               Alias for --loader
+  --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
   --deterministic-test-backend               Use deterministic protocol backend
   --max-new-tokens <n>                       Native Qwen maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens

@@ -11,6 +11,15 @@ generation options.
 | --- | --- | --- |
 | `HF_TOKEN` | `model plan`, `model pull` | Hugging Face bearer token for gated or private repositories. Anonymous access is used when unset. |
 | `LLM_MODEL_HOME` | `model list`, `model pull` | Model store root when `--model-home` is not passed. Defaults to `.llm-models`. |
+| `LLM_ENGINE_SNAPSHOT` | `mise run run-inference` | Raw snapshot path to serve. Mutually exclusive with `LLM_ENGINE_SNAPSHOT_ALIAS`. |
+| `LLM_ENGINE_SNAPSHOT_ALIAS` | `mise run run-inference` | Model-store alias to resolve and serve. |
+| `LLM_ENGINE_LOADER` | `mise run run-inference` | Optional raw snapshot loader override such as `mlx`. |
+| `LLM_ENGINE_FAMILY` | `mise run run-inference` | Optional raw snapshot family override such as `qwen`. |
+| `LLM_ENGINE_MODEL` | `mise run run-inference` | Served model id. Defaults to the snapshot alias or `local-qwen36`. |
+| `LLM_ENGINE_ADDR` | `mise run run-inference` | Listen address. Defaults to `127.0.0.1:3000`. |
+| `LLM_ENGINE_MAX_NEW_TOKENS` | `mise run run-inference` | Generation cap passed to `--max-new-tokens`. Defaults to `256`. |
+| `LLM_ENGINE_MAX_PREFILL_TOKENS` | `mise run run-inference` | Native prefill chunk size passed to `--max-prefill-tokens`. Defaults to `32`. |
+| `MLX_LM_ENDPOINT` | `serve`, `mise run run-inference` | Loopback MLX sidecar `/v1` endpoint when `--mlx-endpoint` is omitted. |
 
 ## Workspace Tooling
 
@@ -28,7 +37,8 @@ Mise tasks:
 | `mise run test` | `cargo test --workspace` |
 | `mise run clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | `mise run check` | `fmt-check`, `test`, and `clippy` |
-| `mise run run` | `cargo run -p llm-engine -- serve --deterministic-test-backend` |
+| `mise run run` | Delegates to `mise run run-inference`; requires `LLM_ENGINE_SNAPSHOT` or `LLM_ENGINE_SNAPSHOT_ALIAS`. |
+| `mise run run-protocol` | `cargo run -p llm-engine -- serve --deterministic-test-backend` |
 
 ## Server Configuration
 
@@ -39,6 +49,9 @@ Mise tasks:
 | `--addr` | socket address | `127.0.0.1:3000` | Address bound by Axum. |
 | `--deterministic-test-backend` | boolean | unset | Enables deterministic protocol mode without model artifacts. |
 | `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--deterministic-test-backend`. |
+| `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
+| `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
+| `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
@@ -73,6 +86,7 @@ Built-in profiles:
 | Profile | Family | Loader | Quantisation |
 | --- | --- | --- | --- |
 | `gemma4-text-safetensors-bf16` | `gemma` | `mlx` | `bf16` |
+| `qwen35-4b-mlx-4bit` | `qwen` | `mlx` | `4bit` |
 | `qwen3-dense-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-mlx-4bit` | `qwen` | `mlx` | `4bit` |

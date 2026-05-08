@@ -176,7 +176,21 @@ fn serve_help_prints_without_backend_validation() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--addr"), "stdout: {stdout}");
     assert!(stdout.contains("--snapshot"), "stdout: {stdout}");
+    assert!(stdout.contains("--snapshot-alias"), "stdout: {stdout}");
+    assert!(stdout.contains("--model-alias"), "stdout: {stdout}");
     assert!(stdout.contains("--model-id"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("--loader <native-metal|mlx>"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("--backend <native-metal|mlx>"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("--family <qwen|deep_seek|gemma>"),
+        "stdout: {stdout}"
+    );
     assert!(
         stdout.contains("--deterministic-test-backend"),
         "stdout: {stdout}"
@@ -220,6 +234,32 @@ async fn serve_without_snapshot_requires_explicit_backend() {
     child.kill().expect("kill hanging serve");
     let _ = child.wait();
     panic!("serve bound the deterministic backend instead of failing without --snapshot");
+}
+
+#[tokio::test]
+async fn serve_with_missing_snapshot_alias_fails_before_binding() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--snapshot-alias",
+            "missing-model",
+            "--loader",
+            "mlx",
+            "--model-home",
+        ])
+        .arg(temp.path())
+        .output()
+        .expect("run serve with missing snapshot alias");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("model alias `missing-model`"),
+        "stderr: {stderr}"
+    );
 }
 
 #[tokio::test]

@@ -39,9 +39,7 @@ mise run check
 Start the deterministic protocol server:
 
 ```sh
-cargo run -p llm-engine -- serve \
-  --addr 127.0.0.1:3000 \
-  --deterministic-test-backend
+mise run run-protocol
 ```
 
 In another terminal, make a chat request:
@@ -107,6 +105,22 @@ mlx_lm.server --model "$SNAPSHOT"
 cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+Cached Hugging Face snapshots without a Kir manifest can be served through the
+same MLX path by selecting the loader and family explicitly. This is the
+practical path for small adaptive chat checks such as
+`mlx-community/Qwen3.5-4B-MLX-4bit`:
+
+```sh
+SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>"
+mlx_lm.server --model "$SNAPSHOT" --chat-template-args '{"enable_thinking":false}'
+cargo run -p llm-engine -- serve \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family qwen \
+  --model-id local-qwen35-4b \
   --mlx-endpoint http://127.0.0.1:8080/v1
 ```
 

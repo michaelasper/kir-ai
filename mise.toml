@@ -30,7 +30,51 @@ description = "Run nightly north-star gates with JSON and Markdown reports"
 run = "bash scripts/north-star-gates.sh nightly"
 
 [tasks.run]
-description = "Run the llm-engine server"
+description = "Run the llm-engine server with an inference-backed snapshot"
+run = "mise run run-inference"
+
+[tasks.run-inference]
+description = "Run the llm-engine server with LLM_ENGINE_SNAPSHOT or LLM_ENGINE_SNAPSHOT_ALIAS"
+run = """
+bash -lc '
+set -euo pipefail
+snapshot_args=()
+if [ -n "${LLM_ENGINE_SNAPSHOT:-}" ]; then
+  snapshot_args=(--snapshot "$LLM_ENGINE_SNAPSHOT")
+elif [ -n "${LLM_ENGINE_SNAPSHOT_ALIAS:-}" ]; then
+  snapshot_args=(--snapshot-alias "$LLM_ENGINE_SNAPSHOT_ALIAS")
+else
+  echo "LLM_ENGINE_SNAPSHOT or LLM_ENGINE_SNAPSHOT_ALIAS is required for inference serving" >&2
+  echo "Use: mise run run-protocol for the deterministic protocol backend" >&2
+  exit 2
+fi
+loader_args=()
+if [ -n "${LLM_ENGINE_LOADER:-}" ]; then
+  loader_args=(--loader "$LLM_ENGINE_LOADER")
+fi
+family_args=()
+if [ -n "${LLM_ENGINE_FAMILY:-}" ]; then
+  family_args=(--family "$LLM_ENGINE_FAMILY")
+fi
+mlx_args=()
+if [ -n "${MLX_LM_ENDPOINT:-}" ]; then
+  mlx_args=(--mlx-endpoint "$MLX_LM_ENDPOINT")
+fi
+model_id="${LLM_ENGINE_MODEL:-${LLM_ENGINE_SNAPSHOT_ALIAS:-local-qwen36}}"
+cargo run -p llm-engine -- serve \
+  --addr "${LLM_ENGINE_ADDR:-127.0.0.1:3000}" \
+  "${snapshot_args[@]}" \
+  --model-id "$model_id" \
+  "${loader_args[@]}" \
+  "${family_args[@]}" \
+  "${mlx_args[@]}" \
+  --max-new-tokens "${LLM_ENGINE_MAX_NEW_TOKENS:-256}" \
+  --max-prefill-tokens "${LLM_ENGINE_MAX_PREFILL_TOKENS:-32}"
+'
+"""
+
+[tasks.run-protocol]
+description = "Run the deterministic protocol backend for HTTP/client contract tests"
 run = "cargo run -p llm-engine -- serve --deterministic-test-backend"
 
 [tasks.bench-qwen-long-context-plan]

@@ -621,6 +621,45 @@ fn full_snapshot_paths_do_not_collide_across_profiles() {
     assert_ne!(store.snapshot_path(&mlx), store.snapshot_path(&native));
 }
 
+#[tokio::test]
+async fn resolves_snapshot_alias_and_checks_manifest_digest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let snapshot_path = write_verified_snapshot(
+        &store,
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen35_4b_mlx_4bit(),
+        chrono::Utc::now(),
+    )
+    .await;
+    store
+        .record_snapshot_alias("local-qwen35-4b", &snapshot_path)
+        .await
+        .expect("alias recorded");
+
+    let resolved = store
+        .resolve_snapshot_alias("local-qwen35-4b")
+        .await
+        .expect("alias resolves");
+
+    assert_eq!(resolved.path, snapshot_path);
+    assert_eq!(resolved.manifest.profile, "qwen35-4b-mlx-4bit");
+    assert_eq!(resolved.manifest.loader, "mlx");
+}
+
+#[tokio::test]
+async fn resolving_missing_snapshot_alias_fails_as_model_not_found() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+
+    let err = store
+        .resolve_snapshot_alias("missing-model")
+        .await
+        .expect_err("missing alias fails");
+
+    assert_eq!(err.code(), "model_not_found");
+}
+
 async fn write_verified_snapshot(
     store: &ModelStore,
     commit: &str,

@@ -492,6 +492,7 @@ impl ModelProfile {
     pub fn builtin(name: &str) -> Option<Self> {
         match name {
             "gemma4-text-safetensors-bf16" => Some(Self::gemma4_text_safetensors_bf16()),
+            "qwen35-4b-mlx-4bit" => Some(Self::qwen35_4b_mlx_4bit()),
             "qwen3-dense-safetensors-bf16" => Some(Self::qwen3_dense_safetensors_bf16()),
             "qwen36-mlx-4bit" => Some(Self::qwen36_mlx_4bit()),
             "qwen36-safetensors-bf16" => Some(Self::qwen36_safetensors_bf16()),
@@ -499,15 +500,12 @@ impl ModelProfile {
         }
     }
 
+    pub fn qwen35_4b_mlx_4bit() -> Self {
+        Self::qwen_mlx_4bit("qwen35-4b-mlx-4bit")
+    }
+
     pub fn qwen36_mlx_4bit() -> Self {
-        Self {
-            name: "qwen36-mlx-4bit".to_owned(),
-            family: "qwen".to_owned(),
-            loader: "mlx".to_owned(),
-            quantization: "4bit".to_owned(),
-            allow_patterns: qwen_static_and_safetensors_patterns(),
-            ignore_patterns: qwen_ignore_patterns(),
-        }
+        Self::qwen_mlx_4bit("qwen36-mlx-4bit")
     }
 
     pub fn qwen36_safetensors_bf16() -> Self {
@@ -540,6 +538,17 @@ impl ModelProfile {
             quantization: "bf16".to_owned(),
             allow_patterns: gemma_text_static_and_safetensors_patterns(),
             ignore_patterns: gemma_text_ignore_patterns(),
+        }
+    }
+
+    fn qwen_mlx_4bit(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            family: "qwen".to_owned(),
+            loader: "mlx".to_owned(),
+            quantization: "4bit".to_owned(),
+            allow_patterns: qwen_static_and_safetensors_patterns(),
+            ignore_patterns: qwen_ignore_patterns(),
         }
     }
 }
@@ -1124,6 +1133,41 @@ impl ModelStore {
             .await
             .map_err(HubError::io)?;
         Ok(record)
+    }
+
+    pub async fn resolve_snapshot_alias(&self, alias: &str) -> Result<PromotedSnapshot, HubError> {
+        validate_alias(alias)?;
+        let alias_path = self.aliases_root().join(alias_file_name(alias));
+        let bytes = tokio::fs::read(&alias_path).await.map_err(|err| {
+            if err.kind() == ErrorKind::NotFound {
+                HubError::model_not_found(format!("model alias `{alias}` was not found"))
+            } else {
+                HubError::io(err)
+            }
+        })?;
+        let record = serde_json::from_slice::<ModelAlias>(&bytes).map_err(|err| {
+            HubError::integrity_failed(format!(
+                "invalid model alias record `{}`: {err}",
+                alias_path.display()
+            ))
+        })?;
+        if record.alias != alias {
+            return Err(HubError::integrity_failed(format!(
+                "model alias record `{}` points at alias `{}` instead of `{alias}`",
+                alias_path.display(),
+                record.alias
+            )));
+        }
+        let snapshot = read_promoted_snapshot(record.snapshot_path).await?;
+        if let Some(expected_digest) = record.manifest_digest.as_deref()
+            && expected_digest != snapshot.manifest_digest
+        {
+            return Err(HubError::integrity_failed(format!(
+                "model alias `{alias}` manifest digest mismatch: alias recorded {expected_digest}, snapshot has {}",
+                snapshot.manifest_digest
+            )));
+        }
+        Ok(snapshot)
     }
 
     pub async fn list_aliases(&self) -> Result<Vec<ModelAlias>, HubError> {

@@ -42,7 +42,7 @@ impl ModelBackend for DeterministicBackend {
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata::new(self.model_id.clone(), "deterministic")
+        BackendModelMetadata::new(self.model_id.clone(), "deterministic").with_family("qwen")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {

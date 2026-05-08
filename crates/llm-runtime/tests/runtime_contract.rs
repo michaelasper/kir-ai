@@ -428,6 +428,22 @@ async fn chat_preserves_assistant_text_whitespace() {
 }
 
 #[tokio::test]
+async fn chat_rejects_missing_model_family_before_generation() {
+    let runtime = Runtime::new(FamilyMetadataBackend { family: None });
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("missing family should fail before generation");
+
+    assert!(err.to_string().contains("did not declare a model family"));
+}
+
+#[tokio::test]
 async fn chat_rejects_unsupported_model_family_before_generation() {
     let runtime = Runtime::new(FamilyMetadataBackend {
         family: Some("gemma".to_owned()),
@@ -1339,10 +1355,18 @@ struct FamilyMetadataBackend {
 
 struct MlxQwenMetadataBackend;
 
+fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
+    BackendModelMetadata::new(model_id, backend).with_family("qwen")
+}
+
 #[async_trait::async_trait]
 impl ModelBackend for RecordingBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "recording")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -1371,6 +1395,10 @@ impl ModelBackend for RecordingBackend {
 impl ModelBackend for RecordingSamplingBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "recording-sampling")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -1462,6 +1490,10 @@ impl ModelBackend for ReplayBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "replay")
+    }
+
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         if request.model != self.model_id() {
             return Err(BackendError::ModelNotFound {
@@ -1536,6 +1568,10 @@ impl ModelBackend for CancellableStreamBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cancellable-stream")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: "unused".to_owned(),
@@ -1577,6 +1613,10 @@ impl ModelBackend for CancellableGenerateBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cancellable-generate")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: "unused".to_owned(),
@@ -1606,6 +1646,10 @@ impl ModelBackend for CancellableGenerateBackend {
 impl ModelBackend for TwoChunkStreamBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "two-chunk-stream")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -1670,6 +1714,10 @@ impl ModelBackend for ToolBoundaryStreamBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "tool-boundary-stream")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::Other(
             "tool boundary streaming test must use generate_stream".to_owned(),
@@ -1727,6 +1775,10 @@ impl ModelBackend for BlockingTextBackend {
         "local-qwen36"
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "blocking-text")
+    }
+
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         self.release.notified().await;
         Ok(BackendOutput {
@@ -1750,6 +1802,10 @@ impl ModelBackend for BlockingTextBackend {
 impl ModelBackend for StopStreamingBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "stop-streaming")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {

@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine serve [--addr <host:port>] [--deterministic-test-backend | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine model <subcommand> ...
 ```
@@ -41,7 +41,10 @@ llm-engine serve \
 | `--addr <host:port>` | `127.0.0.1:3000` | Socket address to bind. |
 | `--deterministic-test-backend` | absent | Enables deterministic protocol mode without model artifacts. Intended for tests and client integration. |
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native Qwen; `loader: mlx` opens the loopback MLX sidecar backend. |
-| `--model-id <id>` | `local-qwen36` | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
+| `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
+| `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
+| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Fails if it conflicts with an existing manifest. |
+| `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Native Qwen prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
@@ -53,9 +56,11 @@ present. Implicit no-snapshot deterministic serving was removed.
 
 With a native-metal snapshot, the directory must contain `config.json`,
 `tokenizer.json`, `model.safetensors.index.json`, and all referenced shard
-files. With an MLX snapshot, the directory must include an
-`llm-engine-manifest.json` whose loader is `mlx`, and an `mlx_lm.server`
-sidecar must already be listening on the configured loopback endpoint.
+files. With an MLX snapshot promoted by `llm-engine model pull`, the directory
+must include an `llm-engine-manifest.json` whose loader is `mlx`, and an
+`mlx_lm.server` sidecar must already be listening on the configured loopback
+endpoint. Raw Hugging Face cache snapshots need both `--loader mlx` and
+`--family qwen` so chat rendering is selected from explicit model metadata.
 
 ## `bench qwen-long-context`
 
@@ -213,6 +218,7 @@ llm-engine model plan <repo> \
 Supported profiles:
 
 - `gemma4-text-safetensors-bf16`
+- `qwen35-4b-mlx-4bit`
 - `qwen3-dense-safetensors-bf16`
 - `qwen36-safetensors-bf16`
 - `qwen36-mlx-4bit`

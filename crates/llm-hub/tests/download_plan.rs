@@ -33,6 +33,17 @@ fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
 }
 
 #[test]
+fn qwen35_4b_mlx_profile_records_practical_chat_identity() {
+    let profile = ModelProfile::qwen35_4b_mlx_4bit();
+
+    assert_eq!(profile.name, "qwen35-4b-mlx-4bit");
+    assert_eq!(profile.family, "qwen");
+    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.quantization, "4bit");
+    assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+}
+
+#[test]
 fn qwen_bf16_profile_records_official_safetensors_identity() {
     let profile = ModelProfile::qwen36_safetensors_bf16();
 
@@ -119,6 +130,7 @@ fn gemma_text_profile_uses_deferred_mlx_loader_metadata() {
 fn builtin_profile_lookup_includes_all_supported_profiles() {
     for name in [
         "gemma4-text-safetensors-bf16",
+        "qwen35-4b-mlx-4bit",
         "qwen3-dense-safetensors-bf16",
         "qwen36-safetensors-bf16",
         "qwen36-mlx-4bit",

@@ -129,6 +129,11 @@ impl BackendModelMetadata {
             manifest_digest: None,
         }
     }
+
+    pub fn with_family(mut self, family: impl Into<String>) -> Self {
+        self.family = Some(family.into());
+        self
+    }
 }
 
 #[async_trait]
