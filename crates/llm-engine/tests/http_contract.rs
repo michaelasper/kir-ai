@@ -1891,6 +1891,66 @@ async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
 }
 
 #[tokio::test]
+async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
+    let first = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(TwoStageStreamBackend {
+        first: first.clone(),
+        finish: finish.clone(),
+    }));
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "lookup while explaining"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {"name": "lookup", "parameters": {}}
+                        }],
+                        "tool_choice": "auto",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        ),
+    )
+    .await
+    .expect("tool-capable stream response should not wait for backend completion")
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    first.notify_one();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(200), async {
+        while !seen.contains("\"content\":\"first\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first backend chunk is sent before final backend chunk");
+
+    finish.notify_one();
+    while let Some(chunk) = body.next().await {
+        seen.push_str(std::str::from_utf8(&chunk.expect("body chunk")).expect("utf8 sse"));
+    }
+    assert!(seen.contains("\"content\":\" second\""));
+    assert_eq!(seen.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn dropping_chat_stream_body_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
     let response = build_router_with_backend(Box::new(CancellableStreamBackend {

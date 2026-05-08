@@ -738,6 +738,18 @@ fn streaming_chat_stream<'a>(
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         };
+        for (index, tool_call) in parsed.tool_calls.iter().enumerate() {
+            let delta = tool_call_delta(index, tool_call)?;
+            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    tool_calls: vec![delta],
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+                None,
+            ));
+        }
         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
             &completion,
             ChatCompletionDelta::default(),
@@ -760,9 +772,7 @@ fn streaming_chat_stream<'a>(
 }
 
 pub fn chat_stream_requires_buffering(request: &ChatCompletionRequest) -> bool {
-    !request.tools.is_empty()
-        || !matches!(request.tool_choice, None | Some(ToolChoice::Auto))
-        || matches!(request.response_format, Some(ResponseFormat::JsonObject))
+    matches!(request.response_format, Some(ResponseFormat::JsonObject))
 }
 
 fn empty_usage() -> Usage {
