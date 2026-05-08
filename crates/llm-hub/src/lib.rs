@@ -308,6 +308,14 @@ impl HubClient {
                 "download for `{path}` returned HTTP {status}"
             )));
         }
+        let append_partial = existing_len > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+        let expected_response_len = expected_download_response_len(
+            path,
+            status,
+            response.headers(),
+            existing_len,
+            expected_size,
+        )?;
         let mut file = if existing_len > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
             tokio::fs::OpenOptions::new()
                 .append(true)
@@ -320,6 +328,7 @@ impl HubClient {
                 .map_err(HubError::io)?
         };
         let mut stream = response.bytes_stream();
+        let mut written_len = 0_u64;
         while let Some(chunk) = time::timeout(self.timeouts.read, stream.next())
             .await
             .map_err(|_| {
@@ -330,9 +339,20 @@ impl HubClient {
             })?
         {
             let chunk = chunk.map_err(HubError::network)?;
+            written_len = written_len.checked_add(chunk.len() as u64).ok_or_else(|| {
+                HubError::integrity_failed(format!(
+                    "downloaded `{path}` response body length overflowed u64"
+                ))
+            })?;
             file.write_all(&chunk).await.map_err(HubError::io)?;
         }
         file.flush().await.map_err(HubError::io)?;
+        if written_len != expected_response_len {
+            let mode = if append_partial { "resumed" } else { "full" };
+            return Err(HubError::integrity_failed(format!(
+                "{mode} download for `{path}` wrote {written_len} bytes, expected {expected_response_len}"
+            )));
+        }
         let final_len = tokio::fs::metadata(destination)
             .await
             .map_err(HubError::io)?
@@ -345,6 +365,76 @@ impl HubClient {
         verify_file_sha256(destination, expected_sha256).await?;
         Ok(())
     }
+}
+
+fn expected_download_response_len(
+    path: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    existing_len: u64,
+    expected_size: u64,
+) -> Result<u64, HubError> {
+    if status != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Ok(expected_size);
+    }
+    if existing_len == 0 {
+        return Err(HubError::integrity_failed(format!(
+            "download for `{path}` returned unexpected HTTP 206 Partial Content without a resume request"
+        )));
+    }
+    validate_resume_content_range(path, headers, existing_len, expected_size)?;
+    expected_size.checked_sub(existing_len).ok_or_else(|| {
+        HubError::integrity_failed(format!(
+            "resume offset {existing_len} exceeds expected size {expected_size} for `{path}`"
+        ))
+    })
+}
+
+fn validate_resume_content_range(
+    path: &str,
+    headers: &reqwest::header::HeaderMap,
+    existing_len: u64,
+    expected_size: u64,
+) -> Result<(), HubError> {
+    let value = headers
+        .get(reqwest::header::CONTENT_RANGE)
+        .ok_or_else(|| {
+            HubError::integrity_failed(format!(
+                "resumed download for `{path}` returned HTTP 206 without Content-Range"
+            ))
+        })?
+        .to_str()
+        .map_err(|err| {
+            HubError::integrity_failed(format!(
+                "resumed download for `{path}` returned invalid Content-Range header: {err}"
+            ))
+        })?;
+    let (start, end, total) = parse_content_range(value).ok_or_else(|| {
+        HubError::integrity_failed(format!(
+            "resumed download for `{path}` returned unsupported Content-Range `{value}`"
+        ))
+    })?;
+    let expected_end = expected_size.checked_sub(1).ok_or_else(|| {
+        HubError::integrity_failed(format!(
+            "resumed download for `{path}` has zero expected size"
+        ))
+    })?;
+    if start != existing_len || end != expected_end || total != expected_size {
+        return Err(HubError::integrity_failed(format!(
+            "resumed download for `{path}` returned Content-Range `{value}`, expected bytes {existing_len}-{expected_end}/{expected_size}"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse().ok()?;
+    let end = end.parse().ok()?;
+    let total = total.parse().ok()?;
+    (start <= end).then_some((start, end, total))
 }
 
 fn build_http_client(timeouts: HubTimeouts) -> reqwest::Client {
@@ -1226,5 +1316,169 @@ fn artifact_order(class: ArtifactClass) -> u8 {
         ArtifactClass::Weights => 3,
         ArtifactClass::License => 4,
         ArtifactClass::Other => 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    #[tokio::test]
+    async fn resumed_download_rejects_missing_content_range_even_when_size_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("config.json");
+        tokio::fs::write(&destination, "ab")
+            .await
+            .expect("partial file");
+        let (endpoint, server) = spawn_test_hub_server(|mut stream| {
+            let request = read_http_request(&mut stream);
+            assert!(
+                request.to_ascii_lowercase().contains("range: bytes=2-"),
+                "request: {request}"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\ncdef"
+            )
+            .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let repo_id = test_repo_id();
+
+        let err = client
+            .download_file_to(test_download_request(&repo_id, &destination, 6))
+            .await
+            .expect_err("missing content-range fails closed");
+
+        assert_eq!(err.code(), "model_integrity_failed");
+        assert!(err.to_string().contains("Content-Range"), "err: {err}");
+        server.join().expect("server exits");
+    }
+
+    #[tokio::test]
+    async fn resumed_download_rejects_wrong_content_range_start_even_when_size_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("config.json");
+        tokio::fs::write(&destination, "ab")
+            .await
+            .expect("partial file");
+        let (endpoint, server) = spawn_test_hub_server(|mut stream| {
+            let request = read_http_request(&mut stream);
+            assert!(
+                request.to_ascii_lowercase().contains("range: bytes=2-"),
+                "request: {request}"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/6\r\nContent-Length: 4\r\nConnection: close\r\n\r\ncdef"
+            )
+            .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let repo_id = test_repo_id();
+
+        let err = client
+            .download_file_to(test_download_request(&repo_id, &destination, 6))
+            .await
+            .expect_err("wrong content-range start fails closed");
+
+        assert_eq!(err.code(), "model_integrity_failed");
+        assert!(err.to_string().contains("Content-Range"), "err: {err}");
+        server.join().expect("server exits");
+    }
+
+    #[tokio::test]
+    async fn resumed_download_accepts_matching_content_range() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("config.json");
+        tokio::fs::write(&destination, "ab")
+            .await
+            .expect("partial file");
+        let (endpoint, server) = spawn_test_hub_server(|mut stream| {
+            let request = read_http_request(&mut stream);
+            assert!(
+                request.to_ascii_lowercase().contains("range: bytes=2-"),
+                "request: {request}"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 2-5/6\r\nContent-Length: 4\r\nConnection: close\r\n\r\ncdef"
+            )
+            .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let repo_id = test_repo_id();
+
+        client
+            .download_file_to(test_download_request(&repo_id, &destination, 6))
+            .await
+            .expect("matching content-range resumes");
+
+        let bytes = tokio::fs::read(&destination)
+            .await
+            .expect("read destination");
+        assert_eq!(bytes, b"abcdef");
+        server.join().expect("server exits");
+    }
+
+    fn test_repo_id() -> HubRepoId {
+        HubRepoId {
+            repo_type: RepoType::Model,
+            id: "Qwen/Qwen3.6-35B-A3B".to_owned(),
+        }
+    }
+
+    fn test_download_request<'a>(
+        repo_id: &'a HubRepoId,
+        destination: &'a Path,
+        expected_size: u64,
+    ) -> HubDownloadFileRequest<'a> {
+        HubDownloadFileRequest {
+            repo_id,
+            resolved_commit: "0123456789abcdef0123456789abcdef01234567",
+            path: "config.json",
+            destination,
+            expected_size,
+            expected_sha256: None,
+            token: None,
+        }
+    }
+
+    fn test_timeouts() -> HubTimeouts {
+        HubTimeouts {
+            connect: Duration::from_millis(100),
+            request: Duration::from_secs(2),
+            read: Duration::from_secs(2),
+        }
+    }
+
+    fn spawn_test_hub_server(
+        handler: impl FnOnce(std::net::TcpStream) + Send + 'static,
+    ) -> (Url, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let endpoint = Url::parse(&format!(
+            "http://{}",
+            listener.local_addr().expect("local addr")
+        ))
+        .expect("endpoint URL");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handler(stream);
+        });
+        (endpoint, server)
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut buffer = [0_u8; 4096];
+        let read = stream.read(&mut buffer).expect("read request");
+        String::from_utf8_lossy(&buffer[..read]).into_owned()
     }
 }
