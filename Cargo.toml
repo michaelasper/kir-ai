@@ -1,0 +1,48 @@
+[workspace]
+members = [
+  "crates/llm-api",
+  "crates/llm-backend",
+  "crates/llm-engine",
+  "crates/llm-hub",
+  "crates/llm-kv-cache",
+  "crates/llm-metal",
+  "crates/llm-models",
+  "crates/llm-runtime",
+  "crates/llm-sampler",
+  "crates/llm-telemetry",
+  "crates/llm-tokenizer",
+  "crates/llm-tool-parser",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+async-stream = "0.3.6"
+async-trait = "0.1.89"
+axum = { version = "0.8.7", features = ["json", "macros", "tokio"] }
+bytes = "1.11.0"
+chrono = { version = "0.4.42", features = ["serde"] }
+futures = "0.3.31"
+hex = "0.4.3"
+indexmap = { version = "2.12.1", features = ["serde"] }
+metal = "0.33.0"
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
+schemars = { version = "1.1.0", features = ["chrono04", "uuid1"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = "0.1.17"
+tokio-util = "0.7.17"
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+tower-http = { version = "0.6.7", features = ["trace"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+url = "2.5.7"
+uuid = { version = "1.19.0", features = ["serde", "v4", "v7"] }

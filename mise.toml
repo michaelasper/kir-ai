@@ -1,0 +1,26 @@
+[tools]
+rust = "1.95.0"
+
+[tasks.fmt]
+description = "Format the Rust workspace"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check Rust formatting"
+run = "cargo fmt --all --check"
+
+[tasks.test]
+description = "Run all Rust tests"
+run = "cargo test --workspace"
+
+[tasks.clippy]
+description = "Run strict Rust lints"
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+
+[tasks.check]
+description = "Run formatting, tests, and clippy"
+depends = ["fmt-check", "test", "clippy"]
+
+[tasks.run]
+description = "Run the llm-engine server"
+run = "cargo run -p llm-engine -- serve"

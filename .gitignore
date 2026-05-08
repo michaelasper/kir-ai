@@ -1,0 +1,5 @@
+/target/
+/.mise.local.toml
+*.log
+*.trace.jsonl
+*.tmp
