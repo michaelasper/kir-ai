@@ -736,6 +736,7 @@ fn qwen_moe_forward_accumulation_uses_configured_backend() {
             .expect("recording moe");
 
     assert_close(&output, &expected, 1e-6);
+    assert_eq!(matvec.range_bf16_calls.get(), 3);
     assert_eq!(matvec.weighted_sum_calls.get(), 2);
     std::fs::remove_dir_all(root).ok();
 }
@@ -2118,6 +2119,7 @@ struct RecordingMatvecBackend {
     single_bf16_calls: Cell<usize>,
     batched_bf16_calls: Cell<usize>,
     rows_bf16_calls: Cell<usize>,
+    range_bf16_calls: Cell<usize>,
     top_k_bf16_calls: Cell<usize>,
     dense_f32_calls: Cell<usize>,
     rms_norm_calls: Cell<usize>,
@@ -2160,6 +2162,26 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
     ) -> Result<Vec<f32>, TensorLoadError> {
         self.rows_bf16_calls.set(self.rows_bf16_calls.get() + 1);
         CpuQwenMatvecBackend.bf16_matvec_rows_f32(store, tensor, input, chunk_rows)
+    }
+
+    fn bf16_matvec_range_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        self.range_bf16_calls.set(self.range_bf16_calls.get() + 1);
+        CpuQwenMatvecBackend.bf16_matvec_range_row_major_f32(
+            store,
+            tensor,
+            element_offset,
+            rows,
+            columns,
+            input,
+        )
     }
 
     fn bf16_matvec_top_k_rows_f32(

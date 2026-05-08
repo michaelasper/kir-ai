@@ -712,6 +712,29 @@ pub trait QwenMatvecBackend {
         store.bf16_matvec_rows_f32(tensor, input, chunk_rows)
     }
 
+    fn bf16_matvec_range_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        if input.len() != columns {
+            return Err(TensorLoadError::integrity(format!(
+                "BF16 range matvec input length {} must match columns {columns}",
+                input.len()
+            )));
+        }
+        let element_count = rows
+            .checked_mul(columns)
+            .ok_or_else(|| TensorLoadError::integrity("BF16 range matvec shape overflow"))?;
+        let weights = store.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+        self.matvec_row_major_f32(input, &weights, rows, columns)
+            .map_err(|err| TensorLoadError::integrity(format!("BF16 range matvec failed: {err}")))
+    }
+
     fn bf16_matvec_top_k_rows_f32(
         &self,
         store: &SafeTensorShardStore,
@@ -3542,6 +3565,12 @@ pub fn qwen_layer_moe_forward_with_matvec(
         .hidden_size
         .checked_mul(dims.moe_intermediate_size)
         .ok_or_else(|| TensorLoadError::integrity("Qwen expert down shape overflow"))?;
+    let split = dims
+        .moe_intermediate_size
+        .checked_mul(dims.hidden_size)
+        .ok_or_else(|| TensorLoadError::integrity("Qwen expert split shape overflow"))?;
+    let gate_up_tensor = qwen_mlp_tensor(layer_idx, "experts.gate_up_proj");
+    let down_tensor = qwen_mlp_tensor(layer_idx, "experts.down_proj");
     for selected in &router.selected {
         if selected.index >= dims.num_experts {
             return Err(TensorLoadError::integrity(format!(
@@ -3549,31 +3578,57 @@ pub fn qwen_layer_moe_forward_with_matvec(
                 selected.index, dims.num_experts
             )));
         }
-        let gate_up = store.bf16_tensor_f32_range(
-            &qwen_mlp_tensor(layer_idx, "experts.gate_up_proj"),
-            selected.index * gate_up_expert_elements,
-            gate_up_expert_elements,
-        )?;
-        let split = dims
-            .moe_intermediate_size
-            .checked_mul(dims.hidden_size)
-            .ok_or_else(|| TensorLoadError::integrity("Qwen expert split shape overflow"))?;
-        let down = store.bf16_tensor_f32_range(
-            &qwen_mlp_tensor(layer_idx, "experts.down_proj"),
-            selected.index * down_expert_elements,
-            down_expert_elements,
-        )?;
-        let expert_output = swiglu_mlp_f32_with_matvec(
-            hidden_states,
-            &gate_up[..split],
-            &gate_up[split..],
-            &down,
-            dims.moe_intermediate_size,
-            matvec,
-        )
-        .map_err(|err| {
-            TensorLoadError::integrity(format!("Qwen selected expert MLP failed: {err}"))
-        })?;
+        let gate_up_offset = selected
+            .index
+            .checked_mul(gate_up_expert_elements)
+            .ok_or_else(|| TensorLoadError::integrity("Qwen expert gate/up offset overflow"))?;
+        let gate = matvec
+            .bf16_matvec_range_row_major_f32(
+                store,
+                &gate_up_tensor,
+                gate_up_offset,
+                dims.moe_intermediate_size,
+                dims.hidden_size,
+                hidden_states,
+            )
+            .map_err(|err| {
+                TensorLoadError::integrity(format!("Qwen selected expert gate failed: {err}"))
+            })?;
+        let up = matvec
+            .bf16_matvec_range_row_major_f32(
+                store,
+                &gate_up_tensor,
+                gate_up_offset
+                    .checked_add(split)
+                    .ok_or_else(|| TensorLoadError::integrity("Qwen expert up offset overflow"))?,
+                dims.moe_intermediate_size,
+                dims.hidden_size,
+                hidden_states,
+            )
+            .map_err(|err| {
+                TensorLoadError::integrity(format!("Qwen selected expert up failed: {err}"))
+            })?;
+        let activated = gate
+            .iter()
+            .zip(up)
+            .map(|(gate, up)| silu_f32(*gate) * up)
+            .collect::<Vec<_>>();
+        let down_offset = selected
+            .index
+            .checked_mul(down_expert_elements)
+            .ok_or_else(|| TensorLoadError::integrity("Qwen expert down offset overflow"))?;
+        let expert_output = matvec
+            .bf16_matvec_range_row_major_f32(
+                store,
+                &down_tensor,
+                down_offset,
+                dims.hidden_size,
+                dims.moe_intermediate_size,
+                &activated,
+            )
+            .map_err(|err| {
+                TensorLoadError::integrity(format!("Qwen selected expert down failed: {err}"))
+            })?;
         selected_outputs.extend_from_slice(&expert_output);
         selected_weights.push(selected.weight);
     }

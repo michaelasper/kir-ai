@@ -1084,6 +1084,78 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
         Ok(output)
     }
 
+    fn bf16_matvec_range_row_major_f32(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Result<Vec<f32>, TensorLoadError> {
+        let Self::Metal(state) = self else {
+            return Self::cpu().bf16_matvec_range_row_major_f32(
+                store,
+                tensor,
+                element_offset,
+                rows,
+                columns,
+                input,
+            );
+        };
+        if input.len() != columns {
+            Self::record_metal_fallback(
+                "matvec_bf16_f32",
+                format!(
+                    "tensor={tensor},offset={element_offset},rows={rows},cols={columns},input_len={}",
+                    input.len()
+                ),
+                "BF16 range input width mismatch",
+            );
+            return Self::cpu().bf16_matvec_range_row_major_f32(
+                store,
+                tensor,
+                element_offset,
+                rows,
+                columns,
+                input,
+            );
+        }
+        let matrix = match state.bf16_matrix_buffer(store, tensor, element_offset, rows, columns) {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "matvec_bf16_f32",
+                    format!("tensor={tensor},offset={element_offset},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Self::cpu().bf16_matvec_range_row_major_f32(
+                    store,
+                    tensor,
+                    element_offset,
+                    rows,
+                    columns,
+                    input,
+                );
+            }
+        };
+        Self::run_metal_tensor(
+            "matvec_bf16_f32",
+            format!("tensor={tensor},offset={element_offset},rows={rows},cols={columns}"),
+            || state.device.matvec_bf16_f32_buffered(&matrix, input),
+            || {
+                Self::cpu().bf16_matvec_range_row_major_f32(
+                    store,
+                    tensor,
+                    element_offset,
+                    rows,
+                    columns,
+                    input,
+                )
+            },
+        )
+    }
+
     fn bf16_matvec_top_k_rows_f32(
         &self,
         store: &SafeTensorShardStore,
