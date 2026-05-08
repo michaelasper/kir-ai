@@ -25,8 +25,14 @@ pub struct HubRepoId {
 impl HubRepoId {
     pub fn model(id: impl Into<String>) -> Result<Self, HubError> {
         let id = id.into();
-        if !id.contains('/') || id.starts_with('/') || id.ends_with('/') {
+        let Some((namespace, name)) = id.split_once('/') else {
             return Err(HubError::invalid_request("repo id must be org/name"));
+        };
+        if name.contains('/') || !is_safe_repo_component(namespace) || !is_safe_repo_component(name)
+        {
+            return Err(HubError::invalid_request(
+                "repo id must be exactly two safe path components",
+            ));
         }
         Ok(Self {
             repo_type: RepoType::Model,
@@ -37,6 +43,21 @@ impl HubRepoId {
     pub fn as_str(&self) -> &str {
         &self.id
     }
+
+    fn components(&self) -> (&str, &str) {
+        self.id
+            .split_once('/')
+            .expect("HubRepoId is validated as two components")
+    }
+}
+
+fn is_safe_repo_component(component: &str) -> bool {
+    !component.is_empty()
+        && component != "."
+        && component != ".."
+        && component
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +133,20 @@ impl HubModelInfo {
     }
 }
 
+fn set_hub_path<'a>(
+    url: &mut Url,
+    segments: impl IntoIterator<Item = &'a str>,
+) -> Result<(), HubError> {
+    let mut path_segments = url
+        .path_segments_mut()
+        .map_err(|_| HubError::invalid_request("Hub endpoint must be hierarchical"))?;
+    path_segments.clear();
+    for segment in segments {
+        path_segments.push(segment);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct HubClient {
     endpoint: Url,
@@ -162,11 +197,11 @@ impl HubClient {
         token: Option<&str>,
     ) -> Result<HubModelInfo, HubError> {
         let mut url = self.endpoint.clone();
-        url.set_path(&format!(
-            "/api/models/{}/revision/{}",
-            repo_id.as_str(),
-            revision
-        ));
+        let (namespace, name) = repo_id.components();
+        set_hub_path(
+            &mut url,
+            ["api", "models", namespace, name, "revision", revision],
+        )?;
         let mut request = self
             .client
             .get(url)
@@ -244,12 +279,21 @@ impl HubClient {
             Err(err) => return Err(HubError::io(err)),
         };
         let mut url = self.endpoint.clone();
-        url.set_path(&format!(
-            "/{}/resolve/{}/{}",
-            repo_id.as_str(),
-            resolved_commit,
-            path
-        ));
+        let (namespace, name) = repo_id.components();
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| HubError::invalid_request("Hub endpoint must be hierarchical"))?;
+            segments
+                .clear()
+                .push(namespace)
+                .push(name)
+                .push("resolve")
+                .push(resolved_commit);
+            for component in path.split('/') {
+                segments.push(component);
+            }
+        }
         let mut request = self.client.get(url);
         if let Some(token) = token {
             request = request.bearer_auth(token);

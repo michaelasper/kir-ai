@@ -43,6 +43,21 @@ fn qwen_bf16_profile_records_official_safetensors_identity() {
 }
 
 #[test]
+fn repo_id_rejects_ambiguous_or_unsafe_components() {
+    for repo_id in [
+        "Qwen//Qwen3.6-35B-A3B",
+        "Qwen/../Qwen3.6-35B-A3B",
+        "Qwen/./Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-35B-A3B/extra",
+        "Qwen/Qwen3.6-35B-A3B\n",
+    ] {
+        let err = HubRepoId::model(repo_id).expect_err("unsafe repo id fails closed");
+
+        assert_eq!(err.code(), "invalid_request");
+    }
+}
+
+#[test]
 fn plan_rejects_mutable_revision_without_resolved_commit() {
     let err = build_download_plan(
         HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),

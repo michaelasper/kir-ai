@@ -32,6 +32,42 @@ async fn model_info_returns_network_error_when_request_times_out() {
 }
 
 #[tokio::test]
+async fn model_info_encodes_revision_as_path_segment() {
+    let (endpoint, server) = spawn_stalling_http_server(|mut stream| {
+        let mut buffer = [0_u8; 2048];
+        let read = stream.read(&mut buffer).expect("read request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        if request.starts_with(
+            "GET /api/models/Qwen/Qwen3.6-35B-A3B/revision/refs%2Fpr%2F1?blobs=true&securityStatus=true ",
+        ) {
+            write_http_response(
+                &mut stream,
+                "200 OK",
+                r#"{"id":"Qwen/Qwen3.6-35B-A3B","sha":"0123456789abcdef0123456789abcdef01234567","siblings":[]}"#,
+            );
+        } else {
+            write_http_response(&mut stream, "400 Bad Request", r#"{"error":"bad path"}"#);
+        }
+    });
+    let client = HubClient::with_timeouts(endpoint, short_timeouts());
+
+    let info = client
+        .model_info(
+            &HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+            "refs/pr/1",
+            None,
+        )
+        .await
+        .expect("revision slash is encoded");
+
+    assert_eq!(
+        info.resolved_commit,
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    server.join().expect("server exits");
+}
+
+#[tokio::test]
 async fn pull_plan_returns_network_error_when_download_body_stalls() {
     let (endpoint, server) = spawn_stalling_http_server(|mut stream| {
         let mut buffer = [0_u8; 1024];
@@ -116,4 +152,14 @@ fn spawn_stalling_http_server(
         handler(stream);
     });
     (endpoint, server)
+}
+
+fn write_http_response(stream: &mut std::net::TcpStream, status: &str, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write response");
+    stream.flush().expect("flush response");
 }
