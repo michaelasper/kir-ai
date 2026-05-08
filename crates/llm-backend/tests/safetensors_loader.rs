@@ -969,6 +969,49 @@ fn qwen_full_attention_step_with_cache_uses_indexed_weights() {
 }
 
 #[test]
+fn qwen_full_attention_sequence_with_cache_appends_to_existing_cache_chunk() {
+    let root = temp_snapshot_dir("qwen-full-attn-cache-chunk");
+    write_tiny_full_attention_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+    let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    let expected_output = qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("full cached sequence");
+    let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states[..2],
+        &mut cache,
+    )
+    .expect("initial cached chunk");
+
+    let output = qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states[2..],
+        &mut cache,
+    )
+    .expect("second cached chunk");
+
+    assert_eq!(output.len(), 1);
+    assert_close(&output[0], &expected_output[2], 1e-6);
+    assert_eq!(cache.token_count(), 3);
+    assert_close(cache.keys(), expected_cache.keys(), 1e-6);
+    assert_close(cache.values(), expected_cache.values(), 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_full_attention_normalization_uses_configured_matvec_backend() {
     let root = temp_snapshot_dir("qwen-full-attn-custom-norm");
     write_tiny_full_attention_snapshot(&root);
@@ -1932,6 +1975,32 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
         qwen_decode_token_with_cache(&store, &spec, 0, &mut caches).expect("cached token decode");
 
     assert_close(&output, &expected[2], 1e-5);
+    match &caches[0] {
+        QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+        QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+    }
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
+    let root = temp_snapshot_dir("qwen-linear-prefill-cache-chunk");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let mut expected_caches = qwen_layer_caches_for_spec(&spec, 3).expect("expected caches");
+    let expected =
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1, 0], &mut expected_caches)
+            .expect("full cached prefill");
+    let mut caches = qwen_layer_caches_for_spec(&spec, 3).expect("layer caches");
+    qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .expect("initial cached chunk");
+
+    let output =
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0], &mut caches).expect("second chunk");
+
+    assert_eq!(output.len(), 1);
+    assert_close(&output[0], &expected[2], 1e-5);
     match &caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),

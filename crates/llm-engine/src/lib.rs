@@ -1321,6 +1321,7 @@ impl NativeQwenBackend {
             context_tokens,
             &mut caches,
             &self.matvec,
+            self.max_prefill_tokens,
             cancellation,
         )?;
         Ok(NativeQwenDecodeSession { hidden, caches })
@@ -1384,21 +1385,26 @@ fn native_qwen_prefill_context_with_cache(
     context_tokens: &[usize],
     caches: &mut [QwenLayerCache],
     matvec: &impl QwenMatvecBackend,
+    prefill_chunk_tokens: usize,
     cancellation: &CancellationToken,
 ) -> Result<Vec<f32>, BackendError> {
     if cancellation.is_cancelled() {
         return Err(BackendError::Cancelled);
     }
-    let hidden_states =
-        qwen_prefill_sequence_with_cache_with_matvec(store, spec, context_tokens, caches, matvec)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-    if cancellation.is_cancelled() {
-        return Err(BackendError::Cancelled);
+    let mut hidden = None;
+    for chunk in context_tokens.chunks(prefill_chunk_tokens.max(1)) {
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        let hidden_states =
+            qwen_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        hidden = hidden_states.last().cloned();
     }
-    hidden_states
-        .last()
-        .cloned()
-        .ok_or_else(|| BackendError::Other("Qwen prefill returned no hidden states".to_owned()))
+    hidden.ok_or_else(|| BackendError::Other("Qwen prefill returned no hidden states".to_owned()))
 }
 
 struct NativeQwenDecodeSession {
@@ -2714,6 +2720,7 @@ mod tests {
             &[0, 1, 0],
             &mut caches,
             &NativeQwenMatvecBackend::Cpu,
+            1,
             &CancellationToken::new(),
         )
         .expect("sequence prefill succeeds");
@@ -2721,6 +2728,40 @@ mod tests {
         assert_eq!(hidden.len(), 2);
         match &caches[0] {
             QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+            QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
+        let snapshot = temp_snapshot_dir("sequence-prefill-cancel");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_linear_decoder_snapshot(&snapshot);
+        let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+        let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
+        let cancellation = CancellationToken::new();
+        let matvec = CancelAfterFirstConv {
+            cancellation: cancellation.clone(),
+            conv_calls: std::cell::Cell::new(0),
+        };
+
+        let err = native_qwen_prefill_context_with_cache(
+            &store,
+            &spec,
+            &[0, 1, 0],
+            &mut caches,
+            &matvec,
+            1,
+            &cancellation,
+        )
+        .expect_err("cancelled after first chunk");
+
+        assert!(matches!(err, BackendError::Cancelled));
+        match &caches[0] {
+            QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 1),
             QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
         }
         std::fs::remove_dir_all(snapshot).ok();
@@ -3179,6 +3220,32 @@ mod tests {
             max_position_embeddings: 32,
             vocab_size: 2,
             layer_kinds: vec![kind],
+        }
+    }
+
+    struct CancelAfterFirstConv {
+        cancellation: CancellationToken,
+        conv_calls: std::cell::Cell<usize>,
+    }
+
+    impl QwenMatvecBackend for CancelAfterFirstConv {
+        fn linear_attention_conv1d_silu_f32(
+            &self,
+            window: &[f32],
+            weights: &[f32],
+            conv_dim: usize,
+            kernel_size: usize,
+        ) -> Result<Vec<f32>, MathError> {
+            self.conv_calls.set(self.conv_calls.get() + 1);
+            if self.conv_calls.get() == 1 {
+                self.cancellation.cancel();
+            }
+            CpuQwenMatvecBackend.linear_attention_conv1d_silu_f32(
+                window,
+                weights,
+                conv_dim,
+                kernel_size,
+            )
         }
     }
 

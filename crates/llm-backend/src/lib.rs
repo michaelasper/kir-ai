@@ -1413,11 +1413,6 @@ pub fn qwen_linear_attention_sequence_with_cache_from_parts_with_matvec(
     cache: &mut LinearAttentionCache,
     matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, MathError> {
-    if cache.token_count() != 0 {
-        return Err(MathError::InvalidShape(
-            "Qwen linear attention prefill cache must be empty".to_owned(),
-        ));
-    }
     qwen_linear_attention_sequence_from_parts_impl(dims, parts, Some(cache), matvec)
 }
 
@@ -1867,11 +1862,6 @@ pub fn qwen_full_attention_sequence_with_cache_from_parts_with_matvec(
     cache: &mut LayerKvCache,
     matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, MathError> {
-    if cache.token_count() != 0 {
-        return Err(MathError::InvalidShape(
-            "Qwen full attention prefill cache must be empty".to_owned(),
-        ));
-    }
     qwen_full_attention_sequence_from_parts_impl(dims, parts, config, Some(cache), matvec)
 }
 
@@ -2090,10 +2080,14 @@ fn qwen_full_attention_sequence_from_parts_impl(
         )));
     }
 
+    let position_offset = cache.as_deref().map_or(0, LayerKvCache::next_position);
     let mut queries = vec![vec![0.0; attention_dim]; seq_len];
     let mut gates = vec![vec![0.0; attention_dim]; seq_len];
     let mut keys = vec![vec![0.0; key_value_dim]; seq_len];
     for token_idx in 0..seq_len {
+        let position = position_offset
+            .checked_add(token_idx)
+            .ok_or_else(|| MathError::InvalidShape("Qwen RoPE position overflow".to_owned()))?;
         require_len("q projection", q_proj[token_idx].len(), attention_dim * 2)?;
         require_len("k projection", k_proj[token_idx].len(), key_value_dim)?;
         require_len("v projection", v_proj[token_idx].len(), key_value_dim)?;
@@ -2113,7 +2107,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
             );
             apply_rope_to_head(
                 &mut queries[token_idx][q_start..q_start + dims.head_dim],
-                token_idx,
+                position,
                 rotary_dim,
                 config.rope_theta,
             );
@@ -2128,7 +2122,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
             keys[token_idx][head_start..head_start + dims.head_dim].copy_from_slice(&key);
             apply_rope_to_head(
                 &mut keys[token_idx][head_start..head_start + dims.head_dim],
-                token_idx,
+                position,
                 rotary_dim,
                 config.rope_theta,
             );
