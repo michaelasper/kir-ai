@@ -64,6 +64,53 @@ impl RequestMetrics {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerMetrics {
+    requests_total: u64,
+    successful_requests: u64,
+    failed_requests: u64,
+    streamed_requests: u64,
+    tokens: TokenCounters,
+}
+
+impl ServerMetrics {
+    pub fn record_success(&mut self, tokens: TokenCounters, streamed: bool) {
+        self.requests_total += 1;
+        self.successful_requests += 1;
+        if streamed {
+            self.streamed_requests += 1;
+        }
+        self.tokens.record_prompt_tokens(tokens.prompt_tokens());
+        self.tokens
+            .record_completion_tokens(tokens.completion_tokens());
+    }
+
+    pub fn record_failure(&mut self) {
+        self.requests_total += 1;
+        self.failed_requests += 1;
+    }
+
+    pub fn requests_total(&self) -> u64 {
+        self.requests_total
+    }
+
+    pub fn successful_requests(&self) -> u64 {
+        self.successful_requests
+    }
+
+    pub fn failed_requests(&self) -> u64 {
+        self.failed_requests
+    }
+
+    pub fn streamed_requests(&self) -> u64 {
+        self.streamed_requests
+    }
+
+    pub fn tokens(&self) -> TokenCounters {
+        self.tokens
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +136,20 @@ mod tests {
 
         assert_eq!(metrics.model(), "local-qwen36");
         assert_eq!(metrics.tokens(), TokenCounters::new(4, 1));
+    }
+
+    #[test]
+    fn server_metrics_tracks_success_failure_streams_and_tokens() {
+        let mut metrics = ServerMetrics::default();
+
+        metrics.record_success(TokenCounters::new(4, 1), false);
+        metrics.record_success(TokenCounters::new(8, 2), true);
+        metrics.record_failure();
+
+        assert_eq!(metrics.requests_total(), 3);
+        assert_eq!(metrics.successful_requests(), 2);
+        assert_eq!(metrics.failed_requests(), 1);
+        assert_eq!(metrics.streamed_requests(), 1);
+        assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
     }
 }

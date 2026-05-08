@@ -77,7 +77,10 @@ where
         if include_usage {
             chunks.push(completion_stream_usage_chunk(&completion));
         }
-        Ok(CompletionStream { chunks })
+        Ok(CompletionStream {
+            chunks,
+            usage: completion.usage,
+        })
     }
 
     pub async fn chat(
@@ -155,7 +158,10 @@ where
         if include_usage {
             chunks.push(stream_usage_chunk(&completion));
         }
-        Ok(ChatCompletionStream { chunks })
+        Ok(ChatCompletionStream {
+            chunks,
+            usage: completion.usage,
+        })
     }
 
     async fn complete_chat(
@@ -261,11 +267,13 @@ where
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatCompletionStream {
     pub chunks: Vec<ChatCompletionStreamResponse>,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionStream {
     pub chunks: Vec<CompletionStreamResponse>,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq)]

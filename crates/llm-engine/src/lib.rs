@@ -10,7 +10,9 @@ use axum::{
     routing::get,
 };
 use futures::stream;
-use llm_api::{ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList};
+use llm_api::{
+    ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
+};
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
     ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
@@ -18,12 +20,13 @@ use llm_backend::{
 use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
+use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::{Value, json};
 use std::{
     convert::Infallible,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
@@ -31,6 +34,7 @@ type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<EngineRuntime>,
+    metrics: Arc<Mutex<ServerMetrics>>,
 }
 
 pub fn build_router() -> Router {
@@ -47,6 +51,7 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
         .route("/v1/models", get(models))
         .route("/admin/models", get(admin_models))
         .route("/admin/models/{alias}", get(admin_model))
+        .route("/admin/metrics", get(admin_metrics))
         .route(
             "/v1/chat/completions",
             axum::routing::post(chat_completions),
@@ -54,6 +59,7 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
         .route("/v1/completions", axum::routing::post(completions))
         .with_state(AppState {
             runtime: Arc::new(runtime),
+            metrics: Arc::new(Mutex::new(ServerMetrics::default())),
         })
 }
 
@@ -299,22 +305,56 @@ fn native_qwen_metadata(
     Ok(metadata)
 }
 
+async fn admin_metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let metrics = *state.metrics.lock().expect("metrics lock is not poisoned");
+    let tokens = metrics.tokens();
+    Json(json!({
+        "requests_total": metrics.requests_total(),
+        "successful_requests": metrics.successful_requests(),
+        "failed_requests": metrics.failed_requests(),
+        "streamed_requests": metrics.streamed_requests(),
+        "tokens": {
+            "prompt_tokens": tokens.prompt_tokens(),
+            "completion_tokens": tokens.completion_tokens(),
+            "total_tokens": tokens.total_tokens(),
+        }
+    }))
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, EngineError> {
+    let streamed = request.stream;
     if request.stream {
-        let response = state.runtime.chat_stream(request).await?;
+        let response = match state.runtime.chat_stream(request).await {
+            Ok(response) => response,
+            Err(err) => {
+                record_failure_metrics(&state);
+                return Err(err.into());
+            }
+        };
+        record_success_metrics(&state, &response.usage, streamed);
         let mut events: Vec<Result<Event, Infallible>> =
             Vec::with_capacity(response.chunks.len() + 1);
         for chunk in response.chunks {
-            let data = serde_json::to_string(&chunk).map_err(EngineError::Serialize)?;
+            let data = serde_json::to_string(&chunk).map_err(|err| {
+                record_failure_metrics(&state);
+                EngineError::Serialize(err)
+            })?;
             events.push(Ok(Event::default().data(data)));
         }
         events.push(Ok(Event::default().data("[DONE]")));
         return Ok(Sse::new(stream::iter(events)).into_response());
     }
-    let response = state.runtime.chat(request).await?;
+    let response = match state.runtime.chat(request).await {
+        Ok(response) => response,
+        Err(err) => {
+            record_failure_metrics(&state);
+            return Err(err.into());
+        }
+    };
+    record_success_metrics(&state, &response.usage, streamed);
     Ok(Json(response).into_response())
 }
 
@@ -322,19 +362,56 @@ async fn completions(
     State(state): State<AppState>,
     Json(request): Json<CompletionRequest>,
 ) -> Result<Response, EngineError> {
+    let streamed = request.stream;
     if request.stream {
-        let response = state.runtime.completion_stream(request).await?;
+        let response = match state.runtime.completion_stream(request).await {
+            Ok(response) => response,
+            Err(err) => {
+                record_failure_metrics(&state);
+                return Err(err.into());
+            }
+        };
+        record_success_metrics(&state, &response.usage, streamed);
         let mut events: Vec<Result<Event, Infallible>> =
             Vec::with_capacity(response.chunks.len() + 1);
         for chunk in response.chunks {
-            let data = serde_json::to_string(&chunk).map_err(EngineError::Serialize)?;
+            let data = serde_json::to_string(&chunk).map_err(|err| {
+                record_failure_metrics(&state);
+                EngineError::Serialize(err)
+            })?;
             events.push(Ok(Event::default().data(data)));
         }
         events.push(Ok(Event::default().data("[DONE]")));
         return Ok(Sse::new(stream::iter(events)).into_response());
     }
-    let response = state.runtime.completion(request).await?;
+    let response = match state.runtime.completion(request).await {
+        Ok(response) => response,
+        Err(err) => {
+            record_failure_metrics(&state);
+            return Err(err.into());
+        }
+    };
+    record_success_metrics(&state, &response.usage, streamed);
     Ok(Json(response).into_response())
+}
+
+fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_success(
+            TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
+            streamed,
+        );
+}
+
+fn record_failure_metrics(state: &AppState) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_failure();
 }
 
 #[derive(Debug)]

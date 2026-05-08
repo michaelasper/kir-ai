@@ -131,6 +131,51 @@ async fn admin_model_endpoint_uses_stable_missing_model_error() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_inference_counts_and_tokens() {
+    let app = build_router();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["requests_total"], 1);
+    assert_eq!(body["successful_requests"], 1);
+    assert_eq!(body["failed_requests"], 0);
+    assert_eq!(body["streamed_requests"], 0);
+    assert_eq!(body["tokens"]["prompt_tokens"], 1);
+    assert_eq!(body["tokens"]["completion_tokens"], 5);
+    assert_eq!(body["tokens"]["total_tokens"], 6);
+}
+
+#[tokio::test]
 async fn chat_completions_returns_openai_shape() {
     let response = build_router()
         .oneshot(
