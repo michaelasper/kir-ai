@@ -114,6 +114,40 @@ fn metal_linear_attention_recurrent_update_f32_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_linear_attention_recurrent_update_state_f32_reuses_state_buffer() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let state = device
+        .new_f32_buffer(&[100.0, 200.0, 1.0, 2.0, 3.0, 4.0, 300.0])
+        .expect("state buffer uploads");
+
+    let output = device
+        .linear_attention_recurrent_update_f32_buffered_state(
+            &state,
+            2,
+            &[0.5, -1.0],
+            &[10.0, 20.0],
+            &[1.0, 2.0],
+            0.25,
+            0.5,
+            2,
+            2,
+        )
+        .expect("buffered recurrent update succeeds");
+    let full_state = device.read_f32_buffer(&state).expect("state buffer reads");
+
+    assert_close(&output, &[1.625, 3.25, -0.75, -2.5], 1e-6);
+    assert_close(
+        &full_state,
+        &[100.0, 200.0, 1.625, 3.25, -0.75, -2.5, 300.0],
+        1e-6,
+    );
+}
+
+#[test]
 fn metal_select_head_rows_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
@@ -125,6 +159,26 @@ fn metal_select_head_rows_f32_matches_cpu_reference() {
         .select_head_rows_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 2, 4, 1, 2)
         .expect("metal head row selection succeeds");
 
+    assert_close(&output, &[2.0, 3.0, 6.0, 7.0], 1e-6);
+}
+
+#[test]
+fn metal_select_head_rows_f32_reuses_value_buffer() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let values = device
+        .new_f32_buffer(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+        .expect("values buffer uploads");
+
+    let output = device
+        .select_head_rows_f32_buffered(&values, 2, 4, 1, 2)
+        .expect("buffered head row selection succeeds");
+
+    assert_eq!(values.len(), 8);
+    assert_eq!(values.byte_len(), 32);
     assert_close(&output, &[2.0, 3.0, 6.0, 7.0], 1e-6);
 }
 

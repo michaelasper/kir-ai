@@ -4,7 +4,7 @@ use futures::{
     stream::{self, BoxStream},
 };
 use llm_api::{FinishReason, ToolDefinition};
-use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
+pub use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
@@ -1059,6 +1059,63 @@ pub trait QwenMatvecBackend {
         select_head_rows_f32(values, row_count, row_len, head_start, head_len)
     }
 
+    fn select_kv_cache_head_rows_f32(
+        &self,
+        cache: &LayerKvCache,
+        tensor: QwenKvCacheTensor,
+        row_count: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        let values = match tensor {
+            QwenKvCacheTensor::Key => cache.keys(),
+            QwenKvCacheTensor::Value => cache.values(),
+        };
+        self.select_head_rows_f32(values, row_count, cache.vector_len(), head_start, head_len)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attention_recurrent_cache_update_f32(
+        &self,
+        cache: &LinearAttentionCache,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        let state_len = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
+            MathError::InvalidShape(
+                "linear attention recurrent cache state shape overflows usize".to_owned(),
+            )
+        })?;
+        let state_end = state_start.checked_add(state_len).ok_or_else(|| {
+            MathError::InvalidShape(
+                "linear attention recurrent cache state offset overflows usize".to_owned(),
+            )
+        })?;
+        let recurrent_state = cache.recurrent_state();
+        if state_end > recurrent_state.len() {
+            return Err(MathError::InvalidShape(format!(
+                "linear attention recurrent cache state range {state_start}..{state_end} exceeds state length {}",
+                recurrent_state.len()
+            )));
+        }
+        self.linear_attention_recurrent_update_f32(
+            &recurrent_state[state_start..state_end],
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+        )
+    }
+
     fn softmax_top_k_f32(
         &self,
         logits: &[f32],
@@ -1066,6 +1123,12 @@ pub trait QwenMatvecBackend {
     ) -> Result<Vec<TopKWeight>, MathError> {
         softmax_top_k_f32(logits, top_k)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QwenKvCacheTensor {
+    Key,
+    Value,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1863,17 +1926,40 @@ fn qwen_linear_attention_sequence_from_parts_impl(
 
             let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
             let state_end = state_start + dims.key_head_dim * dims.value_head_dim;
-            let decayed_state = matvec.linear_attention_recurrent_update_f32(
-                &recurrent_state[state_start..state_end],
-                &key_head_values,
-                &value[value_start..value_start + dims.value_head_dim],
-                &zero_memory,
-                0.0,
-                decay,
-                dims.key_head_dim,
-                dims.value_head_dim,
-            )?;
+            let decayed_state = if let Some(cache) = cache.as_ref() {
+                matvec.linear_attention_recurrent_cache_update_f32(
+                    cache,
+                    state_start,
+                    &key_head_values,
+                    &value[value_start..value_start + dims.value_head_dim],
+                    &zero_memory,
+                    0.0,
+                    decay,
+                    dims.key_head_dim,
+                    dims.value_head_dim,
+                )?
+            } else {
+                matvec.linear_attention_recurrent_update_f32(
+                    &recurrent_state[state_start..state_end],
+                    &key_head_values,
+                    &value[value_start..value_start + dims.value_head_dim],
+                    &zero_memory,
+                    0.0,
+                    decay,
+                    dims.key_head_dim,
+                    dims.value_head_dim,
+                )?
+            };
             recurrent_state[state_start..state_end].copy_from_slice(&decayed_state);
+            if let Some(cache) = cache.as_mut() {
+                cache
+                    .replace_recurrent_state_range(state_start, &decayed_state)
+                    .map_err(|err| {
+                        MathError::InvalidShape(format!(
+                            "linear attention cache update failed: {err}"
+                        ))
+                    })?;
+            }
 
             copy_linear_attention_value_major_state_rows(
                 &recurrent_state,
@@ -1889,17 +1975,40 @@ fn qwen_linear_attention_sequence_from_parts_impl(
                 dims.key_head_dim,
             )?;
 
-            let updated_state = matvec.linear_attention_recurrent_update_f32(
-                &recurrent_state[state_start..state_end],
-                &key_head_values,
-                &value[value_start..value_start + dims.value_head_dim],
-                &memory,
-                beta,
-                1.0,
-                dims.key_head_dim,
-                dims.value_head_dim,
-            )?;
+            let updated_state = if let Some(cache) = cache.as_ref() {
+                matvec.linear_attention_recurrent_cache_update_f32(
+                    cache,
+                    state_start,
+                    &key_head_values,
+                    &value[value_start..value_start + dims.value_head_dim],
+                    &memory,
+                    beta,
+                    1.0,
+                    dims.key_head_dim,
+                    dims.value_head_dim,
+                )?
+            } else {
+                matvec.linear_attention_recurrent_update_f32(
+                    &recurrent_state[state_start..state_end],
+                    &key_head_values,
+                    &value[value_start..value_start + dims.value_head_dim],
+                    &memory,
+                    beta,
+                    1.0,
+                    dims.key_head_dim,
+                    dims.value_head_dim,
+                )?
+            };
             recurrent_state[state_start..state_end].copy_from_slice(&updated_state);
+            if let Some(cache) = cache.as_mut() {
+                cache
+                    .replace_recurrent_state_range(state_start, &updated_state)
+                    .map_err(|err| {
+                        MathError::InvalidShape(format!(
+                            "linear attention cache update failed: {err}"
+                        ))
+                    })?;
+            }
 
             copy_linear_attention_value_major_state_rows(
                 &recurrent_state,
@@ -1927,14 +2036,6 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             dims.hidden_size,
             value_dim,
         )?);
-    }
-
-    if let Some(cache) = cache {
-        cache
-            .replace_recurrent_state(&recurrent_state)
-            .map_err(|err| {
-                MathError::InvalidShape(format!("linear attention cache update failed: {err}"))
-            })?;
     }
 
     Ok(outputs)
@@ -2243,10 +2344,10 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
         let q_start = head * dims.head_dim;
         let kv_start = kv_head * dims.head_dim;
         let token_count = cache.token_count();
-        let key_rows = matvec.select_head_rows_f32(
-            cache.keys(),
+        let key_rows = matvec.select_kv_cache_head_rows_f32(
+            cache,
+            QwenKvCacheTensor::Key,
             token_count,
-            cache.vector_len(),
             kv_start,
             dims.head_dim,
         )?;
@@ -2258,10 +2359,10 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
             matvec,
         )?;
         let weights = matvec.softmax_f32(&scores)?;
-        let value_rows = matvec.select_head_rows_f32(
-            cache.values(),
+        let value_rows = matvec.select_kv_cache_head_rows_f32(
+            cache,
+            QwenKvCacheTensor::Value,
             token_count,
-            cache.vector_len(),
             kv_start,
             dims.head_dim,
         )?;
@@ -2405,10 +2506,10 @@ fn qwen_full_attention_sequence_from_parts_impl(
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
             let key_rows = if let Some(cache) = cache.as_deref() {
-                matvec.select_head_rows_f32(
-                    cache.keys(),
+                matvec.select_kv_cache_head_rows_f32(
+                    cache,
+                    QwenKvCacheTensor::Key,
                     source_count,
-                    cache.vector_len(),
                     kv_start,
                     dims.head_dim,
                 )?
@@ -2428,10 +2529,10 @@ fn qwen_full_attention_sequence_from_parts_impl(
             )?;
             let weights = matvec.softmax_f32(&scores)?;
             let value_rows = if let Some(cache) = cache.as_deref() {
-                matvec.select_head_rows_f32(
-                    cache.values(),
+                matvec.select_kv_cache_head_rows_f32(
+                    cache,
+                    QwenKvCacheTensor::Value,
                     source_count,
-                    cache.vector_len(),
                     kv_start,
                     dims.head_dim,
                 )?

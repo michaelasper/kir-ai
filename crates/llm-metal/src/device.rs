@@ -15,6 +15,7 @@ pub struct MetalDevice {
     linear_attention_conv1d_silu_f32: Arc<MetalKernel>,
     weighted_sum_f32: Arc<MetalKernel>,
     linear_attention_recurrent_update_f32: Arc<MetalKernel>,
+    linear_attention_recurrent_update_state_f32: Arc<MetalKernel>,
     select_head_rows_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
@@ -87,6 +88,27 @@ impl Bf16MatrixBuffer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct F32Buffer {
+    buffer: Option<Buffer>,
+    len: usize,
+    byte_len: usize,
+}
+
+impl F32Buffer {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.byte_len
+    }
+}
+
 impl MetalDevice {
     pub fn system_default() -> Option<Self> {
         Self::system_default_result().ok().flatten()
@@ -112,6 +134,11 @@ impl MetalDevice {
         let weighted_sum_f32 = Self::kernel(&device, &library, "weighted_sum_f32")?;
         let linear_attention_recurrent_update_f32 =
             Self::kernel(&device, &library, "linear_attention_recurrent_update_f32")?;
+        let linear_attention_recurrent_update_state_f32 = Self::kernel(
+            &device,
+            &library,
+            "linear_attention_recurrent_update_state_f32",
+        )?;
         let select_head_rows_f32 = Self::kernel(&device, &library, "select_head_rows_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
@@ -126,6 +153,7 @@ impl MetalDevice {
             linear_attention_conv1d_silu_f32,
             weighted_sum_f32,
             linear_attention_recurrent_update_f32,
+            linear_attention_recurrent_update_state_f32,
             select_head_rows_f32,
             matvec_f32,
             matvec_bf16_f32,
@@ -148,6 +176,89 @@ impl MetalDevice {
             .map_err(|err| MetalError::Pipeline(format!("{err:?}")))?;
         let queue = device.new_command_queue();
         Ok(Arc::new(MetalKernel { pipeline, queue }))
+    }
+
+    pub fn new_f32_buffer(&self, values: &[f32]) -> Result<F32Buffer, MetalError> {
+        let byte_len = std::mem::size_of_val(values);
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(self.device.new_buffer_with_data(
+                values.as_ptr().cast::<c_void>(),
+                byte_len as u64,
+                MTLResourceOptions::StorageModeShared,
+            ))
+        };
+        Ok(F32Buffer {
+            buffer,
+            len: values.len(),
+            byte_len,
+        })
+    }
+
+    pub fn write_f32_buffer(&self, buffer: &F32Buffer, values: &[f32]) -> Result<(), MetalError> {
+        if values.len() != buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "f32 buffer write length {} does not match buffer length {}",
+                values.len(),
+                buffer.len
+            )));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f32 buffer write requires a Metal buffer".to_owned(),
+            ));
+        };
+        // SAFETY: metal_buffer was allocated with byte_len bytes for len f32
+        // values. The caller provides exactly len f32 values above, and both
+        // pointers remain valid for the duration of this copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                metal_buffer.contents().cast::<f32>(),
+                values.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn read_f32_buffer(&self, buffer: &F32Buffer) -> Result<Vec<f32>, MetalError> {
+        self.read_f32_buffer_range(buffer, 0, buffer.len)
+    }
+
+    pub fn read_f32_buffer_range(
+        &self,
+        buffer: &F32Buffer,
+        start: usize,
+        len: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        let end = start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("f32 buffer read range overflows usize".to_owned())
+        })?;
+        if end > buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "f32 buffer read range {start}..{end} exceeds buffer length {}",
+                buffer.len
+            )));
+        }
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f32 buffer read requires a Metal buffer".to_owned(),
+            ));
+        };
+        // SAFETY: the requested range is bounds-checked above against the f32
+        // length used to allocate the StorageModeShared buffer.
+        let values = unsafe {
+            let ptr = metal_buffer.contents().cast::<f32>().add(start);
+            std::slice::from_raw_parts(ptr, len).to_vec()
+        };
+        Ok(values)
     }
 
     pub fn add_f32(&self, left: &[f32], right: &[f32]) -> Result<Vec<f32>, MetalError> {
@@ -683,6 +794,159 @@ impl MetalDevice {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn linear_attention_recurrent_update_f32_buffered_state(
+        &self,
+        state: &F32Buffer,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        if key_head_dim == 0 || value_head_dim == 0 {
+            return Err(MetalError::InvalidShape(
+                "linear attention recurrent update dimensions must be non-zero".to_owned(),
+            ));
+        }
+        let element_count = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "linear attention recurrent update shape overflows usize".to_owned(),
+            )
+        })?;
+        let state_end = state_start.checked_add(element_count).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "linear attention recurrent state range overflows usize".to_owned(),
+            )
+        })?;
+        if state_end > state.len {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent state range {state_start}..{state_end} exceeds state length {}",
+                state.len
+            )));
+        }
+        if key.len() != key_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent key length {} does not match key_head_dim {key_head_dim}",
+                key.len()
+            )));
+        }
+        if value.len() != value_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent value length {} does not match value_head_dim {value_head_dim}",
+                value.len()
+            )));
+        }
+        if memory.len() != value_head_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "linear attention recurrent memory length {} does not match value_head_dim {value_head_dim}",
+                memory.len()
+            )));
+        }
+        if element_count == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(state_buffer) = state.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty recurrent update requires a state buffer".to_owned(),
+            ));
+        };
+        let state_start_u32 = u32::try_from(state_start).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "linear attention recurrent state start does not fit u32: {err}"
+            ))
+        })?;
+        let value_head_dim_u32 = u32::try_from(value_head_dim).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "linear attention recurrent value head dimension does not fit u32: {err}"
+            ))
+        })?;
+        let element_count_u32 = u32::try_from(element_count).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "linear attention recurrent element count does not fit u32: {err}"
+            ))
+        })?;
+        let key_byte_len = std::mem::size_of_val(key) as u64;
+        let value_byte_len = std::mem::size_of_val(value) as u64;
+        let key_buffer = self.device.new_buffer_with_data(
+            key.as_ptr().cast::<c_void>(),
+            key_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let value_buffer = self.device.new_buffer_with_data(
+            value.as_ptr().cast::<c_void>(),
+            value_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let memory_buffer = self.device.new_buffer_with_data(
+            memory.as_ptr().cast::<c_void>(),
+            value_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self
+            .linear_attention_recurrent_update_state_f32
+            .queue
+            .new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder
+            .set_compute_pipeline_state(&self.linear_attention_recurrent_update_state_f32.pipeline);
+        encoder.set_buffer(0, Some(state_buffer), 0);
+        encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&state_start_u32) as u64,
+            (&state_start_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(2, Some(&key_buffer), 0);
+        encoder.set_buffer(3, Some(&value_buffer), 0);
+        encoder.set_buffer(4, Some(&memory_buffer), 0);
+        encoder.set_bytes(
+            5,
+            std::mem::size_of_val(&beta) as u64,
+            (&beta as *const f32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            6,
+            std::mem::size_of_val(&decay) as u64,
+            (&decay as *const f32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            7,
+            std::mem::size_of_val(&value_head_dim_u32) as u64,
+            (&value_head_dim_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            8,
+            std::mem::size_of_val(&element_count_u32) as u64,
+            (&element_count_u32 as *const u32).cast::<c_void>(),
+        );
+        let threads = MTLSize {
+            width: element_count as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .linear_attention_recurrent_update_state_f32
+            .pipeline
+            .thread_execution_width()
+            .min(element_count as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        finish_command_buffer(
+            command_buffer,
+            "linear_attention_recurrent_update_state_f32",
+        )?;
+        self.read_f32_buffer_range(state, state_start, element_count)
+    }
+
     pub fn select_head_rows_f32(
         &self,
         values: &[f32],
@@ -691,13 +955,25 @@ impl MetalDevice {
         head_start: usize,
         head_len: usize,
     ) -> Result<Vec<f32>, MetalError> {
+        let values_buffer = self.new_f32_buffer(values)?;
+        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len)
+    }
+
+    pub fn select_head_rows_f32_buffered(
+        &self,
+        values: &F32Buffer,
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MetalError> {
         let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
             MetalError::InvalidShape("head row selection shape overflows usize".to_owned())
         })?;
-        if values.len() < used_len {
+        if values.len < used_len {
             return Err(MetalError::InvalidShape(format!(
                 "head row selection value length {} is shorter than row_count {row_count} * row_len {row_len}",
-                values.len()
+                values.len
             )));
         }
         let head_end = head_start.checked_add(head_len).ok_or_else(|| {
@@ -726,13 +1002,12 @@ impl MetalDevice {
         let output_len_u32 = u32::try_from(output_len).map_err(|err| {
             MetalError::InvalidShape(format!("head row output length does not fit u32: {err}"))
         })?;
-        let values_byte_len = std::mem::size_of_val(values) as u64;
         let output_byte_len = (output_len * std::mem::size_of::<f32>()) as u64;
-        let values_buffer = self.device.new_buffer_with_data(
-            values.as_ptr().cast::<c_void>(),
-            values_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let Some(values_buffer) = values.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty head row selection requires a values buffer".to_owned(),
+            ));
+        };
         let output_buffer = self
             .device
             .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
@@ -740,7 +1015,7 @@ impl MetalDevice {
         let command_buffer = self.select_head_rows_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.select_head_rows_f32.pipeline);
-        encoder.set_buffer(0, Some(&values_buffer), 0);
+        encoder.set_buffer(0, Some(values_buffer), 0);
         encoder.set_bytes(
             1,
             std::mem::size_of_val(&row_len_u32) as u64,
@@ -1500,6 +1775,28 @@ kernel void linear_attention_recurrent_update_f32(
     uint value_index = index % value_head_dim;
     float delta = (value[value_index] - memory[value_index]) * beta;
     output[index] = (state[index] * decay) + (key[key_index] * delta);
+}
+
+kernel void linear_attention_recurrent_update_state_f32(
+    device float* state [[buffer(0)]],
+    constant uint& state_offset [[buffer(1)]],
+    device const float* key [[buffer(2)]],
+    device const float* value [[buffer(3)]],
+    device const float* memory [[buffer(4)]],
+    constant float& beta [[buffer(5)]],
+    constant float& decay [[buffer(6)]],
+    constant uint& value_head_dim [[buffer(7)]],
+    constant uint& element_count [[buffer(8)]],
+    uint index [[thread_position_in_grid]]
+) {
+    if (index >= element_count) {
+        return;
+    }
+    uint key_index = index / value_head_dim;
+    uint value_index = index % value_head_dim;
+    uint state_index = state_offset + index;
+    float delta = (value[value_index] - memory[value_index]) * beta;
+    state[state_index] = (state[state_index] * decay) + (key[key_index] * delta);
 }
 
 kernel void select_head_rows_f32(

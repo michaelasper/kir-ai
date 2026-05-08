@@ -466,6 +466,14 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         body["native_qwen_metal"]["bf16_matrix_cache"]["resident_bytes"].is_number(),
         "native Qwen Metal BF16 matrix cache residency is exposed"
     );
+    assert!(
+        body["native_qwen_metal"]["kv_cache"]["resident_bytes"].is_number(),
+        "native Qwen Metal KV cache residency is exposed"
+    );
+    assert!(
+        body["native_qwen_metal"]["linear_attention_cache"]["resident_bytes"].is_number(),
+        "native Qwen Metal linear cache residency is exposed"
+    );
 }
 
 #[tokio::test]

@@ -1,9 +1,9 @@
 use llm_backend::{
-    CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache, QwenMatvecBackend,
-    SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore, TensorLoadError,
-    TopKLogit, qwen_decode_token_with_cache, qwen_decode_token_with_cache_with_matvec,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_final_norm_with_matvec,
-    qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
+    CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenKvCacheTensor, QwenLayerCache,
+    QwenMatvecBackend, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
+    TensorLoadError, TopKLogit, qwen_decode_token_with_cache,
+    qwen_decode_token_with_cache_with_matvec, qwen_embedding_and_layer0_norm, qwen_final_norm,
+    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
     qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
     qwen_layer_full_attention_sequence_with_cache_with_matvec,
     qwen_layer_full_attention_step_with_cache,
@@ -1215,7 +1215,7 @@ fn qwen_full_attention_cache_rows_use_configured_matvec_backend() {
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
-    let after_prefill_head_row_calls = matvec.head_row_calls.get();
+    let after_prefill_head_row_calls = matvec.kv_cache_head_row_calls.get();
     let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
         &store,
         &spec,
@@ -1230,7 +1230,7 @@ fn qwen_full_attention_cache_rows_use_configured_matvec_backend() {
     assert_close(&output[1], &expected_output[1], 1e-6);
     assert_close(&decoded, &expected_output[2], 1e-6);
     assert_eq!(after_prefill_head_row_calls, 4);
-    assert_eq!(matvec.head_row_calls.get(), 6);
+    assert_eq!(matvec.kv_cache_head_row_calls.get(), 6);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -1667,7 +1667,7 @@ fn qwen_linear_attention_recurrent_decay_and_update_use_configured_backend() {
 
     assert_close(&output[0], &expected[0], 1e-6);
     assert_close(&output[1], &expected[1], 1e-6);
-    assert_eq!(matvec.recurrent_update_calls.get(), 4);
+    assert_eq!(matvec.recurrent_cache_update_calls.get(), 4);
     assert_close(
         cache.recurrent_state(),
         expected_cache.recurrent_state(),
@@ -2129,7 +2129,9 @@ struct RecordingMatvecBackend {
     softmax_top_k_calls: Cell<usize>,
     weighted_sum_calls: Cell<usize>,
     recurrent_update_calls: Cell<usize>,
+    recurrent_cache_update_calls: Cell<usize>,
     head_row_calls: Cell<usize>,
+    kv_cache_head_row_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -2285,6 +2287,33 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
         )
     }
 
+    fn linear_attention_recurrent_cache_update_f32(
+        &self,
+        cache: &LinearAttentionCache,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.recurrent_cache_update_calls
+            .set(self.recurrent_cache_update_calls.get() + 1);
+        CpuQwenMatvecBackend.linear_attention_recurrent_cache_update_f32(
+            cache,
+            state_start,
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+        )
+    }
+
     fn select_head_rows_f32(
         &self,
         values: &[f32],
@@ -2295,6 +2324,20 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         self.head_row_calls.set(self.head_row_calls.get() + 1);
         CpuQwenMatvecBackend.select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+    }
+
+    fn select_kv_cache_head_rows_f32(
+        &self,
+        cache: &LayerKvCache,
+        tensor: QwenKvCacheTensor,
+        row_count: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.kv_cache_head_row_calls
+            .set(self.kv_cache_head_row_calls.get() + 1);
+        CpuQwenMatvecBackend
+            .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len)
     }
 }
 

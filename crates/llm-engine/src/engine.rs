@@ -16,9 +16,10 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
-    QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
-    TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
+    CpuQwenMatvecBackend, DeterministicBackend, LayerKvCache, LinearAttentionCache, MathError,
+    ModelBackend, QwenKvCacheTensor, QwenLayerCache, QwenMatvecBackend, SafeTensorShardStore,
+    SamplingConfig, TensorLoadError, TopKLogit, TopKWeight,
+    qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
     qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
     qwen_prefill_sequence_with_cache_with_matvec,
 };
@@ -329,6 +330,21 @@ const DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024
 struct NativeQwenMetalState {
     device: llm_metal::MetalDevice,
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
+    kv_caches: Mutex<HashMap<u64, MetalLayerKvCacheMirror>>,
+    linear_caches: Mutex<HashMap<u64, MetalLinearAttentionCacheMirror>>,
+}
+
+#[derive(Debug)]
+struct MetalLayerKvCacheMirror {
+    keys: llm_metal::F32Buffer,
+    values: llm_metal::F32Buffer,
+    revision: u64,
+}
+
+#[derive(Debug)]
+struct MetalLinearAttentionCacheMirror {
+    recurrent_state: llm_metal::F32Buffer,
+    revision: u64,
 }
 
 type NativeQwenMetalStateRegistry =
@@ -506,6 +522,8 @@ impl NativeQwenMetalState {
         Self {
             device,
             bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(weight_cache_bytes)),
+            kv_caches: Mutex::new(HashMap::new()),
+            linear_caches: Mutex::new(HashMap::new()),
         }
     }
 
@@ -603,6 +621,226 @@ impl NativeQwenMetalState {
         }
         Ok(warmup)
     }
+
+    fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
+        let byte_len =
+            cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())?;
+        let mut caches = self
+            .kv_caches
+            .lock()
+            .expect("Metal KV cache mirror lock is not poisoned");
+        match caches.get_mut(&cache.id()) {
+            Some(mirror) if mirror.revision == cache.revision() => Ok(()),
+            Some(mirror) => {
+                self.device
+                    .write_f32_buffer(&mirror.keys, cache.key_storage())?;
+                self.device
+                    .write_f32_buffer(&mirror.values, cache.value_storage())?;
+                mirror.revision = cache.revision();
+                native_qwen_metal_metrics().record_kv_cache_sync(byte_len);
+                Ok(())
+            }
+            None => {
+                let keys = self.device.new_f32_buffer(cache.key_storage())?;
+                let values = self.device.new_f32_buffer(cache.value_storage())?;
+                caches.insert(
+                    cache.id(),
+                    MetalLayerKvCacheMirror {
+                        keys,
+                        values,
+                        revision: cache.revision(),
+                    },
+                );
+                native_qwen_metal_metrics().record_kv_cache_allocation(byte_len);
+                self.record_kv_cache_residency_locked(&caches);
+                Ok(())
+            }
+        }
+    }
+
+    fn select_kv_cache_head_rows(
+        &self,
+        cache: &LayerKvCache,
+        tensor: QwenKvCacheTensor,
+        row_count: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, llm_metal::MetalError> {
+        self.sync_kv_cache(cache)?;
+        let caches = self
+            .kv_caches
+            .lock()
+            .expect("Metal KV cache mirror lock is not poisoned");
+        let mirror = caches.get(&cache.id()).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "missing Metal KV cache mirror for cache {}",
+                cache.id()
+            ))
+        })?;
+        let values = match tensor {
+            QwenKvCacheTensor::Key => &mirror.keys,
+            QwenKvCacheTensor::Value => &mirror.values,
+        };
+        self.device.select_head_rows_f32_buffered(
+            values,
+            row_count,
+            cache.vector_len(),
+            head_start,
+            head_len,
+        )
+    }
+
+    fn sync_linear_cache(&self, cache: &LinearAttentionCache) -> Result<(), llm_metal::MetalError> {
+        let byte_len = cache_resident_byte_len(cache.recurrent_state().len())?;
+        let mut caches = self
+            .linear_caches
+            .lock()
+            .expect("Metal linear attention cache mirror lock is not poisoned");
+        match caches.get_mut(&cache.id()) {
+            Some(mirror) if mirror.revision == cache.revision() => Ok(()),
+            Some(mirror) => {
+                self.device
+                    .write_f32_buffer(&mirror.recurrent_state, cache.recurrent_state())?;
+                mirror.revision = cache.revision();
+                native_qwen_metal_metrics().record_linear_cache_sync(byte_len);
+                Ok(())
+            }
+            None => {
+                let recurrent_state = self.device.new_f32_buffer(cache.recurrent_state())?;
+                caches.insert(
+                    cache.id(),
+                    MetalLinearAttentionCacheMirror {
+                        recurrent_state,
+                        revision: cache.revision(),
+                    },
+                );
+                native_qwen_metal_metrics().record_linear_cache_allocation(byte_len);
+                self.record_linear_cache_residency_locked(&caches);
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attention_recurrent_cache_update(
+        &self,
+        cache: &LinearAttentionCache,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, llm_metal::MetalError> {
+        self.sync_linear_cache(cache)?;
+        let mut caches = self
+            .linear_caches
+            .lock()
+            .expect("Metal linear attention cache mirror lock is not poisoned");
+        let mirror = caches.get_mut(&cache.id()).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "missing Metal linear attention cache mirror for cache {}",
+                cache.id()
+            ))
+        })?;
+        let updated = self
+            .device
+            .linear_attention_recurrent_update_f32_buffered_state(
+                &mirror.recurrent_state,
+                state_start,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+            )?;
+        mirror.revision = cache.revision().saturating_add(1);
+        Ok(updated)
+    }
+
+    fn remove_cache_mirrors(&self, caches: &[QwenLayerCache]) {
+        let mut kv_removed = Vec::new();
+        let mut linear_removed = Vec::new();
+        for cache in caches {
+            match cache {
+                QwenLayerCache::Full(cache) => kv_removed.push(cache.id()),
+                QwenLayerCache::Linear(cache) => linear_removed.push(cache.id()),
+            }
+        }
+        if !kv_removed.is_empty() {
+            let mut mirrors = self
+                .kv_caches
+                .lock()
+                .expect("Metal KV cache mirror lock is not poisoned");
+            let mut bytes = 0_u64;
+            let mut count = 0_u64;
+            for id in kv_removed {
+                if let Some(mirror) = mirrors.remove(&id) {
+                    bytes = bytes
+                        .saturating_add((mirror.keys.byte_len() + mirror.values.byte_len()) as u64);
+                    count += 2;
+                }
+            }
+            if count > 0 {
+                native_qwen_metal_metrics().record_kv_cache_eviction(count, bytes);
+                self.record_kv_cache_residency_locked(&mirrors);
+            }
+        }
+        if !linear_removed.is_empty() {
+            let mut mirrors = self
+                .linear_caches
+                .lock()
+                .expect("Metal linear attention cache mirror lock is not poisoned");
+            let mut bytes = 0_u64;
+            let mut count = 0_u64;
+            for id in linear_removed {
+                if let Some(mirror) = mirrors.remove(&id) {
+                    bytes = bytes.saturating_add(mirror.recurrent_state.byte_len() as u64);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                native_qwen_metal_metrics().record_linear_cache_eviction(count, bytes);
+                self.record_linear_cache_residency_locked(&mirrors);
+            }
+        }
+    }
+
+    fn record_kv_cache_residency_locked(&self, caches: &HashMap<u64, MetalLayerKvCacheMirror>) {
+        let resident_bytes = caches
+            .values()
+            .map(|mirror| mirror.keys.byte_len() as u64 + mirror.values.byte_len() as u64)
+            .sum();
+        native_qwen_metal_metrics()
+            .record_kv_cache_residency(resident_bytes, caches.len() as u64 * 2);
+    }
+
+    fn record_linear_cache_residency_locked(
+        &self,
+        caches: &HashMap<u64, MetalLinearAttentionCacheMirror>,
+    ) {
+        let resident_bytes = caches
+            .values()
+            .map(|mirror| mirror.recurrent_state.byte_len() as u64)
+            .sum();
+        native_qwen_metal_metrics()
+            .record_linear_cache_residency(resident_bytes, caches.len() as u64);
+    }
+}
+
+fn cache_resident_byte_len(elements: usize) -> Result<u64, llm_metal::MetalError> {
+    elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .map(|bytes| bytes as u64)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal resident cache byte length overflows usize".to_owned(),
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -625,10 +863,23 @@ struct MetalBf16MatrixCacheCounters {
     budget_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MetalCacheCounters {
+    allocations: u64,
+    syncs: u64,
+    evictions: u64,
+    bytes_uploaded: u64,
+    bytes_evicted: u64,
+    resident_bytes: u64,
+    resident_buffers: u64,
+}
+
 #[derive(Debug, Default)]
 struct MetalBackendMetrics {
     counters: Mutex<HashMap<&'static str, MetalKernelCounters>>,
     bf16_matrix_cache: Mutex<MetalBf16MatrixCacheCounters>,
+    kv_cache: Mutex<MetalCacheCounters>,
+    linear_cache: Mutex<MetalCacheCounters>,
     warned_fallbacks: Mutex<HashSet<String>>,
 }
 
@@ -724,6 +975,62 @@ impl MetalBackendMetrics {
         cache.budget_bytes = budget_bytes;
     }
 
+    fn record_kv_cache_allocation(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.allocations += 1;
+            cache.bytes_uploaded += byte_len;
+        });
+    }
+
+    fn record_kv_cache_sync(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.syncs += 1;
+            cache.bytes_uploaded += byte_len;
+        });
+    }
+
+    fn record_kv_cache_eviction(&self, count: u64, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.evictions += count;
+            cache.bytes_evicted += byte_len;
+        });
+    }
+
+    fn record_kv_cache_residency(&self, resident_bytes: u64, resident_buffers: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.resident_bytes = resident_bytes;
+            cache.resident_buffers = resident_buffers;
+        });
+    }
+
+    fn record_linear_cache_allocation(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Linear, |cache| {
+            cache.allocations += 1;
+            cache.bytes_uploaded += byte_len;
+        });
+    }
+
+    fn record_linear_cache_sync(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Linear, |cache| {
+            cache.syncs += 1;
+            cache.bytes_uploaded += byte_len;
+        });
+    }
+
+    fn record_linear_cache_eviction(&self, count: u64, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Linear, |cache| {
+            cache.evictions += count;
+            cache.bytes_evicted += byte_len;
+        });
+    }
+
+    fn record_linear_cache_residency(&self, resident_bytes: u64, resident_buffers: u64) {
+        self.update_cache_counter(CacheMetricKind::Linear, |cache| {
+            cache.resident_bytes = resident_bytes;
+            cache.resident_buffers = resident_buffers;
+        });
+    }
+
     fn snapshot(&self) -> Value {
         let counters = self
             .counters
@@ -733,6 +1040,14 @@ impl MetalBackendMetrics {
             .bf16_matrix_cache
             .lock()
             .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        let kv_cache = *self
+            .kv_cache
+            .lock()
+            .expect("Metal KV cache metrics lock is not poisoned");
+        let linear_cache = *self
+            .linear_cache
+            .lock()
+            .expect("Metal linear cache metrics lock is not poisoned");
         let mut kernels = serde_json::Map::new();
         let mut kernel_names = counters.keys().copied().collect::<Vec<_>>();
         kernel_names.sort_unstable();
@@ -759,8 +1074,25 @@ impl MetalBackendMetrics {
                 "resident_bytes": bf16_matrix_cache.resident_bytes,
                 "resident_buffers": bf16_matrix_cache.resident_buffers,
                 "budget_bytes": bf16_matrix_cache.budget_bytes,
-            }
+            },
+            "kv_cache": cache_counters_json(kv_cache),
+            "linear_attention_cache": cache_counters_json(linear_cache),
         })
+    }
+
+    fn update_cache_counter(
+        &self,
+        kind: CacheMetricKind,
+        update: impl FnOnce(&mut MetalCacheCounters),
+    ) {
+        let cache = match kind {
+            CacheMetricKind::Kv => &self.kv_cache,
+            CacheMetricKind::Linear => &self.linear_cache,
+        };
+        let mut cache = cache
+            .lock()
+            .expect("Metal resident cache metrics lock is not poisoned");
+        update(&mut cache);
     }
 
     fn update_counter(&self, kernel: &'static str, update: impl FnOnce(&mut MetalKernelCounters)) {
@@ -770,6 +1102,24 @@ impl MetalBackendMetrics {
             .expect("Metal metrics lock is not poisoned");
         update(counters.entry(kernel).or_default());
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CacheMetricKind {
+    Kv,
+    Linear,
+}
+
+fn cache_counters_json(counters: MetalCacheCounters) -> Value {
+    json!({
+        "allocations": counters.allocations,
+        "syncs": counters.syncs,
+        "evictions": counters.evictions,
+        "bytes_uploaded": counters.bytes_uploaded,
+        "bytes_evicted": counters.bytes_evicted,
+        "resident_bytes": counters.resident_bytes,
+        "resident_buffers": counters.resident_buffers,
+    })
 }
 
 fn native_qwen_metal_metrics() -> &'static MetalBackendMetrics {
@@ -827,6 +1177,13 @@ impl NativeQwenMatvecBackend {
 
     fn cpu() -> CpuQwenMatvecBackend {
         CpuQwenMatvecBackend
+    }
+
+    fn metal_state(&self) -> Option<Arc<NativeQwenMetalState>> {
+        match self {
+            Self::Cpu => None,
+            Self::Metal(state) => Some(Arc::clone(state)),
+        }
     }
 
     fn warm_bf16_matrix_cache(
@@ -1545,6 +1902,95 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
             ),
         }
     }
+
+    fn select_kv_cache_head_rows_f32(
+        &self,
+        cache: &LayerKvCache,
+        tensor: QwenKvCacheTensor,
+        row_count: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu()
+                .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len),
+            Self::Metal(metal) => Self::run_metal_math(
+                "select_head_rows_f32",
+                format!(
+                    "cache_id={},tensor={tensor:?},row_count={row_count},row_len={},head_start={head_start},head_len={head_len}",
+                    cache.id(),
+                    cache.vector_len()
+                ),
+                || metal.select_kv_cache_head_rows(cache, tensor, row_count, head_start, head_len),
+                || {
+                    Self::cpu().select_kv_cache_head_rows_f32(
+                        cache, tensor, row_count, head_start, head_len,
+                    )
+                },
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attention_recurrent_cache_update_f32(
+        &self,
+        cache: &LinearAttentionCache,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().linear_attention_recurrent_cache_update_f32(
+                cache,
+                state_start,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+            ),
+            Self::Metal(metal) => Self::run_metal_math(
+                "linear_attention_recurrent_update_state_f32",
+                format!(
+                    "cache_id={},state_start={state_start},key_head_dim={key_head_dim},value_head_dim={value_head_dim}",
+                    cache.id()
+                ),
+                || {
+                    metal.linear_attention_recurrent_cache_update(
+                        cache,
+                        state_start,
+                        key,
+                        value,
+                        memory,
+                        beta,
+                        decay,
+                        key_head_dim,
+                        value_head_dim,
+                    )
+                },
+                || {
+                    Self::cpu().linear_attention_recurrent_cache_update_f32(
+                        cache,
+                        state_start,
+                        key,
+                        value,
+                        memory,
+                        beta,
+                        decay,
+                        key_head_dim,
+                        value_head_dim,
+                    )
+                },
+            ),
+        }
+    }
 }
 
 fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {
@@ -1860,7 +2306,11 @@ impl NativeQwenBackend {
             self.max_prefill_tokens,
             cancellation,
         )?;
-        Ok(NativeQwenDecodeSession { hidden, caches })
+        Ok(NativeQwenDecodeSession {
+            hidden,
+            caches,
+            metal_state: self.matvec.metal_state(),
+        })
     }
 
     fn next_token_from_hidden(
@@ -1946,6 +2396,7 @@ fn native_qwen_prefill_context_with_cache(
 struct NativeQwenDecodeSession {
     hidden: Vec<f32>,
     caches: Vec<QwenLayerCache>,
+    metal_state: Option<Arc<NativeQwenMetalState>>,
 }
 
 #[derive(Default)]
@@ -2016,6 +2467,14 @@ impl NativeQwenDecodeSession {
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
+    }
+}
+
+impl Drop for NativeQwenDecodeSession {
+    fn drop(&mut self) {
+        if let Some(state) = &self.metal_state {
+            state.remove_cache_mirrors(&self.caches);
+        }
     }
 }
 
@@ -3342,6 +3801,40 @@ mod tests {
         assert_eq!(cache["resident_bytes"], 10);
         assert_eq!(cache["resident_buffers"], 3);
         assert_eq!(cache["budget_bytes"], 16);
+    }
+
+    #[test]
+    fn metal_backend_metrics_records_resident_attention_cache_activity() {
+        let metrics = MetalBackendMetrics::default();
+
+        metrics.record_kv_cache_allocation(16);
+        metrics.record_kv_cache_sync(8);
+        metrics.record_kv_cache_residency(16, 2);
+        metrics.record_kv_cache_eviction(2, 16);
+        metrics.record_kv_cache_residency(0, 0);
+        metrics.record_linear_cache_allocation(12);
+        metrics.record_linear_cache_sync(4);
+        metrics.record_linear_cache_residency(12, 1);
+        metrics.record_linear_cache_eviction(1, 12);
+        metrics.record_linear_cache_residency(0, 0);
+
+        let snapshot = metrics.snapshot();
+        let kv = &snapshot["kv_cache"];
+        assert_eq!(kv["allocations"], 1);
+        assert_eq!(kv["syncs"], 1);
+        assert_eq!(kv["evictions"], 2);
+        assert_eq!(kv["bytes_uploaded"], 24);
+        assert_eq!(kv["bytes_evicted"], 16);
+        assert_eq!(kv["resident_bytes"], 0);
+        assert_eq!(kv["resident_buffers"], 0);
+        let linear = &snapshot["linear_attention_cache"];
+        assert_eq!(linear["allocations"], 1);
+        assert_eq!(linear["syncs"], 1);
+        assert_eq!(linear["evictions"], 1);
+        assert_eq!(linear["bytes_uploaded"], 16);
+        assert_eq!(linear["bytes_evicted"], 12);
+        assert_eq!(linear["resident_bytes"], 0);
+        assert_eq!(linear["resident_buffers"], 0);
     }
 
     #[test]

@@ -1,4 +1,13 @@
-use std::fmt;
+use std::{
+    fmt,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_cache_id() -> u64 {
+    NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KvCacheBudget {
@@ -51,6 +60,8 @@ impl KvCacheBudget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerKvCache {
+    id: u64,
+    revision: u64,
     max_tokens: usize,
     key_value_heads: usize,
     head_dim: usize,
@@ -76,6 +87,8 @@ impl LayerKvCache {
             .checked_mul(vector_len)
             .ok_or(KvCacheError::InvalidShape)?;
         Ok(Self {
+            id: next_cache_id(),
+            revision: 0,
             max_tokens,
             key_value_heads,
             head_dim,
@@ -84,6 +97,14 @@ impl LayerKvCache {
             keys: vec![0.0; storage_len],
             values: vec![0.0; storage_len],
         })
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn max_tokens(&self) -> usize {
@@ -134,6 +155,7 @@ impl LayerKvCache {
         self.values[start..end].copy_from_slice(value);
         self.token_count += 1;
         self.tokens_seen = tokens_seen;
+        self.revision = self.revision.saturating_add(1);
         Ok(token_index)
     }
 
@@ -156,6 +178,7 @@ impl LayerKvCache {
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
         self.tokens_seen = tokens_seen;
+        self.revision = self.revision.saturating_add(1);
         Ok(token_index)
     }
 
@@ -175,9 +198,18 @@ impl LayerKvCache {
         &self.values[..self.used_len()]
     }
 
+    pub fn key_storage(&self) -> &[f32] {
+        &self.keys
+    }
+
+    pub fn value_storage(&self) -> &[f32] {
+        &self.values
+    }
+
     pub fn clear(&mut self) {
         self.token_count = 0;
         self.tokens_seen = 0;
+        self.revision = self.revision.saturating_add(1);
     }
 
     fn token_slice<'a>(&self, storage: &'a [f32], token_index: usize) -> Option<&'a [f32]> {
@@ -213,6 +245,8 @@ impl LayerKvCache {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearAttentionCache {
+    id: u64,
+    revision: u64,
     conv_kernel_size: usize,
     conv_dim: usize,
     num_value_heads: usize,
@@ -247,6 +281,8 @@ impl LinearAttentionCache {
             .and_then(|len| len.checked_mul(value_head_dim))
             .ok_or(KvCacheError::InvalidShape)?;
         Ok(Self {
+            id: next_cache_id(),
+            revision: 0,
             conv_kernel_size,
             conv_dim,
             num_value_heads,
@@ -256,6 +292,14 @@ impl LinearAttentionCache {
             conv_window: vec![0.0; conv_len],
             recurrent_state: vec![0.0; recurrent_state_len],
         })
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn conv_kernel_size(&self) -> usize {
@@ -309,6 +353,7 @@ impl LinearAttentionCache {
         let start = self.conv_window.len() - self.conv_dim;
         self.conv_window[start..].copy_from_slice(input);
         self.token_count = self.token_count.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -320,6 +365,26 @@ impl LinearAttentionCache {
             });
         }
         self.recurrent_state.copy_from_slice(state);
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn replace_recurrent_state_range(
+        &mut self,
+        start: usize,
+        state: &[f32],
+    ) -> Result<(), KvCacheError> {
+        let end = start
+            .checked_add(state.len())
+            .ok_or(KvCacheError::InvalidShape)?;
+        if end > self.recurrent_state.len() {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: self.recurrent_state.len().saturating_sub(start),
+                actual: state.len(),
+            });
+        }
+        self.recurrent_state[start..end].copy_from_slice(state);
+        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -327,6 +392,7 @@ impl LinearAttentionCache {
         self.token_count = 0;
         self.conv_window.fill(0.0);
         self.recurrent_state.fill(0.0);
+        self.revision = self.revision.saturating_add(1);
     }
 }
 
@@ -410,6 +476,8 @@ mod tests {
     fn layer_kv_cache_appends_and_reads_token_slices() {
         let mut cache = LayerKvCache::new(3, 2, 2).expect("cache shape is valid");
 
+        let initial_revision = cache.revision();
+        assert!(cache.id() > 0);
         assert_eq!(cache.max_tokens(), 3);
         assert_eq!(cache.token_count(), 0);
         assert_eq!(cache.vector_len(), 4);
@@ -435,10 +503,12 @@ mod tests {
             cache.values(),
             &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
         );
+        assert!(cache.revision() > initial_revision);
 
         cache.clear();
         assert_eq!(cache.token_count(), 0);
         assert_eq!(cache.key(0), None);
+        assert!(cache.revision() > initial_revision);
     }
 
     #[test]
@@ -514,6 +584,8 @@ mod tests {
     fn linear_attention_cache_tracks_conv_window_and_recurrent_state() {
         let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
 
+        let initial_revision = cache.revision();
+        assert!(cache.id() > 0);
         assert_eq!(cache.conv_kernel_size(), 2);
         assert_eq!(cache.conv_dim(), 3);
         assert_eq!(cache.recurrent_state_len(), 4);
@@ -537,11 +609,17 @@ mod tests {
             .replace_recurrent_state(&[0.5, 1.5, 2.5, 3.5])
             .expect("state shape fits");
         assert_eq!(cache.recurrent_state(), &[0.5, 1.5, 2.5, 3.5]);
+        cache
+            .replace_recurrent_state_range(2, &[8.5, 9.5])
+            .expect("state range fits");
+        assert_eq!(cache.recurrent_state(), &[0.5, 1.5, 8.5, 9.5]);
+        assert!(cache.revision() > initial_revision);
 
         cache.clear();
         assert_eq!(cache.token_count(), 0);
         assert_eq!(cache.conv_window(), &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(cache.recurrent_state(), &[0.0, 0.0, 0.0, 0.0]);
+        assert!(cache.revision() > initial_revision);
     }
 
     #[test]
