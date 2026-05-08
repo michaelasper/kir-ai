@@ -546,6 +546,167 @@ pub fn qwen_linear_attention_first_token_from_parts(
     matvec_row_major_f32(&gated, out_proj_weight, dims.hidden_size, value_dim)
 }
 
+pub fn qwen_linear_attention_sequence_from_parts(
+    dims: &QwenLinearAttentionDims,
+    qkv: &[Vec<f32>],
+    z: &[Vec<f32>],
+    b: &[Vec<f32>],
+    a: &[Vec<f32>],
+    dt_bias: &[f32],
+    a_log: &[f32],
+    conv1d_weight: &[f32],
+    norm_weight: &[f32],
+    out_proj_weight: &[f32],
+) -> Result<Vec<Vec<f32>>, MathError> {
+    if qkv.is_empty() {
+        return Ok(Vec::new());
+    }
+    if dims.num_key_heads == 0
+        || dims.num_value_heads == 0
+        || dims.key_head_dim == 0
+        || dims.value_head_dim == 0
+        || dims.conv_kernel_size == 0
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen linear attention dimensions must be non-zero".to_owned(),
+        ));
+    }
+    if !dims.num_value_heads.is_multiple_of(dims.num_key_heads) {
+        return Err(MathError::InvalidShape(
+            "Qwen value heads must be divisible by key heads".to_owned(),
+        ));
+    }
+    let seq_len = qkv.len();
+    if z.len() != seq_len || b.len() != seq_len || a.len() != seq_len {
+        return Err(MathError::InvalidShape(
+            "Qwen linear attention sequence inputs must have the same length".to_owned(),
+        ));
+    }
+    let key_dim = dims.key_dim()?;
+    let value_dim = dims.value_dim()?;
+    let conv_dim = dims.conv_dim()?;
+    require_len("dt bias", dt_bias.len(), dims.num_value_heads)?;
+    require_len("A log", a_log.len(), dims.num_value_heads)?;
+    require_len("norm weight", norm_weight.len(), dims.value_head_dim)?;
+    require_len(
+        "conv1d weight",
+        conv1d_weight.len(),
+        conv_dim
+            .checked_mul(dims.conv_kernel_size)
+            .ok_or_else(|| MathError::InvalidShape("conv1d weight shape overflow".to_owned()))?,
+    )?;
+    require_len(
+        "out projection weight",
+        out_proj_weight.len(),
+        dims.hidden_size
+            .checked_mul(value_dim)
+            .ok_or_else(|| MathError::InvalidShape("out projection shape overflow".to_owned()))?,
+    )?;
+    for token_idx in 0..seq_len {
+        require_len("qkv projection", qkv[token_idx].len(), conv_dim)?;
+        require_len("z projection", z[token_idx].len(), value_dim)?;
+        require_len("b projection", b[token_idx].len(), dims.num_value_heads)?;
+        require_len("a projection", a[token_idx].len(), dims.num_value_heads)?;
+    }
+
+    let mut mixed_tokens = vec![vec![0.0; conv_dim]; seq_len];
+    for token_idx in 0..seq_len {
+        for channel in 0..conv_dim {
+            let mut mixed = 0.0;
+            for kernel_idx in 0..dims.conv_kernel_size {
+                let lookback = dims.conv_kernel_size - 1 - kernel_idx;
+                if token_idx >= lookback {
+                    mixed += qkv[token_idx - lookback][channel]
+                        * conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
+                }
+            }
+            mixed_tokens[token_idx][channel] = silu_f32(mixed);
+        }
+    }
+
+    let repeat = dims.num_value_heads / dims.num_key_heads;
+    let scale = (dims.key_head_dim as f32).sqrt().recip();
+    let mut recurrent_state =
+        vec![0.0; dims.num_value_heads * dims.key_head_dim * dims.value_head_dim];
+    let mut outputs = Vec::with_capacity(seq_len);
+
+    for token_idx in 0..seq_len {
+        let mixed_qkv = &mixed_tokens[token_idx];
+        let query = &mixed_qkv[..key_dim];
+        let key = &mixed_qkv[key_dim..key_dim * 2];
+        let value = &mixed_qkv[key_dim * 2..];
+        let mut gated = vec![0.0; value_dim];
+
+        for value_head in 0..dims.num_value_heads {
+            let key_head = value_head / repeat;
+            let key_start = key_head * dims.key_head_dim;
+            let value_start = value_head * dims.value_head_dim;
+            let query_head =
+                l2_normalize_f32(&query[key_start..key_start + dims.key_head_dim], 1e-6)?;
+            let key_head_values =
+                l2_normalize_f32(&key[key_start..key_start + dims.key_head_dim], 1e-6)?;
+            let query_scaled = query_head
+                .into_iter()
+                .map(|value| value * scale)
+                .collect::<Vec<_>>();
+            let beta = sigmoid_f32(b[token_idx][value_head]);
+            let decay = (-a_log[value_head].exp()
+                * softplus_f32(a[token_idx][value_head] + dt_bias[value_head]))
+            .exp();
+
+            let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
+            for state in &mut recurrent_state
+                [state_start..state_start + dims.key_head_dim * dims.value_head_dim]
+            {
+                *state *= decay;
+            }
+
+            let mut memory = vec![0.0; dims.value_head_dim];
+            for key_offset in 0..dims.key_head_dim {
+                let state_row = state_start + key_offset * dims.value_head_dim;
+                for value_offset in 0..dims.value_head_dim {
+                    memory[value_offset] +=
+                        recurrent_state[state_row + value_offset] * key_head_values[key_offset];
+                }
+            }
+
+            let mut delta = vec![0.0; dims.value_head_dim];
+            for value_offset in 0..dims.value_head_dim {
+                delta[value_offset] =
+                    (value[value_start + value_offset] - memory[value_offset]) * beta;
+            }
+            for (key_offset, key_value) in key_head_values.iter().enumerate() {
+                let state_row = state_start + key_offset * dims.value_head_dim;
+                for value_offset in 0..dims.value_head_dim {
+                    recurrent_state[state_row + value_offset] += key_value * delta[value_offset];
+                }
+            }
+
+            let mut core_head = vec![0.0; dims.value_head_dim];
+            for (key_offset, query_value) in query_scaled.iter().enumerate() {
+                let state_row = state_start + key_offset * dims.value_head_dim;
+                for value_offset in 0..dims.value_head_dim {
+                    core_head[value_offset] +=
+                        recurrent_state[state_row + value_offset] * query_value;
+                }
+            }
+            let normalized = rms_norm_f32(&core_head, norm_weight, dims.rms_norm_eps)?;
+            for value_offset in 0..dims.value_head_dim {
+                gated[value_start + value_offset] =
+                    normalized[value_offset] * silu_f32(z[token_idx][value_start + value_offset]);
+            }
+        }
+        outputs.push(matvec_row_major_f32(
+            &gated,
+            out_proj_weight,
+            dims.hidden_size,
+            value_dim,
+        )?);
+    }
+
+    Ok(outputs)
+}
+
 pub fn qwen_full_attention_first_token_from_parts(
     dims: &QwenFullAttentionDims,
     q_proj: &[f32],
@@ -1051,6 +1212,14 @@ fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathErr
 
 fn sigmoid_f32(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
+}
+
+fn softplus_f32(value: f32) -> f32 {
+    if value > 20.0 {
+        value
+    } else {
+        (1.0 + value.exp()).ln()
+    }
 }
 
 fn l2_normalize_f32(input: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
