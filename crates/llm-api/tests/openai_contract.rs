@@ -109,6 +109,32 @@ fn accepts_explicit_greedy_sampling_controls() {
 }
 
 #[test]
+fn rejects_zero_chat_max_tokens() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        max_tokens: Some(0),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("zero max_tokens is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_zero_completion_max_tokens() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "hello".to_owned(),
+        max_tokens: Some(0),
+        ..CompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("zero max_tokens is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
 fn streaming_finish_reason_serializes_as_openai_string() {
     let value = serde_json::to_value(FinishReason::ToolCalls).expect("finish reason serializes");
     assert_eq!(value, json!("tool_calls"));

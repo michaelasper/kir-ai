@@ -407,6 +407,11 @@ impl ValidateRequest for ChatCompletionRequest {
                 "top_p sampling is not supported yet; use top_p 1",
             ));
         }
+        if matches!(self.max_tokens, Some(0)) {
+            return Err(ApiError::invalid_request(
+                "max_tokens must be greater than 0",
+            ));
+        }
         if self.stop.iter().any(String::is_empty) {
             return Err(ApiError::invalid_request(
                 "stop sequences must not be empty",
@@ -423,6 +428,11 @@ impl ValidateRequest for CompletionRequest {
         }
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
+        }
+        if matches!(self.max_tokens, Some(0)) {
+            return Err(ApiError::invalid_request(
+                "max_tokens must be greater than 0",
+            ));
         }
         if self.stop.iter().any(String::is_empty) {
             return Err(ApiError::invalid_request(
