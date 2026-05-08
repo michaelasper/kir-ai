@@ -2,8 +2,9 @@ use llm_backend::{
     QwenMoeDims, SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm,
 };
 use llm_backend::{
-    qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_final_norm, qwen_layer0_linear_attention_first_token,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_top_k,
 };
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
@@ -246,10 +247,37 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     .zip(&moe_output)
                     .map(|(residual, moe)| residual + moe)
                     .collect::<Vec<_>>();
+                let lm_head = flag_value(&args, "--lm-head-top-k")
+                    .map(|top_k| {
+                        let top_k = top_k.parse::<usize>()?;
+                        let chunk_rows = flag_value(&args, "--chunk-rows")
+                            .map(str::parse::<usize>)
+                            .transpose()?
+                            .unwrap_or(512);
+                        let final_norm = qwen_final_norm(
+                            &store,
+                            &final_hidden,
+                            spec.hidden_size as usize,
+                            spec.rms_norm_eps,
+                        )?;
+                        let top_logits =
+                            qwen_lm_head_top_k(&store, &final_norm, top_k, chunk_rows)?;
+                        anyhow::Ok(serde_json::json!({
+                            "final_norm_prefix": final_norm.iter().copied().take(limit).collect::<Vec<_>>(),
+                            "top_logits": top_logits.iter().map(|item| {
+                                serde_json::json!({
+                                    "index": item.index,
+                                    "logit": item.logit
+                                })
+                            }).collect::<Vec<_>>()
+                        }))
+                    })
+                    .transpose()?;
                 Some(serde_json::json!({
                     "moe_output_len": moe_output.len(),
                     "moe_output_prefix": moe_output.iter().copied().take(limit).collect::<Vec<_>>(),
-                    "final_hidden_prefix": final_hidden.iter().copied().take(limit).collect::<Vec<_>>()
+                    "final_hidden_prefix": final_hidden.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "lm_head": lm_head
                 }))
             } else {
                 None

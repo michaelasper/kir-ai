@@ -279,6 +279,8 @@ pub const QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert.down_proj.weight";
 pub const QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert_gate.weight";
+pub const QWEN_FINAL_NORM_WEIGHT: &str = "model.language_model.norm.weight";
+pub const QWEN_LM_HEAD_WEIGHT: &str = "lm_head.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
@@ -632,6 +634,32 @@ pub fn qwen_layer0_moe_forward(
         *output += shared_gate * shared;
     }
     Ok(output)
+}
+
+pub fn qwen_final_norm(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<Vec<f32>, TensorLoadError> {
+    if hidden_states.len() != hidden_size {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen final norm hidden length {} must match hidden size {hidden_size}",
+            hidden_states.len()
+        )));
+    }
+    let norm_weight = store.bf16_tensor_f32_range(QWEN_FINAL_NORM_WEIGHT, 0, hidden_size)?;
+    qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps)
+        .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
+}
+
+pub fn qwen_lm_head_top_k(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    top_k: usize,
+    chunk_rows: usize,
+) -> Result<Vec<TopKLogit>, TensorLoadError> {
+    store.bf16_matvec_top_k_rows_f32(QWEN_LM_HEAD_WEIGHT, hidden_states, top_k, chunk_rows)
 }
 
 fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathError> {

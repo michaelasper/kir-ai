@@ -1,8 +1,9 @@
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_backend::{
     SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    qwen_embedding_and_layer0_norm, qwen_layer0_linear_attention_projections,
+    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer0_linear_attention_projections,
     qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_lm_head_top_k,
 };
 
 #[test]
@@ -467,6 +468,50 @@ fn qwen_moe_forward_reads_selected_expert_slices() {
     let output = qwen_layer0_moe_forward(&store, &dims, &[1.0, 2.0], &router).expect("moe");
 
     assert_close(&output, &[1.4621172, 2.9242344], 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
+    let root = temp_snapshot_dir("qwen-lm-head");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 16 },
+            "weight_map": {
+                "model.language_model.norm.weight": "norm.safetensors",
+                "lm_head.weight": "lm_head.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("norm.safetensors"),
+        tiny_safetensors_bf16("model.language_model.norm.weight", &[2], &[0.0, 1.0]),
+    )
+    .expect("norm");
+    std::fs::write(
+        root.join("lm_head.safetensors"),
+        tiny_safetensors_bf16(
+            "lm_head.weight",
+            &[2, 2],
+            &[
+                1.0, 0.0, //
+                0.0, 1.0,
+            ],
+        ),
+    )
+    .expect("lm head");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0).expect("final norm");
+    let top = qwen_lm_head_top_k(&store, &normalized, 1, 1).expect("lm head");
+
+    assert_close(&normalized, &[0.84852815, 2.2627418], 1e-6);
+    assert_eq!(top[0].index, 1);
+    assert_close(&[top[0].logit], &[2.2627418], 1e-6);
     std::fs::remove_dir_all(root).ok();
 }
 
