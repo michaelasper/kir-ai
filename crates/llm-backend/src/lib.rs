@@ -21,14 +21,45 @@ use tokio_util::sync::CancellationToken;
 const MAX_SAFETENSORS_HEADER_LEN: u64 = 64 * 1024 * 1024;
 const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackendRequest {
     pub model: String,
     pub prompt: String,
     pub max_tokens: Option<u32>,
+    pub sampling: SamplingConfig,
     pub required_tool_choice: Option<String>,
     pub json_object_mode: bool,
     pub conversation_mode: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum SamplingConfig {
+    #[default]
+    Greedy,
+    TopP {
+        temperature: f32,
+        top_p: f32,
+    },
+}
+
+impl SamplingConfig {
+    pub fn from_openai_controls(temperature: Option<f32>, top_p: Option<f32>) -> Self {
+        match (temperature, top_p) {
+            (None, None | Some(1.0)) | (Some(0.0), _) => Self::Greedy,
+            (None, Some(top_p)) => Self::TopP {
+                temperature: 1.0,
+                top_p,
+            },
+            (Some(temperature), top_p) => Self::TopP {
+                temperature,
+                top_p: top_p.unwrap_or(1.0),
+            },
+        }
+    }
+
+    pub fn is_greedy(self) -> bool {
+        matches!(self, Self::Greedy)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +246,11 @@ impl ModelBackend for DeterministicBackend {
                 requested: request.model,
                 available: self.model_id.clone(),
             });
+        }
+        if !request.sampling.is_greedy() {
+            return Err(BackendError::UnsupportedRequest(
+                "deterministic backend does not support non-greedy sampling".to_owned(),
+            ));
         }
         let (text, finish_reason) = if self.required_tool_protocol
             && let Some(name) = request.required_tool_choice

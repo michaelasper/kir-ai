@@ -5,7 +5,7 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendOutput, BackendRequest, BackendStreamChunk, DeterministicBackend,
-    ModelBackend,
+    ModelBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::json;
@@ -83,6 +83,33 @@ async fn runtime_forwards_explicit_chat_max_tokens_to_backend() {
 }
 
 #[tokio::test]
+async fn runtime_forwards_chat_sampling_controls_to_backend() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingSamplingBackend {
+        observed_sampling: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("sample")],
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed sampling lock"),
+        Some(SamplingConfig::TopP {
+            temperature: 0.7,
+            top_p: 0.9,
+        })
+    );
+}
+
+#[tokio::test]
 async fn runtime_rejects_chatml_control_tokens_before_prompt_rendering() {
     let backend = DeterministicBackend::new("local-qwen36", "should not run");
     let runtime = Runtime::new(backend);
@@ -127,6 +154,33 @@ async fn runtime_returns_text_completion() {
     assert_eq!(response.choices[0].text, "hello from completion");
     assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
     assert_eq!(response.usage.total_tokens, 7);
+}
+
+#[tokio::test]
+async fn runtime_forwards_completion_sampling_controls_to_backend() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingSamplingBackend {
+        observed_sampling: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .completion(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "sample".to_owned(),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("runtime completion succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed sampling lock"),
+        Some(SamplingConfig::TopP {
+            temperature: 0.7,
+            top_p: 0.9,
+        })
+    );
 }
 
 #[tokio::test]
@@ -822,6 +876,10 @@ struct RecordingBackend {
     observed_max_tokens: Arc<Mutex<Option<Option<u32>>>>,
 }
 
+struct RecordingSamplingBackend {
+    observed_sampling: Arc<Mutex<Option<SamplingConfig>>>,
+}
+
 #[async_trait::async_trait]
 impl ModelBackend for RecordingBackend {
     fn model_id(&self) -> &str {
@@ -833,6 +891,26 @@ impl ModelBackend for RecordingBackend {
             .observed_max_tokens
             .lock()
             .expect("observed max_tokens lock") = Some(request.max_tokens);
+        Ok(BackendOutput {
+            text: "hello".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for RecordingSamplingBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        *self
+            .observed_sampling
+            .lock()
+            .expect("observed sampling lock") = Some(request.sampling);
         Ok(BackendOutput {
             text: "hello".to_owned(),
             prompt_tokens: 1,

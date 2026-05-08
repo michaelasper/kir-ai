@@ -1363,7 +1363,7 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
 }
 
 #[tokio::test]
-async fn completions_endpoint_rejects_unsupported_sampling_controls() {
+async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
     let response = build_router()
         .oneshot(
             Request::builder()

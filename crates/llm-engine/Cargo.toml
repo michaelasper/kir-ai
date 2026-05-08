@@ -16,6 +16,7 @@ llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
 llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
+llm-sampler = { path = "../llm-sampler" }
 llm-telemetry = { path = "../llm-telemetry" }
 llm-tokenizer = { path = "../llm-tokenizer" }
 serde.workspace = true

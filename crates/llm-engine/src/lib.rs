@@ -19,8 +19,8 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    DeterministicBackend, ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k,
-    qwen_prefill_sequence,
+    DeterministicBackend, ModelBackend, SafeTensorShardStore, SamplingConfig, TopKLogit,
+    qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -30,6 +30,7 @@ use llm_runtime::{
     ChatCompletionStreamEvent, CompletionStreamEvent, Runtime, RuntimeError,
     chat_stream_requires_buffering,
 };
+use llm_sampler::TopPSampler;
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Deserialize;
@@ -37,8 +38,11 @@ use serde_json::{Value, json};
 use std::{
     convert::Infallible,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -266,7 +270,7 @@ impl NativeQwenBackend {
                     "native Qwen generation cancelled".to_owned(),
                 ));
             }
-            let candidate = self.next_token(&context_tokens)?;
+            let candidate = self.next_token(&context_tokens, request.sampling)?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Other(
                     "native Qwen generation cancelled".to_owned(),
@@ -338,7 +342,7 @@ impl NativeQwenBackend {
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            let candidate = self.next_token(&context_tokens)?;
+            let candidate = self.next_token(&context_tokens, request.sampling)?;
             if cancellation.is_cancelled() {
                 return Ok(());
             }
@@ -387,7 +391,11 @@ impl NativeQwenBackend {
         )
     }
 
-    fn next_token(&self, context_tokens: &[usize]) -> Result<NativeQwenCandidate, BackendError> {
+    fn next_token(
+        &self,
+        context_tokens: &[usize],
+        sampling: SamplingConfig,
+    ) -> Result<NativeQwenCandidate, BackendError> {
         let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
         let hidden_states =
             qwen_prefill_sequence(&self.store, &self.spec, &context_tokens[start..])
@@ -404,6 +412,21 @@ impl NativeQwenBackend {
         .map_err(|err| BackendError::Other(err.to_string()))?;
         let top_logits = qwen_lm_head_top_k(&self.store, &final_norm, self.top_k, self.chunk_rows)
             .map_err(|err| BackendError::Other(err.to_string()))?;
+
+        if !sampling.is_greedy() {
+            let item = sample_top_logit_with_draw(&top_logits, sampling, native_sampling_draw())?;
+            let token_id = u32::try_from(item.index).map_err(|err| {
+                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
+            })?;
+            let text = self
+                .tokenizer
+                .decode(&[token_id], false)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            return Ok(NativeQwenCandidate {
+                token_id: item.index,
+                text,
+            });
+        }
 
         let mut fallback = None;
         for item in top_logits {
@@ -452,6 +475,46 @@ fn resolve_native_max_tokens(
 struct NativeQwenCandidate {
     token_id: usize,
     text: String,
+}
+
+fn sample_top_logit_with_draw(
+    top_logits: &[TopKLogit],
+    sampling: SamplingConfig,
+    draw: f32,
+) -> Result<TopKLogit, BackendError> {
+    if top_logits.is_empty() {
+        return Err(BackendError::Other(
+            "Qwen lm head returned no logits".to_owned(),
+        ));
+    }
+    match sampling {
+        SamplingConfig::Greedy => Ok(top_logits[0]),
+        SamplingConfig::TopP { temperature, top_p } => {
+            let logits = top_logits.iter().map(|item| item.logit).collect::<Vec<_>>();
+            let sampled_index = TopPSampler { temperature, top_p }
+                .sample(&logits, draw)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+            top_logits.get(sampled_index).copied().ok_or_else(|| {
+                BackendError::Other("Qwen sampler returned an out-of-range index".to_owned())
+            })
+        }
+    }
+}
+
+static NATIVE_SAMPLING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn native_sampling_draw() -> f32 {
+    let time_seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = NATIVE_SAMPLING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut value = time_seed ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    value ^= value >> 12;
+    value ^= value << 25;
+    value ^= value >> 27;
+    let bits = value.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+    (bits as f32) / ((1_u32 << 24) as f32)
 }
 
 #[async_trait]
@@ -1167,6 +1230,7 @@ mod tests {
                     model: "local-qwen36".to_owned(),
                     prompt: "say hi".to_owned(),
                     max_tokens: Some(1),
+                    sampling: SamplingConfig::Greedy,
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,
@@ -1178,6 +1242,34 @@ mod tests {
 
         assert!(err.to_string().contains("cancelled"));
         std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_top_p_sampling_selects_candidate_from_draw() {
+        let selected = sample_top_logit_with_draw(
+            &[
+                TopKLogit {
+                    index: 10,
+                    logit: 2.0,
+                },
+                TopKLogit {
+                    index: 20,
+                    logit: 1.0,
+                },
+                TopKLogit {
+                    index: 30,
+                    logit: 0.0,
+                },
+            ],
+            SamplingConfig::TopP {
+                temperature: 1.0,
+                top_p: 0.9,
+            },
+            0.8,
+        )
+        .expect("sampling succeeds");
+
+        assert_eq!(selected.index, 20);
     }
 
     fn copy_fixture(name: &str, destination: impl AsRef<Path>) {

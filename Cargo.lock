@@ -1062,6 +1062,7 @@ dependencies = [
  "llm-hub",
  "llm-models",
  "llm-runtime",
+ "llm-sampler",
  "llm-telemetry",
  "llm-tokenizer",
  "serde",

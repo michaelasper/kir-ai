@@ -11,7 +11,7 @@ use llm_api::{
     ValidateRequest,
 };
 use llm_backend::BackendModelMetadata;
-use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend};
+use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend, SamplingConfig};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
@@ -85,6 +85,7 @@ where
                 model: request.model,
                 prompt: request.prompt,
                 max_tokens: request.max_tokens,
+                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
                 required_tool_choice: None,
                 json_object_mode: false,
                 conversation_mode: false,
@@ -160,6 +161,7 @@ where
                 model: request.model.clone(),
                 prompt,
                 max_tokens: request.effective_max_tokens(),
+                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
                 required_tool_choice: required_backend_tool_choice(&request),
                 json_object_mode: matches!(
                     request.response_format,
@@ -210,6 +212,10 @@ where
                     model: request.model.clone(),
                     prompt,
                     max_tokens: request.effective_max_tokens(),
+                    sampling: SamplingConfig::from_openai_controls(
+                        request.temperature,
+                        request.top_p,
+                    ),
                     required_tool_choice,
                     json_object_mode: matches!(
                         request.response_format,
@@ -276,6 +282,10 @@ where
                     model: request.model.clone(),
                     prompt: request.prompt,
                     max_tokens: request.max_tokens,
+                    sampling: SamplingConfig::from_openai_controls(
+                        request.temperature,
+                        request.top_p,
+                    ),
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,

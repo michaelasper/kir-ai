@@ -439,20 +439,7 @@ impl ValidateRequest for ChatCompletionRequest {
                 "parallel tool calls are not supported yet; use parallel_tool_calls false",
             ));
         }
-        if let Some(temperature) = self.temperature
-            && (!temperature.is_finite() || temperature != 0.0)
-        {
-            return Err(ApiError::unsupported_capability(
-                "non-greedy temperature sampling is not supported yet; use temperature 0",
-            ));
-        }
-        if let Some(top_p) = self.top_p
-            && (!top_p.is_finite() || top_p != 1.0)
-        {
-            return Err(ApiError::unsupported_capability(
-                "top_p sampling is not supported yet; use top_p 1",
-            ));
-        }
+        validate_sampling_controls(self.temperature, self.top_p)?;
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
         validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
         if matches!(self.logprobs, Some(true)) {
@@ -501,20 +488,7 @@ impl ValidateRequest for CompletionRequest {
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
         }
-        if let Some(temperature) = self.temperature
-            && (!temperature.is_finite() || temperature != 0.0)
-        {
-            return Err(ApiError::unsupported_capability(
-                "non-greedy temperature sampling is not supported yet; use temperature 0",
-            ));
-        }
-        if let Some(top_p) = self.top_p
-            && (!top_p.is_finite() || top_p != 1.0)
-        {
-            return Err(ApiError::unsupported_capability(
-                "top_p sampling is not supported yet; use top_p 1",
-            ));
-        }
+        validate_sampling_controls(self.temperature, self.top_p)?;
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
         validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
         if self.logprobs.is_some() {
@@ -554,6 +528,27 @@ fn validate_neutral_penalty(name: &str, value: Option<f32>) -> Result<(), ApiErr
         return Err(ApiError::unsupported_capability(format!(
             "{name} is not supported yet; use {name} 0"
         )));
+    }
+    Ok(())
+}
+
+fn validate_sampling_controls(
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+) -> Result<(), ApiError> {
+    if let Some(temperature) = temperature
+        && (!temperature.is_finite() || temperature < 0.0)
+    {
+        return Err(ApiError::invalid_request(
+            "temperature must be finite and non-negative",
+        ));
+    }
+    if let Some(top_p) = top_p
+        && (!top_p.is_finite() || top_p <= 0.0 || top_p > 1.0)
+    {
+        return Err(ApiError::invalid_request(
+            "top_p must be finite and in (0, 1]",
+        ));
     }
     Ok(())
 }

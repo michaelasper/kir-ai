@@ -86,30 +86,43 @@ fn rejects_required_tool_choice_without_declared_tools() {
 }
 
 #[test]
-fn rejects_unsupported_non_greedy_sampling_controls() {
+fn accepts_non_greedy_sampling_controls() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
         messages: vec![ChatMessage::user("sample")],
         temperature: Some(0.7),
-        ..ChatCompletionRequest::default()
-    };
-
-    let err = request
-        .validate()
-        .expect_err("non-greedy temperature is not implemented");
-    assert_eq!(err.code(), "unsupported_capability");
-
-    let request = ChatCompletionRequest {
-        model: "local-qwen36".to_owned(),
-        messages: vec![ChatMessage::user("sample")],
         top_p: Some(0.9),
         ..ChatCompletionRequest::default()
     };
 
+    request
+        .validate()
+        .expect("native sampling controls are accepted");
+}
+
+#[test]
+fn rejects_invalid_sampling_controls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(-0.1),
+        ..ChatCompletionRequest::default()
+    };
+
     let err = request
         .validate()
-        .expect_err("nucleus sampling is not implemented");
-    assert_eq!(err.code(), "unsupported_capability");
+        .expect_err("negative temperature is invalid");
+    assert_eq!(err.code(), "invalid_request");
+
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        top_p: Some(0.0),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("zero top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
 }
 
 #[test]
@@ -234,30 +247,43 @@ fn accepts_disabled_parallel_tool_calls() {
 }
 
 #[test]
-fn completion_rejects_unsupported_non_greedy_sampling_controls() {
+fn completion_accepts_non_greedy_sampling_controls() {
     let request = CompletionRequest {
         model: "local-qwen36".to_owned(),
         prompt: "sample".to_owned(),
         temperature: Some(0.7),
-        ..CompletionRequest::default()
-    };
-
-    let err = request
-        .validate()
-        .expect_err("non-greedy temperature is not implemented");
-    assert_eq!(err.code(), "unsupported_capability");
-
-    let request = CompletionRequest {
-        model: "local-qwen36".to_owned(),
-        prompt: "sample".to_owned(),
         top_p: Some(0.9),
         ..CompletionRequest::default()
     };
 
+    request
+        .validate()
+        .expect("native sampling controls are accepted");
+}
+
+#[test]
+fn completion_rejects_invalid_sampling_controls() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        temperature: Some(-0.1),
+        ..CompletionRequest::default()
+    };
+
     let err = request
         .validate()
-        .expect_err("nucleus sampling is not implemented");
-    assert_eq!(err.code(), "unsupported_capability");
+        .expect_err("negative temperature is invalid");
+    assert_eq!(err.code(), "invalid_request");
+
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        top_p: Some(0.0),
+        ..CompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("zero top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
 }
 
 #[test]
