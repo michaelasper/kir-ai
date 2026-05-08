@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_max_new_tokens(max_new_tokens)
                 .with_max_prefill_tokens(max_prefill_tokens);
                 build_router_with_backend_and_options(Box::new(backend), options)
-            } else {
+            } else if has_flag(&serve_args, "--deterministic-test-backend") {
                 build_router_with_backend_and_options(
                     Box::new(
                         llm_backend::DeterministicBackend::new(
@@ -88,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
                     ),
                     options,
                 )
+            } else {
+                anyhow::bail!(
+                    "llm-engine serve requires --snapshot <path> for native Qwen serving; use --deterministic-test-backend only for protocol tests"
+                );
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
             tracing::info!(%addr, "llm-engine listening");

@@ -176,10 +176,10 @@ Current verified state:
 - Non-streaming chat and text completion generation now use a cancellable backend contract. Dropping the runtime future cancels the backend token, and native Qwen checks the token before and after bounded blocking decode steps.
 - Text-only chat SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, while still reserving buffered fail-closed paths for tool-call and JSON-object validation.
 - OpenAI temperature/top_p controls now validate as native sampling inputs, flow through `BackendRequest` as `SamplingConfig`, and drive native Qwen top-p selection from the current top-k lm-head candidate set with a Rust RNG draw. Backends that do not implement non-greedy sampling fail closed.
+- `llm-engine serve` no longer silently starts the deterministic protocol backend when no snapshot is provided. Production serving requires `--snapshot <path>`, while the deterministic backend is explicitly gated behind `--deterministic-test-backend`.
 
 Known incomplete items:
 
-- The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches are wired into decode. Non-greedy top-p sampling is wired over the current top-k lm-head candidate set, but full-vocab sampling and token-level stop handling across incremental native decode are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.

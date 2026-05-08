@@ -1,6 +1,36 @@
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::Value;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+#[tokio::test]
+async fn serve_without_snapshot_requires_explicit_backend() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["serve", "--addr", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn serve");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("poll serve").is_some() {
+            let output = child.wait_with_output().expect("collect serve output");
+            assert!(!output.status.success());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("--snapshot"), "stderr: {stderr}");
+            assert!(
+                stderr.contains("--deterministic-test-backend"),
+                "stderr: {stderr}"
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    child.kill().expect("kill hanging serve");
+    let _ = child.wait();
+    panic!("serve bound the deterministic backend instead of failing without --snapshot");
+}
 
 #[tokio::test]
 async fn model_list_outputs_promoted_snapshots() {
