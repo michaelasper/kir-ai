@@ -203,6 +203,38 @@ async fn runtime_completion_stream_applies_stop_across_backend_chunks() {
 }
 
 #[tokio::test]
+async fn runtime_chat_stream_applies_stop_across_backend_chunks() {
+    let runtime = Runtime::new(StopStreamingBackend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(8),
+            stop: vec![" STOP".to_owned()],
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("chat stream starts without buffering");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    assert_eq!(content, "hello");
+    assert_eq!(
+        chunks
+            .iter()
+            .filter_map(|chunk| chunk.choices.first())
+            .next_back()
+            .and_then(|choice| choice.finish_reason.clone()),
+        Some(FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
 async fn runtime_completion_stream_returns_before_backend_finishes() {
     let release = Arc::new(Notify::new());
     let runtime = Runtime::new(BlockingTextBackend {

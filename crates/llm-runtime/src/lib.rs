@@ -589,32 +589,67 @@ fn streaming_chat_stream<'a>(
 
         let mut backend_stream = backend_stream;
         let mut raw_text = String::new();
+        let mut emitted_len = 0;
         let mut prompt_tokens = 0;
         let mut completion_tokens = 0;
-        let mut backend_finish_reason = llm_api::FinishReason::Length;
+        let mut finish_reason = llm_api::FinishReason::Length;
+        let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             completion_tokens += chunk.completion_tokens;
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
-                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                    &completion,
-                    ChatCompletionDelta {
-                        content: Some(chunk.text),
-                        ..ChatCompletionDelta::default()
-                    },
-                    None,
-                    None,
-                ));
+                if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
+                    if stop_at > emitted_len {
+                        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                            &completion,
+                            ChatCompletionDelta {
+                                content: Some(raw_text[emitted_len..stop_at].to_owned()),
+                                ..ChatCompletionDelta::default()
+                            },
+                            None,
+                            None,
+                        ));
+                    }
+                    emitted_len = stop_at;
+                    finish_reason = llm_api::FinishReason::Stop;
+                    break;
+                }
+                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len);
+                if safe_len > emitted_len {
+                    yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                        &completion,
+                        ChatCompletionDelta {
+                            content: Some(raw_text[emitted_len..safe_len].to_owned()),
+                            ..ChatCompletionDelta::default()
+                        },
+                        None,
+                        None,
+                    ));
+                    emitted_len = safe_len;
+                }
             }
             if let Some(reason) = chunk.finish_reason {
-                backend_finish_reason = reason;
+                finish_reason = reason;
                 break;
             }
         }
+        if finish_reason != llm_api::FinishReason::Stop && emitted_len < raw_text.len() {
+            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    content: Some(raw_text[emitted_len..].to_owned()),
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+                None,
+            ));
+            emitted_len = raw_text.len();
+        }
 
-        let parsed = QwenParser.parse_complete(&raw_text)?;
+        let visible_text = &raw_text[..emitted_len];
+        let parsed = QwenParser.parse_complete(visible_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         let required_tool_pending = matches!(
@@ -622,7 +657,7 @@ fn streaming_chat_stream<'a>(
             Some(ToolChoice::Required | ToolChoice::Function { .. })
         );
         if let Some(class) = classify_no_progress(
-            &raw_text,
+            visible_text,
             completion_tokens,
             required_tool_pending && parsed.tool_calls.is_empty(),
         ) {
@@ -631,7 +666,7 @@ fn streaming_chat_stream<'a>(
         let finish_reason = if !parsed.tool_calls.is_empty() {
             llm_api::FinishReason::ToolCalls
         } else {
-            backend_finish_reason
+            finish_reason
         };
         let usage = Usage {
             prompt_tokens,
@@ -660,8 +695,7 @@ fn streaming_chat_stream<'a>(
 }
 
 pub fn chat_stream_requires_buffering(request: &ChatCompletionRequest) -> bool {
-    !request.stop.is_empty()
-        || !request.tools.is_empty()
+    !request.tools.is_empty()
         || !matches!(request.tool_choice, None | Some(ToolChoice::Auto))
         || matches!(request.response_format, Some(ResponseFormat::JsonObject))
 }
