@@ -1081,6 +1081,33 @@ async fn chat_completions_adapts_protocol_response_across_turns() {
 }
 
 #[tokio::test]
+async fn chat_completions_revises_poem_from_feedback_without_repeating_original() {
+    let original = "Dogs flash through rain-wet grass, brave hearts chasing the sun.";
+    let revised = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short poem about dogs."},
+        {"role": "assistant", "content": original},
+        {
+            "role": "user",
+            "content": "Feedback: The image is lively, but it is only one sentence and feels generic. Please revise it into four short lines with a clearer rhythm, more concrete dog details like paws or tails, and a warmer emotional turn. Avoid vague phrases like brave hearts."
+        }
+    ]))
+    .await;
+
+    assert_ne!(revised, original);
+    assert!(!revised.to_ascii_lowercase().contains("brave hearts"));
+    assert!(
+        revised
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            >= 4,
+        "revised poem should use multiple short lines: {revised}"
+    );
+    let lower = revised.to_ascii_lowercase();
+    assert!(lower.contains("paws") || lower.contains("tails"));
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
     let response = build_router()
         .oneshot(

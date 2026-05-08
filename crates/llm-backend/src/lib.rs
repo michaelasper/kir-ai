@@ -322,10 +322,11 @@ impl ModelBackend for DeterministicBackend {
 
 fn deterministic_conversation_response(prompt: &str) -> Option<String> {
     let prompt = prompt.to_ascii_lowercase();
-    if prompt.contains("rewrite") && prompt.contains("feedback") {
+    if (prompt.contains("rewrite") || prompt.contains("revise") || prompt.contains("revised"))
+        && prompt.contains("feedback")
+    {
         Some(
-            "Revised poem: Dogs sprint through morning light, bright paws drumming home."
-                .to_owned(),
+            "Revised poem:\nPaws tap softly by the door,\nTails sweep circles on the floor,\nWarm noses nudge the evening in,\nHome begins where dogs have been.".to_owned(),
         )
     } else if prompt.contains("critique") && prompt.contains("feedback") {
         Some(
