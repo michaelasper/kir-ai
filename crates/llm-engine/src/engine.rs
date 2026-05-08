@@ -580,9 +580,20 @@ impl Default for EngineOptions {
 }
 
 const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+pub const DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS: u32 = 256;
 
-pub fn build_router() -> Router {
-    build_router_with_backend(Box::new(default_backend()))
+/// Fails closed because a production router must be constructed with an
+/// explicit inference backend.
+///
+/// Use `build_router_with_backend` or `build_router_with_backend_and_options`
+/// for real serving. Use `build_router_with_deterministic_test_backend` only
+/// for protocol tests that intentionally do not exercise model inference.
+pub fn build_router() -> Result<Router, EngineConfigError> {
+    Err(EngineConfigError::missing_backend())
+}
+
+pub fn build_router_with_deterministic_test_backend() -> Router {
+    build_router_with_backend(Box::new(deterministic_test_backend()))
 }
 
 pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
@@ -660,6 +671,13 @@ pub struct EngineConfigError {
 }
 
 impl EngineConfigError {
+    fn missing_backend() -> Self {
+        Self {
+            message: "llm-engine router construction requires an explicit backend; use build_router_with_backend(...) for inference or build_router_with_deterministic_test_backend() for protocol tests"
+                .to_owned(),
+        }
+    }
+
     fn invalid_hub_endpoint(endpoint: &str, source: url::ParseError) -> Self {
         Self {
             message: format!("invalid hub endpoint `{endpoint}`: {source}"),
@@ -704,7 +722,7 @@ fn is_loopback_endpoint(endpoint: &url::Url) -> bool {
     }
 }
 
-fn default_backend() -> DeterministicBackend {
+fn deterministic_test_backend() -> DeterministicBackend {
     DeterministicBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
         .with_json_object_protocol()
@@ -2810,7 +2828,7 @@ impl NativeQwenBackend {
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store,
             matvec,
-            max_new_tokens: 1,
+            max_new_tokens: DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
             max_prefill_tokens: 32,
             top_k: 16,
             chunk_rows: 2048,
@@ -5084,6 +5102,21 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_default_max_new_tokens_is_interactive_budget() {
+        assert_eq!(DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, 256);
+        assert_eq!(
+            resolve_native_max_tokens(None, DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS)
+                .expect("omitted max tokens uses native default"),
+            256
+        );
+        assert_eq!(
+            resolve_native_max_tokens(Some(128), DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS)
+                .expect("requests below native default are accepted"),
+            128
+        );
+    }
+
+    #[test]
     fn native_max_tokens_accepts_multi_token_decode_with_cache() {
         assert_eq!(
             resolve_native_max_tokens(Some(2), 4).expect("multi-token decode uses cache"),
@@ -5325,6 +5358,7 @@ mod tests {
             NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
         let metadata = backend.model_metadata();
 
+        assert_eq!(backend.max_new_tokens, DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS);
         assert_eq!(metadata.id, "local-qwen36");
         assert_eq!(metadata.backend, "native-qwen");
         assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));

@@ -39,7 +39,7 @@ async fn duplicate_active_request_id_fails_closed() {
 
 #[tokio::test]
 async fn chat_completions_returns_openai_shape() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -72,8 +72,8 @@ async fn chat_completions_returns_openai_shape() {
 }
 
 #[tokio::test]
-async fn chat_completions_default_backend_remains_protocol_stub_not_fake_chat_inference() {
-    let content = default_chat_content(json!([
+async fn chat_completions_deterministic_protocol_backend_is_not_fake_chat_inference() {
+    let content = deterministic_protocol_chat_content(json!([
         {
             "role": "user",
             "content": "Use codename Saffron-42 and build color teal. What codename and color should you remember?"
@@ -238,7 +238,7 @@ async fn chat_completions_handles_dog_poem_follow_up_turns() {
 
 #[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -266,7 +266,7 @@ async fn chat_completions_rejects_zero_max_tokens() {
 
 #[tokio::test]
 async fn chat_completions_rejects_malformed_json_with_stable_error() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -287,7 +287,7 @@ async fn chat_completions_rejects_malformed_json_with_stable_error() {
 
 #[tokio::test]
 async fn chat_completions_rejects_multiple_choices() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -356,7 +356,7 @@ async fn invalid_chat_request_validates_before_busy_model_permit() {
 
 #[tokio::test]
 async fn chat_completions_rejects_required_tool_choice_without_tools() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -383,7 +383,7 @@ async fn chat_completions_rejects_required_tool_choice_without_tools() {
 
 #[tokio::test]
 async fn chat_completions_returns_required_tool_call_in_protocol_mode() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -417,7 +417,7 @@ async fn chat_completions_returns_required_tool_call_in_protocol_mode() {
 
 #[tokio::test]
 async fn chat_completions_required_any_uses_matching_tool_not_first_tool() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -483,7 +483,7 @@ async fn chat_completions_required_any_uses_matching_tool_not_first_tool() {
 
 #[tokio::test]
 async fn chat_completions_returns_required_tool_arguments_as_json_string() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -536,7 +536,7 @@ async fn chat_completions_returns_required_tool_arguments_as_json_string() {
 
 #[tokio::test]
 async fn chat_completions_auto_read_intent_returns_read_tool_call() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -585,7 +585,7 @@ async fn chat_completions_auto_read_intent_returns_read_tool_call() {
 
 #[tokio::test]
 async fn chat_completions_rejects_unsupported_penalties() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -612,7 +612,7 @@ async fn chat_completions_rejects_unsupported_penalties() {
 
 #[tokio::test]
 async fn chat_completions_rejects_unsupported_logprobs() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -639,7 +639,7 @@ async fn chat_completions_rejects_unsupported_logprobs() {
 
 #[tokio::test]
 async fn chat_completions_rejects_parallel_tool_calls() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -666,7 +666,7 @@ async fn chat_completions_rejects_parallel_tool_calls() {
 
 #[tokio::test]
 async fn chat_completions_accepts_text_content_parts() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -695,7 +695,7 @@ async fn chat_completions_accepts_text_content_parts() {
 
 #[tokio::test]
 async fn chat_completions_rejects_chatml_control_token_in_message_content() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -727,7 +727,7 @@ async fn chat_completions_rejects_chatml_control_token_in_message_content() {
 
 #[tokio::test]
 async fn chat_completions_streams_openai_sse_chunks() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -766,7 +766,7 @@ async fn chat_completions_streams_openai_sse_chunks() {
 
 #[tokio::test]
 async fn chat_completions_streams_usage_when_requested() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -975,7 +975,7 @@ async fn chat_completions_streaming_json_object_validation_errors_are_sse() {
 
 #[tokio::test]
 async fn chat_completions_returns_json_object_in_protocol_mode() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

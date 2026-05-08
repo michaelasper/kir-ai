@@ -50,7 +50,7 @@ cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36 \
-  --max-new-tokens 1 \
+  --max-new-tokens 256 \
   --max-prefill-tokens 32 \
   --native-metal-weight-cache-bytes 8589934592
 ```
@@ -61,8 +61,8 @@ decoded text.
 
 ## Choose Generation Bounds
 
-`--max-new-tokens` caps native generation per request. It defaults to `1` and is
-clamped to at least `1`.
+`--max-new-tokens` caps native generation per request. It defaults to `256` and
+is clamped to at least `1`.
 
 `--max-prefill-tokens` controls how many recent prompt tokens are retained for
 native prefill. It defaults to `32` and is clamped to at least `1`.
@@ -84,13 +84,13 @@ cargo run -p llm-engine -- serve \
   --max-prefill-tokens 8
 ```
 
-Use larger values only when you expect the current CPU-bound path to spend more
-time in prefill:
+Use a larger prefill window only when you expect the current CPU-bound path to
+spend more time in prefill:
 
 ```sh
 cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
-  --max-new-tokens 4 \
+  --max-new-tokens 256 \
   --max-prefill-tokens 64
 ```
 

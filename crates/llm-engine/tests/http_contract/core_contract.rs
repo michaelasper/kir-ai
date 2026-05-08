@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn health_endpoint_reports_no_python_runtime() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -20,7 +20,7 @@ async fn health_endpoint_reports_no_python_runtime() {
 
 #[tokio::test]
 async fn models_endpoint_lists_qwen_alias() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/v1/models")

@@ -88,6 +88,11 @@ performance properties expected from production serving.
 The opt-in `--snapshot` boundary keeps protocol work easy while making native
 model execution explicit.
 
+Rust callers follow the same rule. `build_router()` fails closed when no backend
+is provided, so callers must migrate to `build_router_with_backend(...)` or
+`build_router_with_backend_and_options(...)` for inference. Protocol-only tests
+can opt into `build_router_with_deterministic_test_backend()`.
+
 ## Fail-Closed Semantics
 
 The runtime rejects unsupported behaviour instead of accepting and ignoring it.

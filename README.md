@@ -80,7 +80,7 @@ cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
   --snapshot .llm-models/huggingface/models--Qwen--Qwen3.6-35B-A3B/snapshots/<resolved-commit> \
   --model-id local-qwen36 \
-  --max-new-tokens 1 \
+  --max-new-tokens 256 \
   --max-prefill-tokens 32 \
   --native-metal-weight-cache-bytes 8589934592
 ```

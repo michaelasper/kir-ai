@@ -101,6 +101,11 @@ fn serve_help_prints_without_backend_validation() {
         stdout.contains("--deterministic-test-backend"),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("--max-new-tokens <n>"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("[default: 256]"),
+        "stdout should document the usable native generation default: {stdout}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("requires --snapshot"),

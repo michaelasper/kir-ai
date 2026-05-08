@@ -11,6 +11,7 @@ use llm_backend::{
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
+    build_router_with_deterministic_test_backend,
 };
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
@@ -36,6 +37,18 @@ mod completion_contract;
 mod core_contract;
 #[path = "http_contract/streaming_contract.rs"]
 mod streaming_contract;
+
+#[test]
+fn public_router_builder_requires_explicit_backend() {
+    let Err(err) = build_router() else {
+        panic!("router builder without a backend must fail closed");
+    };
+
+    assert!(
+        err.to_string().contains("explicit backend"),
+        "error should explain how to provide a backend: {err}"
+    );
+}
 
 struct FailingBackend;
 
@@ -650,8 +663,8 @@ async fn protocol_chat_content(messages: Value) -> String {
         .to_owned()
 }
 
-async fn default_chat_content(messages: Value) -> String {
-    let response = build_router()
+async fn deterministic_protocol_chat_content(messages: Value) -> String {
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

@@ -30,7 +30,7 @@ llm-engine serve \
   --addr 127.0.0.1:3000 \
   --snapshot <snapshot-path> \
   --model-id local-qwen36 \
-  --max-new-tokens 1 \
+  --max-new-tokens 256 \
   --max-prefill-tokens 32 \
   --native-metal-weight-cache-bytes 8589934592
 ```
@@ -41,7 +41,7 @@ llm-engine serve \
 | `--deterministic-test-backend` | absent | Enables deterministic protocol mode without model artifacts. Intended for tests and client integration. |
 | `--snapshot <path>` | none | Enables native Qwen backend from a local snapshot directory. |
 | `--model-id <id>` | `local-qwen36` | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
-| `--max-new-tokens <u32>` | `1` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
+| `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Number of recent prompt tokens retained for native Qwen prefill. Values below `1` are clamped to `1`. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |

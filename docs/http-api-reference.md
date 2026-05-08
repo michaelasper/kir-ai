@@ -162,7 +162,7 @@ Request fields:
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
 | `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
 | `top_p` | number | no | Must be finite and in `(0, 1]`. |
-| `max_tokens` | integer | no | Runtime default is `4096`; native backend may cap lower with `--max-new-tokens`. Must be greater than `0`. |
+| `max_tokens` | integer | no | Omitted values use the backend default. Native Qwen defaults to `256` and caps requests with `--max-new-tokens`. Must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 
 Supported roles:
@@ -323,7 +323,7 @@ Request fields:
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
 | `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
 | `top_p` | number | no | Must be finite and in `(0, 1]`. |
-| `max_tokens` | integer | no | Runtime default is `4096`; must be greater than `0`. |
+| `max_tokens` | integer | no | Omitted values use the backend default. Native Qwen defaults to `256` and caps requests with `--max-new-tokens`. Must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 
 Example:

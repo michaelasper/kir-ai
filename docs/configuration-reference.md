@@ -40,7 +40,7 @@ Mise tasks:
 | `--deterministic-test-backend` | boolean | unset | Enables deterministic protocol mode without model artifacts. |
 | `--snapshot` | path | unset | Enables native Qwen backend. Without this flag, `serve` requires `--deterministic-test-backend`. |
 | `--model-id` | string | `local-qwen36` | Served model id for native Qwen mode. |
-| `--max-new-tokens` | `u32` | `1` | Native backend generation cap. Clamped to at least `1`. |
+| `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Number of recent prompt tokens retained for native prefill. Clamped to at least `1`. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
@@ -282,7 +282,7 @@ Chat request defaults:
 | `stream_options.include_usage` | `false` |
 | `temperature` | unset |
 | `top_p` | unset |
-| `max_tokens` | runtime default `4096` |
+| `max_tokens` | backend default; native Qwen uses `256` unless `--max-new-tokens` changes it |
 | `stop` | `[]` |
 
 Completion request defaults:
@@ -291,7 +291,7 @@ Completion request defaults:
 | --- | --- |
 | `stream` | `false` |
 | `stream_options.include_usage` | `false` |
-| `max_tokens` | runtime default `4096` |
+| `max_tokens` | backend default; native Qwen uses `256` unless `--max-new-tokens` changes it |
 | `stop` | `[]` |
 
 Validation rules:

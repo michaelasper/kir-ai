@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn admin_models_endpoint_reports_ready_model() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models")
@@ -22,7 +22,7 @@ async fn admin_models_endpoint_reports_ready_model() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_ready_model() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/local-qwen36")
@@ -415,7 +415,7 @@ async fn admin_metrics_report_quarantined_model_store_usage() {
 
 #[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/not-loaded")
@@ -434,7 +434,7 @@ async fn admin_model_endpoint_uses_stable_missing_model_error() {
 
 #[tokio::test]
 async fn admin_metrics_report_inference_counts_and_tokens() {
-    let app = build_router();
+    let app = build_router_with_deterministic_test_backend();
     let response = app
         .clone()
         .oneshot(
@@ -537,7 +537,7 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
 
 #[tokio::test]
 async fn admin_metrics_report_process_rss_bytes() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/metrics")
@@ -559,7 +559,7 @@ async fn admin_metrics_report_process_rss_bytes() {
 
 #[tokio::test]
 async fn admin_metrics_report_stream_time_to_first_token() {
-    let app = build_router();
+    let app = build_router_with_deterministic_test_backend();
     let response = app
         .clone()
         .oneshot(
@@ -980,7 +980,7 @@ async fn admin_cancel_request_cancels_active_text_completion() {
 
 #[tokio::test]
 async fn admin_cancel_request_reports_unknown_request_id() {
-    let response = build_router()
+    let response = build_router_with_deterministic_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

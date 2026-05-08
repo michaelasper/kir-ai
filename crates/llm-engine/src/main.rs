@@ -7,7 +7,8 @@ use llm_backend::{
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    EngineOptions, NativeQwenBackend, NativeQwenLoadOptions, build_router_with_backend_and_options,
+    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, EngineOptions, NativeQwenBackend, NativeQwenLoadOptions,
+    build_router_with_backend_and_options,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, ProtectedSnapshot,
@@ -71,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
                     .map(str::parse::<u32>)
                     .transpose()?
-                    .unwrap_or(1);
+                    .unwrap_or(DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS);
                 let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
                     .map(str::parse::<usize>)
                     .transpose()?
@@ -145,7 +146,7 @@ Options:
   --snapshot <path>                          Native Qwen snapshot path
   --model-id <id>                            Served model id [default: local-qwen36]
   --deterministic-test-backend               Use deterministic protocol backend
-  --max-new-tokens <n>                       Native Qwen maximum generated tokens
+  --max-new-tokens <n>                       Native Qwen maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
   --admin-token <token>                      Bearer token for admin endpoints
