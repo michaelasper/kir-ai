@@ -1,6 +1,7 @@
 use llm_backend::{
     QwenFullAttentionDims, QwenLinearAttentionDims, qwen_full_attention_first_token_from_parts,
-    qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
+    qwen_full_attention_sequence_from_parts, qwen_linear_attention_first_token_from_parts,
+    qwen_linear_attention_sequence_from_parts,
 };
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
@@ -152,6 +153,48 @@ fn qwen_full_attention_first_token_matches_single_key_reference() {
         .expect("full attention output");
 
     assert_close(&output, &[12.0], 1e-6);
+}
+
+#[test]
+fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
+    let dims = QwenFullAttentionDims {
+        hidden_size: 2,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+    };
+    let q_proj = vec![vec![1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]];
+    let k_proj = vec![vec![1.0, 0.0], vec![1.0, 0.0]];
+    let v_proj = vec![vec![2.0, 0.0], vec![0.0, 4.0]];
+    let q_norm_weight = vec![0.0, 0.0];
+    let k_norm_weight = vec![0.0, 0.0];
+    let o_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+
+    let output = qwen_full_attention_sequence_from_parts(
+        &dims,
+        &q_proj,
+        &k_proj,
+        &v_proj,
+        &q_norm_weight,
+        &k_norm_weight,
+        &o_proj_weight,
+        0.0,
+        10_000.0,
+        1.0,
+    )
+    .expect("full attention sequence");
+
+    let score0 = 2.0_f32.sqrt() * 1.0_f32.cos();
+    let score1 = 2.0_f32.sqrt();
+    let max_score = score0.max(score1);
+    let exp0 = (score0 - max_score).exp();
+    let exp1 = (score1 - max_score).exp();
+    let sum = exp0 + exp1;
+    let w0 = exp0 / sum;
+    let w1 = exp1 / sum;
+
+    assert_close(&output[0], &[1.0, 0.0], 1e-6);
+    assert_close(&output[1], &[w0, 2.0 * w1], 1e-6);
 }
 
 fn rms_pair(values: [f32; 2], gate: f32) -> Vec<f32> {

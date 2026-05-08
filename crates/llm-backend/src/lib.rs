@@ -759,6 +759,153 @@ pub fn qwen_full_attention_first_token_from_parts(
     matvec_row_major_f32(&gated, o_proj_weight, dims.hidden_size, attention_dim)
 }
 
+pub fn qwen_full_attention_sequence_from_parts(
+    dims: &QwenFullAttentionDims,
+    q_proj: &[Vec<f32>],
+    k_proj: &[Vec<f32>],
+    v_proj: &[Vec<f32>],
+    q_norm_weight: &[f32],
+    k_norm_weight: &[f32],
+    o_proj_weight: &[f32],
+    rms_norm_eps: f32,
+    rope_theta: f32,
+    partial_rotary_factor: f32,
+) -> Result<Vec<Vec<f32>>, MathError> {
+    if q_proj.is_empty() {
+        return Ok(Vec::new());
+    }
+    if dims.num_attention_heads == 0
+        || dims.num_key_value_heads == 0
+        || dims.head_dim == 0
+        || dims.hidden_size == 0
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen full attention dimensions must be non-zero".to_owned(),
+        ));
+    }
+    if !dims
+        .num_attention_heads
+        .is_multiple_of(dims.num_key_value_heads)
+    {
+        return Err(MathError::InvalidShape(
+            "Qwen attention heads must be divisible by key/value heads".to_owned(),
+        ));
+    }
+    if rope_theta <= 0.0 || partial_rotary_factor < 0.0 {
+        return Err(MathError::InvalidShape(
+            "Qwen RoPE parameters must be positive".to_owned(),
+        ));
+    }
+    let seq_len = q_proj.len();
+    if k_proj.len() != seq_len || v_proj.len() != seq_len {
+        return Err(MathError::InvalidShape(
+            "Qwen full attention sequence inputs must have the same length".to_owned(),
+        ));
+    }
+    let attention_dim = dims.attention_dim()?;
+    let key_value_dim = dims.key_value_dim()?;
+    require_len("q norm weight", q_norm_weight.len(), dims.head_dim)?;
+    require_len("k norm weight", k_norm_weight.len(), dims.head_dim)?;
+    require_len(
+        "o projection weight",
+        o_proj_weight.len(),
+        dims.hidden_size
+            .checked_mul(attention_dim)
+            .ok_or_else(|| MathError::InvalidShape("Qwen o projection overflow".to_owned()))?,
+    )?;
+    let rotary_dim = ((dims.head_dim as f32) * partial_rotary_factor).round() as usize;
+    if rotary_dim > dims.head_dim || !rotary_dim.is_multiple_of(2) {
+        return Err(MathError::InvalidShape(format!(
+            "Qwen rotary dimension {rotary_dim} must be even and <= head dim {}",
+            dims.head_dim
+        )));
+    }
+
+    let mut queries = vec![vec![0.0; attention_dim]; seq_len];
+    let mut gates = vec![vec![0.0; attention_dim]; seq_len];
+    let mut keys = vec![vec![0.0; key_value_dim]; seq_len];
+    for token_idx in 0..seq_len {
+        require_len("q projection", q_proj[token_idx].len(), attention_dim * 2)?;
+        require_len("k projection", k_proj[token_idx].len(), key_value_dim)?;
+        require_len("v projection", v_proj[token_idx].len(), key_value_dim)?;
+
+        for head in 0..dims.num_attention_heads {
+            let projected_head_start = head * dims.head_dim * 2;
+            let q_start = head * dims.head_dim;
+            let query = qwen_rms_norm_f32(
+                &q_proj[token_idx][projected_head_start..projected_head_start + dims.head_dim],
+                q_norm_weight,
+                rms_norm_eps,
+            )?;
+            queries[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(&query);
+            gates[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(
+                &q_proj[token_idx][projected_head_start + dims.head_dim
+                    ..projected_head_start + dims.head_dim * 2],
+            );
+            apply_rope_to_head(
+                &mut queries[token_idx][q_start..q_start + dims.head_dim],
+                token_idx,
+                rotary_dim,
+                rope_theta,
+            );
+        }
+        for head in 0..dims.num_key_value_heads {
+            let head_start = head * dims.head_dim;
+            let key = qwen_rms_norm_f32(
+                &k_proj[token_idx][head_start..head_start + dims.head_dim],
+                k_norm_weight,
+                rms_norm_eps,
+            )?;
+            keys[token_idx][head_start..head_start + dims.head_dim].copy_from_slice(&key);
+            apply_rope_to_head(
+                &mut keys[token_idx][head_start..head_start + dims.head_dim],
+                token_idx,
+                rotary_dim,
+                rope_theta,
+            );
+        }
+    }
+
+    let groups = dims.num_attention_heads / dims.num_key_value_heads;
+    let scale = (dims.head_dim as f32).sqrt().recip();
+    let mut outputs = Vec::with_capacity(seq_len);
+    for token_idx in 0..seq_len {
+        let mut attended = vec![0.0; attention_dim];
+        for head in 0..dims.num_attention_heads {
+            let kv_head = head / groups;
+            let q_start = head * dims.head_dim;
+            let kv_start = kv_head * dims.head_dim;
+            let mut scores = Vec::with_capacity(token_idx + 1);
+            for source_idx in 0..=token_idx {
+                let score = queries[token_idx][q_start..q_start + dims.head_dim]
+                    .iter()
+                    .zip(&keys[source_idx][kv_start..kv_start + dims.head_dim])
+                    .map(|(query, key)| query * key)
+                    .sum::<f32>()
+                    * scale;
+                scores.push(score);
+            }
+            let weights = softmax_f32(&scores)?;
+            for (source_idx, weight) in weights.into_iter().enumerate() {
+                for offset in 0..dims.head_dim {
+                    attended[q_start + offset] += weight * v_proj[source_idx][kv_start + offset];
+                }
+            }
+            for offset in 0..dims.head_dim {
+                attended[q_start + offset] *= sigmoid_f32(gates[token_idx][q_start + offset]);
+            }
+        }
+        outputs.push(matvec_row_major_f32(
+            &attended,
+            o_proj_weight,
+            dims.hidden_size,
+            attention_dim,
+        )?);
+    }
+
+    Ok(outputs)
+}
+
 pub fn qwen_layer0_linear_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
@@ -1214,11 +1361,50 @@ fn sigmoid_f32(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
+fn softmax_f32(scores: &[f32]) -> Result<Vec<f32>, MathError> {
+    if scores.is_empty() {
+        return Ok(Vec::new());
+    }
+    if scores.iter().any(|value| !value.is_finite()) {
+        return Err(MathError::InvalidShape(
+            "softmax scores must be finite".to_owned(),
+        ));
+    }
+    let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exp_scores = scores
+        .iter()
+        .map(|score| (*score - max_score).exp())
+        .collect::<Vec<_>>();
+    let sum = exp_scores.iter().sum::<f32>();
+    if sum == 0.0 || !sum.is_finite() {
+        return Err(MathError::InvalidShape(
+            "softmax denominator is invalid".to_owned(),
+        ));
+    }
+    Ok(exp_scores.into_iter().map(|value| value / sum).collect())
+}
+
 fn softplus_f32(value: f32) -> f32 {
     if value > 20.0 {
         value
     } else {
         (1.0 + value.exp()).ln()
+    }
+}
+
+fn apply_rope_to_head(head: &mut [f32], position: usize, rotary_dim: usize, theta: f32) {
+    if rotary_dim == 0 {
+        return;
+    }
+    let half = rotary_dim / 2;
+    for offset in 0..half {
+        let inv_freq = theta.powf(-((2 * offset) as f32) / rotary_dim as f32);
+        let angle = position as f32 * inv_freq;
+        let (sin, cos) = angle.sin_cos();
+        let first = head[offset];
+        let second = head[offset + half];
+        head[offset] = first * cos - second * sin;
+        head[offset + half] = second * cos + first * sin;
     }
 }
 
