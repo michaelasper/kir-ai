@@ -98,6 +98,7 @@ Current commits:
 - `9b54269` - Runtime and HTTP streaming consume backend chunks incrementally instead of prebuilding full SSE vectors.
 - `dc0b86e` - HTTP request validation runs before SSE construction or model scheduling.
 - `e8e51b3` - Model pulls use unique staging directories and clean loser staging after concurrent promotion races.
+- `b005401` - Native Qwen multi-token decode fails closed until reusable KV/recurrent cache exists.
 
 Current verified state:
 
@@ -159,12 +160,13 @@ Current verified state:
 - Streaming HTTP handlers now return SSE responses before backend generation completes, keep the model concurrency permit alive inside the body stream, and forward runtime stream events without prebuilding an SSE vector. `ModelBackend::generate_stream` exposes backend text deltas; runtime and HTTP tests verify that a backend chunk reaches the client before the backend releases its final chunk. Native Qwen serving sends decoded per-token deltas through the same path.
 - Chat and text completion handlers now validate parsed request semantics before acquiring the model semaphore, so malformed or unsupported requests return stable 4xx JSON errors even while the model is busy. Streaming request-validation failures and buffered streaming response-validation failures return JSON errors before SSE starts.
 - Model-store staging directories now include a per-request unique suffix instead of sharing one deterministic `.partial` path. If another pull has already promoted the target snapshot, the losing staging directory is removed and the existing snapshot is verified and reused.
+- Native Qwen serving no longer enters the known multi-token path that reran bounded prefill for every generated token. Until a reusable KV/recurrent cache exists, omitted native Qwen token limits resolve to one generated token and explicit `max_tokens > 1` fails as an unsupported capability.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
-- Multi-token decode state is implemented by recomputing the bounded context window, not by maintaining reusable KV/recurrent caches. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
+- Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches exist. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, and incremental backend text chunks. Stream heartbeats during long prefill, stream stall detection, and disconnect cancellation are not complete; tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
