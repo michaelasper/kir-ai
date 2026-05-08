@@ -508,12 +508,30 @@ impl ModelStore {
         })
     }
 
+    pub async fn verify_existing_snapshot(
+        &self,
+        plan: &DownloadPlan,
+    ) -> Result<Option<PromotedSnapshot>, HubError> {
+        let snapshot = self.snapshot_path(plan);
+        if !tokio::fs::try_exists(&snapshot)
+            .await
+            .map_err(HubError::io)?
+        {
+            return Ok(None);
+        }
+        self.verify_snapshot_files(plan, &snapshot).await?;
+        Ok(Some(self.write_snapshot_manifest(plan, snapshot).await?))
+    }
+
     pub async fn pull_plan(
         &self,
         client: &HubClient,
         plan: &DownloadPlan,
         token: Option<&str>,
     ) -> Result<PromotedSnapshot, HubError> {
+        if let Some(snapshot) = self.verify_existing_snapshot(plan).await? {
+            return Ok(snapshot);
+        }
         let staging = self.create_staging_dir(plan).await?;
         for file in &plan.files_to_download {
             client
@@ -528,6 +546,56 @@ impl ModelStore {
                 .await?;
         }
         self.promote_staging(plan, staging).await
+    }
+
+    async fn verify_snapshot_files(
+        &self,
+        plan: &DownloadPlan,
+        snapshot: &Path,
+    ) -> Result<(), HubError> {
+        for file in &plan.files_to_download {
+            let path = snapshot.join(&file.path);
+            let metadata = tokio::fs::metadata(&path).await.map_err(|err| {
+                HubError::integrity_failed(format!(
+                    "snapshot file `{}` is missing or unreadable: {err}",
+                    path.display()
+                ))
+            })?;
+            if !metadata.is_file() {
+                return Err(HubError::integrity_failed(format!(
+                    "snapshot path `{}` is not a file",
+                    path.display()
+                )));
+            }
+            if metadata.len() != file.size {
+                return Err(HubError::integrity_failed(format!(
+                    "snapshot file `{}` has size {}, expected {}",
+                    path.display(),
+                    metadata.len(),
+                    file.size
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn write_snapshot_manifest(
+        &self,
+        plan: &DownloadPlan,
+        snapshot: PathBuf,
+    ) -> Result<PromotedSnapshot, HubError> {
+        let manifest = SnapshotManifest::from_plan(plan, snapshot.display().to_string());
+        let manifest_digest = manifest.digest();
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|err| HubError::invalid_response(format!("manifest JSON failed: {err}")))?;
+        tokio::fs::write(snapshot.join("llm-engine-manifest.json"), manifest_bytes)
+            .await
+            .map_err(HubError::io)?;
+        Ok(PromotedSnapshot {
+            path: snapshot,
+            manifest,
+            manifest_digest,
+        })
     }
 
     fn repo_root(&self, repo_id: &HubRepoId) -> PathBuf {

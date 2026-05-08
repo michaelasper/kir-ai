@@ -30,3 +30,42 @@ async fn promotes_staged_snapshot_with_manifest() {
     assert_eq!(snapshot.manifest.resolved_commit, plan.resolved_commit);
     assert_eq!(snapshot.manifest_digest.len(), 64);
 }
+
+#[tokio::test]
+async fn verifies_existing_snapshot_and_refreshes_manifest_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+
+    let snapshot = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+
+    assert_eq!(snapshot.path, snapshot_path);
+    assert_eq!(snapshot.manifest.profile, "qwen36-safetensors-bf16");
+    assert_eq!(snapshot.manifest.loader, "native-metal");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &tokio::fs::read(snapshot_path.join("llm-engine-manifest.json"))
+            .await
+            .expect("manifest bytes"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["profile"], "qwen36-safetensors-bf16");
+}

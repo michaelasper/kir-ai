@@ -69,7 +69,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 .get(1)
                 .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model {subcommand} <repo>"))?;
             let revision = flag_value(&args, "--revision").unwrap_or("main");
-            let profile_name = flag_value(&args, "--profile").unwrap_or("qwen36-mlx-4bit");
+            let profile_name = flag_value(&args, "--profile").unwrap_or("qwen36-safetensors-bf16");
             let metadata_only = args.iter().any(|arg| arg == "--metadata-only");
             let profile = match profile_name {
                 "qwen36-mlx-4bit" => ModelProfile::qwen36_mlx_4bit(),
