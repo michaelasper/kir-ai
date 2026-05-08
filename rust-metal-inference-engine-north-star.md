@@ -233,6 +233,7 @@ Current verified state:
 - `GET /admin/metrics` now records streamed time-to-first-token summaries from the first real content/tool/text delta.
 - `GET /admin/metrics` now exposes explicit prefill and decode phase gauges for the current single-stage scheduler.
 - `GET /admin/metrics` now reports model pull operation counts, success/failure counts, and promoted manifest bytes for admin pull operations.
+- `GET /admin/metrics` now reports manifest-backed model-store snapshot count and total artifact bytes from the configured model home.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.

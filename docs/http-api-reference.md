@@ -106,7 +106,8 @@ cumulative admin-triggered `cancelled_requests`, cumulative `no_progress_failure
 `request_latency_ms`, streamed `time_to_first_token_ms`, and cumulative
 `tokens_per_second`. Model-store pull counters are reported separately as
 `model_pull_operations`, `model_pull_successes`, `model_pull_failures`, and
-`model_pull_bytes`.
+`model_pull_bytes`. The response also reports manifest-backed model-store usage
+as `model_store_snapshots` and `model_store_bytes`.
 
 ## `POST /admin/models/{alias}/verify`
 

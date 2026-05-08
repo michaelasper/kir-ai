@@ -883,6 +883,7 @@ async fn admin_metrics(
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
     let time_to_first_token = metrics.time_to_first_token();
+    let model_store_usage = model_store_usage(&state).await?;
     let active_requests = state
         .active_requests
         .lock()
@@ -903,6 +904,8 @@ async fn admin_metrics(
         "model_pull_successes": metrics.model_pull_successes(),
         "model_pull_failures": metrics.model_pull_failures(),
         "model_pull_bytes": metrics.model_pull_bytes(),
+        "model_store_snapshots": model_store_usage.snapshots,
+        "model_store_bytes": model_store_usage.bytes,
         "tokens_per_second": metrics.tokens_per_second(),
         "request_latency_ms": {
             "count": request_latency.count(),
@@ -922,6 +925,28 @@ async fn admin_metrics(
             "total_tokens": tokens.total_tokens(),
         }
     })))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModelStoreUsage {
+    snapshots: usize,
+    bytes: u64,
+}
+
+async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineError> {
+    let snapshots = ModelStore::new(&state.model_home)
+        .list_snapshots()
+        .await
+        .map_err(EngineError::ModelStore)?;
+    let bytes = snapshots
+        .iter()
+        .flat_map(|snapshot| &snapshot.manifest.files)
+        .map(|file| file.size)
+        .sum();
+    Ok(ModelStoreUsage {
+        snapshots: snapshots.len(),
+        bytes,
+    })
 }
 
 async fn admin_cancel_request(
