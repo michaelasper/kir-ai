@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenCounters {
     prompt_tokens: u64,
@@ -31,6 +33,52 @@ impl TokenCounters {
     pub fn record_completion_tokens(&mut self, tokens: u64) {
         self.completion_tokens += tokens;
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LatencyMetrics {
+    count: u64,
+    total_nanos: u128,
+    min_nanos: Option<u128>,
+    max_nanos: u128,
+}
+
+impl LatencyMetrics {
+    pub fn record(&mut self, duration: Duration) {
+        let nanos = duration.as_nanos();
+        self.count += 1;
+        self.total_nanos += nanos;
+        self.min_nanos = Some(self.min_nanos.map_or(nanos, |current| current.min(nanos)));
+        self.max_nanos = self.max_nanos.max(nanos);
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub fn min_ms(&self) -> f64 {
+        nanos_to_ms(self.min_nanos.unwrap_or(0))
+    }
+
+    pub fn max_ms(&self) -> f64 {
+        nanos_to_ms(self.max_nanos)
+    }
+
+    pub fn avg_ms(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            nanos_to_ms(self.total_nanos / u128::from(self.count))
+        }
+    }
+
+    pub fn total_seconds(&self) -> f64 {
+        self.total_nanos as f64 / 1_000_000_000.0
+    }
+}
+
+fn nanos_to_ms(nanos: u128) -> f64 {
+    nanos as f64 / 1_000_000.0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,16 +120,18 @@ pub struct ServerMetrics {
     streamed_requests: u64,
     cancelled_requests: u64,
     no_progress_failures: u64,
+    request_latency: LatencyMetrics,
     tokens: TokenCounters,
 }
 
 impl ServerMetrics {
-    pub fn record_success(&mut self, tokens: TokenCounters, streamed: bool) {
+    pub fn record_success(&mut self, tokens: TokenCounters, streamed: bool, latency: Duration) {
         self.requests_total += 1;
         self.successful_requests += 1;
         if streamed {
             self.streamed_requests += 1;
         }
+        self.request_latency.record(latency);
         self.tokens.record_prompt_tokens(tokens.prompt_tokens());
         self.tokens
             .record_completion_tokens(tokens.completion_tokens());
@@ -124,6 +174,19 @@ impl ServerMetrics {
         self.no_progress_failures
     }
 
+    pub fn request_latency(&self) -> LatencyMetrics {
+        self.request_latency
+    }
+
+    pub fn tokens_per_second(&self) -> f64 {
+        let seconds = self.request_latency.total_seconds();
+        if seconds == 0.0 {
+            0.0
+        } else {
+            self.tokens.total_tokens() as f64 / seconds
+        }
+    }
+
     pub fn tokens(&self) -> TokenCounters {
         self.tokens
     }
@@ -160,8 +223,8 @@ mod tests {
     fn server_metrics_tracks_success_failure_streams_and_tokens() {
         let mut metrics = ServerMetrics::default();
 
-        metrics.record_success(TokenCounters::new(4, 1), false);
-        metrics.record_success(TokenCounters::new(8, 2), true);
+        metrics.record_success(TokenCounters::new(4, 1), false, Duration::from_millis(10));
+        metrics.record_success(TokenCounters::new(8, 2), true, Duration::from_millis(30));
         metrics.record_failure();
 
         assert_eq!(metrics.requests_total(), 3);
@@ -171,6 +234,11 @@ mod tests {
         assert_eq!(metrics.cancelled_requests(), 0);
         assert_eq!(metrics.no_progress_failures(), 0);
         assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
+        assert_eq!(metrics.request_latency().count(), 2);
+        assert_eq!(metrics.request_latency().min_ms(), 10.0);
+        assert_eq!(metrics.request_latency().max_ms(), 30.0);
+        assert_eq!(metrics.request_latency().avg_ms(), 20.0);
+        assert_eq!(metrics.tokens_per_second(), 375.0);
 
         metrics.record_cancellation();
         assert_eq!(metrics.cancelled_requests(), 1);

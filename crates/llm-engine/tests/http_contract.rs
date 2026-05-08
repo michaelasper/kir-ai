@@ -318,6 +318,21 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
     assert_eq!(body["tokens"]["completion_tokens"], 5);
     assert_eq!(body["tokens"]["total_tokens"], 6);
+    assert_eq!(body["request_latency_ms"]["count"], 1);
+    assert!(
+        body["request_latency_ms"]["max"]
+            .as_f64()
+            .expect("latency max is numeric")
+            >= body["request_latency_ms"]["min"]
+                .as_f64()
+                .expect("latency min is numeric")
+    );
+    assert!(
+        body["tokens_per_second"]
+            .as_f64()
+            .expect("tokens per second is numeric")
+            > 0.0
+    );
 }
 
 #[tokio::test]

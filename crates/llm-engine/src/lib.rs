@@ -44,7 +44,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -867,6 +867,7 @@ async fn admin_metrics(
     require_admin(&state, &headers)?;
     let metrics = *state.metrics.lock().expect("metrics lock is not poisoned");
     let tokens = metrics.tokens();
+    let request_latency = metrics.request_latency();
     Ok(Json(json!({
         "requests_total": metrics.requests_total(),
         "successful_requests": metrics.successful_requests(),
@@ -880,6 +881,13 @@ async fn admin_metrics(
         "queued_requests": 0,
         "cancelled_requests": metrics.cancelled_requests(),
         "no_progress_failures": metrics.no_progress_failures(),
+        "tokens_per_second": metrics.tokens_per_second(),
+        "request_latency_ms": {
+            "count": request_latency.count(),
+            "min": request_latency.min_ms(),
+            "max": request_latency.max_ms(),
+            "avg": request_latency.avg_ms(),
+        },
         "tokens": {
             "prompt_tokens": tokens.prompt_tokens(),
             "completion_tokens": tokens.completion_tokens(),
@@ -922,6 +930,7 @@ async fn chat_completions(
         let permit = acquire_model_permit(&state)?;
         let active_request = register_active_request(&state, &headers)?;
         let request_id = active_request.id.clone();
+        let request_started = Instant::now();
         if chat_stream_requires_buffering(&request) {
             let response = match state
                 .runtime
@@ -944,7 +953,7 @@ async fn chat_completions(
                             yield sse_json_event(chunk);
                         }
                         Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                            record_success_metrics(&state, &usage, streamed);
+                            record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                             yield Ok(Event::default().data("[DONE]"));
                         }
                         Ok(Some(Err(err))) => {
@@ -971,6 +980,7 @@ async fn chat_completions(
             insert_request_id_header(&mut response, &request_id);
             return Ok(response);
         }
+        let request_started = Instant::now();
         let events = async_stream::stream! {
             let _permit = permit;
             let _active_request = active_request;
@@ -987,7 +997,7 @@ async fn chat_completions(
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                                record_success_metrics(&state, &usage, streamed);
+                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
@@ -1025,6 +1035,7 @@ async fn chat_completions(
     let _permit = acquire_model_permit(&state)?;
     let active_request = register_active_request(&state, &headers)?;
     let request_id = active_request.id.clone();
+    let request_started = Instant::now();
     let response = match state
         .runtime
         .chat_with_cancel(request, active_request.cancellation.clone())
@@ -1037,7 +1048,7 @@ async fn chat_completions(
         }
     };
     drop(active_request);
-    record_success_metrics(&state, &response.usage, streamed);
+    record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
     let mut response = Json(response).into_response();
     insert_request_id_header(&mut response, &request_id);
     Ok(response)
@@ -1055,6 +1066,7 @@ async fn completions(
         let permit = acquire_model_permit(&state)?;
         let active_request = register_active_request(&state, &headers)?;
         let request_id = active_request.id.clone();
+        let request_started = Instant::now();
         let events = async_stream::stream! {
             let _permit = permit;
             let _active_request = active_request;
@@ -1071,7 +1083,7 @@ async fn completions(
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(CompletionStreamEvent::Complete(usage)))) => {
-                                record_success_metrics(&state, &usage, streamed);
+                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
@@ -1109,6 +1121,7 @@ async fn completions(
     let _permit = acquire_model_permit(&state)?;
     let active_request = register_active_request(&state, &headers)?;
     let request_id = active_request.id.clone();
+    let request_started = Instant::now();
     let response = match state
         .runtime
         .completion_with_cancel(request, active_request.cancellation.clone())
@@ -1121,7 +1134,7 @@ async fn completions(
         }
     };
     drop(active_request);
-    record_success_metrics(&state, &response.usage, streamed);
+    record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
     let mut response = Json(response).into_response();
     insert_request_id_header(&mut response, &request_id);
     Ok(response)
@@ -1198,7 +1211,7 @@ fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     Ok(Event::default().data(data))
 }
 
-fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool) {
+fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool, latency: Duration) {
     state
         .metrics
         .lock()
@@ -1206,6 +1219,7 @@ fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool) {
         .record_success(
             TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
             streamed,
+            latency,
         );
 }
 
