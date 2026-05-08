@@ -23,6 +23,7 @@ use llm_backend::{
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
     TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
     qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
+    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -1314,28 +1315,14 @@ impl NativeQwenBackend {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let mut hidden = None;
-        for token_id in context_tokens {
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            hidden = Some(
-                qwen_decode_token_with_cache_with_matvec(
-                    &self.store,
-                    &self.spec,
-                    *token_id,
-                    &mut caches,
-                    &self.matvec,
-                )
-                .map_err(|err| BackendError::Other(err.to_string()))?,
-            );
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-        }
-        let hidden = hidden.ok_or_else(|| {
-            BackendError::Other("Qwen prefill returned no hidden states".to_owned())
-        })?;
+        let hidden = native_qwen_prefill_context_with_cache(
+            &self.store,
+            &self.spec,
+            context_tokens,
+            &mut caches,
+            &self.matvec,
+            cancellation,
+        )?;
         Ok(NativeQwenDecodeSession { hidden, caches })
     }
 
@@ -1389,6 +1376,29 @@ impl NativeQwenBackend {
             token_id: item.index,
         })
     }
+}
+
+fn native_qwen_prefill_context_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    context_tokens: &[usize],
+    caches: &mut [QwenLayerCache],
+    matvec: &impl QwenMatvecBackend,
+    cancellation: &CancellationToken,
+) -> Result<Vec<f32>, BackendError> {
+    if cancellation.is_cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    let hidden_states =
+        qwen_prefill_sequence_with_cache_with_matvec(store, spec, context_tokens, caches, matvec)
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+    if cancellation.is_cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    hidden_states
+        .last()
+        .cloned()
+        .ok_or_else(|| BackendError::Other("Qwen prefill returned no hidden states".to_owned()))
 }
 
 struct NativeQwenDecodeSession {
@@ -2682,6 +2692,34 @@ mod tests {
             .expect("decode session starts");
 
         match &decode.caches[0] {
+            QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+            QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
+        let snapshot = temp_snapshot_dir("sequence-prefill");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_linear_decoder_snapshot(&snapshot);
+        let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+        let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
+
+        let hidden = native_qwen_prefill_context_with_cache(
+            &store,
+            &spec,
+            &[0, 1, 0],
+            &mut caches,
+            &NativeQwenMatvecBackend::Cpu,
+            &CancellationToken::new(),
+        )
+        .expect("sequence prefill succeeds");
+
+        assert_eq!(hidden.len(), 2);
+        match &caches[0] {
             QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
             QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
         }
