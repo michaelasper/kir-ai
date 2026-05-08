@@ -118,15 +118,18 @@ pub trait ModelBackend: Send + Sync + 'static {
         BackendModelMetadata::new(self.model_id(), "unknown")
     }
 
+    /// Non-cancellable generation entry point for direct backend callers.
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
 
+    /// Cancellable generation entry point used by the production runtime.
+    ///
+    /// Implementations must observe a pre-cancelled token and should bound
+    /// cancellation latency during long-running prefill/decode work.
     async fn generate_with_cancel(
         &self,
         request: BackendRequest,
-        _cancellation: CancellationToken,
-    ) -> Result<BackendOutput, BackendError> {
-        self.generate(request).await
-    }
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError>;
 
     fn generate_stream<'a>(
         &'a self,
@@ -148,9 +151,19 @@ pub trait ModelBackend: Send + Sync + 'static {
     fn generate_stream_with_cancel<'a>(
         &'a self,
         request: BackendRequest,
-        _cancellation: CancellationToken,
+        cancellation: CancellationToken,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
-        self.generate_stream(request)
+        stream::once(async move {
+            self.generate_with_cancel(request, cancellation)
+                .await
+                .map(|output| BackendStreamChunk {
+                    text: output.text,
+                    prompt_tokens: output.prompt_tokens,
+                    completion_tokens: output.completion_tokens,
+                    finish_reason: Some(output.finish_reason),
+                })
+        })
+        .boxed()
     }
 }
 
@@ -292,6 +305,17 @@ impl ModelBackend for DeterministicBackend {
             prompt_tokens: count_tokens(&request.prompt),
             finish_reason,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.generate(request).await
     }
 }
 
@@ -3662,6 +3686,67 @@ impl TensorLoadError {
         Self {
             code: "unsupported_capability",
             message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::{StreamExt, executor::block_on};
+    use tokio_util::sync::CancellationToken;
+
+    struct CancelAwareBackend;
+
+    #[async_trait]
+    impl ModelBackend for CancelAwareBackend {
+        fn model_id(&self) -> &str {
+            "local-qwen36"
+        }
+
+        async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+            Ok(BackendOutput {
+                text: "uncancelled".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: FinishReason::Stop,
+            })
+        }
+
+        async fn generate_with_cancel(
+            &self,
+            request: BackendRequest,
+            cancellation: CancellationToken,
+        ) -> Result<BackendOutput, BackendError> {
+            if cancellation.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+            self.generate(request).await
+        }
+    }
+
+    #[test]
+    fn default_stream_with_cancel_uses_cancellable_generation() {
+        let backend = CancelAwareBackend;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut stream =
+            backend.generate_stream_with_cancel(backend_request("hello"), cancellation);
+
+        let result = block_on(stream.next()).expect("stream emits one result");
+
+        assert!(matches!(result, Err(BackendError::Cancelled)));
+    }
+
+    fn backend_request(prompt: &str) -> BackendRequest {
+        BackendRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: prompt.to_owned(),
+            max_tokens: Some(1),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
         }
     }
 }

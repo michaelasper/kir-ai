@@ -938,6 +938,14 @@ impl ModelBackend for RecordingBackend {
             finish_reason: FinishReason::Stop,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -957,6 +965,14 @@ impl ModelBackend for RecordingSamplingBackend {
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 }
 
@@ -993,6 +1009,14 @@ impl ModelBackend for CancellableStreamBackend {
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 
     fn generate_stream_with_cancel<'a>(
@@ -1061,6 +1085,14 @@ impl ModelBackend for TwoChunkStreamBackend {
         })
     }
 
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
     fn generate_stream<'a>(
         &'a self,
         _request: BackendRequest,
@@ -1085,6 +1117,17 @@ impl ModelBackend for TwoChunkStreamBackend {
         }
         .boxed()
     }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1102,6 +1145,14 @@ impl ModelBackend for BlockingTextBackend {
             finish_reason: FinishReason::Stop,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1114,6 +1165,14 @@ impl ModelBackend for StopStreamingBackend {
         Err(BackendError::Other(
             "stop streaming test must use generate_stream".to_owned(),
         ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 
     fn generate_stream<'a>(
@@ -1136,4 +1195,26 @@ impl ModelBackend for StopStreamingBackend {
         }
         .boxed()
     }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
+}
+
+async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
+    backend: &B,
+    request: BackendRequest,
+    cancellation: CancellationToken,
+) -> Result<BackendOutput, BackendError> {
+    if cancellation.is_cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    backend.generate(request).await
 }

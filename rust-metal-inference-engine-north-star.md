@@ -212,6 +212,7 @@ Current verified state:
 - Safetensors shards can now be materialized through a read-only mmap cache. The shard store exposes per-tensor materialization, counts materialized cached shards, and serves validated tensor byte ranges from the mmap once populated.
 - Safetensors BF16 tensor ranges can now be read either as expanded `f32` values or as raw little-endian BF16 bit words, giving acceleration paths a lossless weight representation without re-reading shard bytes.
 - Streaming backend requests now carry a cancellation token. Dropping an HTTP SSE body cancels the runtime/backend stream, and the native Qwen stream path checks cancellation before and after bounded blocking decode steps.
+- `ModelBackend::generate_with_cancel` is now an explicit trait requirement, and the default cancellable stream adapter delegates through it instead of silently falling back to non-cancellable generation.
 - `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
 - `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.

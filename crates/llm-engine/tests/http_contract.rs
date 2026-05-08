@@ -2082,6 +2082,14 @@ impl ModelBackend for FailingBackend {
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::Other("execution failed".to_owned()))
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 struct StaticBackend {
@@ -2101,6 +2109,14 @@ impl ModelBackend for StaticBackend {
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 }
 
@@ -2124,6 +2140,14 @@ impl ModelBackend for BlockingBackend {
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 }
 
@@ -2172,6 +2196,14 @@ impl ModelBackend for NoProgressBackend {
             finish_reason: llm_api::FinishReason::Length,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 struct DelayedStreamBackend {
@@ -2197,6 +2229,14 @@ impl ModelBackend for DelayedStreamBackend {
             finish_reason: llm_api::FinishReason::Stop,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 struct TwoStageStreamBackend {
@@ -2219,6 +2259,14 @@ impl ModelBackend for TwoStageStreamBackend {
             completion_tokens: 2,
             finish_reason: llm_api::FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 
     fn generate_stream<'a>(
@@ -2245,6 +2293,17 @@ impl ModelBackend for TwoStageStreamBackend {
         }
         .boxed()
     }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
 }
 
 struct CancellableStreamBackend {
@@ -2264,6 +2323,14 @@ impl ModelBackend for CancellableStreamBackend {
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
     }
 
     fn generate_stream_with_cancel<'a>(
@@ -2306,6 +2373,14 @@ impl ModelBackend for FailingStreamBackend {
         })
     }
 
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
     fn generate_stream<'a>(
         &'a self,
         _request: BackendRequest,
@@ -2320,6 +2395,17 @@ impl ModelBackend for FailingStreamBackend {
             Err(BackendError::Other("stream failed".to_owned()))?;
         }
         .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
     }
 }
 
@@ -2356,6 +2442,14 @@ impl ModelBackend for MetadataBackend {
             finish_reason: llm_api::FinishReason::Stop,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
 }
 
 struct SnapshotMetadataBackend {
@@ -2391,6 +2485,25 @@ impl ModelBackend for SnapshotMetadataBackend {
             finish_reason: llm_api::FinishReason::Stop,
         })
     }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
+    backend: &B,
+    request: BackendRequest,
+    cancellation: CancellationToken,
+) -> Result<BackendOutput, BackendError> {
+    if cancellation.is_cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    backend.generate(request).await
 }
 
 async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
