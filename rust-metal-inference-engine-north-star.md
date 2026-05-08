@@ -141,6 +141,7 @@ Current commits:
 - `7a9198b` - Tracker updated with scheduler phase metrics commit identity.
 - `4201417` - Admin metrics report model pull operation counts and promoted manifest bytes.
 - `48a3aa5` - Admin metrics report manifest-backed model-store usage.
+- `392da7b` - Admin metrics report artifact verification failure counts.
 
 Current verified state:
 
