@@ -62,6 +62,7 @@ struct AppState {
     next_request_id: Arc<AtomicU64>,
     admin_token: Option<Arc<str>>,
     model_home: PathBuf,
+    model_store_usage: Arc<Mutex<ModelStoreUsageCache>>,
     hub_client: HubClient,
     hf_token: Option<Arc<str>>,
     stream_stall_timeout: Option<Duration>,
@@ -236,6 +237,7 @@ pub fn build_router_with_backend_and_options(
             next_request_id: Arc::new(AtomicU64::new(1)),
             admin_token: options.admin_token.map(Arc::from),
             model_home: options.model_home.unwrap_or_else(default_model_home),
+            model_store_usage: Arc::new(Mutex::new(ModelStoreUsageCache::default())),
             hub_client,
             hf_token: options.hf_token.map(Arc::from),
             stream_stall_timeout: options.stream_stall_timeout,
@@ -1678,6 +1680,7 @@ async fn admin_model_pull(
     };
     let model_pull_bytes = snapshot.manifest.files.iter().map(|file| file.size).sum();
     record_model_pull_success_metrics(&state, model_pull_bytes);
+    invalidate_model_store_usage_cache(&state);
     Ok(Json(json!({
         "snapshot_path": snapshot.path,
         "manifest_digest": snapshot.manifest_digest,
@@ -1836,8 +1839,57 @@ struct ModelStoreUsage {
     bytes: u64,
 }
 
+#[derive(Debug, Default)]
+struct ModelStoreUsageCache {
+    usage: Option<ModelStoreUsage>,
+    refreshed_at: Option<Instant>,
+}
+
+const MODEL_STORE_USAGE_CACHE_TTL: Duration = Duration::from_secs(30);
+
+impl ModelStoreUsageCache {
+    fn current(&self, now: Instant) -> Option<ModelStoreUsage> {
+        let usage = self.usage?;
+        let refreshed_at = self.refreshed_at?;
+        if now.duration_since(refreshed_at) <= MODEL_STORE_USAGE_CACHE_TTL {
+            Some(usage)
+        } else {
+            None
+        }
+    }
+
+    fn store(&mut self, usage: ModelStoreUsage, refreshed_at: Instant) {
+        self.usage = Some(usage);
+        self.refreshed_at = Some(refreshed_at);
+    }
+
+    fn invalidate(&mut self) {
+        self.usage = None;
+        self.refreshed_at = None;
+    }
+}
+
 async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineError> {
-    let snapshots = ModelStore::new(&state.model_home)
+    let now = Instant::now();
+    if let Some(usage) = state
+        .model_store_usage
+        .lock()
+        .expect("model store usage cache lock is not poisoned")
+        .current(now)
+    {
+        return Ok(usage);
+    }
+    let usage = scan_model_store_usage(&state.model_home).await?;
+    state
+        .model_store_usage
+        .lock()
+        .expect("model store usage cache lock is not poisoned")
+        .store(usage, Instant::now());
+    Ok(usage)
+}
+
+async fn scan_model_store_usage(model_home: &Path) -> Result<ModelStoreUsage, EngineError> {
+    let snapshots = ModelStore::new(model_home)
         .list_snapshots()
         .await
         .map_err(EngineError::ModelStore)?;
@@ -1850,6 +1902,14 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
         snapshots: snapshots.len(),
         bytes,
     })
+}
+
+fn invalidate_model_store_usage_cache(state: &AppState) {
+    state
+        .model_store_usage
+        .lock()
+        .expect("model store usage cache lock is not poisoned")
+        .invalidate();
 }
 
 fn process_rss_bytes() -> u64 {

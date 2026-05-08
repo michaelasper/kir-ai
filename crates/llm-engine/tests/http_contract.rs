@@ -359,7 +359,7 @@ async fn admin_metrics_report_model_pull_operations() {
 async fn admin_metrics_report_model_store_usage() {
     let temp = tempfile::tempdir().expect("tempdir");
     write_verified_test_snapshot(temp.path()).await;
-    let response = build_router_with_backend_and_options(
+    let app = build_router_with_backend_and_options(
         Box::new(StaticBackend {
             text: "unused".to_owned(),
         }),
@@ -368,15 +368,33 @@ async fn admin_metrics_report_model_store_usage() {
             ..EngineOptions::default()
         },
     )
-    .expect("router builds")
-    .oneshot(
-        Request::builder()
-            .uri("/admin/metrics")
-            .body(Body::empty())
-            .expect("request builds"),
-    )
-    .await
-    .expect("metrics response");
+    .expect("router builds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["model_store_snapshots"], 1);
+    assert_eq!(body["model_store_bytes"], 2);
+
+    std::fs::remove_dir_all(temp.path()).expect("remove model home after first metrics scrape");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cached metrics response");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
