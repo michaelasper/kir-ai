@@ -265,6 +265,32 @@ async fn runtime_truncates_content_at_stop_sequence() {
 }
 
 #[tokio::test]
+async fn chat_stop_sequence_suppresses_later_tool_calls() {
+    let backend = DeterministicBackend::new(
+        "local-qwen36",
+        r#"content STOP <tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            stop: vec![" STOP".to_owned()],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("content")
+    );
+    assert!(response.choices[0].message.tool_calls.is_empty());
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
 async fn json_object_response_format_rejects_text_content() {
     let backend = DeterministicBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);

@@ -631,6 +631,43 @@ async fn chat_completions_rejects_undeclared_generated_tool_call() {
 }
 
 #[tokio::test]
+async fn chat_completions_stop_sequence_suppresses_later_tool_calls() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text:
+            r#"content STOP <tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#
+                .to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "lookup rust"}],
+                    "tools": [{
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {}}
+                    }],
+                    "stop": " STOP"
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let message = &body["choices"][0]["message"];
+    assert_eq!(message["content"], "content");
+    assert!(message["tool_calls"].is_null());
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_invalid_json_object_mode_output() {
     let response = build_router_with_backend(Box::new(StaticBackend {
         text: "not json".to_owned(),

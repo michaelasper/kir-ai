@@ -186,8 +186,9 @@ where
                 max_tokens: request.effective_max_tokens(),
             })
             .await?;
-        let mut parsed = QwenParser.parse_complete(&output.text)?;
-        let stopped = apply_stop_sequences(&mut parsed.content, &request.stop);
+        let mut raw_text = output.text;
+        let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
+        let parsed = QwenParser.parse_complete(&raw_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
@@ -198,7 +199,7 @@ where
             Some(ToolChoice::Required | ToolChoice::Function { .. })
         );
         let no_progress = classify_no_progress(
-            &output.text,
+            &raw_text,
             output.completion_tokens,
             required_tool_pending && parsed.tool_calls.is_empty(),
         );
