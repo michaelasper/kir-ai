@@ -72,6 +72,7 @@ Current commits:
 - `3dc2083` - Chat and text completions now reject unsupported `n` values instead of silently ignoring multiple-choice requests.
 - `1b76a55` - Chat requests now support `max_completion_tokens` as the OpenAI token-limit alias and reject conflicting token limit fields.
 - `dbeffc8` - Added non-destructive `llm-engine model prune --dry-run` snapshot usage reporting.
+- `17e3fd8` - Added aggregate inference metrics and `GET /admin/metrics` for request counts, stream counts, failures, and token totals.
 
 Current verified state:
 
@@ -108,6 +109,7 @@ Current verified state:
 - Chat and text completions accept `n: 1`, reject `n: 0` as `invalid_request`, and reject multiple-choice requests as `unsupported_capability` until multi-choice generation is implemented.
 - Chat completions accept `max_completion_tokens` as an alias for `max_tokens`, reject zero values, and reject conflicting `max_tokens`/`max_completion_tokens` values before backend execution.
 - `llm-engine model prune --dry-run --model-home <path>` reports local snapshot count, per-snapshot manifest byte totals, and zero reclaimable bytes without deleting files. Destructive pruning remains disabled until a retention policy is implemented.
+- `GET /admin/metrics` exposes aggregate Rust inference metrics for total, successful, failed, and streamed requests plus prompt/completion/total token counters. Chat and text completion handlers record metrics from runtime usage.
 
 Known incomplete items:
 
