@@ -175,6 +175,49 @@ fn rejects_zero_completion_max_tokens() {
 }
 
 #[test]
+fn rejects_unsupported_multiple_chat_choices() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        n: Some(2),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("multiple choices are not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn rejects_zero_chat_choices() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        n: Some(0),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("zero choices is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_unsupported_multiple_completion_choices() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "hello".to_owned(),
+        n: Some(2),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("multiple choices are not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
 fn streaming_finish_reason_serializes_as_openai_string() {
     let value = serde_json::to_value(FinishReason::ToolCalls).expect("finish reason serializes");
     assert_eq!(value, json!("tool_calls"));

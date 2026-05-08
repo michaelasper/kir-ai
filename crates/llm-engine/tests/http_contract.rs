@@ -192,6 +192,33 @@ async fn chat_completions_rejects_zero_max_tokens() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_multiple_choices() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "n": 2
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "unsupported_capability");
+    assert_eq!(body["error"]["phase"], "request_validation");
+}
+
+#[tokio::test]
 async fn chat_completions_streams_openai_sse_chunks() {
     let response = build_router()
         .oneshot(

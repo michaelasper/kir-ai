@@ -229,6 +229,8 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
     #[serde(
         default,
         deserialize_with = "deserialize_stop_sequences",
@@ -251,6 +253,8 @@ pub struct CompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
     #[serde(
         default,
         deserialize_with = "deserialize_stop_sequences",
@@ -416,6 +420,7 @@ impl ValidateRequest for ChatCompletionRequest {
                 "max_tokens must be greater than 0",
             ));
         }
+        validate_choice_count(self.n)?;
         if self.stop.iter().any(String::is_empty) {
             return Err(ApiError::invalid_request(
                 "stop sequences must not be empty",
@@ -452,12 +457,23 @@ impl ValidateRequest for CompletionRequest {
                 "max_tokens must be greater than 0",
             ));
         }
+        validate_choice_count(self.n)?;
         if self.stop.iter().any(String::is_empty) {
             return Err(ApiError::invalid_request(
                 "stop sequences must not be empty",
             ));
         }
         Ok(())
+    }
+}
+
+fn validate_choice_count(n: Option<u32>) -> Result<(), ApiError> {
+    match n {
+        Some(0) => Err(ApiError::invalid_request("n must be greater than 0")),
+        Some(1) | None => Ok(()),
+        Some(_) => Err(ApiError::unsupported_capability(
+            "multiple choices are not supported yet; use n 1",
+        )),
     }
 }
 
