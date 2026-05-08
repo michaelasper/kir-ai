@@ -1,17 +1,18 @@
 use llm_backend::{
-    CpuQwenMatvecBackend, MathError, QwenLayerCache, QwenMatvecBackend, SafeTensorArchive,
-    SafeTensorFile, SafeTensorHeader, SafeTensorShardStore, TensorLoadError, TopKLogit,
-    qwen_decode_token_with_cache, qwen_decode_token_with_cache_with_matvec,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_caches_for_spec,
-    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
-    qwen_layer_full_attention_sequence_with_cache, qwen_layer_full_attention_step_with_cache,
-    qwen_layer_linear_attention_first_token, qwen_layer_linear_attention_projections,
-    qwen_layer_linear_attention_sequence, qwen_layer_linear_attention_sequence_with_cache,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
-    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
-    qwen_prefill_sequence_with_cache_with_matvec,
+    CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache, QwenMatvecBackend,
+    SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore, TensorLoadError,
+    TopKLogit, qwen_decode_token_with_cache, qwen_decode_token_with_cache_with_matvec,
+    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_final_norm_with_matvec,
+    qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
+    qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
+    qwen_layer_full_attention_step_with_cache, qwen_layer_linear_attention_first_token,
+    qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
+    qwen_layer_linear_attention_sequence_with_cache, qwen_layer_linear_attention_step_with_cache,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_logits_with_matvec,
+    qwen_lm_head_top_k, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence,
+    qwen_prefill_sequence_with_cache, qwen_prefill_sequence_with_cache_with_matvec,
+    qwen_rms_norm_f32,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -1555,6 +1556,36 @@ fn qwen_lm_head_uses_configured_matvec_backend() {
     std::fs::remove_dir_all(root).ok();
 }
 
+#[test]
+fn qwen_final_norm_uses_configured_rms_norm_backend() {
+    let root = temp_snapshot_dir("qwen-final-norm-custom-matvec");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 4 },
+            "weight_map": { QWEN_FINAL_NORM_WEIGHT: "norm.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("norm.safetensors"),
+        tiny_safetensors_bf16(QWEN_FINAL_NORM_WEIGHT, &[2], &[0.0, 1.0]),
+    )
+    .expect("norm");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let matvec = RecordingMatvecBackend::default();
+    let expected = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0).expect("cpu final norm");
+
+    let output = qwen_final_norm_with_matvec(&store, &[3.0, 4.0], 2, 0.0, &matvec)
+        .expect("final norm uses recording backend");
+
+    assert_close(&output, &expected, 1e-6);
+    assert_eq!(matvec.rms_norm_calls.get(), 1);
+    std::fs::remove_dir_all(root).ok();
+}
+
 #[derive(Default)]
 struct RecordingMatvecBackend {
     single_bf16_calls: Cell<usize>,
@@ -1562,6 +1593,7 @@ struct RecordingMatvecBackend {
     rows_bf16_calls: Cell<usize>,
     top_k_bf16_calls: Cell<usize>,
     dense_f32_calls: Cell<usize>,
+    rms_norm_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -1618,6 +1650,16 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         self.dense_f32_calls.set(self.dense_f32_calls.get() + 1);
         CpuQwenMatvecBackend.matvec_row_major_f32(input, weights, rows, columns)
+    }
+
+    fn qwen_rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, MathError> {
+        self.rms_norm_calls.set(self.rms_norm_calls.get() + 1);
+        qwen_rms_norm_f32(input, weight, eps)
     }
 }
 

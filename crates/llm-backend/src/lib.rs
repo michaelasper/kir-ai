@@ -552,6 +552,15 @@ pub trait QwenMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         matvec_row_major_f32(input, weights, rows, columns)
     }
+
+    fn qwen_rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, MathError> {
+        qwen_rms_norm_f32(input, weight, eps)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3184,6 +3193,22 @@ pub fn qwen_final_norm(
     hidden_size: usize,
     rms_norm_eps: f32,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_final_norm_with_matvec(
+        store,
+        hidden_states,
+        hidden_size,
+        rms_norm_eps,
+        &CpuQwenMatvecBackend,
+    )
+}
+
+pub fn qwen_final_norm_with_matvec(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    hidden_size: usize,
+    rms_norm_eps: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
     if hidden_states.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
             "Qwen final norm hidden length {} must match hidden size {hidden_size}",
@@ -3191,7 +3216,8 @@ pub fn qwen_final_norm(
         )));
     }
     let norm_weight = store.bf16_tensor_f32_range(QWEN_FINAL_NORM_WEIGHT, 0, hidden_size)?;
-    qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps)
+    matvec
+        .qwen_rms_norm_f32(hidden_states, &norm_weight, rms_norm_eps)
         .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 

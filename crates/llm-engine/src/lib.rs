@@ -22,7 +22,7 @@ use llm_backend::{
     CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
     qwen_decode_token_with_cache_with_matvec, qwen_decoder_layer_sequence_with_cache_with_matvec,
-    qwen_embedding_sequence, qwen_final_norm, qwen_layer_caches_for_spec,
+    qwen_embedding_sequence, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
     qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
 };
 use llm_hub::{
@@ -426,6 +426,20 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 .or_else(|_| Self::cpu().matvec_row_major_f32(input, weights, rows, columns)),
         }
     }
+
+    fn qwen_rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => Self::cpu().qwen_rms_norm_f32(input, weight, eps),
+            Self::Metal(device) => device
+                .qwen_rms_norm_f32(input, weight, eps)
+                .or_else(|_| Self::cpu().qwen_rms_norm_f32(input, weight, eps)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -721,11 +735,12 @@ impl NativeQwenBackend {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
-        let final_norm = qwen_final_norm(
+        let final_norm = qwen_final_norm_with_matvec(
             &self.store,
             hidden,
             self.spec.hidden_size as usize,
             self.spec.rms_norm_eps,
+            &self.matvec,
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
