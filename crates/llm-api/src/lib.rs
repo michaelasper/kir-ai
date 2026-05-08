@@ -218,6 +218,8 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     #[serde(default)]
     pub stream: bool,
@@ -422,6 +424,11 @@ impl ValidateRequest for ChatCompletionRequest {
                     "required tool `{name}` was not declared"
                 )));
             }
+        }
+        if matches!(self.parallel_tool_calls, Some(true)) {
+            return Err(ApiError::unsupported_capability(
+                "parallel tool calls are not supported yet; use parallel_tool_calls false",
+            ));
         }
         if let Some(temperature) = self.temperature
             && (!temperature.is_finite() || temperature != 0.0)

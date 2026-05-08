@@ -188,6 +188,35 @@ fn accepts_disabled_chat_logprobs() {
 }
 
 #[test]
+fn rejects_parallel_tool_calls_when_requested() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("call tools")],
+        parallel_tool_calls: Some(true),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("parallel tool calls are not implemented");
+    assert_eq!(err.code(), "unsupported_capability");
+}
+
+#[test]
+fn accepts_disabled_parallel_tool_calls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("call tools")],
+        parallel_tool_calls: Some(false),
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("disabled parallel tool calls are a no-op");
+}
+
+#[test]
 fn completion_rejects_unsupported_non_greedy_sampling_controls() {
     let request = CompletionRequest {
         model: "local-qwen36".to_owned(),
