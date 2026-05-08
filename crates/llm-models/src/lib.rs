@@ -17,13 +17,15 @@ pub enum AttentionKind {
     FullAttention,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QwenModelSpec {
     pub family: ModelFamily,
     pub architecture: String,
     pub model_type: String,
     pub text_model_type: String,
     pub hidden_size: u32,
+    pub rms_norm_eps: f32,
+    pub tie_word_embeddings: bool,
     pub num_hidden_layers: u32,
     pub num_attention_heads: u32,
     pub num_key_value_heads: u32,
@@ -167,6 +169,10 @@ impl QwenModelSpec {
             model_type: config.model_type,
             text_model_type: text.model_type,
             hidden_size: text.hidden_size,
+            rms_norm_eps: text
+                .rms_norm_eps
+                .ok_or_else(|| ModelSpecError::unsupported("qwen config missing rms_norm_eps"))?,
+            tie_word_embeddings: text.tie_word_embeddings.unwrap_or(false),
             num_hidden_layers: text.num_hidden_layers,
             num_attention_heads: text.num_attention_heads,
             num_key_value_heads: text.num_key_value_heads,
@@ -197,6 +203,8 @@ struct RawQwenConfig {
 struct RawQwenTextConfig {
     model_type: String,
     hidden_size: u32,
+    rms_norm_eps: Option<f32>,
+    tie_word_embeddings: Option<bool>,
     num_hidden_layers: u32,
     num_attention_heads: u32,
     num_key_value_heads: u32,

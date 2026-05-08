@@ -1,0 +1,50 @@
+use llm_backend::{matvec_row_major_f32, rms_norm_f32, silu_f32};
+
+#[test]
+fn rms_norm_matches_reference_calculation() {
+    let output = rms_norm_f32(&[3.0, 4.0], &[1.0, 2.0], 0.0).expect("rms norm");
+
+    assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
+}
+
+#[test]
+fn rms_norm_rejects_mismatched_weight_shape() {
+    let err = rms_norm_f32(&[1.0, 2.0], &[1.0], 1e-6).expect_err("shape fails");
+
+    assert!(err.to_string().contains("same length"));
+}
+
+#[test]
+fn matvec_row_major_matches_reference_calculation() {
+    let output = matvec_row_major_f32(
+        &[1.0, 2.0, 3.0],
+        &[
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 1.0,
+        ],
+        2,
+        3,
+    )
+    .expect("matvec");
+
+    assert_eq!(output, vec![1.0, 5.0]);
+}
+
+#[test]
+fn silu_matches_reference_values() {
+    assert_close(
+        &[silu_f32(0.0), silu_f32(2.0), silu_f32(-2.0)],
+        &[0.0, 1.761594, -0.23840584],
+        1e-6,
+    );
+}
+
+fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual {actual} expected {expected}"
+        );
+    }
+}

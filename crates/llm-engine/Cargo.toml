@@ -11,6 +11,7 @@ axum.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
+llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
 serde.workspace = true
 serde_json.workspace = true

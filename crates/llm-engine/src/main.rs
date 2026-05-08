@@ -1,6 +1,7 @@
-use llm_backend::{SafeTensorFile, SafeTensorShardStore};
+use llm_backend::{SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm};
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
+use llm_models::QwenModelSpec;
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -123,6 +124,42 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                         "shard_path": shard_path
                     },
                     "bf16_row": bf16_row
+                }))?
+            );
+        }
+        "inspect-qwen-input" => {
+            let snapshot_path = args.get(1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "usage: llm-engine model inspect-qwen-input <snapshot-path> --token-id <id>"
+                )
+            })?;
+            let token_id = flag_value(&args, "--token-id")
+                .ok_or_else(|| anyhow::anyhow!("inspect-qwen-input requires --token-id <id>"))?
+                .parse::<usize>()?;
+            let limit = flag_value(&args, "--limit")
+                .map(str::parse::<usize>)
+                .transpose()?
+                .unwrap_or(8);
+            let config_json =
+                std::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json"))?;
+            let spec = QwenModelSpec::from_config_json(&config_json)?;
+            let store = SafeTensorShardStore::open(snapshot_path)?;
+            let probe = qwen_embedding_and_layer0_norm(
+                &store,
+                token_id,
+                spec.hidden_size as usize,
+                spec.rms_norm_eps,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "snapshot_path": snapshot_path,
+                    "token_id": token_id,
+                    "hidden_size": spec.hidden_size,
+                    "rms_norm_eps": spec.rms_norm_eps,
+                    "embedding_prefix": probe.embedding.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "normalized_prefix": probe.normalized.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "values_read": probe.normalized.len()
                 }))?
             );
         }

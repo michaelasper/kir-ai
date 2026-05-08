@@ -1,4 +1,7 @@
-use llm_backend::{SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore};
+use llm_backend::{
+    SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
+    qwen_embedding_and_layer0_norm,
+};
 
 #[test]
 fn reads_safetensors_metadata_and_f32_tensor() {
@@ -169,6 +172,49 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
     std::fs::remove_dir_all(root).ok();
 }
 
+#[test]
+fn qwen_embedding_probe_reads_and_normalizes_token() {
+    let root = temp_snapshot_dir("qwen-embed");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 20 },
+            "weight_map": {
+                "model.language_model.embed_tokens.weight": "embed.safetensors",
+                "model.language_model.layers.0.input_layernorm.weight": "norm.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("embed.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.embed_tokens.weight",
+            &[2, 2],
+            &[3.0, 4.0, 6.0, 8.0],
+        ),
+    )
+    .expect("embedding shard");
+    std::fs::write(
+        root.join("norm.safetensors"),
+        tiny_safetensors_bf16(
+            "model.language_model.layers.0.input_layernorm.weight",
+            &[2],
+            &[1.0, 2.0],
+        ),
+    )
+    .expect("norm shard");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let probe = qwen_embedding_and_layer0_norm(&store, 1, 2, 0.0).expect("probe");
+
+    assert_eq!(probe.embedding, vec![6.0, 8.0]);
+    assert_close(&probe.normalized, &[0.84852815, 2.2627418], 1e-6);
+    std::fs::remove_dir_all(root).ok();
+}
+
 fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
@@ -211,4 +257,14 @@ fn temp_safetensors_path(label: &str) -> std::path::PathBuf {
 
 fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("llm-backend-{label}-{}", std::process::id()))
+}
+
+fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual {actual} expected {expected}"
+        );
+    }
 }

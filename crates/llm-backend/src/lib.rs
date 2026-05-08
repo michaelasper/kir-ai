@@ -95,6 +95,106 @@ fn count_tokens(text: &str) -> u64 {
     normalized.split_whitespace().count().max(1) as u64
 }
 
+pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+    if input.len() != weight.len() {
+        return Err(MathError::InvalidShape(
+            "input and weight must have the same length".to_owned(),
+        ));
+    }
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if eps < 0.0 {
+        return Err(MathError::InvalidShape(
+            "rms norm epsilon must be non-negative".to_owned(),
+        ));
+    }
+    let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
+    let scale = (mean_square + eps).sqrt().recip();
+    Ok(input
+        .iter()
+        .zip(weight)
+        .map(|(value, weight)| value * scale * weight)
+        .collect())
+}
+
+pub fn matvec_row_major_f32(
+    input: &[f32],
+    weights: &[f32],
+    rows: usize,
+    columns: usize,
+) -> Result<Vec<f32>, MathError> {
+    if input.len() != columns {
+        return Err(MathError::InvalidShape(format!(
+            "input length {} does not match matvec columns {columns}",
+            input.len()
+        )));
+    }
+    let expected_weights = rows
+        .checked_mul(columns)
+        .ok_or_else(|| MathError::InvalidShape("matvec shape overflows usize".to_owned()))?;
+    if weights.len() != expected_weights {
+        return Err(MathError::InvalidShape(format!(
+            "weight length {} does not match rows {rows} * columns {columns}",
+            weights.len()
+        )));
+    }
+    Ok(weights
+        .chunks_exact(columns)
+        .map(|row| {
+            row.iter()
+                .zip(input)
+                .map(|(weight, value)| weight * value)
+                .sum()
+        })
+        .collect())
+}
+
+pub fn silu_f32(value: f32) -> f32 {
+    value / (1.0 + (-value).exp())
+}
+
+pub const QWEN_EMBED_TOKENS_WEIGHT: &str = "model.language_model.embed_tokens.weight";
+pub const QWEN_LAYER0_INPUT_NORM_WEIGHT: &str =
+    "model.language_model.layers.0.input_layernorm.weight";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QwenEmbeddingProbe {
+    pub token_id: usize,
+    pub embedding: Vec<f32>,
+    pub normalized: Vec<f32>,
+}
+
+pub fn qwen_embedding_and_layer0_norm(
+    store: &SafeTensorShardStore,
+    token_id: usize,
+    hidden_size: usize,
+    rms_norm_eps: f32,
+) -> Result<QwenEmbeddingProbe, TensorLoadError> {
+    let embedding = store.bf16_row_f32(QWEN_EMBED_TOKENS_WEIGHT, token_id)?;
+    if embedding.len() != hidden_size {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen embedding row has length {}, expected hidden size {hidden_size}",
+            embedding.len()
+        )));
+    }
+    let norm_weight = store.bf16_tensor_f32_range(QWEN_LAYER0_INPUT_NORM_WEIGHT, 0, hidden_size)?;
+    let normalized = rms_norm_f32(&embedding, &norm_weight, rms_norm_eps).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen layer0 input RMSNorm failed: {err}"))
+    })?;
+    Ok(QwenEmbeddingProbe {
+        token_id,
+        embedding,
+        normalized,
+    })
+}
+
+#[derive(Debug, Error)]
+pub enum MathError {
+    #[error("invalid math shape: {0}")]
+    InvalidShape(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct SafeTensorArchive {
     bytes: Vec<u8>,
