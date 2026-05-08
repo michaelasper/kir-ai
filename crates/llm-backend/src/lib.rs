@@ -624,6 +624,41 @@ fn linear_attention_recurrent_update_f32(
     Ok(output)
 }
 
+fn select_head_rows_f32(
+    values: &[f32],
+    row_count: usize,
+    row_len: usize,
+    head_start: usize,
+    head_len: usize,
+) -> Result<Vec<f32>, MathError> {
+    let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
+        MathError::InvalidShape("head row selection shape overflows usize".to_owned())
+    })?;
+    if values.len() < used_len {
+        return Err(MathError::InvalidShape(format!(
+            "head row selection value length {} is shorter than row_count {row_count} * row_len {row_len}",
+            values.len()
+        )));
+    }
+    let head_end = head_start.checked_add(head_len).ok_or_else(|| {
+        MathError::InvalidShape("head row selection range overflows usize".to_owned())
+    })?;
+    if head_end > row_len {
+        return Err(MathError::InvalidShape(format!(
+            "head row selection range {head_start}..{head_end} exceeds row length {row_len}"
+        )));
+    }
+    let output_len = row_count.checked_mul(head_len).ok_or_else(|| {
+        MathError::InvalidShape("head row selection output shape overflows usize".to_owned())
+    })?;
+    let mut output = Vec::with_capacity(output_len);
+    for row_idx in 0..row_count {
+        let row_start = row_idx * row_len + head_start;
+        output.extend_from_slice(&values[row_start..row_start + head_len]);
+    }
+    Ok(output)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TopKWeight {
     pub index: usize,
@@ -740,6 +775,17 @@ pub trait QwenMatvecBackend {
             key_head_dim,
             value_head_dim,
         )
+    }
+
+    fn select_head_rows_f32(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        select_head_rows_f32(values, row_count, row_len, head_start, head_len)
     }
 
     fn softmax_top_k_f32(
@@ -1912,13 +1958,13 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
         let q_start = head * dims.head_dim;
         let kv_start = kv_head * dims.head_dim;
         let token_count = cache.token_count();
-        let mut key_rows = Vec::with_capacity(token_count * dims.head_dim);
-        for source_idx in 0..cache.token_count() {
-            let key_token = cache
-                .key(source_idx)
-                .ok_or_else(|| MathError::InvalidShape("KV cache key missing".to_owned()))?;
-            key_rows.extend_from_slice(&key_token[kv_start..kv_start + dims.head_dim]);
-        }
+        let key_rows = matvec.select_head_rows_f32(
+            cache.keys(),
+            token_count,
+            cache.vector_len(),
+            kv_start,
+            dims.head_dim,
+        )?;
         let scores = scaled_full_attention_scores_with_matvec(
             &query[q_start..q_start + dims.head_dim],
             &key_rows,
@@ -1927,13 +1973,13 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
             matvec,
         )?;
         let weights = matvec.softmax_f32(&scores)?;
-        let mut value_rows = Vec::with_capacity(token_count * dims.head_dim);
-        for source_idx in 0..token_count {
-            let value_token = cache
-                .value(source_idx)
-                .ok_or_else(|| MathError::InvalidShape("KV cache value missing".to_owned()))?;
-            value_rows.extend_from_slice(&value_token[kv_start..kv_start + dims.head_dim]);
-        }
+        let value_rows = matvec.select_head_rows_f32(
+            cache.values(),
+            token_count,
+            cache.vector_len(),
+            kv_start,
+            dims.head_dim,
+        )?;
         let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
         for offset in 0..dims.head_dim {
             attended[q_start + offset] = mixed[offset] * sigmoid_f32(gate[q_start + offset]);
@@ -2070,14 +2116,21 @@ fn qwen_full_attention_sequence_from_parts_impl(
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
             let source_count = token_idx + 1;
-            let mut key_rows = Vec::with_capacity(source_count * dims.head_dim);
-            for (source_idx, local_key) in keys.iter().enumerate().take(token_idx + 1) {
-                let key_token = cache
-                    .as_deref()
-                    .and_then(|cache| cache.key(source_idx))
-                    .unwrap_or(local_key);
-                key_rows.extend_from_slice(&key_token[kv_start..kv_start + dims.head_dim]);
-            }
+            let key_rows = if let Some(cache) = cache.as_deref() {
+                matvec.select_head_rows_f32(
+                    cache.keys(),
+                    source_count,
+                    cache.vector_len(),
+                    kv_start,
+                    dims.head_dim,
+                )?
+            } else {
+                let mut key_rows = Vec::with_capacity(source_count * dims.head_dim);
+                for local_key in keys.iter().take(source_count) {
+                    key_rows.extend_from_slice(&local_key[kv_start..kv_start + dims.head_dim]);
+                }
+                key_rows
+            };
             let scores = scaled_full_attention_scores_with_matvec(
                 &queries[token_idx][q_start..q_start + dims.head_dim],
                 &key_rows,
@@ -2086,14 +2139,21 @@ fn qwen_full_attention_sequence_from_parts_impl(
                 matvec,
             )?;
             let weights = matvec.softmax_f32(&scores)?;
-            let mut value_rows = Vec::with_capacity(source_count * dims.head_dim);
-            for (source_idx, local_value) in v_proj.iter().enumerate().take(source_count) {
-                let value_token = cache
-                    .as_deref()
-                    .and_then(|cache| cache.value(source_idx))
-                    .unwrap_or(local_value);
-                value_rows.extend_from_slice(&value_token[kv_start..kv_start + dims.head_dim]);
-            }
+            let value_rows = if let Some(cache) = cache.as_deref() {
+                matvec.select_head_rows_f32(
+                    cache.values(),
+                    source_count,
+                    cache.vector_len(),
+                    kv_start,
+                    dims.head_dim,
+                )?
+            } else {
+                let mut value_rows = Vec::with_capacity(source_count * dims.head_dim);
+                for local_value in v_proj.iter().take(source_count) {
+                    value_rows.extend_from_slice(&local_value[kv_start..kv_start + dims.head_dim]);
+                }
+                value_rows
+            };
             let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
             for offset in 0..dims.head_dim {
                 attended[q_start + offset] =

@@ -1143,6 +1143,49 @@ fn qwen_full_attention_value_mix_uses_configured_matvec_backend() {
 }
 
 #[test]
+fn qwen_full_attention_cache_rows_use_configured_matvec_backend() {
+    let root = temp_snapshot_dir("qwen-full-attn-cache-row-backend");
+    write_tiny_full_attention_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+    let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("expected cache shape");
+    let expected_output = qwen_layer_full_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("full cached sequence");
+    let prefill = hidden_states[..2].to_vec();
+    let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    let matvec = RecordingMatvecBackend::default();
+
+    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+        &store, &spec, 0, &prefill, &mut cache, &matvec,
+    )
+    .expect("recording full cached sequence");
+    let after_prefill_head_row_calls = matvec.head_row_calls.get();
+    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &hidden_states[2],
+        &mut cache,
+        &matvec,
+    )
+    .expect("recording full attention step");
+
+    assert_close(&output[0], &expected_output[0], 1e-6);
+    assert_close(&output[1], &expected_output[1], 1e-6);
+    assert_close(&decoded, &expected_output[2], 1e-6);
+    assert_eq!(after_prefill_head_row_calls, 4);
+    assert_eq!(matvec.head_row_calls.get(), 6);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn qwen_linear_attention_first_token_requires_delta_parameters() {
     let root = temp_snapshot_dir("qwen-linear-delta-required");
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -2010,6 +2053,7 @@ struct RecordingMatvecBackend {
     softmax_top_k_calls: Cell<usize>,
     weighted_sum_calls: Cell<usize>,
     recurrent_update_calls: Cell<usize>,
+    head_row_calls: Cell<usize>,
 }
 
 impl QwenMatvecBackend for RecordingMatvecBackend {
@@ -2143,6 +2187,18 @@ impl QwenMatvecBackend for RecordingMatvecBackend {
             key_head_dim,
             value_head_dim,
         )
+    }
+
+    fn select_head_rows_f32(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        self.head_row_calls.set(self.head_row_calls.get() + 1);
+        CpuQwenMatvecBackend.select_head_rows_f32(values, row_count, row_len, head_start, head_len)
     }
 }
 

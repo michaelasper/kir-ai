@@ -589,6 +589,26 @@ impl QwenMatvecBackend for NativeQwenMatvecBackend {
                 }),
         }
     }
+    fn select_head_rows_f32(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu().select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+            }
+            Self::Metal(device) => device
+                .select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+                .or_else(|_| {
+                    Self::cpu()
+                        .select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+                }),
+        }
+    }
 }
 
 fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {

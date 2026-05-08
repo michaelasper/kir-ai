@@ -14,6 +14,7 @@ pub struct MetalDevice {
     linear_attention_conv1d_silu_f32: Arc<MetalKernel>,
     weighted_sum_f32: Arc<MetalKernel>,
     linear_attention_recurrent_update_f32: Arc<MetalKernel>,
+    select_head_rows_f32: Arc<MetalKernel>,
     matvec_f32: Arc<MetalKernel>,
     matvec_bf16_f32: Arc<MetalKernel>,
     batched_matvec_bf16_f32: Arc<MetalKernel>,
@@ -64,6 +65,7 @@ impl MetalDevice {
         let weighted_sum_f32 = Self::kernel(&device, &library, "weighted_sum_f32")?;
         let linear_attention_recurrent_update_f32 =
             Self::kernel(&device, &library, "linear_attention_recurrent_update_f32")?;
+        let select_head_rows_f32 = Self::kernel(&device, &library, "select_head_rows_f32")?;
         let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         let matvec_bf16_f32 = Self::kernel(&device, &library, "matvec_bf16_f32")?;
         let batched_matvec_bf16_f32 = Self::kernel(&device, &library, "batched_matvec_bf16_f32")?;
@@ -77,6 +79,7 @@ impl MetalDevice {
             linear_attention_conv1d_silu_f32,
             weighted_sum_f32,
             linear_attention_recurrent_update_f32,
+            select_head_rows_f32,
             matvec_f32,
             matvec_bf16_f32,
             batched_matvec_bf16_f32,
@@ -635,6 +638,114 @@ impl MetalDevice {
         let output = unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
             std::slice::from_raw_parts(ptr, element_count).to_vec()
+        };
+        Ok(output)
+    }
+
+    pub fn select_head_rows_f32(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+    ) -> Result<Vec<f32>, MetalError> {
+        let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
+            MetalError::InvalidShape("head row selection shape overflows usize".to_owned())
+        })?;
+        if values.len() < used_len {
+            return Err(MetalError::InvalidShape(format!(
+                "head row selection value length {} is shorter than row_count {row_count} * row_len {row_len}",
+                values.len()
+            )));
+        }
+        let head_end = head_start.checked_add(head_len).ok_or_else(|| {
+            MetalError::InvalidShape("head row selection range overflows usize".to_owned())
+        })?;
+        if head_end > row_len {
+            return Err(MetalError::InvalidShape(format!(
+                "head row selection range {head_start}..{head_end} exceeds row length {row_len}"
+            )));
+        }
+        let output_len = row_count.checked_mul(head_len).ok_or_else(|| {
+            MetalError::InvalidShape("head row selection output shape overflows usize".to_owned())
+        })?;
+        if output_len == 0 {
+            return Ok(Vec::new());
+        }
+        let row_len_u32 = u32::try_from(row_len).map_err(|err| {
+            MetalError::InvalidShape(format!("head row length does not fit u32: {err}"))
+        })?;
+        let head_start_u32 = u32::try_from(head_start).map_err(|err| {
+            MetalError::InvalidShape(format!("head row start does not fit u32: {err}"))
+        })?;
+        let head_len_u32 = u32::try_from(head_len).map_err(|err| {
+            MetalError::InvalidShape(format!("head row length does not fit u32: {err}"))
+        })?;
+        let output_len_u32 = u32::try_from(output_len).map_err(|err| {
+            MetalError::InvalidShape(format!("head row output length does not fit u32: {err}"))
+        })?;
+        let values_byte_len = std::mem::size_of_val(values) as u64;
+        let output_byte_len = (output_len * std::mem::size_of::<f32>()) as u64;
+        let values_buffer = self.device.new_buffer_with_data(
+            values.as_ptr().cast::<c_void>(),
+            values_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.select_head_rows_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.select_head_rows_f32.pipeline);
+        encoder.set_buffer(0, Some(&values_buffer), 0);
+        encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&row_len_u32) as u64,
+            (&row_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&head_start_u32) as u64,
+            (&head_start_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&head_len_u32) as u64,
+            (&head_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&output_len_u32) as u64,
+            (&output_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(5, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: output_len as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .select_head_rows_f32
+            .pipeline
+            .thread_execution_width()
+            .min(output_len as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per selected row element.
+        let output = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, output_len).to_vec()
         };
         Ok(output)
     }
@@ -1280,6 +1391,23 @@ kernel void linear_attention_recurrent_update_f32(
     uint value_index = index % value_head_dim;
     float delta = (value[value_index] - memory[value_index]) * beta;
     output[index] = (state[index] * decay) + (key[key_index] * delta);
+}
+
+kernel void select_head_rows_f32(
+    device const float* values [[buffer(0)]],
+    constant uint& row_len [[buffer(1)]],
+    constant uint& head_start [[buffer(2)]],
+    constant uint& head_len [[buffer(3)]],
+    constant uint& output_len [[buffer(4)]],
+    device float* output [[buffer(5)]],
+    uint index [[thread_position_in_grid]]
+) {
+    if (index >= output_len) {
+        return;
+    }
+    uint row = index / head_len;
+    uint offset = index % head_len;
+    output[index] = values[(row * row_len) + head_start + offset];
 }
 
 kernel void matvec_f32(

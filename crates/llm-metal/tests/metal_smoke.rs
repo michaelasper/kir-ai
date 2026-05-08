@@ -114,6 +114,21 @@ fn metal_linear_attention_recurrent_update_f32_matches_cpu_reference() {
 }
 
 #[test]
+fn metal_select_head_rows_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let output = device
+        .select_head_rows_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 2, 4, 1, 2)
+        .expect("metal head row selection succeeds");
+
+    assert_close(&output, &[2.0, 3.0, 6.0, 7.0], 1e-6);
+}
+
+#[test]
 fn metal_matvec_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
