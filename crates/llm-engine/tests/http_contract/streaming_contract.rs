@@ -36,7 +36,7 @@ async fn streaming_chat_validation_errors_return_json_error() {
 }
 
 #[tokio::test]
-async fn streaming_chat_response_validation_errors_return_json_error() {
+async fn streaming_chat_response_validation_errors_emit_sse_error_after_headers() {
     let response = build_router_with_backend(Box::new(StaticBackend {
         text: "not json".to_owned(),
     }))
@@ -59,18 +59,19 @@ async fn streaming_chat_response_validation_errors_return_json_error() {
     .await
     .expect("chat response");
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        !response
+        response
             .headers()
             .get("content-type")
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .starts_with("text/event-stream")
     );
-    let body = body_json(response.into_body()).await;
-    assert_eq!(body["error"]["code"], "json_validation_failed");
-    assert_eq!(body["error"]["phase"], "response_validation");
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"code\":\"json_validation_failed\""));
+    assert!(body.contains("\"phase\":\"response_validation\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 
 #[tokio::test]

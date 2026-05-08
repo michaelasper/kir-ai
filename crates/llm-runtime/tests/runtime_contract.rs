@@ -11,7 +11,7 @@ use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -570,7 +570,7 @@ async fn json_object_response_format_rejects_text_content() {
 async fn streaming_json_object_response_format_rejects_text_content() {
     let backend = DeterministicBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);
-    let err = runtime
+    let stream = runtime
         .chat_stream(ChatCompletionRequest {
             model: "local-qwen36".to_owned(),
             messages: vec![ChatMessage::user("return json")],
@@ -579,9 +579,30 @@ async fn streaming_json_object_response_format_rejects_text_content() {
             ..ChatCompletionRequest::default()
         })
         .await
-        .expect_err("streaming json object mode validates before SSE assembly");
+        .expect("streaming json object mode starts before final validation");
+    let mut emitted_content = String::new();
+    let mut events = stream.into_events();
+    let err = loop {
+        match events.next().await.expect("stream yields validation error") {
+            Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
+                for choice in chunk.choices {
+                    if let Some(content) = choice.delta.content {
+                        emitted_content.push_str(&content);
+                    }
+                }
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                panic!("invalid JSON stream should not complete successfully")
+            }
+            Err(err) => break err,
+        }
+    };
 
     assert!(matches!(err, RuntimeError::JsonMode(_)));
+    assert!(
+        emitted_content.is_empty(),
+        "invalid JSON content must not be emitted before validation"
+    );
 }
 
 #[tokio::test]
@@ -826,6 +847,91 @@ async fn runtime_streams_generated_tool_call_delta() {
         chunks[2].choices[0].finish_reason,
         Some(FinishReason::ToolCalls)
     );
+}
+
+#[tokio::test]
+async fn runtime_streams_tool_call_delta_before_backend_finish() {
+    let first = Arc::new(Semaphore::new(0));
+    let finish = Arc::new(Semaphore::new(0));
+    let backend = ToolBoundaryStreamBackend {
+        first: first.clone(),
+        finish: finish.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming tool calls assemble");
+    let mut events = stream.into_events();
+    assert!(
+        matches!(
+            events.next().await,
+            Some(Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)))
+        ),
+        "role seed chunk arrives"
+    );
+
+    first.add_permits(1);
+    let tool_chunk = tokio::time::timeout(Duration::from_millis(300), async {
+        loop {
+            match events.next().await.expect("stream yields tool chunk") {
+                Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk))
+                    if chunk
+                        .choices
+                        .first()
+                        .is_some_and(|choice| !choice.delta.tool_calls.is_empty()) =>
+                {
+                    return chunk;
+                }
+                Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                    panic!("tool call should arrive before completion")
+                }
+                Err(err) => panic!("stream failed before tool boundary delta: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("tool delta arrives before backend finish");
+
+    let delta = &tool_chunk.choices[0].delta.tool_calls[0];
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("lookup")
+    );
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(r#"{"query":"rust"}"#)
+    );
+
+    finish.add_permits(1);
+    let mut saw_finish = false;
+    while let Some(event) = events.next().await {
+        match event.expect("stream event") {
+            llm_runtime::ChatCompletionStreamEvent::Chunk(chunk) => {
+                saw_finish |= chunk
+                    .choices
+                    .first()
+                    .and_then(|choice| choice.finish_reason.as_ref())
+                    == Some(&FinishReason::ToolCalls);
+            }
+            llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
+        }
+    }
+    assert!(saw_finish, "stream ends with tool_calls finish reason");
 }
 
 #[tokio::test]
@@ -1150,6 +1256,11 @@ struct TwoChunkStreamBackend {
     finish: Arc<Notify>,
 }
 
+struct ToolBoundaryStreamBackend {
+    first: Arc<Semaphore>,
+    finish: Arc<Semaphore>,
+}
+
 struct CancellableStreamBackend {
     cancelled: Arc<Notify>,
 }
@@ -1276,6 +1387,63 @@ impl ModelBackend for TwoChunkStreamBackend {
                 prompt_tokens: 1,
                 completion_tokens: 1,
                 finish_reason: Some(FinishReason::Stop),
+            };
+        }
+        .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for ToolBoundaryStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "tool boundary streaming test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let first = self.first.clone();
+        let finish = self.finish.clone();
+        async_stream::try_stream! {
+            let _permit = first.acquire().await.expect("first semaphore open");
+            yield BackendStreamChunk {
+                text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#.to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            let _permit = finish.acquire().await.expect("finish semaphore open");
+            yield BackendStreamChunk {
+                text: String::new(),
+                prompt_tokens: 1,
+                completion_tokens: 0,
+                finish_reason: Some(FinishReason::ToolCalls),
             };
         }
         .boxed()

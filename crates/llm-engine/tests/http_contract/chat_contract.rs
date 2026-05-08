@@ -985,6 +985,38 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
 }
 
 #[tokio::test]
+async fn chat_completions_streaming_json_object_validation_errors_are_sse() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: "not json".to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "json"}],
+                    "stream": true,
+                    "response_format": {"type": "json_object"}
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"code\":\"json_validation_failed\""));
+    assert!(body.contains("\"phase\":\"response_validation\""));
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+    assert!(!body.contains("\"finish_reason\":\"stop\""));
+}
+
+#[tokio::test]
 async fn chat_completions_returns_json_object_in_protocol_mode() {
     let response = build_router()
         .oneshot(

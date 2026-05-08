@@ -660,6 +660,8 @@ fn streaming_chat_stream<'a>(
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
         let mut stopped_by_sequence = false;
+        let json_object_mode = matches!(request.response_format, Some(ResponseFormat::JsonObject));
+        let mut emitted_tool_calls = 0;
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
@@ -668,7 +670,7 @@ fn streaming_chat_stream<'a>(
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
                 if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
-                    if stop_at > emitted_len {
+                    if !json_object_mode && stop_at > emitted_len {
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
                             ChatCompletionDelta {
@@ -684,19 +686,47 @@ fn streaming_chat_stream<'a>(
                     stopped_by_sequence = true;
                     break;
                 }
-                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
-                    .min(safe_tool_markup_emit_len(&raw_text));
-                if safe_len > emitted_len {
-                    yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                        &completion,
-                        ChatCompletionDelta {
-                            content: Some(raw_text[emitted_len..safe_len].to_owned()),
-                            ..ChatCompletionDelta::default()
-                        },
-                        None,
-                        None,
-                    ));
-                    emitted_len = safe_len;
+                if !json_object_mode {
+                    let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
+                        .min(safe_tool_markup_emit_len(&raw_text));
+                    if safe_len > emitted_len {
+                        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                            &completion,
+                            ChatCompletionDelta {
+                                content: Some(raw_text[emitted_len..safe_len].to_owned()),
+                                ..ChatCompletionDelta::default()
+                            },
+                            None,
+                            None,
+                        ));
+                        emitted_len = safe_len;
+                    }
+                }
+                if let Some(tool_prefix_len) = completed_tool_prefix_len(&raw_text)
+                    && tool_prefix_len > emitted_len
+                {
+                    let parsed_prefix = QwenParser.parse_complete(&raw_text[..tool_prefix_len])?;
+                    validate_tool_call_arguments(&parsed_prefix)?;
+                    validate_tool_calls_against_request(&parsed_prefix, &request)?;
+                    for (index, tool_call) in parsed_prefix
+                        .tool_calls
+                        .iter()
+                        .enumerate()
+                        .skip(emitted_tool_calls)
+                    {
+                        let delta = tool_call_delta(index, tool_call)?;
+                        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                            &completion,
+                            ChatCompletionDelta {
+                                tool_calls: vec![delta],
+                                ..ChatCompletionDelta::default()
+                            },
+                            None,
+                            None,
+                        ));
+                    }
+                    emitted_tool_calls = parsed_prefix.tool_calls.len();
+                    emitted_len = emitted_len.max(tool_prefix_len);
                 }
             }
             if let Some(reason) = chunk.finish_reason {
@@ -711,6 +741,7 @@ fn streaming_chat_stream<'a>(
         };
         if !stopped_by_sequence
             && emitted_len < visible_len
+            && !json_object_mode
             && !contains_tool_call_start(&raw_text[..visible_len])
         {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -728,6 +759,9 @@ fn streaming_chat_stream<'a>(
         let parsed = QwenParser.parse_complete(visible_text)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
+        if json_object_mode {
+            validate_json_object_response(&parsed)?;
+        }
         let required_tool_pending = matches!(
             request.tool_choice,
             Some(ToolChoice::Required | ToolChoice::Function { .. })
@@ -751,7 +785,18 @@ fn streaming_chat_stream<'a>(
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         };
-        for (index, tool_call) in parsed.tool_calls.iter().enumerate() {
+        if json_object_mode && !parsed.content.is_empty() {
+            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    content: Some(parsed.content.clone()),
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+                None,
+            ));
+        }
+        for (index, tool_call) in parsed.tool_calls.iter().enumerate().skip(emitted_tool_calls) {
             let delta = tool_call_delta(index, tool_call)?;
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                 &completion,
@@ -784,8 +829,8 @@ fn streaming_chat_stream<'a>(
     }
 }
 
-pub fn chat_stream_requires_buffering(request: &ChatCompletionRequest) -> bool {
-    matches!(request.response_format, Some(ResponseFormat::JsonObject))
+pub fn chat_stream_requires_buffering(_request: &ChatCompletionRequest) -> bool {
+    false
 }
 
 fn empty_usage() -> Usage {
@@ -918,6 +963,7 @@ fn safe_stream_emit_len(content: &str, max_stop_len: usize) -> usize {
 }
 
 const TOOL_CALL_START_MARKER: &str = "<tool_call>";
+const TOOL_CALL_END_MARKER: &str = "</tool_call>";
 
 fn safe_tool_markup_emit_len(content: &str) -> usize {
     if let Some(start) = content.find(TOOL_CALL_START_MARKER) {
@@ -928,6 +974,12 @@ fn safe_tool_markup_emit_len(content: &str) -> usize {
         .find(|prefix_len| content.ends_with(&TOOL_CALL_START_MARKER[..*prefix_len]))
         .unwrap_or(0);
     content.len() - withheld_prefix_len
+}
+
+fn completed_tool_prefix_len(content: &str) -> Option<usize> {
+    content
+        .rfind(TOOL_CALL_END_MARKER)
+        .map(|end| end + TOOL_CALL_END_MARKER.len())
 }
 
 fn contains_tool_call_start(content: &str) -> bool {
