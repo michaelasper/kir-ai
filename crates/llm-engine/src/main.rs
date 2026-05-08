@@ -31,6 +31,12 @@ async fn main() -> anyhow::Result<()> {
             let admin_token = flag_value(&serve_args, "--admin-token")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_ENGINE_ADMIN_TOKEN").ok());
+            let model_home = flag_value(&serve_args, "--model-home")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("LLM_MODEL_HOME").map(std::path::PathBuf::from));
+            let hub_endpoint = flag_value(&serve_args, "--hub-endpoint")
+                .map(str::to_owned)
+                .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
@@ -39,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
             let options = EngineOptions {
                 concurrency_limit: max_concurrent_requests,
                 admin_token,
+                model_home,
+                hub_endpoint,
+                hf_token: std::env::var("HF_TOKEN").ok(),
             };
             let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
                 let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");

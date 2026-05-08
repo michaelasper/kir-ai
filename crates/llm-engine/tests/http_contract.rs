@@ -12,8 +12,11 @@ use llm_engine::{
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
 use std::{
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
     time::Duration,
 };
 use tokio::sync::{Notify, Semaphore};
@@ -144,6 +147,110 @@ async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     assert_eq!(body["verified_files"], 1);
     assert_eq!(body["verified_bytes"], 2);
     assert_eq!(body["snapshot_path"], snapshot_path.display().to_string());
+}
+
+#[tokio::test]
+async fn admin_model_plan_endpoint_returns_download_plan() {
+    let (endpoint, server) = spawn_fake_hub_server(1);
+    let response = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            hub_endpoint: Some(endpoint),
+            ..EngineOptions::default()
+        },
+    )
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/admin/models/local-qwen36/plan")
+            .header("authorization", "Bearer secret-admin-token")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "repo_id": "Qwen/Qwen3.6-35B-A3B",
+                    "revision": "main",
+                    "profile": "qwen36-safetensors-bf16",
+                    "metadata_only": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin plan response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["repo_id"]["id"], "Qwen/Qwen3.6-35B-A3B");
+    assert_eq!(
+        body["resolved_commit"],
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(body["metadata_only"], true);
+    assert_eq!(
+        body["files_to_download"].as_array().expect("files").len(),
+        1
+    );
+    assert_eq!(body["files_to_download"][0]["path"], "config.json");
+    server.join().expect("fake hub exits");
+}
+
+#[tokio::test]
+async fn admin_model_pull_endpoint_promotes_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (endpoint, server) = spawn_fake_hub_server(2);
+    let response = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            model_home: Some(temp.path().to_path_buf()),
+            hub_endpoint: Some(endpoint),
+            ..EngineOptions::default()
+        },
+    )
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/admin/models/local-qwen36/pull")
+            .header("authorization", "Bearer secret-admin-token")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "repo_id": "Qwen/Qwen3.6-35B-A3B",
+                    "revision": "main",
+                    "profile": "qwen36-safetensors-bf16",
+                    "metadata_only": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin pull response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(
+        body["resolved_commit"],
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(body["files"], 1);
+    assert_eq!(
+        body["manifest_digest"]
+            .as_str()
+            .expect("manifest digest")
+            .len(),
+        64
+    );
+    let snapshot_path = PathBuf::from(body["snapshot_path"].as_str().expect("snapshot path"));
+    assert!(snapshot_path.join("config.json").is_file());
+    assert!(snapshot_path.join("llm-engine-manifest.json").is_file());
+    server.join().expect("fake hub exits");
 }
 
 #[tokio::test]
@@ -1267,6 +1374,50 @@ async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
         .await
         .expect("snapshot verifies");
     snapshot_path
+}
+
+fn spawn_fake_hub_server(requests: usize) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake hub");
+    let endpoint = format!("http://{}", listener.local_addr().expect("local addr"));
+    let server = thread::spawn(move || {
+        for _ in 0..requests {
+            let (mut stream, _) = listener.accept().expect("accept fake hub request");
+            let mut buffer = [0_u8; 4096];
+            let read = stream.read(&mut buffer).expect("read fake hub request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            if request.starts_with(
+                "GET /api/models/Qwen/Qwen3.6-35B-A3B/revision/main?blobs=true&securityStatus=true ",
+            ) {
+                let body = json!({
+                    "id": "Qwen/Qwen3.6-35B-A3B",
+                    "sha": "0123456789abcdef0123456789abcdef01234567",
+                    "siblings": [
+                        {"rfilename": "config.json", "size": 2, "blobId": "\"cfg\""},
+                        {"rfilename": "model.safetensors", "size": 4, "blobId": "\"weights\""}
+                    ]
+                })
+                .to_string();
+                write_http_response(&mut stream, "200 OK", &body);
+            } else if request.starts_with(
+                "GET /Qwen/Qwen3.6-35B-A3B/resolve/0123456789abcdef0123456789abcdef01234567/config.json ",
+            ) {
+                write_http_response(&mut stream, "200 OK", "{}");
+            } else {
+                write_http_response(&mut stream, "404 Not Found", "not found");
+            }
+        }
+    });
+    (endpoint, server)
+}
+
+fn write_http_response(stream: &mut std::net::TcpStream, status: &str, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("write fake hub response");
+    stream.flush().expect("flush fake hub response");
 }
 
 async fn protocol_chat_content(messages: Value) -> String {

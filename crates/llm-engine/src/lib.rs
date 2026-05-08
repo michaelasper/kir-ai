@@ -17,11 +17,14 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
     ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
-use llm_hub::{HubError, ModelStore, SnapshotManifest};
+use llm_hub::{
+    DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
+};
 use llm_models::QwenModelSpec;
 use llm_runtime::{ChatCompletionStream, CompletionStream, Runtime, RuntimeError};
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use llm_tokenizer::HuggingFaceTokenizer;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     convert::Infallible,
@@ -38,12 +41,18 @@ struct AppState {
     metrics: Arc<Mutex<ServerMetrics>>,
     model_permits: Arc<Semaphore>,
     admin_token: Option<Arc<str>>,
+    model_home: PathBuf,
+    hub_client: HubClient,
+    hf_token: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct EngineOptions {
     pub concurrency_limit: usize,
     pub admin_token: Option<String>,
+    pub model_home: Option<PathBuf>,
+    pub hub_endpoint: Option<String>,
+    pub hf_token: Option<String>,
 }
 
 pub fn build_router() -> Router {
@@ -62,7 +71,7 @@ pub fn build_router_with_backend_and_concurrency(
         backend,
         EngineOptions {
             concurrency_limit,
-            admin_token: None,
+            ..EngineOptions::default()
         },
     )
 }
@@ -78,6 +87,8 @@ pub fn build_router_with_backend_and_options(
         .route("/admin/models", get(admin_models))
         .route("/admin/models/{alias}", get(admin_model))
         .route("/admin/models/{alias}/verify", post(admin_model_verify))
+        .route("/admin/models/{alias}/plan", post(admin_model_plan))
+        .route("/admin/models/{alias}/pull", post(admin_model_pull))
         .route("/admin/metrics", get(admin_metrics))
         .route(
             "/v1/chat/completions",
@@ -89,6 +100,14 @@ pub fn build_router_with_backend_and_options(
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
             model_permits: Arc::new(Semaphore::new(options.concurrency_limit.max(1))),
             admin_token: options.admin_token.map(Arc::from),
+            model_home: options.model_home.unwrap_or_else(default_model_home),
+            hub_client: options
+                .hub_endpoint
+                .map(|endpoint| {
+                    HubClient::new(url::Url::parse(&endpoint).expect("hub endpoint URL parses"))
+                })
+                .unwrap_or_default(),
+            hf_token: options.hf_token.map(Arc::from),
         })
 }
 
@@ -97,6 +116,12 @@ fn default_backend() -> DeterministicBackend {
         .with_required_tool_protocol()
         .with_json_object_protocol()
         .with_conversation_protocol()
+}
+
+fn default_model_home() -> PathBuf {
+    std::env::var_os("LLM_MODEL_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".llm-models"))
 }
 
 #[derive(Clone)]
@@ -357,6 +382,98 @@ async fn admin_model_verify(
         "verified_files": verification.verified_files,
         "verified_bytes": verification.verified_bytes,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminModelPlanRequest {
+    repo_id: String,
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    metadata_only: bool,
+}
+
+async fn admin_model_plan(
+    AxumPath(alias): AxumPath<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
+) -> Result<Json<DownloadPlan>, EngineError> {
+    require_admin(&state, &headers)?;
+    require_model_alias(&state, alias)?;
+    let request = parse_json_request(request, &state)?;
+    let plan = build_admin_download_plan(&state, request).await?;
+    Ok(Json(plan))
+}
+
+async fn admin_model_pull(
+    AxumPath(alias): AxumPath<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
+    require_model_alias(&state, alias)?;
+    let request = parse_json_request(request, &state)?;
+    let plan = build_admin_download_plan(&state, request).await?;
+    let snapshot = ModelStore::new(&state.model_home)
+        .pull_plan(&state.hub_client, &plan, state.hf_token.as_deref())
+        .await
+        .map_err(EngineError::ModelStore)?;
+    Ok(Json(json!({
+        "snapshot_path": snapshot.path,
+        "manifest_digest": snapshot.manifest_digest,
+        "repo_id": snapshot.manifest.repo_id,
+        "resolved_commit": snapshot.manifest.resolved_commit,
+        "profile": snapshot.manifest.profile,
+        "files": snapshot.manifest.files.len(),
+    })))
+}
+
+async fn build_admin_download_plan(
+    state: &AppState,
+    request: AdminModelPlanRequest,
+) -> Result<DownloadPlan, EngineError> {
+    let repo_id = HubRepoId::model(request.repo_id).map_err(EngineError::ModelStore)?;
+    let revision = request.revision.unwrap_or_else(|| "main".to_owned());
+    let profile_name = request
+        .profile
+        .unwrap_or_else(|| "qwen36-safetensors-bf16".to_owned());
+    let profile = model_profile(&profile_name)?;
+    let mut plan = state
+        .hub_client
+        .plan_model(repo_id, &revision, profile, state.hf_token.as_deref())
+        .await
+        .map_err(EngineError::ModelStore)?;
+    if request.metadata_only {
+        plan = plan.metadata_only();
+    }
+    Ok(plan)
+}
+
+fn model_profile(name: &str) -> Result<ModelProfile, EngineError> {
+    match name {
+        "qwen36-mlx-4bit" => Ok(ModelProfile::qwen36_mlx_4bit()),
+        "qwen36-safetensors-bf16" => Ok(ModelProfile::qwen36_safetensors_bf16()),
+        other => Err(RuntimeError::Api(ApiError::invalid_request(format!(
+            "unknown model profile `{other}`"
+        )))
+        .into()),
+    }
+}
+
+fn require_model_alias(state: &AppState, alias: String) -> Result<(), EngineError> {
+    let model_id = state.runtime.model_id();
+    if alias == model_id {
+        return Ok(());
+    }
+    Err(RuntimeError::Backend(BackendError::ModelNotFound {
+        requested: alias,
+        available: model_id.to_owned(),
+    })
+    .into())
 }
 
 fn admin_model_status(metadata: &BackendModelMetadata) -> Value {
