@@ -139,6 +139,7 @@ Current commits:
 - `c76ce8d` - Tracker updated with streaming TTFT metrics commit identity.
 - `b08bdbb` - Admin metrics expose current prefill/decode scheduler phase gauges.
 - `7a9198b` - Tracker updated with scheduler phase metrics commit identity.
+- `4201417` - Admin metrics report model pull operation counts and promoted manifest bytes.
 
 Current verified state:
 
