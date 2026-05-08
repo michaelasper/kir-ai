@@ -21,9 +21,9 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
-    qwen_decode_token_with_cache_with_matvec, qwen_final_norm, qwen_layer_caches_for_spec,
+    qwen_decode_token_with_cache_with_matvec, qwen_decoder_layer_sequence_with_cache_with_matvec,
+    qwen_embedding_sequence, qwen_final_norm, qwen_layer_caches_for_spec,
     qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
-    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -519,7 +519,7 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode = self.start_decode_session(&context_tokens, requested)?;
+        let mut decode = self.start_decode_session(&context_tokens, requested, &cancellation)?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -595,7 +595,12 @@ impl NativeQwenBackend {
             .token_to_id("<|im_end|>")
             .map(|id| id as usize);
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode = self.start_decode_session(&context_tokens, requested)?;
+        let mut decode = match self.start_decode_session(&context_tokens, requested, &cancellation)
+        {
+            Ok(decode) => decode,
+            Err(BackendError::Cancelled) if cancellation.is_cancelled() => return Ok(()),
+            Err(err) => return Err(err),
+        };
         if cancellation.is_cancelled() {
             return Ok(());
         }
@@ -662,7 +667,11 @@ impl NativeQwenBackend {
         &self,
         context_tokens: &[usize],
         max_new_tokens: u32,
+        cancellation: &CancellationToken,
     ) -> Result<NativeQwenDecodeSession, BackendError> {
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
         let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
         let prefill_tokens = &context_tokens[start..];
         let cache_tokens = prefill_tokens
@@ -671,14 +680,36 @@ impl NativeQwenBackend {
             .ok_or_else(|| BackendError::Other("Qwen cache token capacity overflow".to_owned()))?;
         let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
             .map_err(|err| BackendError::Other(err.to_string()))?;
-        let hidden_states = qwen_prefill_sequence_with_cache_with_matvec(
-            &self.store,
-            &self.spec,
-            prefill_tokens,
-            &mut caches,
-            &self.matvec,
-        )
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        let mut hidden_states =
+            qwen_embedding_sequence(&self.store, prefill_tokens, self.spec.hidden_size as usize)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        for (layer_idx, cache) in caches
+            .iter_mut()
+            .enumerate()
+            .take(self.spec.num_hidden_layers as usize)
+        {
+            if cancellation.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+            hidden_states = qwen_decoder_layer_sequence_with_cache_with_matvec(
+                &self.store,
+                &self.spec,
+                layer_idx,
+                &hidden_states,
+                cache,
+                &self.matvec,
+            )
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+            if cancellation.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+        }
         let hidden = hidden_states.last().cloned().ok_or_else(|| {
             BackendError::Other("Qwen prefill returned no hidden states".to_owned())
         })?;
@@ -1983,6 +2014,30 @@ mod tests {
             .expect_err("pre-cancelled generation fails before decode");
 
         assert!(err.to_string().contains("cancelled"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
+        let snapshot = temp_snapshot_dir("cancelled-start-decode");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("config.json", snapshot.join("config.json"));
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+        let backend =
+            NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        match backend.start_decode_session(&[0], 1, &cancellation) {
+            Err(BackendError::Cancelled) => {}
+            Err(err) => panic!("expected cancellation before prefill, got {err}"),
+            Ok(_) => panic!("pre-cancelled decode startup should fail before prefill"),
+        }
         std::fs::remove_dir_all(snapshot).ok();
     }
 
