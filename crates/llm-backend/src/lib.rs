@@ -331,6 +331,34 @@ pub struct QwenLinearAttentionProjectionSequence {
     pub a: Vec<Vec<f32>>,
 }
 
+pub struct QwenLinearAttentionSequenceParts<'a> {
+    pub qkv: &'a [Vec<f32>],
+    pub z: &'a [Vec<f32>],
+    pub b: &'a [Vec<f32>],
+    pub a: &'a [Vec<f32>],
+    pub dt_bias: &'a [f32],
+    pub a_log: &'a [f32],
+    pub conv1d_weight: &'a [f32],
+    pub norm_weight: &'a [f32],
+    pub out_proj_weight: &'a [f32],
+}
+
+pub struct QwenFullAttentionSequenceParts<'a> {
+    pub q_proj: &'a [Vec<f32>],
+    pub k_proj: &'a [Vec<f32>],
+    pub v_proj: &'a [Vec<f32>],
+    pub q_norm_weight: &'a [f32],
+    pub k_norm_weight: &'a [f32],
+    pub o_proj_weight: &'a [f32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QwenFullAttentionSequenceConfig {
+    pub rms_norm_eps: f32,
+    pub rope_theta: f32,
+    pub partial_rotary_factor: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenMoeRouterProbe {
     pub logits: Vec<f32>,
@@ -616,16 +644,12 @@ pub fn qwen_linear_attention_first_token_from_parts(
 
 pub fn qwen_linear_attention_sequence_from_parts(
     dims: &QwenLinearAttentionDims,
-    qkv: &[Vec<f32>],
-    z: &[Vec<f32>],
-    b: &[Vec<f32>],
-    a: &[Vec<f32>],
-    dt_bias: &[f32],
-    a_log: &[f32],
-    conv1d_weight: &[f32],
-    norm_weight: &[f32],
-    out_proj_weight: &[f32],
+    parts: &QwenLinearAttentionSequenceParts<'_>,
 ) -> Result<Vec<Vec<f32>>, MathError> {
+    let qkv = parts.qkv;
+    let z = parts.z;
+    let b = parts.b;
+    let a = parts.a;
     if qkv.is_empty() {
         return Ok(Vec::new());
     }
@@ -653,19 +677,19 @@ pub fn qwen_linear_attention_sequence_from_parts(
     let key_dim = dims.key_dim()?;
     let value_dim = dims.value_dim()?;
     let conv_dim = dims.conv_dim()?;
-    require_len("dt bias", dt_bias.len(), dims.num_value_heads)?;
-    require_len("A log", a_log.len(), dims.num_value_heads)?;
-    require_len("norm weight", norm_weight.len(), dims.value_head_dim)?;
+    require_len("dt bias", parts.dt_bias.len(), dims.num_value_heads)?;
+    require_len("A log", parts.a_log.len(), dims.num_value_heads)?;
+    require_len("norm weight", parts.norm_weight.len(), dims.value_head_dim)?;
     require_len(
         "conv1d weight",
-        conv1d_weight.len(),
+        parts.conv1d_weight.len(),
         conv_dim
             .checked_mul(dims.conv_kernel_size)
             .ok_or_else(|| MathError::InvalidShape("conv1d weight shape overflow".to_owned()))?,
     )?;
     require_len(
         "out projection weight",
-        out_proj_weight.len(),
+        parts.out_proj_weight.len(),
         dims.hidden_size
             .checked_mul(value_dim)
             .ok_or_else(|| MathError::InvalidShape("out projection shape overflow".to_owned()))?,
@@ -685,7 +709,7 @@ pub fn qwen_linear_attention_sequence_from_parts(
                 let lookback = dims.conv_kernel_size - 1 - kernel_idx;
                 if token_idx >= lookback {
                     mixed += qkv[token_idx - lookback][channel]
-                        * conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
+                        * parts.conv1d_weight[channel * dims.conv_kernel_size + kernel_idx];
                 }
             }
             mixed_tokens[token_idx][channel] = silu_f32(mixed);
@@ -718,8 +742,8 @@ pub fn qwen_linear_attention_sequence_from_parts(
                 .map(|value| value * scale)
                 .collect::<Vec<_>>();
             let beta = sigmoid_f32(b[token_idx][value_head]);
-            let decay = (-a_log[value_head].exp()
-                * softplus_f32(a[token_idx][value_head] + dt_bias[value_head]))
+            let decay = (-parts.a_log[value_head].exp()
+                * softplus_f32(a[token_idx][value_head] + parts.dt_bias[value_head]))
             .exp();
 
             let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
@@ -730,11 +754,10 @@ pub fn qwen_linear_attention_sequence_from_parts(
             }
 
             let mut memory = vec![0.0; dims.value_head_dim];
-            for key_offset in 0..dims.key_head_dim {
+            for (key_offset, key_value) in key_head_values.iter().enumerate() {
                 let state_row = state_start + key_offset * dims.value_head_dim;
                 for value_offset in 0..dims.value_head_dim {
-                    memory[value_offset] +=
-                        recurrent_state[state_row + value_offset] * key_head_values[key_offset];
+                    memory[value_offset] += recurrent_state[state_row + value_offset] * key_value;
                 }
             }
 
@@ -758,7 +781,7 @@ pub fn qwen_linear_attention_sequence_from_parts(
                         recurrent_state[state_row + value_offset] * query_value;
                 }
             }
-            let normalized = rms_norm_f32(&core_head, norm_weight, dims.rms_norm_eps)?;
+            let normalized = rms_norm_f32(&core_head, parts.norm_weight, dims.rms_norm_eps)?;
             for value_offset in 0..dims.value_head_dim {
                 gated[value_start + value_offset] =
                     normalized[value_offset] * silu_f32(z[token_idx][value_start + value_offset]);
@@ -766,7 +789,7 @@ pub fn qwen_linear_attention_sequence_from_parts(
         }
         outputs.push(matvec_row_major_f32(
             &gated,
-            out_proj_weight,
+            parts.out_proj_weight,
             dims.hidden_size,
             value_dim,
         )?);
@@ -829,16 +852,12 @@ pub fn qwen_full_attention_first_token_from_parts(
 
 pub fn qwen_full_attention_sequence_from_parts(
     dims: &QwenFullAttentionDims,
-    q_proj: &[Vec<f32>],
-    k_proj: &[Vec<f32>],
-    v_proj: &[Vec<f32>],
-    q_norm_weight: &[f32],
-    k_norm_weight: &[f32],
-    o_proj_weight: &[f32],
-    rms_norm_eps: f32,
-    rope_theta: f32,
-    partial_rotary_factor: f32,
+    parts: &QwenFullAttentionSequenceParts<'_>,
+    config: QwenFullAttentionSequenceConfig,
 ) -> Result<Vec<Vec<f32>>, MathError> {
+    let q_proj = parts.q_proj;
+    let k_proj = parts.k_proj;
+    let v_proj = parts.v_proj;
     if q_proj.is_empty() {
         return Ok(Vec::new());
     }
@@ -859,7 +878,7 @@ pub fn qwen_full_attention_sequence_from_parts(
             "Qwen attention heads must be divisible by key/value heads".to_owned(),
         ));
     }
-    if rope_theta <= 0.0 || partial_rotary_factor < 0.0 {
+    if config.rope_theta <= 0.0 || config.partial_rotary_factor < 0.0 {
         return Err(MathError::InvalidShape(
             "Qwen RoPE parameters must be positive".to_owned(),
         ));
@@ -872,16 +891,16 @@ pub fn qwen_full_attention_sequence_from_parts(
     }
     let attention_dim = dims.attention_dim()?;
     let key_value_dim = dims.key_value_dim()?;
-    require_len("q norm weight", q_norm_weight.len(), dims.head_dim)?;
-    require_len("k norm weight", k_norm_weight.len(), dims.head_dim)?;
+    require_len("q norm weight", parts.q_norm_weight.len(), dims.head_dim)?;
+    require_len("k norm weight", parts.k_norm_weight.len(), dims.head_dim)?;
     require_len(
         "o projection weight",
-        o_proj_weight.len(),
+        parts.o_proj_weight.len(),
         dims.hidden_size
             .checked_mul(attention_dim)
             .ok_or_else(|| MathError::InvalidShape("Qwen o projection overflow".to_owned()))?,
     )?;
-    let rotary_dim = ((dims.head_dim as f32) * partial_rotary_factor).round() as usize;
+    let rotary_dim = ((dims.head_dim as f32) * config.partial_rotary_factor).round() as usize;
     if rotary_dim > dims.head_dim || !rotary_dim.is_multiple_of(2) {
         return Err(MathError::InvalidShape(format!(
             "Qwen rotary dimension {rotary_dim} must be even and <= head dim {}",
@@ -902,8 +921,8 @@ pub fn qwen_full_attention_sequence_from_parts(
             let q_start = head * dims.head_dim;
             let query = qwen_rms_norm_f32(
                 &q_proj[token_idx][projected_head_start..projected_head_start + dims.head_dim],
-                q_norm_weight,
-                rms_norm_eps,
+                parts.q_norm_weight,
+                config.rms_norm_eps,
             )?;
             queries[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(&query);
             gates[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(
@@ -914,22 +933,22 @@ pub fn qwen_full_attention_sequence_from_parts(
                 &mut queries[token_idx][q_start..q_start + dims.head_dim],
                 token_idx,
                 rotary_dim,
-                rope_theta,
+                config.rope_theta,
             );
         }
         for head in 0..dims.num_key_value_heads {
             let head_start = head * dims.head_dim;
             let key = qwen_rms_norm_f32(
                 &k_proj[token_idx][head_start..head_start + dims.head_dim],
-                k_norm_weight,
-                rms_norm_eps,
+                parts.k_norm_weight,
+                config.rms_norm_eps,
             )?;
             keys[token_idx][head_start..head_start + dims.head_dim].copy_from_slice(&key);
             apply_rope_to_head(
                 &mut keys[token_idx][head_start..head_start + dims.head_dim],
                 token_idx,
                 rotary_dim,
-                rope_theta,
+                config.rope_theta,
             );
         }
     }
@@ -944,10 +963,10 @@ pub fn qwen_full_attention_sequence_from_parts(
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
             let mut scores = Vec::with_capacity(token_idx + 1);
-            for source_idx in 0..=token_idx {
+            for key_token in keys.iter().take(token_idx + 1) {
                 let score = queries[token_idx][q_start..q_start + dims.head_dim]
                     .iter()
-                    .zip(&keys[source_idx][kv_start..kv_start + dims.head_dim])
+                    .zip(&key_token[kv_start..kv_start + dims.head_dim])
                     .map(|(query, key)| query * key)
                     .sum::<f32>()
                     * scale;
@@ -965,7 +984,7 @@ pub fn qwen_full_attention_sequence_from_parts(
         }
         outputs.push(matvec_row_major_f32(
             &attended,
-            o_proj_weight,
+            parts.o_proj_weight,
             dims.hidden_size,
             attention_dim,
         )?);
@@ -1042,15 +1061,17 @@ pub fn qwen_layer_linear_attention_sequence(
         store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "out_proj.weight"))?;
     qwen_linear_attention_sequence_from_parts(
         &dims,
-        &projections.qkv,
-        &projections.z,
-        &projections.b,
-        &projections.a,
-        &dt_bias,
-        &a_log,
-        &conv1d_weight,
-        &norm_weight,
-        &out_proj_weight,
+        &QwenLinearAttentionSequenceParts {
+            qkv: &projections.qkv,
+            z: &projections.z,
+            b: &projections.b,
+            a: &projections.a,
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
     )
     .map_err(|err| {
         TensorLoadError::integrity(format!(
@@ -1112,15 +1133,19 @@ pub fn qwen_layer_full_attention_sequence(
         store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
     qwen_full_attention_sequence_from_parts(
         &dims,
-        &q_proj,
-        &k_proj,
-        &v_proj,
-        &q_norm_weight,
-        &k_norm_weight,
-        &o_proj_weight,
-        spec.rms_norm_eps,
-        spec.rope_theta,
-        spec.partial_rotary_factor,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        QwenFullAttentionSequenceConfig {
+            rms_norm_eps: spec.rms_norm_eps,
+            rope_theta: spec.rope_theta,
+            partial_rotary_factor: spec.partial_rotary_factor,
+        },
     )
     .map_err(|err| {
         TensorLoadError::integrity(format!(

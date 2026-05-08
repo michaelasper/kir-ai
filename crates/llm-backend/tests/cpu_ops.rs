@@ -1,7 +1,8 @@
 use llm_backend::{
-    QwenFullAttentionDims, QwenLinearAttentionDims, qwen_full_attention_first_token_from_parts,
-    qwen_full_attention_sequence_from_parts, qwen_linear_attention_first_token_from_parts,
-    qwen_linear_attention_sequence_from_parts,
+    QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
+    QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
+    qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
+    qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
 };
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
@@ -103,15 +104,17 @@ fn qwen_linear_attention_sequence_updates_recurrent_state() {
 
     let output = qwen_linear_attention_sequence_from_parts(
         &dims,
-        &qkv,
-        &z,
-        &b,
-        &a,
-        &dt_bias,
-        &a_log,
-        &conv1d_weight,
-        &norm_weight,
-        &out_proj_weight,
+        &QwenLinearAttentionSequenceParts {
+            qkv: &qkv,
+            z: &z,
+            b: &b,
+            a: &a,
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
     )
     .expect("linear attention sequence");
 
@@ -134,7 +137,7 @@ fn qwen_linear_attention_sequence_updates_recurrent_state() {
     ];
     let core1 = [state1[0] * q1, state1[1] * q1];
     let gate = silu_f32(1.0);
-    let expected = vec![rms_pair(core0, gate), rms_pair(core1, gate)];
+    let expected = [rms_pair(core0, gate), rms_pair(core1, gate)];
 
     assert_close(&output[0], &expected[0], 1e-6);
     assert_close(&output[1], &expected[1], 1e-6);
@@ -172,15 +175,19 @@ fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
 
     let output = qwen_full_attention_sequence_from_parts(
         &dims,
-        &q_proj,
-        &k_proj,
-        &v_proj,
-        &q_norm_weight,
-        &k_norm_weight,
-        &o_proj_weight,
-        0.0,
-        10_000.0,
-        1.0,
+        &QwenFullAttentionSequenceParts {
+            q_proj: &q_proj,
+            k_proj: &k_proj,
+            v_proj: &v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        QwenFullAttentionSequenceConfig {
+            rms_norm_eps: 0.0,
+            rope_theta: 10_000.0,
+            partial_rotary_factor: 1.0,
+        },
     )
     .expect("full attention sequence");
 

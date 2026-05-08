@@ -30,8 +30,13 @@ async fn main() -> anyhow::Result<()> {
                     .map(str::parse::<u32>)
                     .transpose()?
                     .unwrap_or(1);
+                let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
+                    .map(str::parse::<usize>)
+                    .transpose()?
+                    .unwrap_or(32);
                 let backend = NativeQwenBackend::open(model_id, snapshot_path)?
-                    .with_max_new_tokens(max_new_tokens);
+                    .with_max_new_tokens(max_new_tokens)
+                    .with_max_prefill_tokens(max_prefill_tokens);
                 build_router_with_backend(Box::new(backend))
             } else {
                 build_router()

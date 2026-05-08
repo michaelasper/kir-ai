@@ -3,8 +3,7 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use llm_api::{ChatCompletionRequest, FinishReason, ModelCard, ModelList};
 use llm_backend::{
     BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
-    SafeTensorShardStore, qwen_decoder_layer_first_token, qwen_embedding_and_layer0_norm,
-    qwen_final_norm, qwen_lm_head_top_k,
+    SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
 use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
@@ -47,6 +46,7 @@ pub struct NativeQwenBackend {
     spec: QwenModelSpec,
     store: SafeTensorShardStore,
     max_new_tokens: u32,
+    max_prefill_tokens: usize,
     top_k: usize,
     chunk_rows: usize,
 }
@@ -64,6 +64,7 @@ impl NativeQwenBackend {
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store: SafeTensorShardStore::open(snapshot_path)?,
             max_new_tokens: 1,
+            max_prefill_tokens: 32,
             top_k: 16,
             chunk_rows: 2048,
         })
@@ -71,6 +72,11 @@ impl NativeQwenBackend {
 
     pub fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
         self.max_new_tokens = max_new_tokens.max(1);
+        self
+    }
+
+    pub fn with_max_prefill_tokens(mut self, max_prefill_tokens: usize) -> Self {
+        self.max_prefill_tokens = max_prefill_tokens.max(1);
         self
     }
 
@@ -85,10 +91,15 @@ impl NativeQwenBackend {
             .tokenizer
             .encode(&request.prompt, false)
             .map_err(|err| BackendError::Other(err.to_string()))?;
-        let mut current_token =
-            prompt_tokens.last().copied().ok_or_else(|| {
-                BackendError::Other("Qwen prompt encoded to zero tokens".to_owned())
-            })? as usize;
+        let mut context_tokens = prompt_tokens
+            .iter()
+            .map(|token| *token as usize)
+            .collect::<Vec<_>>();
+        if context_tokens.is_empty() {
+            return Err(BackendError::Other(
+                "Qwen prompt encoded to zero tokens".to_owned(),
+            ));
+        }
         let mut output_ids = Vec::new();
         let mut finish_reason = FinishReason::Length;
         let eos_id = self
@@ -98,8 +109,8 @@ impl NativeQwenBackend {
         let requested = request.max_tokens.max(1).min(self.max_new_tokens);
 
         for _ in 0..requested {
-            let candidate = self.next_token(current_token)?;
-            current_token = candidate.token_id;
+            let candidate = self.next_token(&context_tokens)?;
+            context_tokens.push(candidate.token_id);
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
                 break;
@@ -121,22 +132,17 @@ impl NativeQwenBackend {
         })
     }
 
-    fn next_token(&self, token_id: usize) -> Result<NativeQwenCandidate, BackendError> {
-        let mut hidden = qwen_embedding_and_layer0_norm(
-            &self.store,
-            token_id,
-            self.spec.hidden_size as usize,
-            self.spec.rms_norm_eps,
-        )
-        .map_err(|err| BackendError::Other(err.to_string()))?
-        .embedding;
-        for layer_idx in 0..self.spec.num_hidden_layers as usize {
-            hidden = qwen_decoder_layer_first_token(&self.store, &self.spec, layer_idx, &hidden)
+    fn next_token(&self, context_tokens: &[usize]) -> Result<NativeQwenCandidate, BackendError> {
+        let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
+        let hidden_states =
+            qwen_prefill_sequence(&self.store, &self.spec, &context_tokens[start..])
                 .map_err(|err| BackendError::Other(err.to_string()))?;
-        }
+        let hidden = hidden_states.last().ok_or_else(|| {
+            BackendError::Other("Qwen prefill returned no hidden states".to_owned())
+        })?;
         let final_norm = qwen_final_norm(
             &self.store,
-            &hidden,
+            hidden,
             self.spec.hidden_size as usize,
             self.spec.rms_norm_eps,
         )
