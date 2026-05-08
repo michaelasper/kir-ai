@@ -21,6 +21,7 @@ pub struct BackendRequest {
     pub prompt: String,
     pub max_tokens: Option<u32>,
     pub required_tool_choice: Option<String>,
+    pub json_object_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,7 @@ pub struct DeterministicBackend {
     model_id: String,
     text: String,
     required_tool_protocol: bool,
+    json_object_protocol: bool,
 }
 
 impl DeterministicBackend {
@@ -104,11 +106,17 @@ impl DeterministicBackend {
             model_id: model_id.into(),
             text: text.into(),
             required_tool_protocol: false,
+            json_object_protocol: false,
         }
     }
 
     pub fn with_required_tool_protocol(mut self) -> Self {
         self.required_tool_protocol = true;
+        self
+    }
+
+    pub fn with_json_object_protocol(mut self) -> Self {
+        self.json_object_protocol = true;
         self
     }
 }
@@ -140,6 +148,14 @@ impl ModelBackend for DeterministicBackend {
                 })
                 .to_string(),
                 FinishReason::ToolCalls,
+            )
+        } else if self.json_object_protocol && request.json_object_mode {
+            (
+                serde_json::json!({
+                    "response": "ok",
+                })
+                .to_string(),
+                FinishReason::Stop,
             )
         } else {
             (self.text.clone(), FinishReason::Stop)

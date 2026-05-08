@@ -271,6 +271,33 @@ async fn json_object_response_format_accepts_object_content() {
 }
 
 #[tokio::test]
+async fn deterministic_backend_returns_json_object_for_json_mode() {
+    let backend =
+        DeterministicBackend::new("local-qwen36", "plain text").with_json_object_protocol();
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("json object protocol mode succeeds");
+
+    let content = response.choices[0]
+        .message
+        .content
+        .as_deref()
+        .expect("assistant content");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(content)
+            .expect("valid JSON")
+            .is_object()
+    );
+}
+
+#[tokio::test]
 async fn runtime_truncates_content_at_stop_sequence() {
     let backend = DeterministicBackend::new("local-qwen36", "hello END trailing");
     let runtime = Runtime::new(backend);

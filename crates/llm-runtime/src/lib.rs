@@ -186,6 +186,10 @@ where
                 prompt,
                 max_tokens: request.effective_max_tokens(),
                 required_tool_choice,
+                json_object_mode: matches!(
+                    request.response_format,
+                    Some(ResponseFormat::JsonObject)
+                ),
             })
             .await?;
         let mut raw_text = output.text;
@@ -242,6 +246,7 @@ where
                 prompt: request.prompt,
                 max_tokens: request.max_tokens,
                 required_tool_choice: None,
+                json_object_mode: false,
             })
             .await?;
         let mut text = output.text;

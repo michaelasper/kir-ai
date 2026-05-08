@@ -819,6 +819,40 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
 }
 
 #[tokio::test]
+async fn chat_completions_returns_json_object_in_protocol_mode() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "return json"}],
+                        "response_format": {"type": "json_object"}
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+    let content = body["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("content");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(content)
+            .expect("valid JSON")
+            .is_object()
+    );
+}
+
+#[tokio::test]
 async fn completions_endpoint_returns_openai_text_completion_shape() {
     let response = build_router()
         .oneshot(

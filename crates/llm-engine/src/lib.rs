@@ -95,6 +95,7 @@ pub fn build_router_with_backend_and_options(
 fn default_backend() -> DeterministicBackend {
     DeterministicBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
+        .with_json_object_protocol()
 }
 
 #[derive(Clone)]
