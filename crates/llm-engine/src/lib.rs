@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Response,
-        sse::{Event, Sse},
+        sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
 };
@@ -38,6 +38,7 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -688,7 +689,9 @@ async fn chat_completions(
                     }
                 }
             };
-            return Ok(Sse::new(events).into_response());
+            return Ok(Sse::new(events)
+                .keep_alive(engine_sse_keep_alive())
+                .into_response());
         }
         let events = async_stream::stream! {
             let _permit = permit;
@@ -722,7 +725,9 @@ async fn chat_completions(
                 }
             }
         };
-        return Ok(Sse::new(events).into_response());
+        return Ok(Sse::new(events)
+            .keep_alive(engine_sse_keep_alive())
+            .into_response());
     }
     let _permit = acquire_model_permit(&state)?;
     let response = match state.runtime.chat(request).await {
@@ -777,7 +782,9 @@ async fn completions(
                 }
             }
         };
-        return Ok(Sse::new(events).into_response());
+        return Ok(Sse::new(events)
+            .keep_alive(engine_sse_keep_alive())
+            .into_response());
     }
     let _permit = acquire_model_permit(&state)?;
     let response = match state.runtime.completion(request).await {
@@ -801,6 +808,12 @@ fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallibl
         })),
         Ok(Event::default().data("[DONE]")),
     ]
+}
+
+fn engine_sse_keep_alive() -> KeepAlive {
+    KeepAlive::new()
+        .interval(Duration::from_millis(100))
+        .text("llm-engine-heartbeat")
 }
 
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {

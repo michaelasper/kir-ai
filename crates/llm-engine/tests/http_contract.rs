@@ -929,6 +929,55 @@ async fn chat_stream_headers_return_before_backend_completion() {
 }
 
 #[tokio::test]
+async fn chat_stream_emits_heartbeat_before_backend_chunk() {
+    let release = Arc::new(Semaphore::new(0));
+    let response = build_router_with_backend(Box::new(DelayedStreamBackend {
+        release: release.clone(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("llm-engine-heartbeat") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has heartbeat chunk")
+                .expect("heartbeat body");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 heartbeat"));
+            assert!(!seen.contains("\"content\":\"released\""));
+        }
+    })
+    .await
+    .expect("heartbeat arrives before backend release");
+
+    release.add_permits(1);
+    let mut tail = String::new();
+    while let Some(chunk) = body.next().await {
+        tail.push_str(std::str::from_utf8(&chunk.expect("body chunk")).expect("utf8 sse"));
+    }
+    assert!(tail.contains("\"content\":\"released\""));
+}
+
+#[tokio::test]
 async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
