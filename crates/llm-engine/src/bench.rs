@@ -155,6 +155,7 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         },
         profiles: primary_profiles,
         lanes: lane_reports,
+        failure_classification: None,
         comparison: None,
     };
 
@@ -205,16 +206,16 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         report.model = primary_lane.model.clone();
         report.profiles = primary_lane.profiles.clone();
     }
-    report.comparison = Some(compare_bench_lanes(&report.lanes));
-    report.status = if release_blocking_failed {
-        "failed".to_owned()
-    } else {
-        "passed".to_owned()
-    };
+    let comparison = compare_bench_lanes(&report.lanes);
+    let failure_classification =
+        bench_gate_failure_classification(release_blocking_failed, &comparison);
+    report.failure_classification = failure_classification.map(str::to_owned);
+    report.status = bench_gate_status(release_blocking_failed, &comparison).to_owned();
+    report.comparison = Some(comparison);
 
     write_and_print_report(&report, output_path.as_deref()).await?;
-    if release_blocking_failed {
-        anyhow::bail!("qwen long-context promotion gate failed");
+    if let Some(classification) = failure_classification {
+        anyhow::bail!("qwen long-context promotion gate failed: {classification}");
     }
     Ok(())
 }
@@ -426,6 +427,30 @@ fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
     }
 }
 
+fn bench_gate_status(
+    release_blocking_failed: bool,
+    comparison: &BenchLaneComparisonReport,
+) -> &'static str {
+    if bench_gate_failure_classification(release_blocking_failed, comparison).is_some() {
+        "failed"
+    } else {
+        "passed"
+    }
+}
+
+fn bench_gate_failure_classification(
+    release_blocking_failed: bool,
+    comparison: &BenchLaneComparisonReport,
+) -> Option<&'static str> {
+    if release_blocking_failed {
+        Some("release_blocking_case_failed")
+    } else if comparison.status == "artifact_identity_mismatch" {
+        Some("lane_artifact_identity_mismatch")
+    } else {
+        None
+    }
+}
+
 fn lane_artifact_identity_matches(lanes: &[BenchLaneReport]) -> bool {
     let Some(first) = lanes.first() else {
         return false;
@@ -560,12 +585,14 @@ impl BenchCaseKind {
     fn response_contract(self) -> &'static str {
         match self {
             Self::PlainRecall => "assistant content must contain the target marker",
-            Self::JsonObjectRecall => "assistant content must be a JSON object with marker",
+            Self::JsonObjectRecall => {
+                "assistant content must be a JSON object with marker, profile, and case"
+            }
             Self::RequiredToolRecall => {
-                "assistant must call report_long_context_recall with marker arguments"
+                "assistant must finish with tool_calls and call report_long_context_recall with marker, profile, and case arguments"
             }
             Self::StreamedRequiredToolRecall => {
-                "SSE deltas must assemble to report_long_context_recall with marker arguments"
+                "SSE deltas must finish with tool_calls and assemble to report_long_context_recall with marker, profile, and case arguments"
             }
             Self::MultiTurnLifecycle => {
                 "multi-message chat response must recall the target marker from the first turn"
@@ -606,6 +633,8 @@ struct BenchReport {
     baseline: BaselineReport,
     profiles: Vec<BenchProfileReport>,
     lanes: Vec<BenchLaneReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_classification: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     comparison: Option<BenchLaneComparisonReport>,
 }
@@ -976,15 +1005,16 @@ async fn run_case(
     };
     let body = request_body(model_id, profile, case, &prompt, max_tokens);
     if case.streams() {
-        run_streaming_case(client, endpoint, case, prompt, body).await
+        run_streaming_case(client, endpoint, profile, case, prompt, body).await
     } else {
-        run_buffered_case(client, endpoint, case, prompt, body).await
+        run_buffered_case(client, endpoint, profile, case, prompt, body).await
     }
 }
 
 async fn run_buffered_case(
     client: &reqwest::Client,
     endpoint: &str,
+    profile: BenchProfileKind,
     case: BenchCaseKind,
     prompt: PromptBuild,
     body: Value,
@@ -1044,7 +1074,7 @@ async fn run_buffered_case(
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let validation = validate_buffered_case(case, &prompt.marker, &value);
+    let validation = validate_buffered_case(profile, case, &prompt.marker, &value);
     case_from_validation(
         validation,
         prompt.token_count,
@@ -1059,6 +1089,7 @@ async fn run_buffered_case(
 async fn run_streaming_case(
     client: &reqwest::Client,
     endpoint: &str,
+    profile: BenchProfileKind,
     case: BenchCaseKind,
     prompt: PromptBuild,
     body: Value,
@@ -1118,7 +1149,7 @@ async fn run_streaming_case(
         consume_sse_buffer(&mut buffer, &mut assembly);
     }
     let latency = started.elapsed();
-    let validation = validate_streaming_case(case, &prompt.marker, &assembly);
+    let validation = validate_streaming_case(profile, case, &prompt.marker, &assembly);
     case_from_validation(
         validation,
         prompt.token_count,
@@ -1250,7 +1281,12 @@ fn recall_tool_schema() -> Value {
     })
 }
 
-fn validate_buffered_case(case: BenchCaseKind, marker: &str, value: &Value) -> Result<(), String> {
+fn validate_buffered_case(
+    profile: BenchProfileKind,
+    case: BenchCaseKind,
+    marker: &str,
+    value: &Value,
+) -> Result<(), String> {
     match case {
         BenchCaseKind::PlainRecall | BenchCaseKind::MultiTurnLifecycle => {
             let content = value
@@ -1272,20 +1308,20 @@ fn validate_buffered_case(case: BenchCaseKind, marker: &str, value: &Value) -> R
                 .ok_or_else(|| "missing assistant JSON content".to_owned())?;
             let parsed = serde_json::from_str::<Value>(content)
                 .map_err(|err| format!("assistant content was not valid JSON: {err}"))?;
-            let object = parsed
+            parsed
                 .as_object()
                 .ok_or_else(|| "assistant JSON content was not an object".to_owned())?;
-            if object.get("marker").and_then(Value::as_str) == Some(marker) {
-                Ok(())
-            } else {
-                Err(format!("JSON marker did not equal `{marker}`"))
-            }
+            validate_recall_arguments(&parsed, profile, case, marker, "JSON")
         }
         BenchCaseKind::RequiredToolRecall => {
+            let finish_reason = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str);
+            validate_tool_finish_reason(finish_reason, "tool call")?;
             let tool_call = value
                 .pointer("/choices/0/message/tool_calls/0")
                 .ok_or_else(|| "missing required tool call".to_owned())?;
-            validate_tool_call(tool_call, marker)
+            validate_tool_call(tool_call, profile, case, marker)
         }
         BenchCaseKind::StreamedRequiredToolRecall => {
             Err("streamed tool case was routed through buffered validator".to_owned())
@@ -1294,6 +1330,7 @@ fn validate_buffered_case(case: BenchCaseKind, marker: &str, value: &Value) -> R
 }
 
 fn validate_streaming_case(
+    profile: BenchProfileKind,
     case: BenchCaseKind,
     marker: &str,
     assembly: &StreamAssembly,
@@ -1310,16 +1347,18 @@ fn validate_streaming_case(
             "streamed tool name `{name}` did not match expected"
         ));
     }
+    validate_tool_finish_reason(assembly.finish_reason.as_deref(), "streamed tool call")?;
     let args = serde_json::from_str::<Value>(&assembly.tool_arguments)
         .map_err(|err| format!("streamed tool arguments were not JSON: {err}"))?;
-    if args.get("marker").and_then(Value::as_str) == Some(marker) {
-        Ok(())
-    } else {
-        Err(format!("streamed tool marker did not equal `{marker}`"))
-    }
+    validate_recall_arguments(&args, profile, case, marker, "streamed tool")
 }
 
-fn validate_tool_call(tool_call: &Value, marker: &str) -> Result<(), String> {
+fn validate_tool_call(
+    tool_call: &Value,
+    profile: BenchProfileKind,
+    case: BenchCaseKind,
+    marker: &str,
+) -> Result<(), String> {
     let name = tool_call
         .pointer("/function/name")
         .and_then(Value::as_str)
@@ -1333,10 +1372,52 @@ fn validate_tool_call(tool_call: &Value, marker: &str) -> Result<(), String> {
         .ok_or_else(|| "missing tool function arguments".to_owned())?;
     let args = serde_json::from_str::<Value>(args_text)
         .map_err(|err| format!("tool arguments were not JSON: {err}"))?;
-    if args.get("marker").and_then(Value::as_str) == Some(marker) {
-        Ok(())
-    } else {
-        Err(format!("tool marker did not equal `{marker}`"))
+    validate_recall_arguments(&args, profile, case, marker, "tool")
+}
+
+fn validate_tool_finish_reason(finish_reason: Option<&str>, label: &str) -> Result<(), String> {
+    match finish_reason {
+        Some("tool_calls") => Ok(()),
+        Some(other) => Err(format!(
+            "{label} finish_reason `{other}` did not equal `tool_calls`"
+        )),
+        None => Err(format!("{label} response was missing finish_reason")),
+    }
+}
+
+fn validate_recall_arguments(
+    args: &Value,
+    profile: BenchProfileKind,
+    case: BenchCaseKind,
+    marker: &str,
+    label: &str,
+) -> Result<(), String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| format!("{label} arguments were not a JSON object"))?;
+    validate_recall_argument(object.get("marker"), marker, label, "marker")?;
+    validate_recall_argument(object.get("profile"), profile.name(), label, "profile")?;
+    validate_recall_argument(object.get("case"), case.name(), label, "case")?;
+    if object.len() != 3 {
+        return Err(format!(
+            "{label} arguments must contain exactly marker, profile, and case"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recall_argument(
+    value: Option<&Value>,
+    expected: &str,
+    label: &str,
+    key: &str,
+) -> Result<(), String> {
+    match value.and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!(
+            "{label} {key} `{actual}` did not equal `{expected}`"
+        )),
+        None => Err(format!("{label} arguments missing string `{key}`")),
     }
 }
 
@@ -1701,4 +1782,214 @@ fn command_output(command: &str, args: &[&str]) -> Option<String> {
     let text = String::from_utf8(output.stdout).ok()?;
     let text = text.trim();
     (!text.is_empty()).then_some(text.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MARKER: &str = "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741";
+
+    #[test]
+    fn lane_artifact_mismatch_fails_gate_status() {
+        let lanes = vec![
+            passed_lane(
+                "native",
+                "michaelasper/qwen",
+                "commit-a",
+                "qwen3-bf16",
+                "bf16",
+            ),
+            passed_lane("mlx", "michaelasper/qwen", "commit-b", "qwen3-bf16", "bf16"),
+        ];
+        let comparison = compare_bench_lanes(&lanes);
+
+        assert_eq!(comparison.status, "artifact_identity_mismatch");
+        assert_eq!(
+            bench_gate_failure_classification(false, &comparison),
+            Some("lane_artifact_identity_mismatch")
+        );
+        assert_eq!(bench_gate_status(false, &comparison), "failed");
+    }
+
+    #[test]
+    fn json_object_recall_rejects_marker_only_contract() {
+        let value = buffered_content_response(serde_json::json!({"marker": MARKER}).to_string());
+
+        let err = validate_buffered_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::JsonObjectRecall,
+            MARKER,
+            &value,
+        )
+        .expect_err("marker-only JSON must fail");
+
+        assert!(err.contains("profile"), "error: {err}");
+    }
+
+    #[test]
+    fn json_object_recall_rejects_wrong_profile_or_case() {
+        let value = buffered_content_response(
+            serde_json::json!({
+                "marker": MARKER,
+                "profile": "qwen-200k-characterization",
+                "case": "json-object-recall"
+            })
+            .to_string(),
+        );
+
+        let err = validate_buffered_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::JsonObjectRecall,
+            MARKER,
+            &value,
+        )
+        .expect_err("wrong profile must fail");
+
+        assert!(err.contains("profile"), "error: {err}");
+    }
+
+    #[test]
+    fn required_tool_recall_requires_tool_finish_reason_and_full_arguments() {
+        let marker_only = buffered_tool_response(
+            "tool_calls",
+            serde_json::json!({"marker": MARKER}).to_string(),
+        );
+        let marker_only_err = validate_buffered_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::RequiredToolRecall,
+            MARKER,
+            &marker_only,
+        )
+        .expect_err("marker-only tool arguments must fail");
+        assert!(
+            marker_only_err.contains("profile"),
+            "error: {marker_only_err}"
+        );
+
+        let wrong_finish = buffered_tool_response(
+            "stop",
+            serde_json::json!({
+                "marker": MARKER,
+                "profile": "qwen-135k-promotion",
+                "case": "required-tool-recall"
+            })
+            .to_string(),
+        );
+        let finish_err = validate_buffered_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::RequiredToolRecall,
+            MARKER,
+            &wrong_finish,
+        )
+        .expect_err("wrong finish_reason must fail");
+        assert!(finish_err.contains("finish_reason"), "error: {finish_err}");
+    }
+
+    #[test]
+    fn streamed_required_tool_recall_requires_tool_finish_reason_and_full_arguments() {
+        let marker_only = StreamAssembly {
+            tool_name: Some("report_long_context_recall".to_owned()),
+            tool_arguments: serde_json::json!({"marker": MARKER}).to_string(),
+            finish_reason: Some("tool_calls".to_owned()),
+            ..StreamAssembly::default()
+        };
+        let marker_only_err = validate_streaming_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::StreamedRequiredToolRecall,
+            MARKER,
+            &marker_only,
+        )
+        .expect_err("marker-only streamed tool arguments must fail");
+        assert!(
+            marker_only_err.contains("profile"),
+            "error: {marker_only_err}"
+        );
+
+        let wrong_finish = StreamAssembly {
+            tool_name: Some("report_long_context_recall".to_owned()),
+            tool_arguments: serde_json::json!({
+                "marker": MARKER,
+                "profile": "qwen-135k-promotion",
+                "case": "streamed-required-tool-recall"
+            })
+            .to_string(),
+            finish_reason: Some("stop".to_owned()),
+            ..StreamAssembly::default()
+        };
+        let finish_err = validate_streaming_case(
+            BenchProfileKind::Promotion135k,
+            BenchCaseKind::StreamedRequiredToolRecall,
+            MARKER,
+            &wrong_finish,
+        )
+        .expect_err("wrong streamed finish_reason must fail");
+        assert!(finish_err.contains("finish_reason"), "error: {finish_err}");
+    }
+
+    fn passed_lane(
+        name: &str,
+        repo_id: &str,
+        resolved_commit: &str,
+        profile: &str,
+        quantization: &str,
+    ) -> BenchLaneReport {
+        let mut report = profile_report(BenchProfileKind::Promotion135k);
+        report.status = "passed".to_owned();
+        for case in &mut report.cases {
+            case.status = "passed".to_owned();
+            case.classification = "passed".to_owned();
+            case.latency_ms = Some(100);
+        }
+        BenchLaneReport {
+            name: name.to_owned(),
+            status: "passed".to_owned(),
+            model: ModelIdentityReport {
+                id: name.to_owned(),
+                endpoint: None,
+                snapshot_path: None,
+                repo_id: Some(repo_id.to_owned()),
+                requested_revision: Some(resolved_commit.to_owned()),
+                resolved_commit: Some(resolved_commit.to_owned()),
+                profile: Some(profile.to_owned()),
+                family: Some("qwen".to_owned()),
+                loader: Some("native-metal".to_owned()),
+                quantization: Some(quantization.to_owned()),
+                manifest_digest: None,
+            },
+            profiles: vec![report],
+            admin_metrics: None,
+            admin_metrics_error: None,
+        }
+    }
+
+    fn buffered_content_response(content: String) -> Value {
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": content
+                }
+            }]
+        })
+    }
+
+    fn buffered_tool_response(finish_reason: &str, arguments: String) -> Value {
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": finish_reason,
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "report_long_context_recall",
+                            "arguments": arguments
+                        }
+                    }]
+                }
+            }]
+        })
+    }
 }

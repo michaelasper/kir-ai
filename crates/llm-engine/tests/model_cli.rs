@@ -92,6 +92,30 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
             "multi-turn-lifecycle"
         ]
     );
+    let required_tool = promotion["cases"]
+        .as_array()
+        .expect("promotion cases")
+        .iter()
+        .find(|case| case["name"] == "required-tool-recall")
+        .expect("required tool case");
+    let streamed_tool = promotion["cases"]
+        .as_array()
+        .expect("promotion cases")
+        .iter()
+        .find(|case| case["name"] == "streamed-required-tool-recall")
+        .expect("streamed required tool case");
+    assert!(
+        required_tool["response_contract"]
+            .as_str()
+            .expect("required tool response contract")
+            .contains("tool_calls")
+    );
+    assert!(
+        streamed_tool["response_contract"]
+            .as_str()
+            .expect("streamed tool response contract")
+            .contains("tool_calls")
+    );
 }
 
 #[test]

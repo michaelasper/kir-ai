@@ -97,7 +97,10 @@ single-lane consumers. New consumers should read `lanes[*].profiles` and
 `comparison`, which includes per-case latency, TTFT, token throughput, pass/fail
 classification, and fastest-lane summaries. Lane comparison reports
 `artifact_identity_mismatch` unless repo, commit, profile, and quantization are
-identical across lanes.
+identical across lanes; that mismatch fails the promotion gate and is emitted as
+`failure_classification: "lane_artifact_identity_mismatch"`. JSON and tool-call
+recall cases validate the full benchmark contract: `marker`, `profile`, `case`,
+and `finish_reason: "tool_calls"` for tool responses.
 
 ## `model list`
 
