@@ -71,6 +71,7 @@ pub struct ServerMetrics {
     failed_requests: u64,
     streamed_requests: u64,
     cancelled_requests: u64,
+    no_progress_failures: u64,
     tokens: TokenCounters,
 }
 
@@ -95,6 +96,10 @@ impl ServerMetrics {
         self.cancelled_requests += 1;
     }
 
+    pub fn record_no_progress_failure(&mut self) {
+        self.no_progress_failures += 1;
+    }
+
     pub fn requests_total(&self) -> u64 {
         self.requests_total
     }
@@ -113,6 +118,10 @@ impl ServerMetrics {
 
     pub fn cancelled_requests(&self) -> u64 {
         self.cancelled_requests
+    }
+
+    pub fn no_progress_failures(&self) -> u64 {
+        self.no_progress_failures
     }
 
     pub fn tokens(&self) -> TokenCounters {
@@ -160,9 +169,12 @@ mod tests {
         assert_eq!(metrics.failed_requests(), 1);
         assert_eq!(metrics.streamed_requests(), 1);
         assert_eq!(metrics.cancelled_requests(), 0);
+        assert_eq!(metrics.no_progress_failures(), 0);
         assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
 
         metrics.record_cancellation();
         assert_eq!(metrics.cancelled_requests(), 1);
+        metrics.record_no_progress_failure();
+        assert_eq!(metrics.no_progress_failures(), 1);
     }
 }

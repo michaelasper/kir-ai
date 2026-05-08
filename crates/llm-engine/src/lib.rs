@@ -877,7 +877,9 @@ async fn admin_metrics(
             .lock()
             .expect("active request lock is not poisoned")
             .len(),
+        "queued_requests": 0,
         "cancelled_requests": metrics.cancelled_requests(),
+        "no_progress_failures": metrics.no_progress_failures(),
         "tokens": {
             "prompt_tokens": tokens.prompt_tokens(),
             "completion_tokens": tokens.completion_tokens(),
@@ -928,7 +930,7 @@ async fn chat_completions(
             {
                 Ok(response) => response,
                 Err(err) => {
-                    record_failure_metrics(&state);
+                    record_runtime_error_metrics(&state, &err);
                     return Err(err.into());
                 }
             };
@@ -946,7 +948,7 @@ async fn chat_completions(
                             yield Ok(Event::default().data("[DONE]"));
                         }
                         Ok(Some(Err(err))) => {
-                            record_failure_metrics(&state);
+                            record_runtime_error_metrics(&state, &err);
                             for event in runtime_error_stream_events(err) {
                                 yield event;
                             }
@@ -989,7 +991,7 @@ async fn chat_completions(
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
-                                record_failure_metrics(&state);
+                                record_runtime_error_metrics(&state, &err);
                                 for event in runtime_error_stream_events(err) {
                                     yield event;
                                 }
@@ -1007,7 +1009,7 @@ async fn chat_completions(
                     }
                 }
                 Err(err) => {
-                    record_failure_metrics(&state);
+                    record_runtime_error_metrics(&state, &err);
                     for event in runtime_error_stream_events(err) {
                         yield event;
                     }
@@ -1030,7 +1032,7 @@ async fn chat_completions(
     {
         Ok(response) => response,
         Err(err) => {
-            record_failure_metrics(&state);
+            record_runtime_error_metrics(&state, &err);
             return Err(err.into());
         }
     };
@@ -1073,7 +1075,7 @@ async fn completions(
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
-                                record_failure_metrics(&state);
+                                record_runtime_error_metrics(&state, &err);
                                 for event in runtime_error_stream_events(err) {
                                     yield event;
                                 }
@@ -1091,7 +1093,7 @@ async fn completions(
                     }
                 }
                 Err(err) => {
-                    record_failure_metrics(&state);
+                    record_runtime_error_metrics(&state, &err);
                     for event in runtime_error_stream_events(err) {
                         yield event;
                     }
@@ -1114,7 +1116,7 @@ async fn completions(
     {
         Ok(response) => response,
         Err(err) => {
-            record_failure_metrics(&state);
+            record_runtime_error_metrics(&state, &err);
             return Err(err.into());
         }
     };
@@ -1213,6 +1215,14 @@ fn record_failure_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_failure();
+}
+
+fn record_runtime_error_metrics(state: &AppState, err: &RuntimeError) {
+    let mut metrics = state.metrics.lock().expect("metrics lock is not poisoned");
+    if matches!(err, RuntimeError::NoProgress(_)) {
+        metrics.record_no_progress_failure();
+    }
+    metrics.record_failure();
 }
 
 fn record_cancellation_metrics(state: &AppState) {

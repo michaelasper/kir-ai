@@ -435,6 +435,47 @@ async fn admin_metrics_report_active_and_cancelled_requests() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
+    let app = build_router_with_backend(Box::new(NoProgressBackend));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "make progress"}]
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "no_progress");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["failed_requests"], 1);
+    assert_eq!(body["no_progress_failures"], 1);
+    assert_eq!(body["queued_requests"], 0);
+}
+
+#[tokio::test]
 async fn concurrent_generation_returns_model_overloaded() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
@@ -1868,6 +1909,24 @@ impl ModelBackend for AdminCancellableBackend {
         cancellation.cancelled().await;
         self.cancelled.notify_waiters();
         Err(BackendError::Cancelled)
+    }
+}
+
+struct NoProgressBackend;
+
+#[async_trait]
+impl ModelBackend for NoProgressBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: String::new(),
+            prompt_tokens: 1,
+            completion_tokens: 4096,
+            finish_reason: llm_api::FinishReason::Length,
+        })
     }
 }
 
