@@ -134,6 +134,48 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        "prune" => {
+            if !args.iter().any(|arg| arg == "--dry-run") {
+                anyhow::bail!("llm-engine model prune currently requires --dry-run");
+            }
+            let root = flag_value(&args, "--model-home")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("LLM_MODEL_HOME").map(std::path::PathBuf::from))
+                .unwrap_or_else(|| std::path::PathBuf::from(".llm-models"));
+            let snapshots = ModelStore::new(root).list_snapshots().await?;
+            let mut total_bytes = 0_u64;
+            let snapshots = snapshots
+                .into_iter()
+                .map(|snapshot| {
+                    let snapshot_bytes = snapshot
+                        .manifest
+                        .files
+                        .iter()
+                        .map(|file| file.size)
+                        .sum::<u64>();
+                    total_bytes += snapshot_bytes;
+                    serde_json::json!({
+                        "path": snapshot.path,
+                        "repo_id": snapshot.manifest.repo_id,
+                        "resolved_commit": snapshot.manifest.resolved_commit,
+                        "manifest_digest": snapshot.manifest_digest,
+                        "bytes": snapshot_bytes,
+                        "would_delete": false,
+                    })
+                })
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "snapshots": snapshots.len(),
+                    "total_bytes": total_bytes,
+                    "reclaimable_bytes": 0_u64,
+                    "candidates": [],
+                    "snapshot_usage": snapshots,
+                }))?
+            );
+        }
         "inspect-safetensors" => {
             let path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")
