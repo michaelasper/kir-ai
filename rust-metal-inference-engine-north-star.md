@@ -149,6 +149,7 @@ Current commits:
 - `5fb7d9e` - Native Qwen serving routes prefill, decode, MoE dense projections, and lm-head matvecs through a Metal-capable executor.
 - `ff60424` - Native Qwen decode-session startup checks cancellation before and between prefill layers.
 - `4a5cfbd` - Native Qwen final RMSNorm routes through the Metal-capable execution backend.
+- `773dac0` - GitHub issues #45 through #47 are fixed, and native Qwen layer input/post-attention RMSNorm routes through the Metal-capable execution backend.
 
 Current verified state:
 
