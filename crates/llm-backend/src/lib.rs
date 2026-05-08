@@ -163,6 +163,30 @@ pub fn matvec_row_major_f32(
         .collect())
 }
 
+pub fn swiglu_mlp_f32(
+    input: &[f32],
+    gate_weight: &[f32],
+    up_weight: &[f32],
+    down_weight: &[f32],
+    intermediate_size: usize,
+) -> Result<Vec<f32>, MathError> {
+    let gate = matvec_row_major_f32(input, gate_weight, intermediate_size, input.len())?;
+    let up = matvec_row_major_f32(input, up_weight, intermediate_size, input.len())?;
+    let activated = gate
+        .iter()
+        .zip(up)
+        .map(|(gate, up)| silu_f32(*gate) * up)
+        .collect::<Vec<_>>();
+    if !down_weight.len().is_multiple_of(intermediate_size) {
+        return Err(MathError::InvalidShape(format!(
+            "down projection length {} is not divisible by intermediate size {intermediate_size}",
+            down_weight.len()
+        )));
+    }
+    let rows = down_weight.len() / intermediate_size;
+    matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
+}
+
 pub fn silu_f32(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
@@ -237,6 +261,18 @@ pub const QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT: &str =
 pub const QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT: &str =
     "model.language_model.layers.0.post_attention_layernorm.weight";
 pub const QWEN_LAYER0_MLP_GATE_WEIGHT: &str = "model.language_model.layers.0.mlp.gate.weight";
+pub const QWEN_LAYER0_MLP_EXPERTS_GATE_UP_PROJ: &str =
+    "model.language_model.layers.0.mlp.experts.gate_up_proj";
+pub const QWEN_LAYER0_MLP_EXPERTS_DOWN_PROJ: &str =
+    "model.language_model.layers.0.mlp.experts.down_proj";
+pub const QWEN_LAYER0_MLP_SHARED_GATE_PROJ_WEIGHT: &str =
+    "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight";
+pub const QWEN_LAYER0_MLP_SHARED_UP_PROJ_WEIGHT: &str =
+    "model.language_model.layers.0.mlp.shared_expert.up_proj.weight";
+pub const QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT: &str =
+    "model.language_model.layers.0.mlp.shared_expert.down_proj.weight";
+pub const QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT: &str =
+    "model.language_model.layers.0.mlp.shared_expert_gate.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
@@ -257,6 +293,25 @@ pub struct QwenLinearAttentionProjectionProbe {
 pub struct QwenMoeRouterProbe {
     pub logits: Vec<f32>,
     pub selected: Vec<TopKWeight>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QwenMoeDims {
+    pub hidden_size: usize,
+    pub num_experts: usize,
+    pub moe_intermediate_size: usize,
+    pub shared_expert_intermediate_size: usize,
+}
+
+impl QwenMoeDims {
+    pub fn from_spec(spec: &QwenModelSpec) -> Self {
+        Self {
+            hidden_size: spec.hidden_size as usize,
+            num_experts: spec.num_experts as usize,
+            moe_intermediate_size: spec.moe_intermediate_size as usize,
+            shared_expert_intermediate_size: spec.shared_expert_intermediate_size as usize,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -486,6 +541,91 @@ pub fn qwen_layer0_post_attention_norm(
     qwen_rms_norm_f32(&hidden_states, &norm_weight, rms_norm_eps).map_err(|err| {
         TensorLoadError::integrity(format!("Qwen layer0 post-attention RMSNorm failed: {err}"))
     })
+}
+
+pub fn qwen_layer0_moe_forward(
+    store: &SafeTensorShardStore,
+    dims: &QwenMoeDims,
+    hidden_states: &[f32],
+    router: &QwenMoeRouterProbe,
+) -> Result<Vec<f32>, TensorLoadError> {
+    if hidden_states.len() != dims.hidden_size {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen MoE hidden length {} must match hidden size {}",
+            hidden_states.len(),
+            dims.hidden_size
+        )));
+    }
+    let mut output = vec![0.0; dims.hidden_size];
+    let gate_up_expert_elements = dims
+        .moe_intermediate_size
+        .checked_mul(2)
+        .and_then(|rows| rows.checked_mul(dims.hidden_size))
+        .ok_or_else(|| TensorLoadError::integrity("Qwen expert gate/up shape overflow"))?;
+    let down_expert_elements = dims
+        .hidden_size
+        .checked_mul(dims.moe_intermediate_size)
+        .ok_or_else(|| TensorLoadError::integrity("Qwen expert down shape overflow"))?;
+    for selected in &router.selected {
+        if selected.index >= dims.num_experts {
+            return Err(TensorLoadError::integrity(format!(
+                "Qwen selected expert {} exceeds expert count {}",
+                selected.index, dims.num_experts
+            )));
+        }
+        let gate_up = store.bf16_tensor_f32_range(
+            QWEN_LAYER0_MLP_EXPERTS_GATE_UP_PROJ,
+            selected.index * gate_up_expert_elements,
+            gate_up_expert_elements,
+        )?;
+        let split = dims
+            .moe_intermediate_size
+            .checked_mul(dims.hidden_size)
+            .ok_or_else(|| TensorLoadError::integrity("Qwen expert split shape overflow"))?;
+        let down = store.bf16_tensor_f32_range(
+            QWEN_LAYER0_MLP_EXPERTS_DOWN_PROJ,
+            selected.index * down_expert_elements,
+            down_expert_elements,
+        )?;
+        let expert_output = swiglu_mlp_f32(
+            hidden_states,
+            &gate_up[..split],
+            &gate_up[split..],
+            &down,
+            dims.moe_intermediate_size,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen selected expert MLP failed: {err}"))
+        })?;
+        for (output, expert) in output.iter_mut().zip(expert_output) {
+            *output += expert * selected.weight;
+        }
+    }
+
+    let shared_gate = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_GATE_PROJ_WEIGHT)?;
+    let shared_up = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_UP_PROJ_WEIGHT)?;
+    let shared_down = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT)?;
+    let shared_output = swiglu_mlp_f32(
+        hidden_states,
+        &shared_gate,
+        &shared_up,
+        &shared_down,
+        dims.shared_expert_intermediate_size,
+    )
+    .map_err(|err| TensorLoadError::integrity(format!("Qwen shared expert MLP failed: {err}")))?;
+    let shared_expert_gate = store.bf16_tensor_f32(QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT)?;
+    let shared_gate = matvec_row_major_f32(hidden_states, &shared_expert_gate, 1, dims.hidden_size)
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
+        })?
+        .into_iter()
+        .next()
+        .ok_or_else(|| TensorLoadError::integrity("Qwen shared expert gate returned no value"))?;
+    let shared_gate = sigmoid_f32(shared_gate);
+    for (output, shared) in output.iter_mut().zip(shared_output) {
+        *output += shared_gate * shared;
+    }
+    Ok(output)
 }
 
 fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathError> {

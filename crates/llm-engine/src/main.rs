@@ -1,7 +1,9 @@
-use llm_backend::{SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm};
+use llm_backend::{
+    QwenMoeDims, SafeTensorFile, SafeTensorShardStore, qwen_embedding_and_layer0_norm,
+};
 use llm_backend::{
     qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
 };
 use llm_engine::build_router;
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
@@ -155,7 +157,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 spec.rms_norm_eps,
             )?;
             let run_layer0_attention = args.iter().any(|arg| arg == "--layer0-attention")
-                || args.iter().any(|arg| arg == "--layer0-router");
+                || args.iter().any(|arg| arg == "--layer0-router")
+                || args.iter().any(|arg| arg == "--layer0-moe");
             let run_layer0_projections =
                 args.iter().any(|arg| arg == "--layer0-projections") || run_layer0_attention;
             let projections = if run_layer0_projections {
@@ -182,10 +185,21 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "output_prefix": output.iter().copied().take(limit).collect::<Vec<_>>()
                 })
             });
-            let layer0_router = if args.iter().any(|arg| arg == "--layer0-router") {
+            let run_layer0_router = args.iter().any(|arg| arg == "--layer0-router")
+                || args.iter().any(|arg| arg == "--layer0-moe");
+            let mut attention_residual = None;
+            let mut post_attention_norm = None;
+            let mut router_probe = None;
+            let layer0_router = if run_layer0_router {
                 let attention_output = layer0_attention_output
                     .as_ref()
                     .expect("attention output is computed");
+                let residual = probe
+                    .embedding
+                    .iter()
+                    .zip(attention_output)
+                    .map(|(embedding, attention)| embedding + attention)
+                    .collect::<Vec<_>>();
                 let post_attention = qwen_layer0_post_attention_norm(
                     &store,
                     &probe.embedding,
@@ -198,6 +212,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     .transpose()?
                     .unwrap_or(spec.num_experts_per_tok as usize);
                 let router = qwen_layer0_moe_router(&store, &post_attention, top_k)?;
+                attention_residual = Some(residual);
+                post_attention_norm = Some(post_attention.clone());
+                router_probe = Some(router.clone());
                 Some(serde_json::json!({
                     "post_attention_norm_prefix": post_attention.iter().copied().take(limit).collect::<Vec<_>>(),
                     "logits_len": router.logits.len(),
@@ -207,6 +224,32 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                             "weight": item.weight
                         })
                     }).collect::<Vec<_>>()
+                }))
+            } else {
+                None
+            };
+            let layer0_moe = if args.iter().any(|arg| arg == "--layer0-moe") {
+                let post_attention = post_attention_norm
+                    .as_ref()
+                    .expect("post-attention norm is computed");
+                let router = router_probe.as_ref().expect("router is computed");
+                let moe_output = qwen_layer0_moe_forward(
+                    &store,
+                    &QwenMoeDims::from_spec(&spec),
+                    post_attention,
+                    router,
+                )?;
+                let final_hidden = attention_residual
+                    .as_ref()
+                    .expect("attention residual is computed")
+                    .iter()
+                    .zip(&moe_output)
+                    .map(|(residual, moe)| residual + moe)
+                    .collect::<Vec<_>>();
+                Some(serde_json::json!({
+                    "moe_output_len": moe_output.len(),
+                    "moe_output_prefix": moe_output.iter().copied().take(limit).collect::<Vec<_>>(),
+                    "final_hidden_prefix": final_hidden.iter().copied().take(limit).collect::<Vec<_>>()
                 }))
             } else {
                 None
@@ -235,7 +278,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     "values_read": probe.normalized.len(),
                     "layer0_projections": layer0_projections,
                     "layer0_attention": layer0_attention,
-                    "layer0_router": layer0_router
+                    "layer0_router": layer0_router,
+                    "layer0_moe": layer0_moe
                 }))?
             );
         }

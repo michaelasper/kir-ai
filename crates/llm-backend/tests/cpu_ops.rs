@@ -1,6 +1,7 @@
 use llm_backend::{QwenLinearAttentionDims, qwen_linear_attention_first_token_from_parts};
 use llm_backend::{
     matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
+    swiglu_mlp_f32,
 };
 
 #[test]
@@ -86,6 +87,14 @@ fn softmax_top_k_returns_normalized_selected_weights() {
         &[0.7310586, 0.26894143],
         1e-6,
     );
+}
+
+#[test]
+fn swiglu_mlp_matches_reference_calculation() {
+    let output =
+        swiglu_mlp_f32(&[1.0, 2.0], &[1.0, 0.0], &[0.0, 1.0], &[1.0, 2.0], 1).expect("swiglu mlp");
+
+    assert_close(&output, &[1.4621172, 2.9242344], 1e-6);
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
