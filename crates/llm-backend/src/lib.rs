@@ -1728,6 +1728,44 @@ fn qwen_layer_linear_attention_sequence_impl(
     })
 }
 
+pub fn qwen_layer_linear_attention_step_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    cache: &mut LinearAttentionCache,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let projections = qwen_layer_linear_attention_projections(store, layer_idx, hidden_states)?;
+    let dims = QwenLinearAttentionDims::from_spec(spec);
+    let dt_bias = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "dt_bias"))?;
+    let a_log = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "A_log"))?;
+    let conv1d_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "conv1d.weight"))?;
+    let norm_weight = store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "norm.weight"))?;
+    let out_proj_weight =
+        store.bf16_tensor_f32(&qwen_linear_attn_tensor(layer_idx, "out_proj.weight"))?;
+    qwen_linear_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenLinearAttentionStepParts {
+            qkv: &projections.qkv,
+            z: &projections.z,
+            b: &projections.b,
+            a: &projections.a,
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
+        cache,
+    )
+    .map_err(|err| {
+        TensorLoadError::integrity(format!(
+            "Qwen layer{layer_idx} linear attention step failed: {err}"
+        ))
+    })
+}
+
 pub fn qwen_layer_full_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,

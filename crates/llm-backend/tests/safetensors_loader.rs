@@ -4,10 +4,10 @@ use llm_backend::{
     qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
     qwen_layer_full_attention_sequence_with_cache, qwen_layer_linear_attention_first_token,
     qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
-    qwen_layer_linear_attention_sequence_with_cache, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_top_k, qwen_prefill_sequence,
-    qwen_prefill_sequence_with_cache,
+    qwen_layer_linear_attention_sequence_with_cache, qwen_layer_linear_attention_step_with_cache,
+    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer0_post_attention_norm, qwen_lm_head_logits, qwen_lm_head_top_k,
+    qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -976,6 +976,128 @@ fn qwen_linear_attention_sequence_with_cache_uses_indexed_weights() {
     assert_close(&output[1], &expected[1], 1e-6);
     assert_close(cache.conv_window(), &[0.0, 1.0, 0.0, 4.0], 1e-6);
     assert!(cache.recurrent_state().iter().any(|value| *value != 0.0));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_linear_attention_step_with_cache_uses_indexed_weights() {
+    let root = temp_snapshot_dir("qwen-linear-attn-step-cache");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 96 },
+            "weight_map": {
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight": "qkv.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight": "z.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight": "b.safetensors",
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight": "a.safetensors",
+                "model.language_model.layers.0.linear_attn.dt_bias": "dt.safetensors",
+                "model.language_model.layers.0.linear_attn.A_log": "a_log.safetensors",
+                "model.language_model.layers.0.linear_attn.conv1d.weight": "conv.safetensors",
+                "model.language_model.layers.0.linear_attn.norm.weight": "norm.safetensors",
+                "model.language_model.layers.0.linear_attn.out_proj.weight": "out.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "qkv.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+            vec![4, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 4.0],
+        ),
+        (
+            "z.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "b.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "a.safetensors",
+            "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+            vec![1, 2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "dt.safetensors",
+            "model.language_model.layers.0.linear_attn.dt_bias",
+            vec![1],
+            vec![0.0],
+        ),
+        (
+            "a_log.safetensors",
+            "model.language_model.layers.0.linear_attn.A_log",
+            vec![1],
+            vec![0.0],
+        ),
+        (
+            "conv.safetensors",
+            "model.language_model.layers.0.linear_attn.conv1d.weight",
+            vec![4, 1],
+            vec![1.0, 1.0, 1.0, 1.0],
+        ),
+        (
+            "norm.safetensors",
+            "model.language_model.layers.0.linear_attn.norm.weight",
+            vec![2],
+            vec![1.0, 1.0],
+        ),
+        (
+            "out.safetensors",
+            "model.language_model.layers.0.linear_attn.out_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+    let mut expected_cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
+    let expected_output = qwen_layer_linear_attention_sequence_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states,
+        &mut expected_cache,
+    )
+    .expect("full cached sequence");
+    let prefill = hidden_states[..2].to_vec();
+    let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
+    qwen_layer_linear_attention_sequence_with_cache(&store, &spec, 0, &prefill, &mut cache)
+        .expect("initial cached sequence");
+
+    let output = qwen_layer_linear_attention_step_with_cache(
+        &store,
+        &spec,
+        0,
+        &hidden_states[2],
+        &mut cache,
+    )
+    .expect("linear attention step");
+
+    assert_close(&output, &expected_output[2], 1e-6);
+    assert_eq!(cache.token_count(), 3);
+    assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-6);
+    assert_close(
+        cache.recurrent_state(),
+        expected_cache.recurrent_state(),
+        1e-6,
+    );
     std::fs::remove_dir_all(root).ok();
 }
 
