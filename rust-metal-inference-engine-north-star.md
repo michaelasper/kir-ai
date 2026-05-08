@@ -96,6 +96,8 @@ Current commits:
 - `bdc18ed` - HTTP SSE responses are constructed before backend completion and hold model permits inside the body stream.
 - `f9fe943` - Admin HTTP endpoints can plan and pull model snapshots through the native HubClient and ModelStore paths.
 - `9b54269` - Runtime and HTTP streaming consume backend chunks incrementally instead of prebuilding full SSE vectors.
+- `dc0b86e` - HTTP request validation runs before SSE construction or model scheduling.
+- `e8e51b3` - Model pulls use unique staging directories and clean loser staging after concurrent promotion races.
 
 Current verified state:
 
@@ -155,6 +157,8 @@ Current verified state:
 - The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behavior.
 - Model-store promoted snapshot and staging directory names now include a sanitized profile name in addition to repo and resolved commit. Metadata-only snapshots still use a distinct suffix, and full profiles at the same commit no longer share one manifest directory.
 - Streaming HTTP handlers now return SSE responses before backend generation completes, keep the model concurrency permit alive inside the body stream, and forward runtime stream events without prebuilding an SSE vector. `ModelBackend::generate_stream` exposes backend text deltas; runtime and HTTP tests verify that a backend chunk reaches the client before the backend releases its final chunk. Native Qwen serving sends decoded per-token deltas through the same path.
+- Chat and text completion handlers now validate parsed request semantics before acquiring the model semaphore, so malformed or unsupported requests return stable 4xx JSON errors even while the model is busy. Streaming request-validation failures and buffered streaming response-validation failures return JSON errors before SSE starts.
+- Model-store staging directories now include a per-request unique suffix instead of sharing one deterministic `.partial` path. If another pull has already promoted the target snapshot, the losing staging directory is removed and the existing snapshot is verified and reused.
 
 Known incomplete items:
 
