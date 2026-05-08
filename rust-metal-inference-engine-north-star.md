@@ -62,6 +62,7 @@ Current commits:
 - `6907375` - Engine error responses now include stable machine-readable error codes for API, backend, parser, JSON, serialization, and no-progress failures.
 - `bf5ac3e` - The model store can list promoted local snapshots, and `llm-engine model list --model-home <path>` reports snapshot identity, profile, manifest digest, and file counts.
 - `45bf64a` - Chat requests now fail closed for unsupported non-greedy `temperature`/`top_p` values instead of silently ignoring sampling controls.
+- `4cf4cf6` - Engine error bodies now include failure phase and retryability metadata alongside stable error codes.
 
 Current verified state:
 
@@ -88,6 +89,7 @@ Current verified state:
 - HTTP error bodies now include a stable `error.code` field, so clients can classify model-not-found, backend execution, parser, JSON validation, serialization, and no-progress failures without parsing human-readable messages.
 - `llm-engine model list --model-home <path>` enumerates promoted engine-owned snapshots from local manifests, including repo ID, resolved commit, profile, family, loader, quantization, manifest digest, and file count.
 - Chat sampling controls are fail-closed: explicit greedy settings `temperature: 0` and `top_p: 1` are accepted, while unsupported non-greedy sampling settings return an `unsupported_capability` validation error.
+- HTTP failure bodies now include `error.phase` and `error.retryable` in addition to `error.code`, covering request validation, model resolution, prompt rendering, decode, response parsing, response validation, and serialization phases.
 
 Known incomplete items:
 
