@@ -336,6 +336,55 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_stream_time_to_first_token() {
+    let app = build_router();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true,
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"content\":\"hello from rust native backend\""));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["time_to_first_token_ms"]["count"], 1);
+    assert!(
+        body["time_to_first_token_ms"]["max"]
+            .as_f64()
+            .expect("ttft max is numeric")
+            >= body["time_to_first_token_ms"]["min"]
+                .as_f64()
+                .expect("ttft min is numeric")
+    );
+}
+
+#[tokio::test]
 async fn admin_metrics_requires_bearer_token_when_configured() {
     let response = build_router_with_backend_and_options(
         Box::new(StaticBackend {

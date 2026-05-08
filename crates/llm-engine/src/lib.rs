@@ -14,8 +14,8 @@ use futures::{
     stream::{self, BoxStream},
 };
 use llm_api::{
-    ApiError, ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList, Usage,
-    ValidateRequest,
+    ApiError, ChatCompletionRequest, ChatCompletionStreamResponse, CompletionRequest,
+    CompletionStreamResponse, FinishReason, ModelCard, ModelList, Usage, ValidateRequest,
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
@@ -868,6 +868,7 @@ async fn admin_metrics(
     let metrics = *state.metrics.lock().expect("metrics lock is not poisoned");
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
+    let time_to_first_token = metrics.time_to_first_token();
     Ok(Json(json!({
         "requests_total": metrics.requests_total(),
         "successful_requests": metrics.successful_requests(),
@@ -887,6 +888,12 @@ async fn admin_metrics(
             "min": request_latency.min_ms(),
             "max": request_latency.max_ms(),
             "avg": request_latency.avg_ms(),
+        },
+        "time_to_first_token_ms": {
+            "count": time_to_first_token.count(),
+            "min": time_to_first_token.min_ms(),
+            "max": time_to_first_token.max_ms(),
+            "avg": time_to_first_token.avg_ms(),
         },
         "tokens": {
             "prompt_tokens": tokens.prompt_tokens(),
@@ -947,9 +954,14 @@ async fn chat_completions(
                 let _permit = permit;
                 let _active_request = active_request;
                 let mut events = response.into_events();
+                let mut ttft_recorded = false;
                 loop {
                     match next_stream_event(&mut events, state.stream_stall_timeout).await {
                         Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                            if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                record_time_to_first_token_metrics(&state, request_started.elapsed());
+                                ttft_recorded = true;
+                            }
                             yield sse_json_event(chunk);
                         }
                         Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
@@ -991,9 +1003,14 @@ async fn chat_completions(
             {
                 Ok(response) => {
                     let mut events = response.into_events();
+                    let mut ttft_recorded = false;
                     loop {
                         match next_stream_event(&mut events, state.stream_stall_timeout).await {
                             Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                                if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
+                                    ttft_recorded = true;
+                                }
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
@@ -1077,9 +1094,14 @@ async fn completions(
             {
                 Ok(response) => {
                     let mut events = response.into_events();
+                    let mut ttft_recorded = false;
                     loop {
                         match next_stream_event(&mut events, state.stream_stall_timeout).await {
                             Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
+                                if !ttft_recorded && completion_chunk_has_real_delta(&chunk) {
+                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
+                                    ttft_recorded = true;
+                                }
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(CompletionStreamEvent::Complete(usage)))) => {
@@ -1211,6 +1233,21 @@ fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     Ok(Event::default().data(data))
 }
 
+fn chat_chunk_has_real_delta(chunk: &ChatCompletionStreamResponse) -> bool {
+    chunk.choices.iter().any(|choice| {
+        choice
+            .delta
+            .content
+            .as_ref()
+            .is_some_and(|content| !content.is_empty())
+            || !choice.delta.tool_calls.is_empty()
+    })
+}
+
+fn completion_chunk_has_real_delta(chunk: &CompletionStreamResponse) -> bool {
+    chunk.choices.iter().any(|choice| !choice.text.is_empty())
+}
+
 fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool, latency: Duration) {
     state
         .metrics
@@ -1245,6 +1282,14 @@ fn record_cancellation_metrics(state: &AppState) {
         .lock()
         .expect("metrics lock is not poisoned")
         .record_cancellation();
+}
+
+fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock()
+        .expect("metrics lock is not poisoned")
+        .record_time_to_first_token(latency);
 }
 
 fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, EngineError> {

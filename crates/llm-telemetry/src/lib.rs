@@ -121,6 +121,7 @@ pub struct ServerMetrics {
     cancelled_requests: u64,
     no_progress_failures: u64,
     request_latency: LatencyMetrics,
+    time_to_first_token: LatencyMetrics,
     tokens: TokenCounters,
 }
 
@@ -150,6 +151,10 @@ impl ServerMetrics {
         self.no_progress_failures += 1;
     }
 
+    pub fn record_time_to_first_token(&mut self, latency: Duration) {
+        self.time_to_first_token.record(latency);
+    }
+
     pub fn requests_total(&self) -> u64 {
         self.requests_total
     }
@@ -176,6 +181,10 @@ impl ServerMetrics {
 
     pub fn request_latency(&self) -> LatencyMetrics {
         self.request_latency
+    }
+
+    pub fn time_to_first_token(&self) -> LatencyMetrics {
+        self.time_to_first_token
     }
 
     pub fn tokens_per_second(&self) -> f64 {
@@ -239,6 +248,10 @@ mod tests {
         assert_eq!(metrics.request_latency().max_ms(), 30.0);
         assert_eq!(metrics.request_latency().avg_ms(), 20.0);
         assert_eq!(metrics.tokens_per_second(), 375.0);
+        assert_eq!(metrics.time_to_first_token().count(), 0);
+        metrics.record_time_to_first_token(Duration::from_millis(7));
+        assert_eq!(metrics.time_to_first_token().count(), 1);
+        assert_eq!(metrics.time_to_first_token().avg_ms(), 7.0);
 
         metrics.record_cancellation();
         assert_eq!(metrics.cancelled_requests(), 1);
