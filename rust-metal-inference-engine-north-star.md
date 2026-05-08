@@ -68,6 +68,7 @@ Current commits:
 - `ca7c097` - Added offline local snapshot `model inspect` and `model verify` commands backed by engine manifests.
 - `d49ee2b` - Chat and text completion requests now reject `max_tokens: 0` during request validation.
 - `358196e` - Backends now expose model metadata, and admin model status reports artifact identity when native snapshots are serving.
+- `3991363` - Legacy text completions now fail closed for unsupported non-greedy `temperature` and `top_p` sampling controls.
 
 Current verified state:
 
@@ -100,6 +101,7 @@ Current verified state:
 - `llm-engine model inspect <snapshot-path>` reads the engine manifest without network access and reports artifact identity, profile, manifest digest, file count, and total manifest bytes. `llm-engine model verify <snapshot-path>` rechecks manifest file sizes and recorded SHA-256 digests and reports verified file/byte counts.
 - Chat and text completion request validation now rejects `max_tokens: 0` with a stable `invalid_request` error before backend execution.
 - Backend model metadata is now part of the Rust backend contract. Native Qwen serving reads `llm-engine-manifest.json` at startup and surfaces repo ID, resolved commit, profile, family, loader, quantization, snapshot path, and manifest digest through admin model status.
+- Legacy `/v1/completions` sampling controls now match chat validation: explicit greedy `temperature: 0` and `top_p: 1` are accepted, while unsupported non-greedy values return `unsupported_capability`.
 
 Known incomplete items:
 
