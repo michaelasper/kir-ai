@@ -89,6 +89,7 @@ Current commits:
 - `07073a1` - Chat messages accept OpenAI text content-part arrays and normalize them to internal text.
 - `12d8cdf` - Deterministic protocol mode now emits structured tool calls for required tool-choice requests.
 - `ded78eb` - Safetensors index shard paths are validated and shard opens are confined to the snapshot root.
+- `66f1dd2` - Deterministic protocol mode now emits valid JSON objects for `response_format: json_object`.
 
 Current verified state:
 
@@ -142,6 +143,7 @@ Current verified state:
 - Chat message deserialization accepts plain string content, `null`, and text-only OpenAI content-part arrays such as `[{"type":"text","text":"hello"}]`; text parts are concatenated before prompt rendering.
 - The default deterministic/protocol backend now threads required tool choice to the backend and emits a valid `<tool_call>` block for declared tools; optional tools still allow text fallback.
 - Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
+- The default deterministic/protocol backend now returns valid JSON object content when `response_format.type` is `json_object`, while fixed-text backends still fail response validation if they emit invalid JSON.
 
 Known incomplete items:
 
