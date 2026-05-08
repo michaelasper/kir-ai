@@ -305,9 +305,11 @@ enum NativeQwenMatvecBackend {
     Metal(Arc<NativeQwenMetalState>),
 }
 
+const DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
 struct NativeQwenMetalState {
     device: llm_metal::MetalDevice,
-    bf16_matrices: Mutex<HashMap<Bf16MatrixCacheKey, Arc<llm_metal::Bf16MatrixBuffer>>>,
+    bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -316,6 +318,101 @@ struct Bf16MatrixCacheKey {
     element_offset: usize,
     rows: usize,
     columns: usize,
+}
+
+#[derive(Debug)]
+struct Bf16MatrixBufferCache<T> {
+    max_bytes: u64,
+    used_bytes: u64,
+    next_access: u64,
+    entries: HashMap<Bf16MatrixCacheKey, CachedBf16MatrixBuffer<T>>,
+}
+
+#[derive(Debug)]
+struct CachedBf16MatrixBuffer<T> {
+    value: T,
+    byte_len: u64,
+    last_used: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Bf16MatrixBufferCacheInsert {
+    inserted: bool,
+    evicted_count: u64,
+    evicted_bytes: u64,
+}
+
+impl<T: Clone> Bf16MatrixBufferCache<T> {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            used_bytes: 0,
+            next_access: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, key: &Bf16MatrixCacheKey) -> Option<T> {
+        let access = self.next_access();
+        self.entries.get_mut(key).map(|entry| {
+            entry.last_used = access;
+            entry.value.clone()
+        })
+    }
+
+    fn insert(
+        &mut self,
+        key: Bf16MatrixCacheKey,
+        value: T,
+        byte_len: u64,
+    ) -> Bf16MatrixBufferCacheInsert {
+        if byte_len > self.max_bytes {
+            return Bf16MatrixBufferCacheInsert::default();
+        }
+        if let Some(existing) = self.entries.remove(&key) {
+            self.used_bytes = self.used_bytes.saturating_sub(existing.byte_len);
+        }
+        let mut result = Bf16MatrixBufferCacheInsert::default();
+        while self.used_bytes.saturating_add(byte_len) > self.max_bytes {
+            let Some(lru_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            let Some(evicted) = self.entries.remove(&lru_key) else {
+                break;
+            };
+            self.used_bytes = self.used_bytes.saturating_sub(evicted.byte_len);
+            result.evicted_count += 1;
+            result.evicted_bytes += evicted.byte_len;
+        }
+        let access = self.next_access();
+        self.entries.insert(
+            key,
+            CachedBf16MatrixBuffer {
+                value,
+                byte_len,
+                last_used: access,
+            },
+        );
+        self.used_bytes = self.used_bytes.saturating_add(byte_len);
+        result.inserted = true;
+        result
+    }
+
+    #[cfg(test)]
+    fn used_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    fn next_access(&mut self) -> u64 {
+        let access = self.next_access;
+        self.next_access = self.next_access.saturating_add(1);
+        access
+    }
 }
 
 #[derive(Debug)]
@@ -339,7 +436,9 @@ impl NativeQwenMetalState {
     fn new(device: llm_metal::MetalDevice) -> Self {
         Self {
             device,
-            bf16_matrices: Mutex::new(HashMap::new()),
+            bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(
+                DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES,
+            )),
         }
     }
 
@@ -362,7 +461,6 @@ impl NativeQwenMetalState {
             .lock()
             .expect("BF16 matrix buffer cache lock is not poisoned")
             .get(&key)
-            .cloned()
         {
             native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
             return Ok(buffer);
@@ -385,10 +483,15 @@ impl NativeQwenMetalState {
             .expect("BF16 matrix buffer cache lock is not poisoned");
         if let Some(existing) = matrices.get(&key) {
             native_qwen_metal_metrics().record_bf16_matrix_cache_hit();
-            return Ok(Arc::clone(existing));
+            return Ok(existing);
         }
-        native_qwen_metal_metrics().record_bf16_matrix_cache_upload(buffer.byte_len() as u64);
-        matrices.insert(key, Arc::clone(&buffer));
+        let byte_len = buffer.byte_len() as u64;
+        let insert = matrices.insert(key, Arc::clone(&buffer), byte_len);
+        let metrics = native_qwen_metal_metrics();
+        metrics.record_bf16_matrix_cache_upload(byte_len);
+        if insert.evicted_count > 0 {
+            metrics.record_bf16_matrix_cache_eviction(insert.evicted_count, insert.evicted_bytes);
+        }
         Ok(buffer)
     }
 }
@@ -406,6 +509,8 @@ struct MetalBf16MatrixCacheCounters {
     misses: u64,
     uploads: u64,
     bytes_uploaded: u64,
+    evictions: u64,
+    bytes_evicted: u64,
 }
 
 #[derive(Debug, Default)]
@@ -483,6 +588,15 @@ impl MetalBackendMetrics {
         cache.bytes_uploaded += byte_len;
     }
 
+    fn record_bf16_matrix_cache_eviction(&self, count: u64, byte_len: u64) {
+        let mut cache = self
+            .bf16_matrix_cache
+            .lock()
+            .expect("Metal BF16 matrix cache metrics lock is not poisoned");
+        cache.evictions += count;
+        cache.bytes_evicted += byte_len;
+    }
+
     fn snapshot(&self) -> Value {
         let counters = self
             .counters
@@ -513,6 +627,8 @@ impl MetalBackendMetrics {
                 "misses": bf16_matrix_cache.misses,
                 "uploads": bf16_matrix_cache.uploads,
                 "bytes_uploaded": bf16_matrix_cache.bytes_uploaded,
+                "evictions": bf16_matrix_cache.evictions,
+                "bytes_evicted": bf16_matrix_cache.bytes_evicted,
             }
         })
     }
@@ -2749,6 +2865,7 @@ mod tests {
 
         metrics.record_bf16_matrix_cache_miss();
         metrics.record_bf16_matrix_cache_upload(12);
+        metrics.record_bf16_matrix_cache_eviction(2, 8);
         metrics.record_bf16_matrix_cache_hit();
 
         let snapshot = metrics.snapshot();
@@ -2757,6 +2874,64 @@ mod tests {
         assert_eq!(cache["misses"], 1);
         assert_eq!(cache["uploads"], 1);
         assert_eq!(cache["bytes_uploaded"], 12);
+        assert_eq!(cache["evictions"], 2);
+        assert_eq!(cache["bytes_evicted"], 8);
+    }
+
+    #[test]
+    fn bf16_matrix_buffer_cache_evicts_lru_entries_to_fit_budget() {
+        let mut cache = Bf16MatrixBufferCache::new(10);
+        let first = Bf16MatrixCacheKey {
+            tensor: "first.weight".to_owned(),
+            element_offset: 0,
+            rows: 2,
+            columns: 1,
+        };
+        let second = Bf16MatrixCacheKey {
+            tensor: "second.weight".to_owned(),
+            element_offset: 0,
+            rows: 2,
+            columns: 1,
+        };
+        let third = Bf16MatrixCacheKey {
+            tensor: "third.weight".to_owned(),
+            element_offset: 0,
+            rows: 3,
+            columns: 1,
+        };
+
+        assert!(cache.get(&first).is_none());
+        assert!(cache.insert(first.clone(), "first", 4).inserted);
+        assert!(cache.insert(second.clone(), "second", 4).inserted);
+        assert_eq!(cache.get(&first), Some("first"));
+
+        let result = cache.insert(third.clone(), "third", 6);
+
+        assert!(result.inserted);
+        assert_eq!(result.evicted_count, 1);
+        assert_eq!(result.evicted_bytes, 4);
+        assert_eq!(cache.used_bytes(), 10);
+        assert_eq!(cache.get(&second), None);
+        assert_eq!(cache.get(&first), Some("first"));
+        assert_eq!(cache.get(&third), Some("third"));
+    }
+
+    #[test]
+    fn bf16_matrix_buffer_cache_skips_entries_larger_than_budget() {
+        let mut cache = Bf16MatrixBufferCache::new(4);
+        let key = Bf16MatrixCacheKey {
+            tensor: "large.weight".to_owned(),
+            element_offset: 0,
+            rows: 3,
+            columns: 1,
+        };
+
+        let result = cache.insert(key.clone(), "large", 6);
+
+        assert!(!result.inserted);
+        assert_eq!(result.evicted_count, 0);
+        assert_eq!(cache.used_bytes(), 0);
+        assert_eq!(cache.get(&key), None);
     }
 
     #[test]
