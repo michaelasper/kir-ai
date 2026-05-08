@@ -142,6 +142,7 @@ Current commits:
 - `4201417` - Admin metrics report model pull operation counts and promoted manifest bytes.
 - `48a3aa5` - Admin metrics report manifest-backed model-store usage.
 - `392da7b` - Admin metrics report artifact verification failure counts.
+- `a80cd60` - Admin metrics report process RSS bytes on macOS and Linux.
 
 Current verified state:
 
