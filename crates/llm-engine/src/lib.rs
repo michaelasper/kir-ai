@@ -21,10 +21,8 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     CpuQwenMatvecBackend, DeterministicBackend, MathError, ModelBackend, QwenLayerCache,
     QwenMatvecBackend, SafeTensorShardStore, SamplingConfig, TensorLoadError, TopKLogit,
-    TopKWeight, qwen_decode_token_with_cache_with_matvec,
-    qwen_decoder_layer_sequence_with_cache_with_matvec, qwen_embedding_sequence,
-    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec,
-    qwen_lm_head_top_k_with_matvec,
+    TopKWeight, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_with_matvec,
+    qwen_layer_caches_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k_with_matvec,
 };
 use llm_hub::{
     DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile, ModelStore, SnapshotManifest,
@@ -1307,8 +1305,6 @@ impl NativeQwenBackend {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let start = context_tokens.len().saturating_sub(self.max_prefill_tokens);
-        let prefill_tokens = &context_tokens[start..];
         let cache_tokens =
             native_qwen_cache_token_capacity(self.max_prefill_tokens, max_new_tokens);
         let mut caches = qwen_layer_caches_for_spec(&self.spec, cache_tokens)
@@ -1316,34 +1312,26 @@ impl NativeQwenBackend {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let mut hidden_states =
-            qwen_embedding_sequence(&self.store, prefill_tokens, self.spec.hidden_size as usize)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        for (layer_idx, cache) in caches
-            .iter_mut()
-            .enumerate()
-            .take(self.spec.num_hidden_layers as usize)
-        {
+        let mut hidden = None;
+        for token_id in context_tokens {
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
-            hidden_states = qwen_decoder_layer_sequence_with_cache_with_matvec(
-                &self.store,
-                &self.spec,
-                layer_idx,
-                &hidden_states,
-                cache,
-                &self.matvec,
-            )
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+            hidden = Some(
+                qwen_decode_token_with_cache_with_matvec(
+                    &self.store,
+                    &self.spec,
+                    *token_id,
+                    &mut caches,
+                    &self.matvec,
+                )
+                .map_err(|err| BackendError::Other(err.to_string()))?,
+            );
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
         }
-        let hidden = hidden_states.last().cloned().ok_or_else(|| {
+        let hidden = hidden.ok_or_else(|| {
             BackendError::Other("Qwen prefill returned no hidden states".to_owned())
         })?;
         Ok(NativeQwenDecodeSession { hidden, caches })
@@ -2609,6 +2597,38 @@ mod tests {
     }
 
     #[test]
+    fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
+        let snapshot = temp_snapshot_dir("full-context-prefill");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        write_tiny_linear_decoder_snapshot(&snapshot);
+        let backend = NativeQwenBackend {
+            model_id: "local-qwen36".to_owned(),
+            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
+            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
+                .expect("tokenizer loads"),
+            spec: tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
+            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
+            matvec: NativeQwenMatvecBackend::Cpu,
+            max_new_tokens: 8,
+            max_prefill_tokens: 1,
+            top_k: 2,
+            chunk_rows: 64,
+        };
+
+        let decode = backend
+            .start_decode_session(&[0, 1, 0], 8, &CancellationToken::new())
+            .expect("decode session starts");
+
+        match &decode.caches[0] {
+            QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
+            QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
     fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
         let snapshot = temp_snapshot_dir("no-manifest");
         std::fs::remove_dir_all(&snapshot).ok();
@@ -2883,6 +2903,185 @@ mod tests {
         bytes.extend_from_slice(header.as_bytes());
         bytes.extend_from_slice(&data);
         bytes
+    }
+
+    fn tiny_owned_multi_safetensors_bf16(tensors: &[(&str, Vec<usize>, Vec<f32>)]) -> Vec<u8> {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, shape, values) in tensors {
+            let start = data.len();
+            for value in values {
+                data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+            }
+            let end = data.len();
+            header.insert(
+                (*name).to_owned(),
+                serde_json::json!({
+                    "dtype": "BF16",
+                    "shape": shape,
+                    "data_offsets": [start, end]
+                }),
+            );
+        }
+        let header = serde_json::Value::Object(header).to_string();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
+    }
+
+    fn write_tiny_linear_decoder_snapshot(root: &Path) {
+        let tensors = vec![
+            (
+                "model.language_model.embed_tokens.weight",
+                vec![2, 2],
+                vec![1.0, 0.0, 0.0, 1.0],
+            ),
+            (
+                "model.language_model.layers.0.input_layernorm.weight",
+                vec![2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+                vec![4, 2],
+                vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 4.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+                vec![2, 2],
+                vec![1.0, 0.0, 0.0, 1.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.dt_bias",
+                vec![1],
+                vec![0.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.A_log",
+                vec![1],
+                vec![0.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.conv1d.weight",
+                vec![4, 1],
+                vec![1.0, 1.0, 1.0, 1.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.norm.weight",
+                vec![2],
+                vec![1.0, 1.0],
+            ),
+            (
+                "model.language_model.layers.0.linear_attn.out_proj.weight",
+                vec![2, 2],
+                vec![1.0, 0.0, 0.0, 1.0],
+            ),
+            (
+                "model.language_model.layers.0.post_attention_layernorm.weight",
+                vec![2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.gate.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.experts.gate_up_proj",
+                vec![2, 2],
+                vec![0.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.experts.down_proj",
+                vec![2, 1],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+                vec![2, 1],
+                vec![0.0, 0.0],
+            ),
+            (
+                "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+                vec![1, 2],
+                vec![0.0, 0.0],
+            ),
+        ];
+        let mut weight_map = serde_json::Map::new();
+        for (name, _, _) in &tensors {
+            weight_map.insert(
+                (*name).to_owned(),
+                serde_json::Value::String("model.safetensors".to_owned()),
+            );
+        }
+        let safetensors = tiny_owned_multi_safetensors_bf16(&tensors);
+        std::fs::write(snapshot_path(root, "model.safetensors"), &safetensors)
+            .expect("write tiny decoder shard");
+        std::fs::write(
+            snapshot_path(root, "model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": safetensors.len() },
+                "weight_map": serde_json::Value::Object(weight_map)
+            })
+            .to_string(),
+        )
+        .expect("write tiny decoder index");
+    }
+
+    fn snapshot_path(root: &Path, name: &str) -> PathBuf {
+        root.join(name)
+    }
+
+    fn tiny_engine_qwen_spec(kind: llm_models::AttentionKind) -> QwenModelSpec {
+        QwenModelSpec {
+            family: llm_models::ModelFamily::Qwen,
+            architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+            model_type: "qwen3_5_moe".to_owned(),
+            text_model_type: "qwen3_5_moe_text".to_owned(),
+            hidden_size: 2,
+            rms_norm_eps: 1e-6,
+            tie_word_embeddings: false,
+            rope_theta: 1_000_000.0,
+            partial_rotary_factor: 1.0,
+            num_hidden_layers: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 2,
+            linear_num_key_heads: 1,
+            linear_num_value_heads: 1,
+            linear_key_head_dim: 1,
+            linear_value_head_dim: 2,
+            linear_conv_kernel_dim: 1,
+            num_experts: 1,
+            num_experts_per_tok: 1,
+            moe_intermediate_size: 1,
+            shared_expert_intermediate_size: 1,
+            max_position_embeddings: 32,
+            vocab_size: 2,
+            layer_kinds: vec![kind],
+        }
     }
 
     fn temp_snapshot_dir(label: &str) -> PathBuf {
