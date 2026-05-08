@@ -126,6 +126,104 @@ async fn chat_completions_revises_poem_from_feedback_without_repeating_original(
 }
 
 #[tokio::test]
+async fn chat_completions_handles_open_ended_multi_turn_story_fixture() {
+    let story = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a tiny children's story about a shy dog named Miso."}
+    ]))
+    .await;
+    assert!(story.contains("Miso"));
+    assert!(!story.contains("hello from rust native backend"));
+
+    let specific = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a tiny children's story about a shy dog named Miso."},
+        {"role": "assistant", "content": story},
+        {"role": "user", "content": "Make it more specific with one toy and one place."}
+    ]))
+    .await;
+    assert!(specific.contains("Miso"));
+    assert!(specific.contains("sock") || specific.contains("porch"));
+
+    let bullets = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a tiny children's story about a shy dog named Miso."},
+        {"role": "assistant", "content": story},
+        {"role": "user", "content": "Make it more specific with one toy and one place."},
+        {"role": "assistant", "content": specific},
+        {"role": "user", "content": "Explain in two bullets what changed."}
+    ]))
+    .await;
+    assert!(
+        bullets
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .count()
+            >= 2
+    );
+
+    let bedtime = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a tiny children's story about a shy dog named Miso."},
+        {"role": "assistant", "content": story},
+        {"role": "user", "content": "Make it more specific with one toy and one place."},
+        {"role": "assistant", "content": specific},
+        {"role": "user", "content": "Explain in two bullets what changed."},
+        {"role": "assistant", "content": bullets},
+        {"role": "user", "content": "Revise it as a quiet bedtime version."}
+    ]))
+    .await;
+    assert!(bedtime.contains("Miso"));
+    assert!(bedtime.to_ascii_lowercase().contains("bedtime"));
+
+    let memory = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a tiny children's story about a shy dog named Miso."},
+        {"role": "assistant", "content": story},
+        {"role": "user", "content": "Make it more specific with one toy and one place."},
+        {"role": "assistant", "content": specific},
+        {"role": "user", "content": "Revise it as a quiet bedtime version."},
+        {"role": "assistant", "content": bedtime},
+        {"role": "user", "content": "Memory check: what is the dog's name?"}
+    ]))
+    .await;
+    assert!(memory.contains("Miso"));
+}
+
+#[tokio::test]
+async fn chat_completions_handles_dog_poem_follow_up_turns() {
+    let original = "Dogs flash through rain-wet grass, brave hearts chasing the sun.";
+    let revised = "Revised poem:\nPaws tap softly by the door,\nTails sweep circles on the floor,\nWarm noses nudge the evening in,\nHome begins where dogs have been.";
+
+    let explanation = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short poem about dogs."},
+        {"role": "assistant", "content": original},
+        {"role": "user", "content": "Feedback: The image is lively, but it is only one sentence and feels generic. Please revise it into four short lines with a clearer rhythm, more concrete dog details like paws or tails, and a warmer emotional turn. Avoid vague phrases like brave hearts."},
+        {"role": "assistant", "content": revised},
+        {"role": "user", "content": "Explain what changed in the revision."}
+    ]))
+    .await;
+    assert_ne!(explanation, revised);
+    assert!(explanation.to_ascii_lowercase().contains("changed"));
+
+    let bedtime = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short poem about dogs."},
+        {"role": "assistant", "content": original},
+        {"role": "user", "content": "Feedback: The image is lively, but it is only one sentence and feels generic. Please revise it into four short lines with a clearer rhythm, more concrete dog details like paws or tails, and a warmer emotional turn. Avoid vague phrases like brave hearts."},
+        {"role": "assistant", "content": revised},
+        {"role": "user", "content": "Revise again into a quieter bedtime version."}
+    ]))
+    .await;
+    assert_ne!(bedtime, revised);
+    assert!(bedtime.to_ascii_lowercase().contains("bedtime"));
+
+    let memory = protocol_chat_content(json!([
+        {"role": "user", "content": "Write a short poem about dogs."},
+        {"role": "assistant", "content": original},
+        {"role": "user", "content": "Feedback: The image is lively, but it is only one sentence and feels generic. Please revise it into four short lines with a clearer rhythm, more concrete dog details like paws or tails, and a warmer emotional turn. Avoid vague phrases like brave hearts."},
+        {"role": "assistant", "content": revised},
+        {"role": "user", "content": "Memory check: what phrase did we avoid?"}
+    ]))
+    .await;
+    assert!(memory.to_ascii_lowercase().contains("brave hearts"));
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
     let response = build_router()
         .oneshot(

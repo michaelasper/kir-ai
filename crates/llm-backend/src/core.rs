@@ -321,22 +321,65 @@ impl ModelBackend for DeterministicBackend {
 }
 
 fn deterministic_conversation_response(prompt: &str) -> Option<String> {
+    let current = last_user_message(prompt).to_ascii_lowercase();
     let prompt = prompt.to_ascii_lowercase();
-    if (prompt.contains("rewrite") || prompt.contains("revise") || prompt.contains("revised"))
+    if prompt.contains("miso") {
+        if current.contains("memory check") || current.contains("dog's name") {
+            return Some("The dog's name is Miso.".to_owned());
+        }
+        if current.contains("bedtime") || current.contains("quiet") {
+            return Some(
+                "Bedtime version: Miso curled beside the blue sock on the porch, listened to the moon, and fell asleep knowing the house was kind.".to_owned(),
+            );
+        }
+        if current.contains("bullet") || current.contains("explain") {
+            return Some(
+                "- I kept Miso as the shy dog so the thread has continuity.\n- I added the blue sock and porch so the story has concrete details.".to_owned(),
+            );
+        }
+        if current.contains("specific") || current.contains("toy") || current.contains("place") {
+            return Some(
+                "Miso carried a blue sock to the porch, peeked at the rain, and wagged when a child sat beside him.".to_owned(),
+            );
+        }
+        if current.contains("story") {
+            return Some(
+                "Miso was a shy little dog who hid behind a chair until a kind child offered a quiet hello.".to_owned(),
+            );
+        }
+    }
+    if current.contains("memory check") && prompt.contains("brave hearts") {
+        Some("The avoided phrase was \"brave hearts.\"".to_owned())
+    } else if current.contains("explain") && prompt.contains("brave hearts") {
+        Some(
+            "The revision changed the one-sentence image into short lines, replaced brave hearts with paws and tails, and made the ending warmer.".to_owned(),
+        )
+    } else if current.contains("bedtime") && prompt.contains("dog") {
+        Some(
+            "Bedtime version:\nSoft paws settle by the bed,\nSleepy tails make one last sweep,\nWarm noses rest near open hands,\nDogs turn the quiet house to sleep.".to_owned(),
+        )
+    } else if (current.contains("rewrite")
+        || current.contains("revise")
+        || current.contains("revised"))
         && prompt.contains("feedback")
     {
         Some(
             "Revised poem:\nPaws tap softly by the door,\nTails sweep circles on the floor,\nWarm noses nudge the evening in,\nHome begins where dogs have been.".to_owned(),
         )
-    } else if prompt.contains("critique") && prompt.contains("feedback") {
+    } else if current.contains("critique") && current.contains("feedback") {
         Some(
             "Feedback: The dog poem has clear motion; add sharper images and a stronger final line."
                 .to_owned(),
         )
-    } else if prompt.contains("poem") && prompt.contains("dog") {
+    } else if current.contains("poem") && current.contains("dog") {
         Some("Dogs flash through rain-wet grass, brave hearts chasing the sun.".to_owned())
+    } else if current.contains("hello") {
+        Some("hello from rust native backend".to_owned())
     } else {
-        None
+        Some(
+            "Rust deterministic chat fixture: unsupported prompt for this protocol test mode."
+                .to_owned(),
+        )
     }
 }
 
