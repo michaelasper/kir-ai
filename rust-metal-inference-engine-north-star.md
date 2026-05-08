@@ -148,6 +148,7 @@ Current commits:
 - `6a898ad` - Hub repo IDs are validated as safe two-component paths, and Hub request paths encode revisions.
 - `5fb7d9e` - Native Qwen serving routes prefill, decode, MoE dense projections, and lm-head matvecs through a Metal-capable executor.
 - `ff60424` - Native Qwen decode-session startup checks cancellation before and between prefill layers.
+- `4a5cfbd` - Native Qwen final RMSNorm routes through the Metal-capable execution backend.
 
 Current verified state:
 
