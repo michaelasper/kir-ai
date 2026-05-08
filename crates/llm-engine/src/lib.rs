@@ -28,6 +28,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -35,16 +36,21 @@ type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 struct AppState {
     runtime: Arc<EngineRuntime>,
     metrics: Arc<Mutex<ServerMetrics>>,
+    model_permits: Arc<Semaphore>,
 }
 
 pub fn build_router() -> Router {
-    build_router_with_backend(Box::new(DeterministicBackend::new(
-        "local-qwen36",
-        "hello from rust native backend",
-    )))
+    build_router_with_backend(Box::new(default_backend()))
 }
 
 pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
+    build_router_with_backend_and_concurrency(backend, 1)
+}
+
+pub fn build_router_with_backend_and_concurrency(
+    backend: Box<dyn ModelBackend>,
+    concurrency_limit: usize,
+) -> Router {
     let runtime = Runtime::new(backend);
     Router::new()
         .route("/health", get(health))
@@ -61,7 +67,12 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
         .with_state(AppState {
             runtime: Arc::new(runtime),
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
+            model_permits: Arc::new(Semaphore::new(concurrency_limit.max(1))),
         })
+}
+
+fn default_backend() -> DeterministicBackend {
+    DeterministicBackend::new("local-qwen36", "hello from rust native backend")
 }
 
 #[derive(Clone)]
@@ -375,6 +386,7 @@ async fn chat_completions(
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
+    let _permit = acquire_model_permit(&state)?;
     if request.stream {
         let response = match state.runtime.chat_stream(request).await {
             Ok(response) => response,
@@ -413,6 +425,7 @@ async fn completions(
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
     let streamed = request.stream;
+    let _permit = acquire_model_permit(&state)?;
     if request.stream {
         let response = match state.runtime.completion_stream(request).await {
             Ok(response) => response,
@@ -464,6 +477,17 @@ fn record_failure_metrics(state: &AppState) {
         .record_failure();
 }
 
+fn acquire_model_permit(state: &AppState) -> Result<OwnedSemaphorePermit, EngineError> {
+    state
+        .model_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            record_failure_metrics(state);
+            EngineError::Overloaded("model is busy; retry the request later".to_owned())
+        })
+}
+
 fn parse_json_request<T>(
     request: Result<Json<T>, JsonRejection>,
     state: &AppState,
@@ -506,6 +530,7 @@ mod tests {
 enum EngineError {
     Runtime(RuntimeError),
     ModelStore(HubError),
+    Overloaded(String),
     Serialize(serde_json::Error),
 }
 
@@ -594,6 +619,13 @@ impl IntoResponse for EngineError {
                 "model_artifact_verification",
                 false,
                 err.to_string(),
+            ),
+            Self::Overloaded(message) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "model_overloaded",
+                "scheduler",
+                true,
+                message,
             ),
         };
         let body = Json(json!({

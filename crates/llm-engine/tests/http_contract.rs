@@ -9,7 +9,12 @@ use llm_backend::{
 use llm_engine::{build_router, build_router_with_backend};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -201,6 +206,36 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
     assert_eq!(body["tokens"]["completion_tokens"], 5);
     assert_eq!(body["tokens"]["total_tokens"], 6);
+}
+
+#[tokio::test]
+async fn concurrent_generation_returns_model_overloaded() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(BlockingBackend {
+        entered: entered.clone(),
+        release: release.clone(),
+    }));
+    let first = tokio::spawn(app.clone().oneshot(chat_request_body("first")));
+    entered.notified().await;
+
+    let second = tokio::time::timeout(
+        Duration::from_millis(200),
+        app.clone().oneshot(chat_request_body("second")),
+    )
+    .await
+    .expect("overloaded request returns promptly")
+    .expect("second response");
+
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_json(second.into_body()).await;
+    assert_eq!(body["error"]["code"], "model_overloaded");
+    assert_eq!(body["error"]["phase"], "scheduler");
+    assert_eq!(body["error"]["retryable"], true);
+
+    release.notify_waiters();
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -815,6 +850,29 @@ impl ModelBackend for StaticBackend {
     }
 }
 
+struct BlockingBackend {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for BlockingBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.entered.notify_waiters();
+        self.release.notified().await;
+        Ok(BackendOutput {
+            text: "released".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+}
+
 struct MetadataBackend;
 
 #[async_trait]
@@ -918,4 +976,19 @@ async fn body_json(body: Body) -> Value {
 async fn body_text(body: Body) -> String {
     let bytes = to_bytes(body, usize::MAX).await.expect("body bytes");
     String::from_utf8(bytes.to_vec()).expect("utf8 body")
+}
+
+fn chat_request_body(content: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "local-qwen36",
+                "messages": [{"role": "user", "content": content}]
+            })
+            .to_string(),
+        ))
+        .expect("request builds")
 }

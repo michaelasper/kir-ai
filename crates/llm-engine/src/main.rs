@@ -6,7 +6,7 @@ use llm_backend::{
     qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
-use llm_engine::{NativeQwenBackend, build_router, build_router_with_backend};
+use llm_engine::{NativeQwenBackend, build_router_with_backend_and_concurrency};
 use llm_hub::{HubClient, HubRepoId, ModelProfile, ModelStore};
 use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -24,6 +24,10 @@ async fn main() -> anyhow::Result<()> {
             let addr = flag_value(&serve_args, "--addr")
                 .unwrap_or("127.0.0.1:3000")
                 .parse::<SocketAddr>()?;
+            let max_concurrent_requests = flag_value(&serve_args, "--max-concurrent-requests")
+                .map(str::parse::<usize>)
+                .transpose()?
+                .unwrap_or(1);
             let router = if let Some(snapshot_path) = flag_value(&serve_args, "--snapshot") {
                 let model_id = flag_value(&serve_args, "--model-id").unwrap_or("local-qwen36");
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
@@ -37,9 +41,18 @@ async fn main() -> anyhow::Result<()> {
                 let backend = NativeQwenBackend::open(model_id, snapshot_path)?
                     .with_max_new_tokens(max_new_tokens)
                     .with_max_prefill_tokens(max_prefill_tokens);
-                build_router_with_backend(Box::new(backend))
+                build_router_with_backend_and_concurrency(
+                    Box::new(backend),
+                    max_concurrent_requests,
+                )
             } else {
-                build_router()
+                build_router_with_backend_and_concurrency(
+                    Box::new(llm_backend::DeterministicBackend::new(
+                        "local-qwen36",
+                        "hello from rust native backend",
+                    )),
+                    max_concurrent_requests,
+                )
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
             tracing::info!(%addr, "llm-engine listening");
