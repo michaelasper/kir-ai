@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 const MAX_SAFETENSORS_HEADER_LEN: u64 = 64 * 1024 * 1024;
 const BF16_MATVEC_CHUNK_ROWS: usize = 256;
@@ -103,6 +104,14 @@ pub trait ModelBackend: Send + Sync + 'static {
         })
         .boxed()
     }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        self.generate_stream(request)
+    }
 }
 
 #[async_trait]
@@ -127,6 +136,14 @@ where
         request: BackendRequest,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         (**self).generate_stream(request)
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        (**self).generate_stream_with_cancel(request, cancellation)
     }
 }
 

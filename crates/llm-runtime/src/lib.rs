@@ -17,6 +17,7 @@ use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -82,18 +83,23 @@ where
             created: Utc::now().timestamp(),
             model: request.model.clone(),
         };
-        let backend_stream = self.backend.generate_stream(BackendRequest {
-            model: request.model,
-            prompt: request.prompt,
-            max_tokens: request.max_tokens,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-        });
+        let cancellation = CancellationToken::new();
+        let backend_stream = self.backend.generate_stream_with_cancel(
+            BackendRequest {
+                model: request.model,
+                prompt: request.prompt,
+                max_tokens: request.max_tokens,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+            },
+            cancellation.clone(),
+        );
         Ok(streaming_completion_stream(
             completion,
             backend_stream,
             include_usage,
+            cancellation,
         ))
     }
 
@@ -151,19 +157,27 @@ where
             created: Utc::now().timestamp(),
             model: request.model.clone(),
         };
-        let backend_stream = self.backend.generate_stream(BackendRequest {
-            model: request.model.clone(),
-            prompt,
-            max_tokens: request.effective_max_tokens(),
-            required_tool_choice: required_backend_tool_choice(&request),
-            json_object_mode: matches!(request.response_format, Some(ResponseFormat::JsonObject)),
-            conversation_mode: true,
-        });
+        let cancellation = CancellationToken::new();
+        let backend_stream = self.backend.generate_stream_with_cancel(
+            BackendRequest {
+                model: request.model.clone(),
+                prompt,
+                max_tokens: request.effective_max_tokens(),
+                required_tool_choice: required_backend_tool_choice(&request),
+                json_object_mode: matches!(
+                    request.response_format,
+                    Some(ResponseFormat::JsonObject)
+                ),
+                conversation_mode: true,
+            },
+            cancellation.clone(),
+        );
         Ok(streaming_chat_stream(
             completion,
             request,
             backend_stream,
             include_usage,
+            cancellation,
         ))
     }
 
@@ -362,6 +376,23 @@ pub enum CompletionStreamEvent {
     Complete(Usage),
 }
 
+#[derive(Debug)]
+struct CancelOnDrop {
+    token: CancellationToken,
+}
+
+impl CancelOnDrop {
+    fn new(token: CancellationToken) -> Self {
+        Self { token }
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.token.cancel();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct RuntimeCompletionSeed {
     id: String,
@@ -420,8 +451,11 @@ fn streaming_completion_stream<'a>(
     completion: RuntimeCompletionSeed,
     backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
     include_usage: bool,
+    cancellation: CancellationToken,
 ) -> CompletionStream<'a> {
+    let cancel_on_drop = CancelOnDrop::new(cancellation);
     let events = async_stream::try_stream! {
+        let _cancel_on_drop = cancel_on_drop;
         let mut backend_stream = backend_stream;
         let mut text = String::new();
         let mut prompt_tokens = 0;
@@ -528,8 +562,11 @@ fn streaming_chat_stream<'a>(
     request: ChatCompletionRequest,
     backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
     include_usage: bool,
+    cancellation: CancellationToken,
 ) -> ChatCompletionStream<'a> {
+    let cancel_on_drop = CancelOnDrop::new(cancellation);
     let events = async_stream::try_stream! {
+        let _cancel_on_drop = cancel_on_drop;
         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
             &completion,
             ChatCompletionDelta {

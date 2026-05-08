@@ -166,19 +166,20 @@ Current verified state:
 - SSE streaming responses now use Axum keep-alive frames with an `llm-engine-heartbeat` marker. HTTP contract coverage holds the backend before its first content chunk and verifies a heartbeat reaches the client before generation is released.
 - Streaming handlers now enforce a configurable backend-output stall timeout, defaulting to 300 seconds through `EngineOptions`. If the runtime stream does not produce the next backend event before the timeout, the SSE body emits a retryable `stream_stalled` error event followed by `[DONE]`, records failure metrics, and releases the model permit.
 - Safetensors shards can now be materialized through a read-only mmap cache. The shard store exposes per-tensor materialization, counts materialized cached shards, and serves validated tensor byte ranges from the mmap once populated.
+- Streaming backend requests now carry a cancellation token. Dropping an HTTP SSE body cancels the runtime/backend stream, and the native Qwen stream path checks cancellation before and after bounded blocking decode steps.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches exist. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, and configured stream stall detection. Disconnect cancellation is not complete; tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, and stream-drop backend cancellation. Tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, mmap-backed shard materialization, and chunked BF16 matvecs are implemented; eager native weight-cache planning is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
-- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. True request cancellation is not complete.
+- Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation and interruption inside a long native prefill/Metal kernel are not complete.
 
 The first-class model families are:
 

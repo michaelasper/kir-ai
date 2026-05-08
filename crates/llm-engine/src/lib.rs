@@ -41,6 +41,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -252,12 +253,19 @@ impl NativeQwenBackend {
         &self,
         request: BackendRequest,
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
+        cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
         if request.model != self.model_id {
             return Err(BackendError::ModelNotFound {
                 requested: request.model,
                 available: self.model_id.clone(),
             });
+        }
+        if cancellation.is_cancelled() {
+            return Ok(());
         }
         let prompt_tokens = self
             .tokenizer
@@ -282,7 +290,13 @@ impl NativeQwenBackend {
         let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
 
         for _ in 0..requested {
+            if cancellation.is_cancelled() {
+                return Ok(());
+            }
             let candidate = self.next_token(&context_tokens)?;
+            if cancellation.is_cancelled() {
+                return Ok(());
+            }
             context_tokens.push(candidate.token_id);
             if Some(candidate.token_id) == eos_id {
                 finish_reason = FinishReason::Stop;
@@ -300,6 +314,9 @@ impl NativeQwenBackend {
                 .unwrap_or(&next_decoded)
                 .to_owned();
             decoded = next_decoded;
+            if cancellation.is_cancelled() {
+                return Ok(());
+            }
             send_backend_stream_chunk(
                 &tx,
                 BackendStreamChunk {
@@ -311,6 +328,9 @@ impl NativeQwenBackend {
             )?;
         }
 
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
         send_backend_stream_chunk(
             &tx,
             BackendStreamChunk {
@@ -410,11 +430,19 @@ impl ModelBackend for NativeQwenBackend {
         &'a self,
         request: BackendRequest,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        self.generate_stream_with_cancel(request, CancellationToken::new())
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         let backend = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tokio::task::spawn_blocking(move || {
             let err_tx = tx.clone();
-            if let Err(err) = backend.generate_blocking_stream(request, tx) {
+            if let Err(err) = backend.generate_blocking_stream(request, tx, cancellation) {
                 let _ = err_tx.blocking_send(Err(err));
             }
         });

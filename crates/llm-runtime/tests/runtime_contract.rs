@@ -12,6 +12,7 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn runtime_returns_non_streaming_chat_completion() {
@@ -658,6 +659,28 @@ async fn runtime_streams_generated_tool_call_delta() {
     );
 }
 
+#[tokio::test]
+async fn dropping_unpolled_chat_stream_cancels_backend_stream() {
+    let cancelled = Arc::new(Notify::new());
+    let runtime = Runtime::new(CancellableStreamBackend {
+        cancelled: cancelled.clone(),
+    });
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming chat starts");
+
+    drop(stream);
+    tokio::time::timeout(Duration::from_millis(100), cancelled.notified())
+        .await
+        .expect("backend cancellation token is cancelled");
+}
+
 #[test]
 fn classifies_high_output_empty_completion_as_no_progress() {
     let class = llm_runtime::classify_no_progress("", 4096, false);
@@ -701,6 +724,43 @@ struct BlockingTextBackend {
 struct TwoChunkStreamBackend {
     first: Arc<Notify>,
     finish: Arc<Notify>,
+}
+
+struct CancellableStreamBackend {
+    cancelled: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for CancellableStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "unused".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let cancelled = self.cancelled.clone();
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            cancelled.notify_waiters();
+        });
+        async_stream::try_stream! {
+            let chunk = futures::future::pending::<BackendStreamChunk>().await;
+            yield chunk;
+        }
+        .boxed()
+    }
 }
 
 #[async_trait::async_trait]

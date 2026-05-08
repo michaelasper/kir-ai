@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, Semaphore};
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -1075,6 +1076,52 @@ async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
 }
 
 #[tokio::test]
+async fn dropping_chat_stream_body_cancels_backend_stream() {
+    let cancelled = Arc::new(Notify::new());
+    let response = build_router_with_backend(Box::new(CancellableStreamBackend {
+        cancelled: cancelled.clone(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("\"content\":\"first\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first backend chunk arrives");
+
+    drop(body);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend stream receives cancellation");
+}
+
+#[tokio::test]
 async fn chat_completions_streams_usage_when_requested() {
     let response = build_router()
         .oneshot(
@@ -1664,6 +1711,48 @@ impl ModelBackend for TwoStageStreamBackend {
                 completion_tokens: 1,
                 finish_reason: Some(llm_api::FinishReason::Stop),
             };
+        }
+        .boxed()
+    }
+}
+
+struct CancellableStreamBackend {
+    cancelled: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for CancellableStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "first".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let cancelled = self.cancelled.clone();
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            cancelled.notify_waiters();
+        });
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: "first".to_owned(),
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            futures::future::pending::<()>().await;
         }
         .boxed()
     }
