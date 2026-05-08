@@ -62,6 +62,22 @@ fn metal_matvec_bf16_f32_matches_cpu_reference() {
     assert_close(&output, &[8.5, 6.0], 1e-6);
 }
 
+#[test]
+fn metal_batched_matvec_bf16_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let matrix = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(f32_to_bf16_bits);
+
+    let output = device
+        .batched_matvec_bf16_f32(&matrix, 2, 3, &[1.0, 2.0, 3.0, 3.0, 2.0, 1.0], 2)
+        .expect("metal batched bf16 matvec succeeds");
+
+    assert_close(&output, &[14.0, 32.0, 10.0, 28.0], 1e-6);
+}
+
 fn f32_to_bf16_bits(value: f32) -> u16 {
     (value.to_bits() >> 16) as u16
 }

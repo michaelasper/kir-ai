@@ -122,6 +122,7 @@ Current commits:
 - `7449bb6` - Native Qwen generation reuses typed layer caches for bounded multi-token decode.
 - `2e7c802` - Metal includes a row-major `f32` matvec kernel.
 - `86f64ff` - Metal includes a row-major BF16-weight matvec kernel.
+- `60d5328` - Safetensors exposes raw BF16 tensor ranges for acceleration paths.
 
 Current verified state:
 
@@ -202,6 +203,7 @@ Current verified state:
 - `llm-metal` now includes a Qwen-centered RMSNorm Metal kernel with smoke coverage against the CPU reference, in addition to the direct vector-add compute smoke.
 - `llm-metal` now includes a row-major `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - `llm-metal` now includes a row-major BF16-weight to `f32` matvec Metal kernel with smoke coverage against the CPU reference.
+- `llm-metal` now includes a batched row-major BF16-weight to `f32` matvec Metal kernel with input-major output coverage against the CPU reference.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
@@ -223,7 +225,7 @@ Known incomplete items:
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 f32/raw-bit reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
-- Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, and row-major BF16-weight matvec are implemented; the remaining Qwen kernels are not complete.
+- Direct Metal smoke compute, a Qwen RMSNorm kernel, row-major `f32` matvec, row-major BF16-weight matvec, and batched BF16-weight matvec are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 
