@@ -82,6 +82,7 @@ Current commits:
 - `3885568` - Hub planning and download HTTP requests now have explicit connect/request/read timeout bounds.
 - `7a20446` - Parsed generated tool calls are validated against declared tools and explicit tool choices.
 - `dd34c95` - Runtime generation limits now preserve omitted max-token requests and native Qwen rejects explicit requests above its configured cap.
+- `913e25b` - Added model-level concurrency backpressure with structured retryable 429 overload errors.
 
 Current verified state:
 
@@ -128,6 +129,7 @@ Current verified state:
 - `HubClient` builds reqwest clients with configurable connect and whole-request timeouts, and wraps streamed download body reads in a per-chunk deadline. Local socket tests cover a stalled model-info response and a stalled artifact body.
 - Parsed generated tool calls must now match the request tool contract before any response is returned. The runtime rejects undeclared tool names, rejects tool calls when `tool_choice` is `none`, rejects names that differ from an explicit function choice, and still accepts multiple generated tool calls when each name was declared.
 - Runtime backend requests now carry `max_tokens` as `Option<u32>`, preserving omitted OpenAI token limits as backend defaults instead of converting them to an arbitrary numeric request. Native Qwen uses its configured `max_new_tokens` only for omitted limits and rejects explicit requests above that cap as `unsupported_capability`.
+- The HTTP engine state now uses a model-level semaphore. The default serve path allows one concurrent generation, `--max-concurrent-requests` can raise that limit, and requests received while all permits are busy return a stable retryable `model_overloaded` error with HTTP 429.
 
 Known incomplete items:
 
