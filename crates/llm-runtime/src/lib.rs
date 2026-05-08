@@ -6,6 +6,7 @@ use llm_api::{
     ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
     ValidateRequest,
 };
+use llm_backend::BackendModelMetadata;
 use llm_backend::{BackendError, BackendRequest, ModelBackend};
 use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
 use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
@@ -27,6 +28,10 @@ where
 
     pub fn model_id(&self) -> &str {
         self.backend.model_id()
+    }
+
+    pub fn model_metadata(&self) -> BackendModelMetadata {
+        self.backend.model_metadata()
     }
 
     pub async fn completion(

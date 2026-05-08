@@ -12,14 +12,19 @@ use axum::{
 use futures::stream;
 use llm_api::{ChatCompletionRequest, CompletionRequest, FinishReason, ModelCard, ModelList};
 use llm_backend::{
-    BackendError, BackendOutput, BackendRequest, DeterministicBackend, ModelBackend,
-    SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, DeterministicBackend,
+    ModelBackend, SafeTensorShardStore, qwen_final_norm, qwen_lm_head_top_k, qwen_prefill_sequence,
 };
+use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
 use llm_runtime::{Runtime, RuntimeError};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::{Value, json};
-use std::{convert::Infallible, path::Path, sync::Arc};
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -55,6 +60,7 @@ pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
 #[derive(Clone)]
 pub struct NativeQwenBackend {
     model_id: String,
+    metadata: BackendModelMetadata,
     tokenizer: HuggingFaceTokenizer,
     spec: QwenModelSpec,
     store: SafeTensorShardStore,
@@ -69,10 +75,13 @@ impl NativeQwenBackend {
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
+        let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
+        let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
         Ok(Self {
-            model_id: model_id.into(),
+            model_id,
+            metadata,
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
             spec: QwenModelSpec::from_config_json(&config_json)?,
             store: SafeTensorShardStore::open(snapshot_path)?,
@@ -199,6 +208,10 @@ impl ModelBackend for NativeQwenBackend {
         &self.model_id
     }
 
+    fn model_metadata(&self) -> BackendModelMetadata {
+        self.metadata.clone()
+    }
+
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || backend.generate_blocking(request))
@@ -227,9 +240,10 @@ async fn models(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn admin_models(State(state): State<AppState>) -> impl IntoResponse {
+    let metadata = state.runtime.model_metadata();
     Json(json!({
         "object": "list",
-        "data": [admin_model_status(state.runtime.model_id())],
+        "data": [admin_model_status(&metadata)],
     }))
 }
 
@@ -237,25 +251,52 @@ async fn admin_model(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, EngineError> {
-    let model_id = state.runtime.model_id();
-    if alias != model_id {
+    let metadata = state.runtime.model_metadata();
+    if alias != metadata.id {
         return Err(RuntimeError::Backend(BackendError::ModelNotFound {
             requested: alias,
-            available: model_id.to_owned(),
+            available: metadata.id,
         })
         .into());
     }
-    Ok(Json(admin_model_status(model_id)))
+    Ok(Json(admin_model_status(&metadata)))
 }
 
-fn admin_model_status(model_id: &str) -> Value {
+fn admin_model_status(metadata: &BackendModelMetadata) -> Value {
     json!({
-        "id": model_id,
+        "id": metadata.id,
         "object": "admin.model",
         "status": "ready",
         "runtime": "rust",
         "python_runtime": false,
+        "backend": metadata.backend,
+        "family": metadata.family,
+        "loader": metadata.loader,
+        "quantization": metadata.quantization,
+        "repo_id": metadata.repo_id,
+        "resolved_commit": metadata.resolved_commit,
+        "profile": metadata.profile,
+        "snapshot_path": metadata.snapshot_path,
+        "manifest_digest": metadata.manifest_digest,
     })
+}
+
+fn native_qwen_metadata(
+    model_id: &str,
+    snapshot_path: &Path,
+) -> anyhow::Result<BackendModelMetadata> {
+    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
+    let manifest = serde_json::from_slice::<SnapshotManifest>(&std::fs::read(&manifest_path)?)?;
+    let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "native-qwen");
+    metadata.family = Some(manifest.family.clone());
+    metadata.loader = Some(manifest.loader.clone());
+    metadata.quantization = Some(manifest.quantization.clone());
+    metadata.repo_id = Some(manifest.repo_id.clone());
+    metadata.resolved_commit = Some(manifest.resolved_commit.clone());
+    metadata.profile = Some(manifest.profile.clone());
+    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
+    metadata.manifest_digest = Some(manifest.digest());
+    Ok(metadata)
 }
 
 async fn chat_completions(

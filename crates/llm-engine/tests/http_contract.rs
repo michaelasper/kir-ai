@@ -3,7 +3,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use llm_backend::{BackendError, BackendOutput, BackendRequest, ModelBackend};
+use llm_backend::{
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, ModelBackend,
+};
 use llm_engine::{build_router, build_router_with_backend};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -81,6 +83,32 @@ async fn admin_model_endpoint_reports_ready_model() {
     assert_eq!(body["id"], "local-qwen36");
     assert_eq!(body["status"], "ready");
     assert_eq!(body["python_runtime"], false);
+}
+
+#[tokio::test]
+async fn admin_model_endpoint_reports_backend_artifact_identity() {
+    let response = build_router_with_backend(Box::new(MetadataBackend))
+        .oneshot(
+            Request::builder()
+                .uri("/admin/models/local-qwen36")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin model response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["backend"], "native-qwen");
+    assert_eq!(body["repo_id"], "Qwen/Qwen3.6-35B-A3B");
+    assert_eq!(
+        body["resolved_commit"],
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(
+        body["manifest_digest"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
 }
 
 #[tokio::test]
@@ -462,6 +490,41 @@ impl ModelBackend for StaticBackend {
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: self.text.clone(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+}
+
+struct MetadataBackend;
+
+#[async_trait]
+impl ModelBackend for MetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata {
+            id: "local-qwen36".to_owned(),
+            backend: "native-qwen".to_owned(),
+            family: Some("qwen".to_owned()),
+            loader: Some("native-metal".to_owned()),
+            quantization: Some("bf16".to_owned()),
+            repo_id: Some("Qwen/Qwen3.6-35B-A3B".to_owned()),
+            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            profile: Some("qwen36-safetensors-bf16".to_owned()),
+            snapshot_path: Some(std::path::PathBuf::from("/tmp/local-qwen36")),
+            manifest_digest: Some(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            ),
+        }
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "metadata".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,

@@ -30,9 +30,44 @@ pub struct BackendOutput {
     pub finish_reason: FinishReason,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendModelMetadata {
+    pub id: String,
+    pub backend: String,
+    pub family: Option<String>,
+    pub loader: Option<String>,
+    pub quantization: Option<String>,
+    pub repo_id: Option<String>,
+    pub resolved_commit: Option<String>,
+    pub profile: Option<String>,
+    pub snapshot_path: Option<PathBuf>,
+    pub manifest_digest: Option<String>,
+}
+
+impl BackendModelMetadata {
+    pub fn new(id: impl Into<String>, backend: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            backend: backend.into(),
+            family: None,
+            loader: None,
+            quantization: None,
+            repo_id: None,
+            resolved_commit: None,
+            profile: None,
+            snapshot_path: None,
+            manifest_digest: None,
+        }
+    }
+}
+
 #[async_trait]
 pub trait ModelBackend: Send + Sync + 'static {
     fn model_id(&self) -> &str;
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id(), "unknown")
+    }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
 }
@@ -44,6 +79,10 @@ where
 {
     fn model_id(&self) -> &str {
         (**self).model_id()
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        (**self).model_metadata()
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -70,6 +109,10 @@ impl DeterministicBackend {
 impl ModelBackend for DeterministicBackend {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id.clone(), "deterministic")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
