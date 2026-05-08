@@ -393,7 +393,18 @@ fn l2_normalize_f32_with_matvec(
     eps: f32,
     matvec: &impl QwenMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
+    let mut qwen_weight = Vec::new();
+    l2_normalize_f32_with_matvec_and_weight_scratch(input, eps, matvec, &mut qwen_weight)
+}
+
+fn l2_normalize_f32_with_matvec_and_weight_scratch(
+    input: &[f32],
+    eps: f32,
+    matvec: &impl QwenMatvecBackend,
+    qwen_weight: &mut Vec<f32>,
+) -> Result<Vec<f32>, MathError> {
     if input.is_empty() {
+        qwen_weight.clear();
         return Ok(Vec::new());
     }
     if eps < 0.0 {
@@ -402,8 +413,9 @@ fn l2_normalize_f32_with_matvec(
         ));
     }
     let weight_scale = (input.len() as f32).sqrt().recip();
-    let qwen_weight = vec![weight_scale - 1.0; input.len()];
-    matvec.qwen_rms_norm_f32(input, &qwen_weight, eps / input.len() as f32)
+    qwen_weight.clear();
+    qwen_weight.resize(input.len(), weight_scale - 1.0);
+    matvec.qwen_rms_norm_f32(input, qwen_weight, eps / input.len() as f32)
 }
 
 fn rms_norm_with_weight_offset_f32(
@@ -1554,6 +1566,14 @@ fn qwen_linear_attention_sequence_from_parts_impl(
         .unwrap_or_else(|| {
             vec![0.0; dims.num_value_heads * dims.key_head_dim * dims.value_head_dim]
         });
+    let value_major_len = dims
+        .value_head_dim
+        .checked_mul(dims.key_head_dim)
+        .ok_or_else(|| MathError::InvalidShape("value-major state shape overflow".to_owned()))?;
+    let mut l2_weight_scratch = Vec::with_capacity(dims.key_head_dim);
+    let zero_memory = vec![0.0; dims.value_head_dim];
+    let mut value_major_state = Vec::with_capacity(value_major_len);
+    let mut query_scaled = vec![0.0; dims.key_head_dim];
     let mut outputs = Vec::with_capacity(seq_len);
 
     for token_idx in 0..seq_len {
@@ -1567,20 +1587,21 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             let key_head = value_head / repeat;
             let key_start = key_head * dims.key_head_dim;
             let value_start = value_head * dims.value_head_dim;
-            let query_head = l2_normalize_f32_with_matvec(
+            let query_head = l2_normalize_f32_with_matvec_and_weight_scratch(
                 &query[key_start..key_start + dims.key_head_dim],
                 1e-6,
                 matvec,
+                &mut l2_weight_scratch,
             )?;
-            let key_head_values = l2_normalize_f32_with_matvec(
+            let key_head_values = l2_normalize_f32_with_matvec_and_weight_scratch(
                 &key[key_start..key_start + dims.key_head_dim],
                 1e-6,
                 matvec,
+                &mut l2_weight_scratch,
             )?;
-            let query_scaled = query_head
-                .into_iter()
-                .map(|value| value * scale)
-                .collect::<Vec<_>>();
+            for (output, value) in query_scaled.iter_mut().zip(&query_head) {
+                *output = value * scale;
+            }
             let beta = sigmoid_f32(b[token_idx][value_head]);
             let decay = (-parts.a_log[value_head].exp()
                 * softplus_f32(a[token_idx][value_head] + parts.dt_bias[value_head]))
@@ -1588,7 +1609,6 @@ fn qwen_linear_attention_sequence_from_parts_impl(
 
             let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
             let state_end = state_start + dims.key_head_dim * dims.value_head_dim;
-            let zero_memory = vec![0.0; dims.value_head_dim];
             let decayed_state = matvec.linear_attention_recurrent_update_f32(
                 &recurrent_state[state_start..state_end],
                 &key_head_values,
@@ -1601,12 +1621,13 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             )?;
             recurrent_state[state_start..state_end].copy_from_slice(&decayed_state);
 
-            let mut value_major_state = linear_attention_value_major_state_rows(
+            copy_linear_attention_value_major_state_rows(
                 &recurrent_state,
                 state_start,
                 dims.key_head_dim,
                 dims.value_head_dim,
-            );
+                &mut value_major_state,
+            )?;
             let memory = matvec.matvec_row_major_f32(
                 &key_head_values,
                 &value_major_state,
@@ -1626,12 +1647,13 @@ fn qwen_linear_attention_sequence_from_parts_impl(
             )?;
             recurrent_state[state_start..state_end].copy_from_slice(&updated_state);
 
-            value_major_state = linear_attention_value_major_state_rows(
+            copy_linear_attention_value_major_state_rows(
                 &recurrent_state,
                 state_start,
                 dims.key_head_dim,
                 dims.value_head_dim,
-            );
+                &mut value_major_state,
+            )?;
             let core_head = matvec.matvec_row_major_f32(
                 &query_scaled,
                 &value_major_state,
@@ -1664,20 +1686,34 @@ fn qwen_linear_attention_sequence_from_parts_impl(
     Ok(outputs)
 }
 
-fn linear_attention_value_major_state_rows(
+fn copy_linear_attention_value_major_state_rows(
     recurrent_state: &[f32],
     state_start: usize,
     key_head_dim: usize,
     value_head_dim: usize,
-) -> Vec<f32> {
-    let mut rows = vec![0.0; value_head_dim * key_head_dim];
+    rows: &mut Vec<f32>,
+) -> Result<(), MathError> {
+    let row_len = value_head_dim
+        .checked_mul(key_head_dim)
+        .ok_or_else(|| MathError::InvalidShape("value-major state shape overflow".to_owned()))?;
+    let state_end = state_start
+        .checked_add(row_len)
+        .ok_or_else(|| MathError::InvalidShape("recurrent state offset overflow".to_owned()))?;
+    if recurrent_state.len() < state_end {
+        return Err(MathError::InvalidShape(format!(
+            "recurrent state slice too short: expected at least {state_end}, got {}",
+            recurrent_state.len()
+        )));
+    }
+    rows.clear();
+    rows.resize(row_len, 0.0);
     for value_offset in 0..value_head_dim {
         for key_offset in 0..key_head_dim {
             rows[value_offset * key_head_dim + key_offset] =
                 recurrent_state[state_start + key_offset * value_head_dim + value_offset];
         }
     }
-    rows
+    Ok(())
 }
 
 fn require_linear_attention_cache_shape(
@@ -4771,6 +4807,36 @@ mod tests {
         let result = block_on(stream.next()).expect("stream emits one result");
 
         assert!(matches!(result, Err(BackendError::Cancelled)));
+    }
+
+    #[test]
+    fn linear_attention_value_major_state_rows_reuses_scratch_buffer() {
+        let recurrent_state = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut scratch = Vec::with_capacity(16);
+
+        copy_linear_attention_value_major_state_rows(&recurrent_state, 0, 2, 3, &mut scratch)
+            .expect("state transpose succeeds");
+
+        assert_eq!(scratch, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        assert_eq!(scratch.capacity(), 16);
+    }
+
+    #[test]
+    fn l2_normalize_f32_with_matvec_reuses_weight_scratch() {
+        let mut qwen_weight = Vec::with_capacity(8);
+
+        let normalized = l2_normalize_f32_with_matvec_and_weight_scratch(
+            &[3.0, 4.0],
+            1e-6,
+            &CpuQwenMatvecBackend,
+            &mut qwen_weight,
+        )
+        .expect("l2 normalize succeeds");
+
+        assert!((normalized[0] - 0.6).abs() < 1e-5);
+        assert!((normalized[1] - 0.8).abs() < 1e-5);
+        assert_eq!(qwen_weight, vec![2.0_f32.sqrt().recip() - 1.0; 2]);
+        assert_eq!(qwen_weight.capacity(), 8);
     }
 
     fn backend_request(prompt: &str) -> BackendRequest {
