@@ -1722,19 +1722,21 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
         let kv_head = head / groups;
         let q_start = head * dims.head_dim;
         let kv_start = kv_head * dims.head_dim;
-        let mut scores = Vec::with_capacity(cache.token_count());
+        let token_count = cache.token_count();
+        let mut key_rows = Vec::with_capacity(token_count * dims.head_dim);
         for source_idx in 0..cache.token_count() {
             let key_token = cache
                 .key(source_idx)
                 .ok_or_else(|| MathError::InvalidShape("KV cache key missing".to_owned()))?;
-            let score = query[q_start..q_start + dims.head_dim]
-                .iter()
-                .zip(&key_token[kv_start..kv_start + dims.head_dim])
-                .map(|(query, key)| query * key)
-                .sum::<f32>()
-                * scale;
-            scores.push(score);
+            key_rows.extend_from_slice(&key_token[kv_start..kv_start + dims.head_dim]);
         }
+        let scores = scaled_full_attention_scores_with_matvec(
+            &query[q_start..q_start + dims.head_dim],
+            &key_rows,
+            token_count,
+            scale,
+            matvec,
+        )?;
         let weights = matvec.softmax_f32(&scores)?;
         for (source_idx, weight) in weights.into_iter().enumerate() {
             let value_token = cache
@@ -1878,20 +1880,22 @@ fn qwen_full_attention_sequence_from_parts_impl(
             let kv_head = head / groups;
             let q_start = head * dims.head_dim;
             let kv_start = kv_head * dims.head_dim;
-            let mut scores = Vec::with_capacity(token_idx + 1);
+            let source_count = token_idx + 1;
+            let mut key_rows = Vec::with_capacity(source_count * dims.head_dim);
             for (source_idx, local_key) in keys.iter().enumerate().take(token_idx + 1) {
                 let key_token = cache
                     .as_deref()
                     .and_then(|cache| cache.key(source_idx))
                     .unwrap_or(local_key);
-                let score = queries[token_idx][q_start..q_start + dims.head_dim]
-                    .iter()
-                    .zip(&key_token[kv_start..kv_start + dims.head_dim])
-                    .map(|(query, key)| query * key)
-                    .sum::<f32>()
-                    * scale;
-                scores.push(score);
+                key_rows.extend_from_slice(&key_token[kv_start..kv_start + dims.head_dim]);
             }
+            let scores = scaled_full_attention_scores_with_matvec(
+                &queries[token_idx][q_start..q_start + dims.head_dim],
+                &key_rows,
+                source_count,
+                scale,
+                matvec,
+            )?;
             let weights = matvec.softmax_f32(&scores)?;
             for (source_idx, weight) in weights.into_iter().enumerate() {
                 let value_token = cache
@@ -1915,6 +1919,21 @@ fn qwen_full_attention_sequence_from_parts_impl(
     }
 
     Ok(outputs)
+}
+
+fn scaled_full_attention_scores_with_matvec(
+    query_head: &[f32],
+    key_rows: &[f32],
+    row_count: usize,
+    scale: f32,
+    matvec: &impl QwenMatvecBackend,
+) -> Result<Vec<f32>, MathError> {
+    let mut scores =
+        matvec.matvec_row_major_f32(query_head, key_rows, row_count, query_head.len())?;
+    for score in &mut scores {
+        *score *= scale;
+    }
+    Ok(scores)
 }
 
 pub fn qwen_layer0_linear_attention_first_token(
