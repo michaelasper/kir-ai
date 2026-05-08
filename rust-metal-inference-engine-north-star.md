@@ -78,6 +78,8 @@ Current commits:
 - `eee90ab` - Chat and text completions now fail closed for unsupported log probability controls instead of ignoring them.
 - `5c496d6` - Chat completions now fail closed for explicit parallel tool-call requests until parallel execution policy exists.
 - `90e4988` - Added admin snapshot verification for the currently served snapshot-backed model.
+- `efd5537` - Request-controlled prompt text now rejects reserved ChatML and tool-call control tokens before rendering.
+- `3885568` - Hub planning and download HTTP requests now have explicit connect/request/read timeout bounds.
 
 Current verified state:
 
@@ -120,6 +122,8 @@ Current verified state:
 - Chat accepts `logprobs: false` as a no-op and rejects enabled `logprobs`/`top_logprobs`; legacy text completions reject requested `logprobs` until log probability output is implemented.
 - Chat completions accept `parallel_tool_calls: false` as a no-op and reject explicit `parallel_tool_calls: true` as `unsupported_capability` until the scheduler has a parallel tool execution policy.
 - `POST /admin/models/{alias}/verify` verifies the currently served snapshot from backend metadata via the engine manifest and reports status, snapshot path, repo ID, resolved commit, manifest digest, verified file count, and verified bytes.
+- The Qwen ChatML renderer fails closed when request-controlled message content, tool schemas, or prior tool-call payloads contain reserved prompt control tokens such as `<|im_start|>`, `<|im_end|>`, `<tool_call>`, or thinking tags. HTTP chat requests surface this as `chat_template_failed` in the `prompt_rendering` phase.
+- `HubClient` builds reqwest clients with configurable connect and whole-request timeouts, and wraps streamed download body reads in a per-chunk deadline. Local socket tests cover a stalled model-info response and a stalled artifact body.
 
 Known incomplete items:
 
