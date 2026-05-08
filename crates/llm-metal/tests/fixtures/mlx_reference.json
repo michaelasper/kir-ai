@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "source": "mlx.core offline reference trace generated from simple deterministic tensors",
+  "generator": "crates/llm-metal/tests/fixtures/generate_mlx_reference.py",
+  "generated_date": "2026-05-08",
+  "cases": {
+    "vector_add_f32": {
+      "output": [
+        5.0,
+        1.0,
+        0.0,
+        8.25
+      ],
+      "mlx_median_us": 206.479
+    },
+    "qwen_rms_norm_f32": {
+      "output": [
+        0.8485281467437744,
+        2.262741804122925
+      ],
+      "mlx_median_us": 271.75
+    },
+    "softmax_f32": {
+      "output": [
+        0.2242078334093094,
+        0.6094600558280945,
+        0.030343232676386833,
+        0.13598893582820892
+      ],
+      "mlx_median_us": 220.354
+    },
+    "linear_attention_conv1d_silu_f32": {
+      "output": [
+        4.450558662414551,
+        -0.24061596393585205,
+        2.857722520828247
+      ],
+      "mlx_median_us": 252.729
+    },
+    "matvec_f32": {
+      "output": [
+        8.5,
+        6.0
+      ],
+      "mlx_median_us": 227.772
+    },
+    "matvec_bf16_f32": {
+      "output": [
+        8.5,
+        6.0
+      ],
+      "mlx_median_us": 211.23
+    },
+    "batched_matvec_bf16_f32": {
+      "output": [
+        14.0,
+        32.0,
+        10.0,
+        28.0
+      ],
+      "mlx_median_us": 206.605
+    },
+    "weighted_sum_f32": {
+      "output": [
+        -1.75,
+        -2.0,
+        -2.25
+      ],
+      "mlx_median_us": 171.355
+    },
+    "linear_attention_recurrent_update_f32": {
+      "output": [
+        1.625,
+        3.25,
+        4.875,
+        -0.25,
+        -2.0,
+        -3.75
+      ],
+      "mlx_median_us": 201.625
+    },
+    "select_head_rows_f32": {
+      "output": [
+        2.0,
+        3.0,
+        6.0,
+        7.0
+      ],
+      "mlx_median_us": 28.458
+    },
+    "argmax_f32": {
+      "index": 42,
+      "value": 4.5,
+      "mlx_median_us": 178.958
+    },
+    "top_k_f32": {
+      "indices": [
+        288,
+        499,
+        7
+      ],
+      "values": [
+        12.0,
+        12.0,
+        9.0
+      ],
+      "mlx_median_us": 205.25
+    }
+  }
+}

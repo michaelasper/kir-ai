@@ -1107,6 +1107,8 @@ name = "llm-metal"
 version = "0.1.0"
 dependencies = [
  "metal",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
