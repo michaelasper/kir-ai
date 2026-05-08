@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use llm_api::FinishReason;
+use safetensors::{SafeTensors, tensor::Dtype};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,4 +83,102 @@ fn count_tokens(text: &str) -> u64 {
         .replace("<think>", " ")
         .replace("</think>", " ");
     normalized.split_whitespace().count().max(1) as u64
+}
+
+#[derive(Debug, Clone)]
+pub struct SafeTensorArchive {
+    bytes: Vec<u8>,
+}
+
+impl SafeTensorArchive {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, TensorLoadError> {
+        SafeTensors::deserialize(bytes)
+            .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))?;
+        Ok(Self {
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    pub fn tensor_metadata(&self, name: &str) -> Result<TensorMetadata, TensorLoadError> {
+        let tensors = self.tensors()?;
+        let view = tensors
+            .tensor(name)
+            .map_err(|err| TensorLoadError::missing(format!("tensor `{name}` not found: {err}")))?;
+        Ok(TensorMetadata {
+            name: name.to_owned(),
+            dtype: format!("{:?}", view.dtype()),
+            shape: view.shape().to_vec(),
+            byte_len: view.data().len(),
+        })
+    }
+
+    pub fn f32_tensor(&self, name: &str) -> Result<Vec<f32>, TensorLoadError> {
+        let tensors = self.tensors()?;
+        let view = tensors
+            .tensor(name)
+            .map_err(|err| TensorLoadError::missing(format!("tensor `{name}` not found: {err}")))?;
+        if view.dtype() != Dtype::F32 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{name}` has dtype {:?}, expected F32",
+                view.dtype()
+            )));
+        }
+        let data = view.data();
+        if data.len() % std::mem::size_of::<f32>() != 0 {
+            return Err(TensorLoadError::integrity(format!(
+                "tensor `{name}` byte length is not divisible by 4"
+            )));
+        }
+        Ok(data
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has length 4")))
+            .collect())
+    }
+
+    fn tensors(&self) -> Result<SafeTensors<'_>, TensorLoadError> {
+        SafeTensors::deserialize(&self.bytes)
+            .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorMetadata {
+    pub name: String,
+    pub dtype: String,
+    pub shape: Vec<usize>,
+    pub byte_len: usize,
+}
+
+#[derive(Debug, Error)]
+#[error("{code}: {message}")]
+pub struct TensorLoadError {
+    code: &'static str,
+    message: String,
+}
+
+impl TensorLoadError {
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    fn integrity(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_integrity_failed",
+            message: message.into(),
+        }
+    }
+
+    fn missing(message: impl Into<String>) -> Self {
+        Self {
+            code: "model_artifact_missing",
+            message: message.into(),
+        }
+    }
+
+    fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            code: "unsupported_capability",
+            message: message.into(),
+        }
+    }
 }

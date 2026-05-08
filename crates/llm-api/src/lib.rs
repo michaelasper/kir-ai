@@ -133,18 +133,15 @@ pub struct FunctionDefinition {
     pub parameters: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ToolChoice {
+    #[default]
     Auto,
     None,
     Required,
-    Function { name: String },
-}
-
-impl Default for ToolChoice {
-    fn default() -> Self {
-        Self::Auto
-    }
+    Function {
+        name: String,
+    },
 }
 
 impl<'de> Deserialize<'de> for ToolChoice {
@@ -211,7 +208,7 @@ pub enum ResponseFormat {
     JsonSchema { json_schema: Value },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     #[serde(default)]
@@ -230,22 +227,6 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-}
-
-impl Default for ChatCompletionRequest {
-    fn default() -> Self {
-        Self {
-            model: String::new(),
-            messages: Vec::new(),
-            tools: Vec::new(),
-            tool_choice: None,
-            response_format: None,
-            stream: false,
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

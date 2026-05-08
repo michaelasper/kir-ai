@@ -8,4 +8,6 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 llm-api = { path = "../llm-api" }
+safetensors.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true

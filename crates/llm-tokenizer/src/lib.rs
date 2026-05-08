@@ -2,19 +2,10 @@ use llm_api::{ChatMessage, ChatRole, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QwenPromptOptions {
     pub enable_thinking: bool,
     pub add_generation_prompt: bool,
-}
-
-impl Default for QwenPromptOptions {
-    fn default() -> Self {
-        Self {
-            enable_thinking: false,
-            add_generation_prompt: false,
-        }
-    }
 }
 
 #[derive(Debug, Error)]
