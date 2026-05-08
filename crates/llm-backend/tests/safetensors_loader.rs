@@ -1,12 +1,14 @@
 use llm_backend::{
     QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
     qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_layer_caches_for_spec,
-    qwen_layer_full_attention_first_token, qwen_layer_linear_attention_first_token,
+    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
+    qwen_layer_full_attention_sequence_with_cache, qwen_layer_linear_attention_first_token,
     qwen_layer_linear_attention_projections, qwen_layer0_linear_attention_projections,
     qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
     qwen_lm_head_logits, qwen_lm_head_top_k,
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
+use llm_kv_cache::LayerKvCache;
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 
 #[test]
@@ -691,6 +693,88 @@ fn qwen_full_attention_first_token_requires_key_and_norm_weights() {
     .expect_err("full attention requires k_proj/q_norm/k_norm");
 
     assert_eq!(err.code(), "model_artifact_missing");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_full_attention_sequence_with_cache_uses_indexed_weights() {
+    let root = temp_snapshot_dir("qwen-full-attn-cache");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 64 },
+            "weight_map": {
+                "model.language_model.layers.0.self_attn.q_proj.weight": "q.safetensors",
+                "model.language_model.layers.0.self_attn.k_proj.weight": "k.safetensors",
+                "model.language_model.layers.0.self_attn.v_proj.weight": "v.safetensors",
+                "model.language_model.layers.0.self_attn.q_norm.weight": "q_norm.safetensors",
+                "model.language_model.layers.0.self_attn.k_norm.weight": "k_norm.safetensors",
+                "model.language_model.layers.0.self_attn.o_proj.weight": "o.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    for (filename, tensor, shape, values) in [
+        (
+            "q.safetensors",
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+            vec![4, 2],
+            vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            "k.safetensors",
+            "model.language_model.layers.0.self_attn.k_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "v.safetensors",
+            "model.language_model.layers.0.self_attn.v_proj.weight",
+            vec![2, 2],
+            vec![2.0, 0.0, 0.0, 4.0],
+        ),
+        (
+            "q_norm.safetensors",
+            "model.language_model.layers.0.self_attn.q_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "k_norm.safetensors",
+            "model.language_model.layers.0.self_attn.k_norm.weight",
+            vec![2],
+            vec![0.0, 0.0],
+        ),
+        (
+            "o.safetensors",
+            "model.language_model.layers.0.self_attn.o_proj.weight",
+            vec![2, 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        ),
+    ] {
+        std::fs::write(
+            root.join(filename),
+            tiny_safetensors_bf16(tensor, &shape, &values),
+        )
+        .expect("tensor");
+    }
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let hidden_states = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape");
+
+    let output =
+        qwen_layer_full_attention_sequence_with_cache(&store, &spec, 0, &hidden_states, &mut cache)
+            .expect("full attention sequence with cache");
+    let expected = qwen_layer_full_attention_sequence(&store, &spec, 0, &hidden_states)
+        .expect("full attention sequence");
+
+    assert_eq!(cache.token_count(), 2);
+    assert_close(&output[0], &expected[0], 1e-6);
+    assert_close(&output[1], &expected[1], 1e-6);
+    assert_close(cache.value(1).expect("value 1"), &[0.0, 4.0], 1e-6);
     std::fs::remove_dir_all(root).ok();
 }
 

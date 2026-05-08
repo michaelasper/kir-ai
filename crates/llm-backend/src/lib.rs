@@ -1764,6 +1764,26 @@ pub fn qwen_layer_full_attention_sequence(
     layer_idx: usize,
     hidden_states: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_layer_full_attention_sequence_impl(store, spec, layer_idx, hidden_states, None)
+}
+
+pub fn qwen_layer_full_attention_sequence_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+    cache: &mut LayerKvCache,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_layer_full_attention_sequence_impl(store, spec, layer_idx, hidden_states, Some(cache))
+}
+
+fn qwen_layer_full_attention_sequence_impl(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+    cache: Option<&mut LayerKvCache>,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let dims = QwenFullAttentionDims::from_spec(spec);
     let q_proj = store.bf16_matvecs_row_major_f32(
         &qwen_self_attn_tensor(layer_idx, "q_proj.weight"),
@@ -1783,23 +1803,25 @@ pub fn qwen_layer_full_attention_sequence(
         store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "k_norm.weight"))?;
     let o_proj_weight =
         store.bf16_tensor_f32(&qwen_self_attn_tensor(layer_idx, "o_proj.weight"))?;
-    qwen_full_attention_sequence_from_parts(
-        &dims,
-        &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
-            q_norm_weight: &q_norm_weight,
-            k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
-        },
-        QwenFullAttentionSequenceConfig {
-            rms_norm_eps: spec.rms_norm_eps,
-            rope_theta: spec.rope_theta,
-            partial_rotary_factor: spec.partial_rotary_factor,
-        },
-    )
-    .map_err(|err| {
+    let parts = QwenFullAttentionSequenceParts {
+        q_proj: &q_proj,
+        k_proj: &k_proj,
+        v_proj: &v_proj,
+        q_norm_weight: &q_norm_weight,
+        k_norm_weight: &k_norm_weight,
+        o_proj_weight: &o_proj_weight,
+    };
+    let config = QwenFullAttentionSequenceConfig {
+        rms_norm_eps: spec.rms_norm_eps,
+        rope_theta: spec.rope_theta,
+        partial_rotary_factor: spec.partial_rotary_factor,
+    };
+    let result = if let Some(cache) = cache {
+        qwen_full_attention_sequence_with_cache_from_parts(&dims, &parts, config, cache)
+    } else {
+        qwen_full_attention_sequence_from_parts(&dims, &parts, config)
+    };
+    result.map_err(|err| {
         TensorLoadError::integrity(format!(
             "Qwen layer{layer_idx} full attention sequence failed: {err}"
         ))
