@@ -168,6 +168,7 @@ Current verified state:
 - Safetensors shards can now be materialized through a read-only mmap cache. The shard store exposes per-tensor materialization, counts materialized cached shards, and serves validated tensor byte ranges from the mmap once populated.
 - Streaming backend requests now carry a cancellation token. Dropping an HTTP SSE body cancels the runtime/backend stream, and the native Qwen stream path checks cancellation before and after bounded blocking decode steps.
 - `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
+- `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
 
 Known incomplete items:
 
@@ -176,7 +177,7 @@ Known incomplete items:
 - Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches exist. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, and stream-drop backend cancellation. Tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, and a reusable layer KV storage primitive, but native Qwen multi-token decode is not wired to read/write it yet.
-- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
+- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill and a reusable recurrent/convolution cache primitive, but native Qwen decode is not wired to update it incrementally yet.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, mmap-backed shard materialization, and chunked BF16 matvecs are implemented; eager native weight-cache planning is not complete.
 - Direct Metal smoke compute is implemented; Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
