@@ -19,6 +19,7 @@ llm-runtime = { path = "../llm-runtime" }
 llm-sampler = { path = "../llm-sampler" }
 llm-telemetry = { path = "../llm-telemetry" }
 llm-tokenizer = { path = "../llm-tokenizer" }
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

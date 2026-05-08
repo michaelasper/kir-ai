@@ -1058,6 +1058,7 @@ dependencies = [
  "async-trait",
  "axum",
  "futures",
+ "libc",
  "llm-api",
  "llm-backend",
  "llm-hub",

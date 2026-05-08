@@ -911,6 +911,7 @@ async fn admin_metrics(
         "model_store_snapshots": model_store_usage.snapshots,
         "model_store_bytes": model_store_usage.bytes,
         "artifact_verification_failures": metrics.artifact_verification_failures(),
+        "process_rss_bytes": process_rss_bytes(),
         "tokens_per_second": metrics.tokens_per_second(),
         "request_latency_ms": {
             "count": request_latency.count(),
@@ -952,6 +953,50 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
         snapshots: snapshots.len(),
         bytes,
     })
+}
+
+fn process_rss_bytes() -> u64 {
+    platform_process_rss_bytes().unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn platform_process_rss_bytes() -> Option<u64> {
+    let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info>::uninit();
+    let mut count = (std::mem::size_of::<libc::mach_task_basic_info>()
+        / std::mem::size_of::<libc::natural_t>())
+        as libc::mach_msg_type_number_t;
+    let task = unsafe { libc::mach_task_self_ };
+    let result = unsafe {
+        libc::task_info(
+            task,
+            libc::MACH_TASK_BASIC_INFO,
+            info.as_mut_ptr().cast(),
+            &mut count,
+        )
+    };
+    if result == libc::KERN_SUCCESS {
+        let info = unsafe { info.assume_init() };
+        Some(info.resident_size)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_process_rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    resident_pages.checked_mul(page_size as u64)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn platform_process_rss_bytes() -> Option<u64> {
+    None
 }
 
 async fn admin_cancel_request(

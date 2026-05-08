@@ -460,6 +460,28 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_process_rss_bytes() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert!(
+        body["process_rss_bytes"]
+            .as_u64()
+            .expect("process RSS is reported")
+            > 0
+    );
+}
+
+#[tokio::test]
 async fn admin_metrics_report_stream_time_to_first_token() {
     let app = build_router();
     let response = app
