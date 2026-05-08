@@ -113,6 +113,7 @@ Current commits:
 - `c2ec88f` - Linear-attention single-token decode has a cache-backed `LinearAttentionCache` CPU step.
 - `b1b8f82` - Full-attention single-token decode has a cache-backed `LayerKvCache` CPU step.
 - `9934f3e` - Hybrid Qwen specs allocate typed per-layer attention caches.
+- `6535150` - Shard-backed full-attention layer prefill can write `LayerKvCache`.
 
 Current verified state:
 
@@ -196,6 +197,7 @@ Current verified state:
 - Full-attention single-token decode now has a cache-backed CPU primitive that uses the cache token count for RoPE position, appends the normalized key/value, attends across the full `LayerKvCache`, and matches full cached sequence prefill.
 - Hybrid Qwen layer cache allocation now derives one cache per parsed layer kind, using `LinearAttentionCache` for Gated DeltaNet layers and fixed-capacity `LayerKvCache` for full-attention layers.
 - Shard-backed full-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, writes `LayerKvCache`, and matches the existing uncached layer output.
+- Shard-backed linear-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, updates `LinearAttentionCache`, and matches the existing uncached layer output.
 
 Known incomplete items:
 
@@ -203,7 +205,7 @@ Known incomplete items:
 - Native Qwen multi-token decode is fail-closed until reusable per-layer KV/recurrent caches are wired into decode. Non-greedy top-p sampling is wired over full lm-head logits, but token-level stop handling across incremental native decode is not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math and shard-backed layer prefill paths, but native Qwen layer decode is not wired to use it in the server multi-token path yet.
-- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus a cache-backed `LinearAttentionCache` prefill and single-token step path, but native Qwen layer decode is not wired to use it in the server multi-token path yet.
+- Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math and shard-backed layer prefill paths, but native Qwen layer decode is not wired to use it in the server multi-token path yet.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
 - Direct Metal smoke compute and a Qwen RMSNorm kernel are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
