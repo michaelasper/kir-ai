@@ -81,6 +81,7 @@ Current commits:
 - `efd5537` - Request-controlled prompt text now rejects reserved ChatML and tool-call control tokens before rendering.
 - `3885568` - Hub planning and download HTTP requests now have explicit connect/request/read timeout bounds.
 - `7a20446` - Parsed generated tool calls are validated against declared tools and explicit tool choices.
+- `dd34c95` - Runtime generation limits now preserve omitted max-token requests and native Qwen rejects explicit requests above its configured cap.
 
 Current verified state:
 
@@ -126,6 +127,7 @@ Current verified state:
 - The Qwen ChatML renderer fails closed when request-controlled message content, tool schemas, or prior tool-call payloads contain reserved prompt control tokens such as `<|im_start|>`, `<|im_end|>`, `<tool_call>`, or thinking tags. HTTP chat requests surface this as `chat_template_failed` in the `prompt_rendering` phase.
 - `HubClient` builds reqwest clients with configurable connect and whole-request timeouts, and wraps streamed download body reads in a per-chunk deadline. Local socket tests cover a stalled model-info response and a stalled artifact body.
 - Parsed generated tool calls must now match the request tool contract before any response is returned. The runtime rejects undeclared tool names, rejects tool calls when `tool_choice` is `none`, rejects names that differ from an explicit function choice, and still accepts multiple generated tool calls when each name was declared.
+- Runtime backend requests now carry `max_tokens` as `Option<u32>`, preserving omitted OpenAI token limits as backend defaults instead of converting them to an arbitrary numeric request. Native Qwen uses its configured `max_new_tokens` only for omitted limits and rejects explicit requests above that cap as `unsupported_capability`.
 
 Known incomplete items:
 
