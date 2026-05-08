@@ -128,6 +128,8 @@ Current commits:
 - `a6f92f3` - Metal includes chunked `f32` argmax and top-k logits kernels.
 - `445c5ff` - Tracker updated with Metal logits kernel commit identity.
 - `c48be82` - Admin request cancellation is wired through runtime/backend cancellation tokens.
+- `cbe0ba6` - Tracker updated with admin cancellation commit identity.
+- `838f218` - Admin metrics report active requests and admin-triggered cancellations.
 
 Current verified state:
 
