@@ -100,6 +100,7 @@ Current commits:
 - `e8e51b3` - Model pulls use unique staging directories and clean loser staging after concurrent promotion races.
 - `b005401` - Native Qwen multi-token decode fails closed until reusable KV/recurrent cache exists.
 - `337c107` - SSE streams emit engine heartbeats while backend generation is stalled before the next data chunk.
+- `f0a5e5a` - SSE streams report a structured `stream_stalled` error when backend output exceeds the configured stall timeout.
 
 Current verified state:
 
@@ -163,13 +164,14 @@ Current verified state:
 - Model-store staging directories now include a per-request unique suffix instead of sharing one deterministic `.partial` path. If another pull has already promoted the target snapshot, the losing staging directory is removed and the existing snapshot is verified and reused.
 - Native Qwen serving no longer enters the known multi-token path that reran bounded prefill for every generated token. Until a reusable KV/recurrent cache exists, omitted native Qwen token limits resolve to one generated token and explicit `max_tokens > 1` fails as an unsupported capability.
 - SSE streaming responses now use Axum keep-alive frames with an `llm-engine-heartbeat` marker. HTTP contract coverage holds the backend before its first content chunk and verifies a heartbeat reaches the client before generation is released.
+- Streaming handlers now enforce a configurable backend-output stall timeout, defaulting to 300 seconds through `EngineOptions`. If the runtime stream does not produce the next backend event before the timeout, the SSE body emits a retryable `stream_stalled` error event followed by `[DONE]`, records failure metrics, and releases the model permit.
 
 Known incomplete items:
 
 - The default OpenAI server path still uses the deterministic Rust backend for protocol/runtime tests. The native Qwen path is available by starting `serve` with `--snapshot`.
 - The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
 - Native Qwen multi-token decode is fail-closed until reusable KV/recurrent caches exist. Non-greedy sampling implementation and token-level stop handling across incremental native decode are not complete.
-- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, and heartbeat frames while waiting on backend output. Stream stall detection and disconnect cancellation are not complete; tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
+- Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, and configured stream stall detection. Disconnect cancellation is not complete; tool-call, JSON-object, and stop-sequence validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, and causal softmax coverage, but efficient reusable KV-cache reads/writes for multi-token decode are not complete.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill, but reusable recurrent/convolution cache updates for efficient decode are not complete.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, and chunked BF16 matvecs are implemented; mmap-backed tensor caching/materialization is not complete.
