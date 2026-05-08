@@ -230,6 +230,8 @@ pub struct ChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
     #[serde(
         default,
@@ -237,6 +239,12 @@ pub struct ChatCompletionRequest {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub stop: Vec<String>,
+}
+
+impl ChatCompletionRequest {
+    pub fn effective_max_tokens(&self) -> Option<u32> {
+        self.max_completion_tokens.or(self.max_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -418,6 +426,19 @@ impl ValidateRequest for ChatCompletionRequest {
         if matches!(self.max_tokens, Some(0)) {
             return Err(ApiError::invalid_request(
                 "max_tokens must be greater than 0",
+            ));
+        }
+        if matches!(self.max_completion_tokens, Some(0)) {
+            return Err(ApiError::invalid_request(
+                "max_completion_tokens must be greater than 0",
+            ));
+        }
+        if let (Some(max_tokens), Some(max_completion_tokens)) =
+            (self.max_tokens, self.max_completion_tokens)
+            && max_tokens != max_completion_tokens
+        {
+            return Err(ApiError::invalid_request(
+                "max_tokens and max_completion_tokens must match when both are provided",
             ));
         }
         validate_choice_count(self.n)?;

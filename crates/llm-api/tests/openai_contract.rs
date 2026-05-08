@@ -162,6 +162,50 @@ fn rejects_zero_chat_max_tokens() {
 }
 
 #[test]
+fn chat_accepts_max_completion_tokens_alias() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_completion_tokens": 12
+    }))
+    .expect("request parses");
+
+    request.validate().expect("alias is valid");
+    assert_eq!(request.effective_max_tokens(), Some(12));
+}
+
+#[test]
+fn rejects_conflicting_chat_max_token_fields() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 8,
+        "max_completion_tokens": 12
+    }))
+    .expect("request parses");
+
+    let err = request
+        .validate()
+        .expect_err("conflicting token limits are invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_zero_chat_max_completion_tokens() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_completion_tokens": 0
+    }))
+    .expect("request parses");
+
+    let err = request
+        .validate()
+        .expect_err("zero max_completion_tokens is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
 fn rejects_zero_completion_max_tokens() {
     let request = CompletionRequest {
         model: "local-qwen36".to_owned(),

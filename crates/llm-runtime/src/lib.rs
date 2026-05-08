@@ -176,7 +176,7 @@ where
             .generate(BackendRequest {
                 model: request.model.clone(),
                 prompt,
-                max_tokens: request.max_tokens.unwrap_or(4096),
+                max_tokens: request.effective_max_tokens().unwrap_or(4096),
             })
             .await?;
         let mut parsed = QwenParser.parse_complete(&output.text)?;
