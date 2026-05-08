@@ -2144,6 +2144,26 @@ pub fn qwen_decoder_layer_sequence(
     layer_idx: usize,
     hidden_states: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_decoder_layer_sequence_impl(store, spec, layer_idx, hidden_states, None)
+}
+
+pub fn qwen_decoder_layer_sequence_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+    cache: &mut QwenLayerCache,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_decoder_layer_sequence_impl(store, spec, layer_idx, hidden_states, Some(cache))
+}
+
+fn qwen_decoder_layer_sequence_impl(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[Vec<f32>],
+    cache: Option<&mut QwenLayerCache>,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
     let input_norm = qwen_layer_input_norm_sequence(
         store,
@@ -2153,12 +2173,36 @@ pub fn qwen_decoder_layer_sequence(
         spec.rms_norm_eps,
     )?;
     let attention_output = match spec.layer_kinds.get(layer_idx) {
-        Some(AttentionKind::LinearAttention) => {
-            qwen_layer_linear_attention_sequence(store, spec, layer_idx, &input_norm)?
-        }
-        Some(AttentionKind::FullAttention) => {
-            qwen_layer_full_attention_sequence(store, spec, layer_idx, &input_norm)?
-        }
+        Some(AttentionKind::LinearAttention) => match cache {
+            Some(QwenLayerCache::Linear(cache)) => qwen_layer_linear_attention_sequence_with_cache(
+                store,
+                spec,
+                layer_idx,
+                &input_norm,
+                cache,
+            )?,
+            Some(QwenLayerCache::Full(_)) => {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} expected linear attention cache"
+                )));
+            }
+            None => qwen_layer_linear_attention_sequence(store, spec, layer_idx, &input_norm)?,
+        },
+        Some(AttentionKind::FullAttention) => match cache {
+            Some(QwenLayerCache::Full(cache)) => qwen_layer_full_attention_sequence_with_cache(
+                store,
+                spec,
+                layer_idx,
+                &input_norm,
+                cache,
+            )?,
+            Some(QwenLayerCache::Linear(_)) => {
+                return Err(TensorLoadError::integrity(format!(
+                    "Qwen layer{layer_idx} expected full attention cache"
+                )));
+            }
+            None => qwen_layer_full_attention_sequence(store, spec, layer_idx, &input_norm)?,
+        },
         None => {
             return Err(TensorLoadError::missing(format!(
                 "Qwen layer {layer_idx} is outside configured layer count"
@@ -2205,6 +2249,27 @@ pub fn qwen_prefill_sequence(
     let mut hidden_states = qwen_embedding_sequence(store, token_ids, spec.hidden_size as usize)?;
     for layer_idx in 0..spec.num_hidden_layers as usize {
         hidden_states = qwen_decoder_layer_sequence(store, spec, layer_idx, &hidden_states)?;
+    }
+    Ok(hidden_states)
+}
+
+pub fn qwen_prefill_sequence_with_cache(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    token_ids: &[usize],
+    caches: &mut [QwenLayerCache],
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let layer_count = spec.num_hidden_layers as usize;
+    if caches.len() != layer_count {
+        return Err(TensorLoadError::integrity(format!(
+            "Qwen prefill expected {layer_count} layer caches, got {}",
+            caches.len()
+        )));
+    }
+    let mut hidden_states = qwen_embedding_sequence(store, token_ids, spec.hidden_size as usize)?;
+    for (layer_idx, cache) in caches.iter_mut().enumerate().take(layer_count) {
+        hidden_states =
+            qwen_decoder_layer_sequence_with_cache(store, spec, layer_idx, &hidden_states, cache)?;
     }
     Ok(hidden_states)
 }

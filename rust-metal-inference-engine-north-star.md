@@ -114,6 +114,7 @@ Current commits:
 - `b1b8f82` - Full-attention single-token decode has a cache-backed `LayerKvCache` CPU step.
 - `9934f3e` - Hybrid Qwen specs allocate typed per-layer attention caches.
 - `6535150` - Shard-backed full-attention layer prefill can write `LayerKvCache`.
+- `30a9583` - Shard-backed linear-attention layer prefill can write `LinearAttentionCache`.
 
 Current verified state:
 
@@ -198,10 +199,11 @@ Current verified state:
 - Hybrid Qwen layer cache allocation now derives one cache per parsed layer kind, using `LinearAttentionCache` for Gated DeltaNet layers and fixed-capacity `LayerKvCache` for full-attention layers.
 - Shard-backed full-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, writes `LayerKvCache`, and matches the existing uncached layer output.
 - Shard-backed linear-attention sequence execution now has a cache-aware layer path that reads indexed safetensors projections, updates `LinearAttentionCache`, and matches the existing uncached layer output.
+- Qwen bounded prefill now has a cache-aware decoder loop that consumes typed per-layer caches, matches the existing uncached prefill output on a tiny shard-backed fixture, and leaves layer cache state populated.
 
 Known incomplete items:
 
-- The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens, but this is still a slow correctness path and not a production cache.
+- The native Qwen server path currently tokenizes the rendered prompt and runs a configurable tail window through bounded CPU prefill before generating. It defaults to 32 retained prompt tokens; a cache-aware prefill primitive now exists, but the server path is not yet reusing those caches for multi-token decode.
 - Native Qwen multi-token decode is fail-closed until reusable per-layer KV/recurrent caches are wired into decode. Non-greedy top-p sampling is wired over full lm-head logits, but token-level stop handling across incremental native decode is not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math and shard-backed layer prefill paths, but native Qwen layer decode is not wired to use it in the server multi-token path yet.
