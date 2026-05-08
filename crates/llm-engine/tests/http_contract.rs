@@ -178,6 +178,7 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "json_validation_failed");
     assert!(
         body["error"]["message"]
             .as_str()
@@ -277,6 +278,8 @@ async fn backend_execution_errors_are_not_reported_as_missing_model() {
         .expect("chat response");
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "backend_execution_failed");
 }
 
 struct FailingBackend;

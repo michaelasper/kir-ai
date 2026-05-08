@@ -276,29 +276,40 @@ impl From<RuntimeError> for EngineError {
 
 impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
-        let (status, message) = match self {
+        let (status, code, message) = match self {
             Self::Runtime(err) => {
-                let status = match &err {
-                    RuntimeError::Api(_) => StatusCode::BAD_REQUEST,
+                let (status, code) = match &err {
+                    RuntimeError::Api(api) => (StatusCode::BAD_REQUEST, api.code()),
                     RuntimeError::Backend(BackendError::ModelNotFound { .. }) => {
-                        StatusCode::NOT_FOUND
+                        (StatusCode::NOT_FOUND, "model_not_found")
                     }
-                    RuntimeError::Backend(BackendError::Other(_)) => {
-                        StatusCode::INTERNAL_SERVER_ERROR
+                    RuntimeError::Backend(BackendError::Other(_)) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "backend_execution_failed",
+                    ),
+                    RuntimeError::Template(_) => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "chat_template_failed")
                     }
-                    RuntimeError::Template(_)
-                    | RuntimeError::Parser(_)
-                    | RuntimeError::Json(_)
-                    | RuntimeError::JsonMode(_)
-                    | RuntimeError::NoProgress(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                    RuntimeError::Parser(err) => (StatusCode::UNPROCESSABLE_ENTITY, err.code()),
+                    RuntimeError::Json(_) | RuntimeError::JsonMode(_) => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "json_validation_failed")
+                    }
+                    RuntimeError::NoProgress(_) => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "no_progress")
+                    }
                 };
-                (status, err.to_string())
+                (status, code, err.to_string())
             }
-            Self::Serialize(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            Self::Serialize(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response_serialization_failed",
+                err.to_string(),
+            ),
         };
         let body = Json(json!({
             "error": {
                 "message": message,
+                "code": code,
                 "type": "llm_engine_error"
             }
         }));
