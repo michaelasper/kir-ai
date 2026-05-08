@@ -58,6 +58,7 @@ type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 struct AppState {
     runtime: Arc<EngineRuntime>,
     metrics: Arc<Mutex<ServerMetrics>>,
+    generation_phases: Arc<GenerationPhaseMetrics>,
     model_permits: Arc<Semaphore>,
     active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
     next_request_id: Arc<AtomicU64>,
@@ -66,6 +67,74 @@ struct AppState {
     hub_client: HubClient,
     hf_token: Option<Arc<str>>,
     stream_stall_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Default)]
+struct GenerationPhaseMetrics {
+    prefill_requests: AtomicU64,
+    decode_requests: AtomicU64,
+}
+
+impl GenerationPhaseMetrics {
+    fn begin(self: &Arc<Self>, phase: GenerationPhase) -> GenerationPhaseGuard {
+        self.increment(phase);
+        GenerationPhaseGuard {
+            metrics: Arc::clone(self),
+            phase,
+        }
+    }
+
+    fn prefill_requests(&self) -> u64 {
+        self.prefill_requests.load(Ordering::Relaxed)
+    }
+
+    fn decode_requests(&self) -> u64 {
+        self.decode_requests.load(Ordering::Relaxed)
+    }
+
+    fn increment(&self, phase: GenerationPhase) {
+        self.counter(phase).fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn decrement(&self, phase: GenerationPhase) {
+        self.counter(phase).fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn counter(&self, phase: GenerationPhase) -> &AtomicU64 {
+        match phase {
+            GenerationPhase::Prefill => &self.prefill_requests,
+            GenerationPhase::Decode => &self.decode_requests,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenerationPhase {
+    Prefill,
+    Decode,
+}
+
+#[derive(Debug)]
+struct GenerationPhaseGuard {
+    metrics: Arc<GenerationPhaseMetrics>,
+    phase: GenerationPhase,
+}
+
+impl GenerationPhaseGuard {
+    fn transition_to_decode(&mut self) {
+        if self.phase == GenerationPhase::Decode {
+            return;
+        }
+        self.metrics.decrement(self.phase);
+        self.phase = GenerationPhase::Decode;
+        self.metrics.increment(self.phase);
+    }
+}
+
+impl Drop for GenerationPhaseGuard {
+    fn drop(&mut self) {
+        self.metrics.decrement(self.phase);
+    }
 }
 
 #[derive(Debug)]
@@ -163,6 +232,7 @@ pub fn build_router_with_backend_and_options(
         .with_state(AppState {
             runtime: Arc::new(runtime),
             metrics: Arc::new(Mutex::new(ServerMetrics::default())),
+            generation_phases: Arc::new(GenerationPhaseMetrics::default()),
             model_permits: Arc::new(Semaphore::new(options.concurrency_limit.max(1))),
             active_requests: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
@@ -1736,8 +1806,8 @@ async fn admin_metrics(
         "streamed_requests": metrics.streamed_requests(),
         "active_requests": active_requests,
         "queued_requests": 0,
-        "prefill_requests": 0,
-        "decode_requests": active_requests,
+        "prefill_requests": state.generation_phases.prefill_requests(),
+        "decode_requests": state.generation_phases.decode_requests(),
         "cancelled_requests": metrics.cancelled_requests(),
         "no_progress_failures": metrics.no_progress_failures(),
         "model_pull_operations": metrics.model_pull_operations(),
@@ -1869,6 +1939,7 @@ async fn chat_completions(
     if request.stream {
         let permit = acquire_model_permit(&state)?;
         let active_request = register_active_request(&state, &headers)?;
+        let phase = state.generation_phases.begin(GenerationPhase::Prefill);
         let request_id = active_request.id.clone();
         let request_started = Instant::now();
         if chat_stream_requires_buffering(&request) {
@@ -1886,12 +1957,14 @@ async fn chat_completions(
             let events = async_stream::stream! {
                 let _permit = permit;
                 let _active_request = active_request;
+                let mut phase = phase;
                 let mut events = response.into_events();
                 let mut ttft_recorded = false;
                 loop {
                     match next_stream_event(&mut events, state.stream_stall_timeout).await {
                         Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
                             if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                phase.transition_to_decode();
                                 record_time_to_first_token_metrics(&state, request_started.elapsed());
                                 ttft_recorded = true;
                             }
@@ -1929,6 +2002,7 @@ async fn chat_completions(
         let events = async_stream::stream! {
                     let _permit = permit;
                     let _active_request = active_request;
+                    let mut phase = phase;
                     match state
                         .runtime
                         .chat_stream_with_cancel(request, _active_request.cancellation.clone())
@@ -1941,6 +2015,7 @@ async fn chat_completions(
                                 match next_stream_event(&mut events, state.stream_stall_timeout).await {
                                     Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
                                         if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
+                                            phase.transition_to_decode();
                                             record_time_to_first_token_metrics(&state, request_started.elapsed());
                                             ttft_recorded = true;
                                         }
@@ -1985,6 +2060,7 @@ async fn chat_completions(
     }
     let _permit = acquire_model_permit(&state)?;
     let active_request = register_active_request(&state, &headers)?;
+    let _phase = state.generation_phases.begin(GenerationPhase::Decode);
     let request_id = active_request.id.clone();
     let request_started = Instant::now();
     let response = match state
@@ -2016,11 +2092,13 @@ async fn completions(
     if request.stream {
         let permit = acquire_model_permit(&state)?;
         let active_request = register_active_request(&state, &headers)?;
+        let phase = state.generation_phases.begin(GenerationPhase::Prefill);
         let request_id = active_request.id.clone();
         let request_started = Instant::now();
         let events = async_stream::stream! {
             let _permit = permit;
             let _active_request = active_request;
+            let mut phase = phase;
             match state
                 .runtime
                 .completion_stream_with_cancel(request, _active_request.cancellation.clone())
@@ -2033,6 +2111,7 @@ async fn completions(
                         match next_stream_event(&mut events, state.stream_stall_timeout).await {
                             Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
                                 if !ttft_recorded && completion_chunk_has_real_delta(&chunk) {
+                                    phase.transition_to_decode();
                                     record_time_to_first_token_metrics(&state, request_started.elapsed());
                                     ttft_recorded = true;
                                 }
@@ -2076,6 +2155,7 @@ async fn completions(
     }
     let _permit = acquire_model_permit(&state)?;
     let active_request = register_active_request(&state, &headers)?;
+    let _phase = state.generation_phases.begin(GenerationPhase::Decode);
     let request_id = active_request.id.clone();
     let request_started = Instant::now();
     let response = match state

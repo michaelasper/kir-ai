@@ -700,6 +700,134 @@ async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
 }
 
 #[tokio::test]
+async fn admin_metrics_report_stream_prefill_phase_before_first_chunk() {
+    let release = Arc::new(Semaphore::new(0));
+    let app = build_router_with_backend(Box::new(DelayedStreamBackend {
+        release: release.clone(),
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let metrics = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let body = body_json(metrics.into_body()).await;
+    assert_eq!(body["active_requests"], 1);
+    assert_eq!(body["prefill_requests"], 1);
+    assert_eq!(body["decode_requests"], 0);
+
+    release.add_permits(1);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"content\":\"released\""));
+
+    let metrics = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let body = body_json(metrics.into_body()).await;
+    assert_eq!(body["active_requests"], 0);
+    assert_eq!(body["prefill_requests"], 0);
+    assert_eq!(body["decode_requests"], 0);
+}
+
+#[tokio::test]
+async fn admin_metrics_report_stream_decode_phase_after_first_chunk() {
+    let first = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(TwoStageStreamBackend {
+        first: first.clone(),
+        finish: finish.clone(),
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+
+    first.notify_one();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("\"content\":\"first\"") {
+            let chunk = stream
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first streamed content arrives");
+
+    let metrics = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let body = body_json(metrics.into_body()).await;
+    assert_eq!(body["active_requests"], 1);
+    assert_eq!(body["prefill_requests"], 0);
+    assert_eq!(body["decode_requests"], 1);
+
+    finish.notify_one();
+    while stream.next().await.is_some() {}
+}
+
+#[tokio::test]
 async fn concurrent_generation_returns_model_overloaded() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
