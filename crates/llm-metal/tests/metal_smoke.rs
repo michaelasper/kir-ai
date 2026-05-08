@@ -31,6 +31,21 @@ fn metal_qwen_rms_norm_matches_cpu_reference() {
     assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
 }
 
+#[test]
+fn metal_matvec_f32_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let output = device
+        .matvec_f32(&[1.0, 2.0, 3.0, 4.0, -1.0, 0.5], 2, 3, &[0.5, -2.0, 4.0])
+        .expect("metal matvec succeeds");
+
+    assert_close(&output, &[8.5, 6.0], 1e-6);
+}
+
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(expected) {

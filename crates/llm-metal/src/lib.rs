@@ -10,6 +10,7 @@ pub struct MetalDevice {
     device: Device,
     vector_add: Arc<MetalKernel>,
     qwen_rms_norm: Arc<MetalKernel>,
+    matvec_f32: Arc<MetalKernel>,
 }
 
 #[derive(Debug)]
@@ -37,10 +38,12 @@ impl MetalDevice {
             .map_err(MetalError::Compile)?;
         let vector_add = Self::kernel(&device, &library, "vector_add")?;
         let qwen_rms_norm = Self::kernel(&device, &library, "qwen_rms_norm")?;
+        let matvec_f32 = Self::kernel(&device, &library, "matvec_f32")?;
         Ok(Self {
             device,
             vector_add,
             qwen_rms_norm,
+            matvec_f32,
         })
     }
 
@@ -202,6 +205,105 @@ impl MetalDevice {
         };
         Ok(values)
     }
+
+    pub fn matvec_f32(
+        &self,
+        matrix: &[f32],
+        rows: usize,
+        cols: usize,
+        vector: &[f32],
+    ) -> Result<Vec<f32>, MetalError> {
+        let expected_matrix_len = rows
+            .checked_mul(cols)
+            .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
+        if matrix.len() != expected_matrix_len {
+            return Err(MetalError::InvalidShape(format!(
+                "matrix length {} does not match rows {rows} * cols {cols}",
+                matrix.len()
+            )));
+        }
+        if vector.len() != cols {
+            return Err(MetalError::InvalidShape(format!(
+                "vector length {} does not match cols {cols}",
+                vector.len()
+            )));
+        }
+        if rows == 0 {
+            return Ok(Vec::new());
+        }
+        if cols == 0 {
+            return Ok(vec![0.0; rows]);
+        }
+        let rows_u32 = u32::try_from(rows).map_err(|err| {
+            MetalError::InvalidShape(format!("row count does not fit u32: {err}"))
+        })?;
+        let cols_u32 = u32::try_from(cols).map_err(|err| {
+            MetalError::InvalidShape(format!("column count does not fit u32: {err}"))
+        })?;
+        let matrix_byte_len = std::mem::size_of_val(matrix) as u64;
+        let vector_byte_len = std::mem::size_of_val(vector) as u64;
+        let output_byte_len = rows
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| MetalError::InvalidShape("output byte length overflow".to_owned()))?
+            as u64;
+        let matrix_buffer = self.device.new_buffer_with_data(
+            matrix.as_ptr().cast::<c_void>(),
+            matrix_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let vector_buffer = self.device.new_buffer_with_data(
+            vector.as_ptr().cast::<c_void>(),
+            vector_byte_len,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.matvec_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.matvec_f32.pipeline);
+        encoder.set_buffer(0, Some(&matrix_buffer), 0);
+        encoder.set_buffer(1, Some(&vector_buffer), 0);
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&rows_u32) as u64,
+            (&rows_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&cols_u32) as u64,
+            (&cols_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(4, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: rows as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .matvec_f32
+            .pipeline
+            .thread_execution_width()
+            .min(rows as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per requested matrix row.
+        let values = unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            std::slice::from_raw_parts(ptr, rows).to_vec()
+        };
+        Ok(values)
+    }
 }
 
 const METAL_SOURCE: &str = r#"
@@ -235,6 +337,25 @@ kernel void qwen_rms_norm(
     }
     float inv_rms = rsqrt((sum / float(len)) + eps);
     output[id] = input[id] * inv_rms * (weight[id] + 1.0);
+}
+
+kernel void matvec_f32(
+    device const float* matrix [[buffer(0)]],
+    device const float* vector [[buffer(1)]],
+    constant uint& rows [[buffer(2)]],
+    constant uint& cols [[buffer(3)]],
+    device float* output [[buffer(4)]],
+    uint row [[thread_position_in_grid]]
+) {
+    if (row >= rows) {
+        return;
+    }
+    float sum = 0.0;
+    uint row_offset = row * cols;
+    for (uint col = 0; col < cols; col++) {
+        sum += matrix[row_offset + col] * vector[col];
+    }
+    output[row] = sum;
 }
 "#;
 

@@ -119,6 +119,7 @@ Current commits:
 - `c1dbb12` - Shard-backed linear-attention layer decode can step with `LinearAttentionCache`.
 - `79352bc` - Shard-backed full-attention layer decode can step with `LayerKvCache`.
 - `1d111cb` - Qwen token decode can step typed per-layer caches after cached prefill.
+- `7449bb6` - Native Qwen generation reuses typed layer caches for bounded multi-token decode.
 
 Current verified state:
 
@@ -180,7 +181,7 @@ Current verified state:
 - Streaming HTTP handlers now return SSE responses before backend generation completes, keep the model concurrency permit alive inside the body stream, and forward runtime stream events without prebuilding an SSE vector. `ModelBackend::generate_stream` exposes backend text deltas; runtime and HTTP tests verify that a backend chunk reaches the client before the backend releases its final chunk. Native Qwen serving sends decoded per-token deltas through the same path.
 - Chat and text completion handlers now validate parsed request semantics before acquiring the model semaphore, so malformed or unsupported requests return stable 4xx JSON errors even while the model is busy. Streaming request-validation failures and buffered streaming response-validation failures return JSON errors before SSE starts.
 - Model-store staging directories now include a per-request unique suffix instead of sharing one deterministic `.partial` path. If another pull has already promoted the target snapshot, the losing staging directory is removed and the existing snapshot is verified and reused.
-- Native Qwen serving no longer enters the known multi-token path that reran bounded prefill for every generated token. Until a reusable KV/recurrent cache exists, omitted native Qwen token limits resolve to one generated token and explicit `max_tokens > 1` fails as an unsupported capability.
+- Native Qwen serving no longer reruns bounded prefill for every generated token. It now pre-fills once into typed per-layer caches, reuses those caches for bounded multi-token decode, defaults omitted native token limits to the configured `max_new_tokens`, and rejects explicit requests only above that cap.
 - SSE streaming responses now use Axum keep-alive frames with an `llm-engine-heartbeat` marker. HTTP contract coverage holds the backend before its first content chunk and verifies a heartbeat reaches the client before generation is released.
 - Streaming handlers now enforce a configurable backend-output stall timeout, defaulting to 300 seconds through `EngineOptions`. If the runtime stream does not produce the next backend event before the timeout, the SSE body emits a retryable `stream_stalled` error event followed by `[DONE]`, records failure metrics, and releases the model permit.
 - Safetensors shards can now be materialized through a read-only mmap cache. The shard store exposes per-tensor materialization, counts materialized cached shards, and serves validated tensor byte ranges from the mmap once populated.
@@ -196,6 +197,7 @@ Current verified state:
 - OpenAI temperature/top_p controls now validate as native sampling inputs, flow through `BackendRequest` as `SamplingConfig`, and drive native Qwen top-p selection from full lm-head logits with a Rust RNG draw. Backends that do not implement non-greedy sampling fail closed.
 - `llm-engine serve` no longer silently starts the deterministic protocol backend when no snapshot is provided. Production serving requires `--snapshot <path>`, while the deterministic backend is explicitly gated behind `--deterministic-test-backend`.
 - `llm-metal` now includes a Qwen-centered RMSNorm Metal kernel with smoke coverage against the CPU reference, in addition to the direct vector-add compute smoke.
+- `llm-metal` now includes a row-major `f32` matvec Metal kernel with smoke coverage against the CPU reference.
 - Full-attention sequence prefill now has a cache-backed CPU path that appends normalized RoPE keys and values into `LayerKvCache` and reads that cache for causal attention outputs.
 - Linear-attention sequence prefill now has a cache-backed CPU path that updates `LinearAttentionCache` convolution history and recurrent state while matching the existing sequence output.
 - Linear-attention single-token decode now has a cache-backed CPU primitive that consumes existing `LinearAttentionCache` state, emits the same next-token output as full cached sequence prefill, and leaves matching convolution/recurrent cache state.
@@ -217,7 +219,7 @@ Known incomplete items:
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Linear Gated DeltaNet sequence math has recurrent state coverage for bounded prefill plus cache-backed `LinearAttentionCache` math, shard-backed layer prefill, and shard-backed layer step paths, but the native Qwen server path is still CPU-bound for these layers.
 - Safetensors metadata, F32 tensor loading, header-only BF16 shard inspection, targeted BF16 reads, shard-file/header caching, per-shard and all-shard mmap materialization, native startup eager materialization policy, chunked BF16 matvecs, and full lm-head logit materialization are implemented.
-- Direct Metal smoke compute and a Qwen RMSNorm kernel are implemented; the remaining Qwen kernels are not complete.
+- Direct Metal smoke compute, a Qwen RMSNorm kernel, and a row-major `f32` matvec kernel are implemented; the remaining Qwen kernels are not complete.
 - Large projection reads are still CPU BF16 streaming paths; the current full 40-layer plus lm-head probe is correctness evidence, not a serving-performance path.
 - Admin status, metrics, served snapshot verification, and model plan/pull HTTP endpoints exist. Non-streaming decode cancellation is wired through runtime/backend tokens, but interruption inside a long native prefill/Metal kernel is not complete.
 
