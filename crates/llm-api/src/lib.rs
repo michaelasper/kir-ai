@@ -413,6 +413,11 @@ impl ValidateRequest for ChatCompletionRequest {
                 "json_schema response_format is not supported; use json_object",
             ));
         }
+        if matches!(self.tool_choice, Some(ToolChoice::Required)) && self.tools.is_empty() {
+            return Err(ApiError::invalid_request(
+                "tool_choice required needs at least one declared tool",
+            ));
+        }
         if let Some(ToolChoice::Function { name }) = &self.tool_choice {
             let names = self
                 .tools

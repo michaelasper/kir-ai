@@ -348,6 +348,33 @@ async fn chat_completions_rejects_multiple_choices() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_required_tool_choice_without_tools() {
+    let response = build_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "use a tool"}],
+                        "tool_choice": "required"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_unsupported_penalties() {
     let response = build_router()
         .oneshot(

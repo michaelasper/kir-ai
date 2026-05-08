@@ -69,6 +69,23 @@ fn rejects_json_schema_when_object_mode_is_required() {
 }
 
 #[test]
+fn rejects_required_tool_choice_without_declared_tools() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tool_choice: Some(ToolChoice::Required),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("required tool choice needs tools");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("tool_choice required"));
+}
+
+#[test]
 fn rejects_unsupported_non_greedy_sampling_controls() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
