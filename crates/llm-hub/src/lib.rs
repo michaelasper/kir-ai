@@ -184,16 +184,16 @@ impl HubClient {
         )
     }
 
-    pub async fn download_file_to(
-        &self,
-        repo_id: &HubRepoId,
-        resolved_commit: &str,
-        path: &str,
-        destination: &Path,
-        expected_size: u64,
-        expected_sha256: Option<&str>,
-        token: Option<&str>,
-    ) -> Result<(), HubError> {
+    async fn download_file_to(&self, request: HubDownloadFileRequest<'_>) -> Result<(), HubError> {
+        let HubDownloadFileRequest {
+            repo_id,
+            resolved_commit,
+            path,
+            destination,
+            expected_size,
+            expected_sha256,
+            token,
+        } = request;
         validate_artifact_path(path)?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent)
@@ -265,6 +265,16 @@ impl HubClient {
         verify_file_sha256(destination, expected_sha256).await?;
         Ok(())
     }
+}
+
+struct HubDownloadFileRequest<'a> {
+    repo_id: &'a HubRepoId,
+    resolved_commit: &'a str,
+    path: &'a str,
+    destination: &'a Path,
+    expected_size: u64,
+    expected_sha256: Option<&'a str>,
+    token: Option<&'a str>,
 }
 
 impl HubFile {
@@ -550,15 +560,15 @@ impl ModelStore {
         let staging = self.create_staging_dir(plan).await?;
         for file in &plan.files_to_download {
             client
-                .download_file_to(
-                    &plan.repo_id,
-                    &plan.resolved_commit,
-                    &file.path,
-                    &staging.join(&file.path),
-                    file.size,
-                    file.sha256.as_deref(),
+                .download_file_to(HubDownloadFileRequest {
+                    repo_id: &plan.repo_id,
+                    resolved_commit: &plan.resolved_commit,
+                    path: &file.path,
+                    destination: &staging.join(&file.path),
+                    expected_size: file.size,
+                    expected_sha256: file.sha256.as_deref(),
                     token,
-                )
+                })
                 .await?;
         }
         self.promote_staging(plan, staging).await
