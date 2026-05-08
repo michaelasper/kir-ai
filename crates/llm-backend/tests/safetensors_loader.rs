@@ -169,6 +169,11 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
             .expect("matvec"),
         vec![14.0, 32.0]
     );
+    let top = store
+        .bf16_matvec_top_k_rows_f32("embed.weight", &[1.0, 2.0, 3.0], 1, 1)
+        .expect("top logits");
+    assert_eq!(top[0].index, 1);
+    assert_eq!(top[0].logit, 32.0);
     assert_eq!(
         store
             .tensor_shard_path("embed.weight")

@@ -197,6 +197,12 @@ pub struct TopKWeight {
     pub weight: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopKLogit {
+    pub index: usize,
+    pub logit: f32,
+}
+
 pub fn softmax_top_k_f32(logits: &[f32], top_k: usize) -> Result<Vec<TopKWeight>, MathError> {
     if top_k == 0 || top_k > logits.len() {
         return Err(MathError::InvalidShape(format!(
@@ -1072,9 +1078,82 @@ impl SafeTensorShardStore {
         })
     }
 
+    pub fn bf16_matvec_top_k_rows_f32(
+        &self,
+        tensor: &str,
+        input: &[f32],
+        top_k: usize,
+        chunk_rows: usize,
+    ) -> Result<Vec<TopKLogit>, TensorLoadError> {
+        let file = self.open_tensor_file(tensor)?;
+        let metadata = file.tensor_metadata(tensor)?;
+        if metadata.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{tensor}` top-k matvec expects rank 2, got rank {}",
+                metadata.shape.len()
+            )));
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        if input.len() != columns {
+            return Err(TensorLoadError::integrity(format!(
+                "input length {} does not match tensor `{tensor}` columns {columns}",
+                input.len()
+            )));
+        }
+        if top_k == 0 || top_k > rows {
+            return Err(TensorLoadError::integrity(format!(
+                "top_k {top_k} must be in 1..={rows}"
+            )));
+        }
+        if chunk_rows == 0 {
+            return Err(TensorLoadError::integrity(
+                "chunk_rows must be greater than zero",
+            ));
+        }
+        let mut top = Vec::with_capacity(top_k);
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
+            let element_offset = row_start
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("top-k matvec offset overflow"))?;
+            let element_count = rows_in_chunk
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("top-k matvec chunk overflow"))?;
+            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+            for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
+                let logit = row
+                    .iter()
+                    .zip(input)
+                    .map(|(weight, value)| weight * value)
+                    .sum::<f32>();
+                push_top_logit(
+                    &mut top,
+                    TopKLogit {
+                        index: row_start + row_offset,
+                        logit,
+                    },
+                    top_k,
+                );
+            }
+        }
+        Ok(top)
+    }
+
     fn open_tensor_file(&self, tensor: &str) -> Result<SafeTensorFile, TensorLoadError> {
         SafeTensorFile::open(self.tensor_shard_path(tensor)?)
     }
+}
+
+fn push_top_logit(top: &mut Vec<TopKLogit>, candidate: TopKLogit, top_k: usize) {
+    top.push(candidate);
+    top.sort_by(|left, right| {
+        right
+            .logit
+            .total_cmp(&left.logit)
+            .then_with(|| left.index.cmp(&right.index))
+    });
+    top.truncate(top_k);
 }
 
 pub fn bf16_bits_to_f32(bits: u16) -> f32 {
