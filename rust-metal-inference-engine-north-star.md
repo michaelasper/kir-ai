@@ -87,6 +87,7 @@ Current commits:
 - `562b3dd` - Chat stop sequences are applied to raw backend output before tool-call parsing.
 - `33b3954` - Admin endpoints support configured Bearer authentication and non-loopback serving requires an admin token.
 - `07073a1` - Chat messages accept OpenAI text content-part arrays and normalize them to internal text.
+- `12d8cdf` - Deterministic protocol mode now emits structured tool calls for required tool-choice requests.
 
 Current verified state:
 
@@ -138,6 +139,7 @@ Current verified state:
 - Chat stop sequences now truncate raw model output before Qwen tool-call parsing. Tool calls after the earliest stop marker are suppressed, and the response finish reason remains `stop`.
 - `/admin/*` routes can be protected with `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN`; configured deployments require `Authorization: Bearer <token>` and return `admin_auth_required` otherwise. `serve --addr` refuses non-loopback binds unless an admin token is configured.
 - Chat message deserialization accepts plain string content, `null`, and text-only OpenAI content-part arrays such as `[{"type":"text","text":"hello"}]`; text parts are concatenated before prompt rendering.
+- The default deterministic/protocol backend now threads required tool choice to the backend and emits a valid `<tool_call>` block for declared tools; optional tools still allow text fallback.
 
 Known incomplete items:
 
