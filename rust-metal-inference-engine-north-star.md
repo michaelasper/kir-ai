@@ -146,6 +146,7 @@ Current commits:
 - `3e50842` - Streaming runtime errors include stable error metadata.
 - `1822a58` - Backend cancellation support is an explicit trait requirement.
 - `6a898ad` - Hub repo IDs are validated as safe two-component paths, and Hub request paths encode revisions.
+- `5fb7d9e` - Native Qwen serving routes prefill, decode, MoE dense projections, and lm-head matvecs through a Metal-capable executor.
 
 Current verified state:
 
