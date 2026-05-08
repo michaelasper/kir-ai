@@ -150,6 +150,7 @@ Current commits:
 - `ff60424` - Native Qwen decode-session startup checks cancellation before and between prefill layers.
 - `4a5cfbd` - Native Qwen final RMSNorm routes through the Metal-capable execution backend.
 - `773dac0` - GitHub issues #45 through #47 are fixed, and native Qwen layer input/post-attention RMSNorm routes through the Metal-capable execution backend.
+- `f89343f` - Docs and `mise run run` now require explicit deterministic serve mode, fixing GitHub issue #48.
 
 Current verified state:
 
@@ -221,6 +222,7 @@ Current verified state:
 - `ModelBackend::generate_with_cancel` is now an explicit trait requirement, and the default cancellable stream adapter delegates through it instead of silently falling back to non-cancellable generation.
 - Native Qwen decode-session startup now accepts the request cancellation token and checks it before cache allocation, before embedding/prefill work, and between each prefill layer. Streaming generation treats cancellation during startup as a clean stop instead of emitting a backend error.
 - GitHub issues #45 through #47 have local fixes: native greedy decoding keeps whitespace-only top logits, snapshot verification rejects symlinked manifest artifacts before hashing, and invalid hub endpoints return configuration errors instead of panicking during router construction.
+- GitHub issue #48 has a local docs/config fix: protocol-mode serve examples and `mise run run` use `--deterministic-test-backend`, and the docs state that no-snapshot implicit serving was intentionally removed.
 - `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
 - `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.
