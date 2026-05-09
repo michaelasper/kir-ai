@@ -126,6 +126,7 @@ impl MlxBackend {
                 let tools = mlx_tool_schema(request)?;
                 let tool_choice = mlx_tool_choice(request);
                 let response_format = mlx_response_format(request);
+                let chat_template_kwargs = mlx_chat_template_kwargs_for_metadata(&self.metadata);
                 self.client
                     .post(upstream_url)
                     .json(&MlxChatCompletionRequest {
@@ -134,6 +135,7 @@ impl MlxBackend {
                         tools,
                         tool_choice,
                         response_format,
+                        chat_template_kwargs,
                         max_tokens: request.max_tokens,
                         temperature,
                         top_p,
@@ -308,6 +310,8 @@ struct MlxChatCompletionRequest<'a> {
     tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<Value>,
     max_tokens: Option<u32>,
     temperature: f32,
     top_p: f32,
@@ -369,6 +373,20 @@ fn mlx_response_format(request: &BackendRequest) -> Option<Value> {
     request
         .json_object_mode
         .then(|| serde_json::json!({"type": "json_object"}))
+}
+
+fn mlx_chat_template_kwargs_for_metadata(metadata: &BackendModelMetadata) -> Option<Value> {
+    match metadata
+        .family
+        .as_deref()
+        .and_then(|family| ModelFamily::parse_slug(family).ok())
+    {
+        Some(ModelFamily::Qwen) => Some(serde_json::json!({"enable_thinking": false})),
+        Some(ModelFamily::DeepSeek)
+        | Some(ModelFamily::Gemma)
+        | Some(ModelFamily::Llama)
+        | None => None,
+    }
 }
 
 #[cfg(test)]
@@ -520,6 +538,7 @@ mod tests {
         assert_eq!(request["messages"][1]["role"], "user");
         assert_eq!(request["messages"][1]["content"], "hello gemma");
         assert_eq!(request["stream"], true);
+        assert!(request.get("chat_template_kwargs").is_none());
     }
 
     #[tokio::test]
@@ -627,6 +646,7 @@ mod tests {
             request["tool_choice"],
             serde_json::json!({"type":"function","function":{"name":"lookup"}})
         );
+        assert!(request.get("chat_template_kwargs").is_none());
     }
 
     #[tokio::test]
@@ -669,6 +689,7 @@ mod tests {
         let request = server.received_body();
         assert_eq!(request["messages"][0]["role"], "user");
         assert_eq!(request["messages"][0]["content"], "hello");
+        assert!(request.get("chat_template_kwargs").is_none());
     }
 
     #[tokio::test]
@@ -747,9 +768,14 @@ mod tests {
 
         assert_eq!(output.text, "{\"ok\":true}");
         assert_eq!(server.received_path(), "/v1/chat/completions");
+        let request = server.received_body();
         assert_eq!(
-            server.received_body()["response_format"],
+            request["response_format"],
             serde_json::json!({"type":"json_object"})
+        );
+        assert_eq!(
+            request["chat_template_kwargs"],
+            serde_json::json!({"enable_thinking": false})
         );
     }
 
