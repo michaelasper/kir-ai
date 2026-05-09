@@ -1,6 +1,6 @@
 use crate::{
-    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeQwenBackend,
-    NativeQwenLoadOptions,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeQwenLoadOptions,
+    NativeTextBackend, NativeTextLoadOptions,
 };
 use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
@@ -34,7 +34,7 @@ impl Default for SnapshotBackendOptions {
             family: None,
             native_qwen: NativeQwenLoadOptions::default(),
             mlx: MlxBackendOptions::default(),
-            max_new_tokens: DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
+            max_new_tokens: DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
             max_prefill_tokens: 32,
         }
     }
@@ -66,9 +66,13 @@ pub fn open_snapshot_backend(
             )?))
         }
         SnapshotBackendLoader::NativeMetal => Ok(Box::new(
-            NativeQwenBackend::open_with_options(model_id, snapshot_path, options.native_qwen)?
-                .with_max_new_tokens(options.max_new_tokens)
-                .with_max_prefill_tokens(options.max_prefill_tokens),
+            NativeTextBackend::open_with_options(
+                model_id,
+                snapshot_path,
+                NativeTextLoadOptions::with_qwen_options(options.native_qwen),
+            )?
+            .with_max_new_tokens(options.max_new_tokens)
+            .with_max_prefill_tokens(options.max_prefill_tokens),
         )),
     }
 }
@@ -253,6 +257,30 @@ mod tests {
         assert_eq!(metadata.backend, "mlx");
         assert_eq!(metadata.loader.as_deref(), Some("mlx"));
         assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_opens_native_text_backend_from_raw_qwen_snapshot() {
+        let snapshot = temp_snapshot_dir("native-text-raw-qwen");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        copy_qwen36_fixture("config.json", snapshot.join("config.json"));
+        copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_qwen36_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+
+        let backend =
+            open_snapshot_backend("local-qwen36", &snapshot, SnapshotBackendOptions::default())
+                .expect("native text backend opens raw Qwen snapshot");
+        let metadata = backend.model_metadata();
+
+        assert_eq!(metadata.backend, "native-qwen");
+        assert_eq!(metadata.loader.as_deref(), Some("native-metal"));
+        assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -467,6 +495,13 @@ mod tests {
 
     fn write_manifest(root: &Path, loader: &str) {
         write_manifest_with_family(root, loader, "qwen");
+    }
+
+    fn copy_qwen36_fixture(name: &str, destination: impl AsRef<Path>) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36")
+            .join(name);
+        std::fs::copy(&source, destination).expect("copy Qwen fixture");
     }
 
     fn write_manifest_with_family(root: &Path, loader: &str, family: &str) {

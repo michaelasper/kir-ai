@@ -7,7 +7,7 @@ use llm_backend::{
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeQwenLoadOptions,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeQwenLoadOptions,
     SnapshotBackendLoader, SnapshotBackendOptions, build_router_with_backend_and_options,
     open_snapshot_backend, parse_snapshot_model_family,
 };
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
                     .map(str::parse::<u32>)
                     .transpose()?
-                    .unwrap_or(DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS);
+                    .unwrap_or(DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS);
                 let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
                     .map(str::parse::<usize>)
                     .transpose()?

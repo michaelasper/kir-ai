@@ -1,6 +1,7 @@
 mod engine;
 mod mlx;
 mod native_qwen;
+mod native_text;
 mod snapshot_backend;
 mod sync_ext;
 
@@ -15,4 +16,5 @@ pub mod route {
 pub use engine::*;
 pub use mlx::*;
 pub use native_qwen::*;
+pub use native_text::*;
 pub use snapshot_backend::*;
