@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, for example v0.1.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.95.0"
+
+jobs:
+  release:
+    name: Build and Publish Release
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "release tag is required" >&2
+            exit 2
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Validate release version
+        run: bash scripts/check-versioning.sh --tag "${{ steps.release.outputs.tag }}"
+
+      - name: Run release checks
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          previous_tag="$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || true)"
+          if [ -n "$previous_tag" ]; then
+            bash scripts/check-conventional-commits.sh "$previous_tag..$tag"
+          else
+            bash scripts/check-conventional-commits.sh "$tag"
+          fi
+          cargo test -p llm-engine --test model_cli
+          cargo test -p llm-runtime --test runtime_contract
+
+      - name: Build release binary
+        run: cargo build --release -p llm-engine
+
+      - name: Generate release notes
+        run: bash scripts/generate-release-notes.sh "${{ steps.release.outputs.tag }}" > target/release-notes.md
+
+      - name: Package release archive
+        run: |
+          mkdir -p target/release-artifacts
+          os="$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
+          arch="$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+          archive="kir-ai-${{ steps.release.outputs.tag }}-${os}-${arch}.tar.gz"
+          tar -czf "target/release-artifacts/$archive" -C target/release llm-engine
+          (cd target/release-artifacts && shasum -a 256 "$archive" > "$archive.sha256")
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kir-ai-${{ steps.release.outputs.tag }}-macos
+          path: target/release-artifacts/
+          retention-days: 30
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease_args=()
+          if [ "${{ inputs.prerelease }}" = "true" ] || [[ "${{ steps.release.outputs.tag }}" == *-* ]]; then
+            prerelease_args=(--prerelease)
+          fi
+          gh release create "${{ steps.release.outputs.tag }}" \
+            target/release-artifacts/* \
+            --title "${{ steps.release.outputs.tag }}" \
+            --notes-file target/release-notes.md \
+            --verify-tag \
+            "${prerelease_args[@]}"

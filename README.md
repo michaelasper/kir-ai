@@ -5,7 +5,8 @@
 # kir-ai
 
 <p align="center">
-  <a href="https://github.com/michaelasper/kir-ai/actions/workflows/north-star-ci.yml"><img alt="North Star CI" src="https://img.shields.io/github/actions/workflow/status/michaelasper/kir-ai/north-star-ci.yml?branch=main&style=flat-square&label=north-star%20ci&logo=githubactions&logoColor=white&color=8bd5ca"></a>
+  <a href="https://github.com/michaelasper/kir-ai/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/michaelasper/kir-ai/ci.yml?branch=main&style=flat-square&label=ci&logo=githubactions&logoColor=white&color=8bd5ca"></a>
+  <a href="https://github.com/michaelasper/kir-ai/actions/workflows/release.yml"><img alt="Release" src="https://img.shields.io/github/actions/workflow/status/michaelasper/kir-ai/release.yml?style=flat-square&label=release&logo=githubactions&logoColor=white&color=a6da95"></a>
   <a href="https://www.rust-lang.org/"><img alt="Rust 1.95" src="https://img.shields.io/badge/rust-1.95-f5a97f?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://developer.apple.com/metal/"><img alt="Apple Metal native" src="https://img.shields.io/badge/apple%20metal-native-c6a0f6?style=flat-square&logo=apple&logoColor=white"></a>
   <a href="docs/getting-started.md"><img alt="Local inference" src="https://img.shields.io/badge/local-inference-91d7e3?style=flat-square"></a>
@@ -36,6 +37,16 @@ The project is intentionally explicit about its current state:
   serving paths can be compared side by side before promotion decisions.
 
 ## Quick Start
+
+For a macOS machine, install the Rust toolchain, create the local Python
+environment for MLX sidecars, and run the installer smoke tests with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/michaelasper/kir-ai/main/scripts/install-macos.sh | bash
+```
+
+Set `KIR_AI_DIR`, `KIR_AI_REF`, or `KIR_AI_SKIP_BUILD=1` when you want a
+specific checkout path, branch/tag, or dependency-only setup.
 
 Install the pinned Rust toolchain with `mise`:
 
@@ -158,6 +169,7 @@ cargo run -p llm-engine -- serve \
 | Look up configuration, snapshot, and model format facts | [Configuration reference](docs/configuration-reference.md) |
 | Understand crate boundaries and request flow | [Architecture](docs/architecture.md) |
 | Work on the codebase safely | [Development guide](docs/development.md) |
+| Understand CI, release tags, and install scripts | [CI and release reference](docs/ci-and-release.md) |
 
 The north-star product direction and implementation tracker live in
 [rust-metal-inference-engine-north-star.md](rust-metal-inference-engine-north-star.md).

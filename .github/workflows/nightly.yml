@@ -1,4 +1,4 @@
-name: North Star Nightly
+name: Nightly
 
 on:
   schedule:
@@ -7,6 +7,14 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.95.0"
 
 jobs:
   north-star-nightly:
@@ -21,24 +29,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
       - name: Install Rust
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-nightly-
             ${{ runner.os }}-cargo-
 
       - name: Run nightly gates
@@ -55,7 +65,7 @@ jobs:
 
       - name: Upload gate reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: north-star-nightly-report
           path: target/north-star-gates/
