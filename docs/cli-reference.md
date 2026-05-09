@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine model <subcommand> ...
 ```
@@ -43,7 +43,7 @@ llm-engine serve \
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native Qwen; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
-| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw MLX snapshots must set this explicitly. Qwen, DeepSeek, and Gemma are serveable through the MLX sidecar. |
+| `--family <qwen\|deep_seek\|gemma\|llama>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw MLX snapshots must set this explicitly. Qwen, DeepSeek, Gemma, and Llama are serveable through the MLX sidecar. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Native Qwen prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
@@ -59,13 +59,14 @@ With a native-metal snapshot, the directory must contain `config.json`,
 files. With an MLX snapshot promoted by `llm-engine model pull`, the directory
 must include an `llm-engine-manifest.json` whose loader is `mlx`, and a
 compatible MLX sidecar must already be listening on the configured loopback
-endpoint. Chat requests for Qwen, DeepSeek, and Gemma use OpenAI-compatible
+endpoint. Chat requests for Qwen, DeepSeek, Gemma, and Llama use OpenAI-compatible
 `/v1/chat/completions` so the MLX sidecar owns model-specific chat templating
 and structured tool metadata; legacy text completion requests use a
 completions-capable sidecar endpoint when the selected family exposes one. Raw
 Hugging Face cache snapshots need both `--loader mlx` and a serveable `--family`
-such as `qwen`, `deep_seek`, or `gemma` so family metadata and parser policy are
-explicit. `--loader mlx` without a family fails at startup for raw snapshots.
+such as `qwen`, `deep_seek`, `gemma`, or `llama` so family metadata and parser
+policy are explicit. `--loader mlx` without a family fails at startup for raw
+snapshots.
 
 ## `bench qwen-long-context`
 
@@ -239,6 +240,7 @@ Supported profiles:
 
 - `gemma4-e2b-it-mlx-4bit`
 - `gemma4-text-safetensors-bf16`
+- `llama32-3b-instruct-mlx-4bit`
 - `qwen35-4b-mlx-4bit`
 - `qwen35-4b-mlx-8bit`
 - `qwen35-4b-mlx-optiq-4bit`
@@ -249,6 +251,8 @@ Supported profiles:
 `gemma4-e2b-it-mlx-4bit` targets a practical Gemma 4 MLX text-chat snapshot.
 `gemma4-text-safetensors-bf16` targets BF16 Gemma 4 text artifacts for MLX
 sidecar serving and excludes vision and projector artifacts.
+`llama32-3b-instruct-mlx-4bit` targets practical Llama 3.2 Instruct MLX
+chat snapshots.
 `qwen35-4b-mlx-optiq-4bit` targets the Apple-silicon OptiQ mixed 4/8-bit MLX
 snapshot family.
 `qwen3-dense-safetensors-bf16` targets standard dense Qwen3 text checkpoints

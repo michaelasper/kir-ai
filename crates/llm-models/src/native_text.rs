@@ -12,7 +12,7 @@ impl NativeTextModelSpec {
             ModelFamily::Qwen => Ok(Self::Qwen(QwenModelSpec::from_config_json(json)?)),
             ModelFamily::Gemma => Ok(Self::Gemma(GemmaModelSpec::from_config_json(json)?)),
             family => Err(ModelSpecError::unsupported(format!(
-                "native text execution for family `{}` is deferred until Qwen production parity",
+                "native text execution for family `{}` is deferred until native tensor support exists",
                 family.canonical_slug()
             ))),
         }

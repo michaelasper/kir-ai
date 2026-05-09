@@ -34,7 +34,7 @@ impl ToolMarkupMarkers {
     }
 }
 
-const QWEN_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
+const JSON_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
     [ToolMarkupMarkers::new("<tool_call>", "</tool_call>")];
 const DEEPSEEK_TOOL_MARKERS: [ToolMarkupMarkers; 2] = [
     ToolMarkupMarkers::new("<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"),
@@ -144,10 +144,16 @@ impl ChatAdapter for SelectedChatAdapter {
 
     fn tool_markup_policy(self) -> ToolMarkupPolicy {
         match self.family {
-            ModelFamily::Qwen => ToolMarkupPolicy::new(&QWEN_TOOL_MARKERS),
+            ModelFamily::Qwen | ModelFamily::Llama => ToolMarkupPolicy::new(&JSON_TOOL_MARKERS),
             ModelFamily::DeepSeek => ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS),
             ModelFamily::Gemma => ToolMarkupPolicy::new(&GEMMA_TOOL_MARKERS),
         }
+    }
+}
+
+impl SelectedChatAdapter {
+    pub(crate) fn parses_unmarked_tool_calls(self) -> bool {
+        matches!(self.family, ModelFamily::Llama)
     }
 }
 

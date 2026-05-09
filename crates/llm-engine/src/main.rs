@@ -197,8 +197,8 @@ Options:
   --model-id <id>                            Served model id [default: local-qwen36]
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
   --backend <native-metal|mlx>               Alias for --loader
-  --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
-                                             Qwen, DeepSeek, and Gemma are serveable through MLX
+  --family <qwen|deep_seek|gemma|llama>      Model family for raw snapshots without a Kir manifest
+                                             Qwen, DeepSeek, Gemma, and Llama are serveable through MLX
   --protocol-test-backend               Use protocol test backend
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text maximum prefill tokens

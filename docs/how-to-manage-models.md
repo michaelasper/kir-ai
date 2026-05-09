@@ -67,6 +67,14 @@ cargo run -p llm-engine -- model plan mlx-community/gemma-4-e2b-it-4bit \
   --profile gemma4-e2b-it-mlx-4bit
 ```
 
+Plan a practical Llama 3.2 Instruct MLX text-chat profile:
+
+```sh
+cargo run -p llm-engine -- model plan mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --revision main \
+  --profile llama32-3b-instruct-mlx-4bit
+```
+
 Plan the larger Qwen3.6 MoE native BF16 profile when you need that family:
 
 ```sh

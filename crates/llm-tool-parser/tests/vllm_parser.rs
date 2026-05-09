@@ -15,6 +15,10 @@ fn vllm_parser_names_route_to_supported_families() {
         Some(ToolParserFamily::Gemma)
     );
     assert_eq!(
+        ToolParserFamily::from_vllm_name("llama3_json_tool_parser"),
+        Some(ToolParserFamily::Llama)
+    );
+    assert_eq!(
         ToolParserFamily::from_vllm_name("granite-20b-fc"),
         Some(ToolParserFamily::Json)
     );

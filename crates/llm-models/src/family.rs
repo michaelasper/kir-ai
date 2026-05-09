@@ -8,6 +8,7 @@ pub enum ModelFamily {
     Qwen,
     DeepSeek,
     Gemma,
+    Llama,
 }
 
 impl ModelFamily {
@@ -20,6 +21,7 @@ impl ModelFamily {
             "qwen" => Ok(Self::Qwen),
             "deep_seek" | "deepseek" => Ok(Self::DeepSeek),
             "gemma" => Ok(Self::Gemma),
+            "llama" => Ok(Self::Llama),
             other => Err(ModelFamilyParseError {
                 value: other.to_owned(),
             }),
@@ -31,6 +33,7 @@ impl ModelFamily {
             Self::Qwen => "qwen",
             Self::DeepSeek => "deep_seek",
             Self::Gemma => "gemma",
+            Self::Llama => "llama",
         }
     }
 
@@ -39,6 +42,7 @@ impl ModelFamily {
             Self::Qwen => "Qwen",
             Self::DeepSeek => "DeepSeek",
             Self::Gemma => "Gemma",
+            Self::Llama => "Llama",
         }
     }
 }
@@ -58,7 +62,7 @@ impl fmt::Display for ModelFamily {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("unsupported model family `{value}`; expected `qwen`, `deep_seek`, or `gemma`")]
+#[error("unsupported model family `{value}`; expected `qwen`, `deep_seek`, `gemma`, or `llama`")]
 pub struct ModelFamilyParseError {
     value: String,
 }
@@ -148,6 +152,7 @@ impl ModelFamily {
             Self::Qwen => &QWEN_FAMILY_ADAPTER,
             Self::DeepSeek => &DEEPSEEK_FAMILY_ADAPTER,
             Self::Gemma => &GEMMA_FAMILY_ADAPTER,
+            Self::Llama => &LLAMA_FAMILY_ADAPTER,
         }
     }
 }
@@ -262,6 +267,46 @@ impl ModelFamilyAdapter for GemmaFamilyAdapter {
             dsml_tools: false,
             raw_completion: true,
             reasoning_channels: true,
+            multimodal_artifacts: false,
+            backend_execution: true,
+        }
+    }
+
+    fn promotion_stage(&self) -> PromotionStage {
+        PromotionStage::Production
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LlamaFamilyAdapter;
+
+static LLAMA_FAMILY_ADAPTER: LlamaFamilyAdapter = LlamaFamilyAdapter;
+
+impl ModelFamilyAdapter for LlamaFamilyAdapter {
+    fn family(&self) -> ModelFamily {
+        ModelFamily::Llama
+    }
+
+    fn production_backends(&self) -> &'static [BackendKind] {
+        &[BackendKind::Mlx]
+    }
+
+    fn cache_template_id(&self) -> &'static str {
+        "llama3/instruct/v1"
+    }
+
+    fn tensor_namespace(&self) -> &'static str {
+        "llama"
+    }
+
+    fn capabilities(&self) -> FamilyCapabilityFlags {
+        FamilyCapabilityFlags {
+            text: true,
+            reasoning: false,
+            tool_calls: true,
+            dsml_tools: false,
+            raw_completion: true,
+            reasoning_channels: false,
             multimodal_artifacts: false,
             backend_execution: true,
         }

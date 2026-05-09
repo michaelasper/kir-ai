@@ -72,3 +72,22 @@ async fn chat_accepts_mlx_backend_when_family_is_deepseek() {
         Some("hello from deepseek")
     );
 }
+
+#[tokio::test]
+async fn chat_accepts_mlx_backend_when_family_is_llama() {
+    let runtime = Runtime::new(MlxLlamaMetadataBackend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Llama MLX metadata selects Llama adapter");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("hello from llama")
+    );
+}

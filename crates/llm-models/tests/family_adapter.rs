@@ -1,6 +1,6 @@
 use llm_models::{
-    BackendKind, DeepSeekFamilyAdapter, GemmaFamilyAdapter, ModelFamily, ModelFamilyAdapter,
-    NativeTextModelSpec, PromotionStage, QwenFamilyAdapter,
+    BackendKind, DeepSeekFamilyAdapter, GemmaFamilyAdapter, LlamaFamilyAdapter, ModelFamily,
+    ModelFamilyAdapter, NativeTextModelSpec, PromotionStage, QwenFamilyAdapter,
 };
 
 #[test]
@@ -9,13 +9,16 @@ fn model_family_parses_aliases_to_canonical_slugs_and_adapters() {
     let deepseek = ModelFamily::parse_slug("deepseek").expect("deepseek alias parses");
     let deep_seek = ModelFamily::parse_slug("deep_seek").expect("deep_seek parses");
     let gemma = ModelFamily::parse_slug("gemma").expect("gemma parses");
+    let llama = ModelFamily::parse_slug("llama").expect("llama parses");
 
     assert_eq!(qwen, ModelFamily::Qwen);
     assert_eq!(deepseek, ModelFamily::DeepSeek);
     assert_eq!(deep_seek, ModelFamily::DeepSeek);
     assert_eq!(gemma, ModelFamily::Gemma);
+    assert_eq!(llama, ModelFamily::Llama);
     assert_eq!(deepseek.canonical_slug(), "deep_seek");
     assert_eq!(deepseek.adapter().tensor_namespace(), "deepseek");
+    assert_eq!(llama.adapter().tensor_namespace(), "llama");
 }
 
 #[test]
@@ -95,7 +98,7 @@ fn native_text_model_spec_routes_qwen_config_through_family_contract() {
 }
 
 #[test]
-fn native_text_model_spec_rejects_deferred_families_before_qwen_parity() {
+fn native_text_model_spec_rejects_families_without_native_tensor_support() {
     let err = NativeTextModelSpec::from_config_json(
         ModelFamily::DeepSeek,
         r#"{"architectures":["DeepseekV3ForCausalLM"],"model_type":"deepseek_v3"}"#,
@@ -141,6 +144,26 @@ fn gemma_family_supports_mlx_text_chat_before_native_parity() {
     assert!(!capabilities.dsml_tools);
     assert!(capabilities.raw_completion);
     assert!(capabilities.reasoning_channels);
+    assert!(!capabilities.multimodal_artifacts);
+    assert!(capabilities.backend_execution);
+}
+
+#[test]
+fn llama_family_declares_mlx_text_chat_contract() {
+    let adapter = LlamaFamilyAdapter;
+    let capabilities = adapter.capabilities();
+
+    assert_eq!(adapter.family(), ModelFamily::Llama);
+    assert_eq!(adapter.production_backends(), &[BackendKind::Mlx]);
+    assert_eq!(adapter.cache_template_id(), "llama3/instruct/v1");
+    assert_eq!(adapter.tensor_namespace(), "llama");
+    assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
+    assert!(capabilities.text);
+    assert!(!capabilities.reasoning);
+    assert!(capabilities.tool_calls);
+    assert!(!capabilities.dsml_tools);
+    assert!(capabilities.raw_completion);
+    assert!(!capabilities.reasoning_channels);
     assert!(!capabilities.multimodal_artifacts);
     assert!(capabilities.backend_execution);
 }

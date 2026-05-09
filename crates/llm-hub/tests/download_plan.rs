@@ -204,10 +204,63 @@ fn gemma4_e2b_mlx_4bit_profile_records_practical_chat_identity() {
 }
 
 #[test]
+fn llama32_mlx_profile_records_practical_chat_identity() {
+    let profile = ModelProfile::llama32_3b_instruct_mlx_4bit();
+
+    assert_eq!(profile.name, "llama32-3b-instruct-mlx-4bit");
+    assert_eq!(profile.family, "llama");
+    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.quantization, "4bit");
+    assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+    assert!(
+        profile
+            .ignore_patterns
+            .contains(&"processor_config.json".to_owned())
+    );
+}
+
+#[test]
+fn llama_text_profile_selects_text_artifacts_and_weights() {
+    let files = vec![
+        HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
+        HubFile::new("tokenizer_config.json", 250, Some("\"tok-cfg\"")),
+        HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        HubFile::new("preprocessor_config.json", 300, Some("\"pre\"")),
+        HubFile::new("vision_tower.safetensors", 600, Some("\"vision\"")),
+        HubFile::new("optimizer.pt", 10_000, Some("\"opt\"")),
+    ];
+
+    let plan = build_download_plan(
+        HubRepoId::model("mlx-community/Llama-3.2-3B-Instruct-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::llama32_3b_instruct_mlx_4bit(),
+        files,
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_eq!(plan.profile.family, "llama");
+    assert_eq!(plan.profile.loader, "mlx");
+    assert_eq!(plan.files_to_download.len(), 4);
+    assert_eq!(plan.total_bytes_to_download, 1_550);
+    assert_eq!(
+        plan.skipped_files,
+        vec![
+            "optimizer.pt",
+            "preprocessor_config.json",
+            "vision_tower.safetensors",
+        ]
+    );
+}
+
+#[test]
 fn builtin_profile_lookup_includes_all_supported_profiles() {
     for name in [
         "gemma4-e2b-it-mlx-4bit",
         "gemma4-text-safetensors-bf16",
+        "llama32-3b-instruct-mlx-4bit",
         "qwen35-4b-mlx-4bit",
         "qwen35-4b-mlx-8bit",
         "qwen35-4b-mlx-optiq-4bit",

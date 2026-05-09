@@ -63,3 +63,28 @@ async fn json_object_response_format_rejects_text_content() {
 
     assert!(matches!(err, RuntimeError::JsonMode(_)));
 }
+
+#[tokio::test]
+async fn llama_json_object_mode_keeps_tool_shaped_json_as_content_when_no_tools_are_declared() {
+    let runtime = Runtime::new(FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text: r#"{"name":"report","parameters":{"status":"ok"}}<|eot_id|>"#,
+        finish_reason: FinishReason::Stop,
+    });
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("json object content is not treated as an undeclared tool call");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some(r#"{"name":"report","parameters":{"status":"ok"}}"#)
+    );
+    assert!(response.choices[0].message.tool_calls.is_empty());
+}

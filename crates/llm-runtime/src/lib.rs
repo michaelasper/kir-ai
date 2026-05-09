@@ -282,7 +282,7 @@ where
             .await?;
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
-        let parsed = adapter.parse_complete(&raw_text)?;
+        let parsed = parse_chat_text(adapter, &raw_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
@@ -670,6 +670,8 @@ fn streaming_chat_stream<'a>(
         let mut stopped_by_sequence = false;
         let json_object_mode = matches!(request.response_format, Some(ResponseFormat::JsonObject));
         let requires_tool_choice = request_requires_tool_choice(&request);
+        let buffers_unmarked_tool_candidates =
+            adapter.parses_unmarked_tool_calls() && !request.tools.is_empty();
         let mut emitted_tool_calls = 0;
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
@@ -679,7 +681,11 @@ fn streaming_chat_stream<'a>(
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
                 if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
-                    if !json_object_mode && !requires_tool_choice && stop_at > emitted_len {
+                    if !json_object_mode
+                        && !requires_tool_choice
+                        && !buffers_unmarked_tool_candidates
+                        && stop_at > emitted_len
+                    {
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
                             ChatCompletionDelta {
@@ -695,7 +701,7 @@ fn streaming_chat_stream<'a>(
                     stopped_by_sequence = true;
                     break;
                 }
-                if !json_object_mode && !requires_tool_choice {
+                if !json_object_mode && !requires_tool_choice && !buffers_unmarked_tool_candidates {
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
                         .min(tool_markup_policy.safe_emit_len(&raw_text));
                     if safe_len > emitted_len {
@@ -752,6 +758,7 @@ fn streaming_chat_stream<'a>(
             && emitted_len < visible_len
             && !json_object_mode
             && !requires_tool_choice
+            && !buffers_unmarked_tool_candidates
             && !tool_markup_policy.contains_start(&raw_text[..visible_len])
         {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -766,7 +773,7 @@ fn streaming_chat_stream<'a>(
         }
 
         let visible_text = &raw_text[..visible_len];
-        let parsed = adapter.parse_complete(visible_text)?;
+        let parsed = parse_chat_text(adapter, visible_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
         if json_object_mode {
@@ -792,6 +799,20 @@ fn streaming_chat_stream<'a>(
             total_tokens: prompt_tokens + completion_tokens,
         };
         if json_object_mode && !parsed.content.is_empty() {
+            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                &completion,
+                ChatCompletionDelta {
+                    content: Some(parsed.content.clone()),
+                    ..ChatCompletionDelta::default()
+                },
+                None,
+                None,
+            ));
+        }
+        if buffers_unmarked_tool_candidates
+            && parsed.tool_calls.is_empty()
+            && !parsed.content.is_empty()
+        {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                 &completion,
                 ChatCompletionDelta {
@@ -837,6 +858,63 @@ fn streaming_chat_stream<'a>(
 
 pub fn chat_stream_requires_buffering(_request: &ChatCompletionRequest) -> bool {
     false
+}
+
+fn parse_chat_text(
+    adapter: SelectedChatAdapter,
+    text: &str,
+    request: &ChatCompletionRequest,
+) -> Result<ParsedAssistant, RuntimeError> {
+    if let Some(content) = unmarked_tool_json_without_declared_tools(request, text, adapter) {
+        return Ok(ParsedAssistant::content(content));
+    }
+    if let Some(content) = json_object_mode_without_tools(request, text, adapter) {
+        return Ok(ParsedAssistant::content(content));
+    }
+    adapter.parse_complete(text)
+}
+
+fn unmarked_tool_json_without_declared_tools(
+    request: &ChatCompletionRequest,
+    text: &str,
+    adapter: SelectedChatAdapter,
+) -> Option<String> {
+    if !adapter.parses_unmarked_tool_calls()
+        || !request.tools.is_empty()
+        || adapter.tool_markup_policy().contains_start(text)
+    {
+        return None;
+    }
+    let content = unmarked_tool_json_candidate(text);
+    serde_json::from_str::<serde_json::Value>(content)
+        .is_ok_and(|value| value.is_object() || value.is_array())
+        .then(|| content.to_owned())
+}
+
+fn json_object_mode_without_tools(
+    request: &ChatCompletionRequest,
+    text: &str,
+    adapter: SelectedChatAdapter,
+) -> Option<String> {
+    if !matches!(request.response_format, Some(ResponseFormat::JsonObject))
+        || !request.tools.is_empty()
+        || adapter.tool_markup_policy().contains_start(text)
+    {
+        return None;
+    }
+    let content = unmarked_tool_json_candidate(text);
+    serde_json::from_str::<serde_json::Value>(content)
+        .is_ok_and(|value| value.is_object())
+        .then(|| content.to_owned())
+}
+
+fn unmarked_tool_json_candidate(text: &str) -> &str {
+    ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"]
+        .iter()
+        .filter_map(|token| text.find(token))
+        .min()
+        .map_or(text, |index| &text[..index])
+        .trim()
 }
 
 fn empty_usage() -> Usage {

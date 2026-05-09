@@ -13,10 +13,14 @@ These vLLM parser names are accepted today:
 | `deepseek_v3` | `deep_seek` |
 | `functiongemma`, `gemma4` | `gemma` |
 | `hermes` | `hermes` |
+| `llama3`, `llama3_json` | `llama` |
 | `qwen3coder`, `qwen3xml` | `qwen` |
 | `xlam` | `xlam` |
 | `json`, `openai`, `mistral`, `granite`, `granite_20b_fc`, `hunyuan_a13b`, `kimi_k2`, `minimax`, `minimax_m2`, `olmo3`, `phi4mini`, `seed_oss`, `step3`, `step3p5` | `json` |
 
+The `llama` parser accepts Llama 3 JSON tool calls and OpenAI structured
+tool-call wrappers, but leaves ordinary JSON-object assistant content as text so
+`response_format: {"type":"json_object"}` remains usable.
 The `json` parser accepts direct OpenAI-style objects, arrays of tool calls,
 `tool_calls` wrapper objects, and stringified OpenAI `function.arguments`.
 The `xlam` parser adds support for vLLM-style `[TOOL_CALLS]` markers, JSON code

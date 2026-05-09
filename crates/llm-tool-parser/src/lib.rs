@@ -45,6 +45,9 @@ pub struct GemmaParser;
 #[derive(Debug, Default, Clone)]
 pub struct DeepSeekParser;
 
+#[derive(Debug, Default, Clone)]
+pub struct LlamaParser;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolParserFamily {
@@ -53,6 +56,7 @@ pub enum ToolParserFamily {
     Qwen,
     DeepSeek,
     Gemma,
+    Llama,
     Json,
     Xlam,
 }
@@ -75,6 +79,8 @@ const VLLM_TOOL_PARSER_ROUTES: &[(&str, ToolParserFamily)] = &[
     ("functiongemma", ToolParserFamily::Gemma),
     ("gemma4", ToolParserFamily::Gemma),
     ("hermes", ToolParserFamily::Hermes),
+    ("llama3", ToolParserFamily::Llama),
+    ("llama3_json", ToolParserFamily::Llama),
     ("qwen3coder", ToolParserFamily::Qwen),
     ("qwen3xml", ToolParserFamily::Qwen),
     ("xlam", ToolParserFamily::Xlam),
@@ -143,6 +149,17 @@ impl GemmaParser {
     }
 }
 
+impl LlamaParser {
+    pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
+        let (reasoning, rest) = split_reasoning(text)?;
+        let rest = trim_llama_after_stop_control(&rest);
+        if rest.contains("<tool_call>") {
+            return parse_tool_calls(reasoning, rest);
+        }
+        parse_json_tool_output_if_tool_like(reasoning, rest)
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("{code}: {message}")]
 pub struct ParserError {
@@ -178,6 +195,7 @@ pub fn parse_assistant_for_family(
         ModelFamily::Qwen => QwenParser.parse_complete(text),
         ModelFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ModelFamily::Gemma => GemmaParser.parse_complete(text),
+        ModelFamily::Llama => LlamaParser.parse_complete(text),
     }
 }
 
@@ -190,6 +208,7 @@ pub fn parse_assistant_for_parser_family(
         ToolParserFamily::Hermes | ToolParserFamily::Qwen => QwenParser.parse_complete(text),
         ToolParserFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ToolParserFamily::Gemma => GemmaParser.parse_complete(text),
+        ToolParserFamily::Llama => LlamaParser.parse_complete(text),
         ToolParserFamily::Json => parse_json_tool_output(text),
         ToolParserFamily::Xlam => parse_xlam_tool_output(text),
     }
@@ -444,6 +463,39 @@ fn parse_json_tool_output_with_reasoning(
     })
 }
 
+fn parse_json_tool_output_if_tool_like(
+    reasoning: Option<String>,
+    rest: &str,
+) -> Result<ParsedAssistant, ParserError> {
+    let Some((content, source)) = extract_json_tool_candidate(rest) else {
+        return Ok(ParsedAssistant {
+            reasoning,
+            content: rest.to_owned(),
+            tool_calls: Vec::new(),
+        });
+    };
+    let Ok(value) = serde_json::from_str::<Value>(source.trim()) else {
+        return Ok(ParsedAssistant {
+            reasoning,
+            content: rest.to_owned(),
+            tool_calls: Vec::new(),
+        });
+    };
+    if !json_value_has_tool_shape(&value) {
+        return Ok(ParsedAssistant {
+            reasoning,
+            content: rest.to_owned(),
+            tool_calls: Vec::new(),
+        });
+    }
+    let tool_calls = parse_json_tool_value(&value)?;
+    Ok(ParsedAssistant {
+        reasoning,
+        content,
+        tool_calls,
+    })
+}
+
 fn extract_json_tool_candidate(rest: &str) -> Option<(String, &str)> {
     if let Some(marker_start) = rest.find("[TOOL_CALLS]") {
         let source_start = marker_start + "[TOOL_CALLS]".len();
@@ -507,6 +559,49 @@ fn parse_json_tool_value(value: &Value) -> Result<Vec<ToolCall>, ParserError> {
             "JSON tool-call payload must be an object or array",
         )),
     }
+}
+
+fn json_value_has_tool_shape(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => {
+            !items.is_empty() && items.iter().all(json_value_has_direct_tool_shape)
+        }
+        Value::Object(object) => {
+            ["tool_calls", "calls", "tools"]
+                .iter()
+                .any(|key| matches!(object.get(*key), Some(Value::Array(_))))
+                || json_object_has_direct_tool_shape(object)
+        }
+        _ => false,
+    }
+}
+
+fn json_value_has_direct_tool_shape(value: &Value) -> bool {
+    let Value::Object(object) = value else {
+        return false;
+    };
+    json_object_has_direct_tool_shape(object)
+}
+
+fn json_object_has_direct_tool_shape(object: &serde_json::Map<String, Value>) -> bool {
+    let has_name = object
+        .get("function")
+        .and_then(Value::as_object)
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .is_some()
+        || object.get("function").and_then(Value::as_str).is_some()
+        || object.get("name").and_then(Value::as_str).is_some()
+        || object.get("tool_name").and_then(Value::as_str).is_some();
+    let has_arguments = object
+        .get("function")
+        .and_then(Value::as_object)
+        .and_then(|function| function.get("arguments"))
+        .is_some()
+        || object.contains_key("arguments")
+        || object.contains_key("parameters")
+        || object.contains_key("args");
+    has_name && has_arguments
 }
 
 fn parse_json_tool_value_as_call(value: &Value, index: usize) -> Result<ToolCall, ParserError> {
@@ -672,6 +767,14 @@ fn reject_gemma_multimodal_markers(text: &str) -> Result<(), ParserError> {
 
 fn trim_gemma_after_stop_control(text: &str) -> &str {
     ["<turn|>", "<|tool_response>", "<eos>"]
+        .iter()
+        .filter_map(|token| text.find(token))
+        .min()
+        .map_or(text, |index| &text[..index])
+}
+
+fn trim_llama_after_stop_control(text: &str) -> &str {
+    ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"]
         .iter()
         .filter_map(|token| text.find(token))
         .min()

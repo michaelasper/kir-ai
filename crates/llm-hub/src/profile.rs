@@ -12,8 +12,9 @@ pub struct ModelProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProfileArtifactSet {
-    QwenText,
-    GemmaText,
+    Qwen,
+    Gemma,
+    Llama,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,56 +32,63 @@ const BUILTIN_PROFILES: &[BuiltinProfile] = &[
         family: "gemma",
         loader: "mlx",
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::GemmaText,
+        artifacts: ProfileArtifactSet::Gemma,
     },
     BuiltinProfile {
         name: "gemma4-text-safetensors-bf16",
         family: "gemma",
         loader: "mlx",
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::GemmaText,
+        artifacts: ProfileArtifactSet::Gemma,
+    },
+    BuiltinProfile {
+        name: "llama32-3b-instruct-mlx-4bit",
+        family: "llama",
+        loader: "mlx",
+        quantization: "4bit",
+        artifacts: ProfileArtifactSet::Llama,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-4bit",
         family: "qwen",
         loader: "mlx",
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-8bit",
         family: "qwen",
         loader: "mlx",
         quantization: "8bit",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-optiq-4bit",
         family: "qwen",
         loader: "mlx",
         quantization: "optiq-4bit",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen3-dense-safetensors-bf16",
         family: "qwen",
         loader: "native-metal",
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen36-mlx-4bit",
         family: "qwen",
         loader: "mlx",
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen36-safetensors-bf16",
         family: "qwen",
         loader: "native-metal",
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::QwenText,
+        artifacts: ProfileArtifactSet::Qwen,
     },
 ];
 
@@ -132,15 +140,24 @@ impl ModelProfile {
         Self::builtin("gemma4-e2b-it-mlx-4bit").expect("built-in Gemma 4 E2B IT MLX 4-bit profile")
     }
 
+    pub fn llama32_3b_instruct_mlx_4bit() -> Self {
+        Self::builtin("llama32-3b-instruct-mlx-4bit")
+            .expect("built-in Llama 3.2 3B Instruct MLX 4-bit profile")
+    }
+
     fn from_builtin(profile: BuiltinProfile) -> Self {
         let (allow_patterns, ignore_patterns) = match profile.artifacts {
-            ProfileArtifactSet::QwenText => (
+            ProfileArtifactSet::Qwen => (
                 qwen_static_and_safetensors_patterns(),
                 qwen_ignore_patterns(),
             ),
-            ProfileArtifactSet::GemmaText => (
+            ProfileArtifactSet::Gemma => (
                 gemma_text_static_and_safetensors_patterns(),
                 gemma_text_ignore_patterns(),
+            ),
+            ProfileArtifactSet::Llama => (
+                llama_text_static_and_safetensors_patterns(),
+                llama_text_ignore_patterns(),
             ),
         };
         Self {
@@ -209,5 +226,33 @@ fn gemma_text_ignore_patterns() -> Vec<String> {
         "mm_projector*".to_owned(),
         "multi_modal_projector*".to_owned(),
         "projector*".to_owned(),
+    ]
+}
+
+fn llama_text_static_and_safetensors_patterns() -> Vec<String> {
+    vec![
+        "*.json".to_owned(),
+        "*.jinja".to_owned(),
+        "*.model".to_owned(),
+        "*.txt".to_owned(),
+        "tokenizer*".to_owned(),
+        "README.md".to_owned(),
+        "LICENSE*".to_owned(),
+        "*.safetensors".to_owned(),
+        "*.safetensors.index.json".to_owned(),
+    ]
+}
+
+fn llama_text_ignore_patterns() -> Vec<String> {
+    vec![
+        "*.bin".to_owned(),
+        "*.pt".to_owned(),
+        "image_*".to_owned(),
+        "preprocessor_config.json".to_owned(),
+        "processor_config.json".to_owned(),
+        "optimizer*".to_owned(),
+        "training_args.bin".to_owned(),
+        "video_preprocessor_config.json".to_owned(),
+        "vision*".to_owned(),
     ]
 }

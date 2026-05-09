@@ -27,6 +27,7 @@ const MLX_DEEPSEEK_CONTROL_STOP_TOKENS: &[&str] =
     &["<｜end▁of▁sentence｜>", "<｜User｜>", "<|endoftext|>"];
 const MLX_GEMMA_CONTROL_STOP_TOKENS: &[&str] =
     &["<turn|>", "<|tool_response>", "<eos>", "<|endoftext|>"];
+const MLX_LLAMA_CONTROL_STOP_TOKENS: &[&str] = &["<|eot_id|>", "<|end_of_text|>"];
 
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
@@ -629,6 +630,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"llama says hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Llama),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "hello".to_owned(),
+                    }],
+                }),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template("llama3/instruct/v1", None),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "llama says hi");
+        assert_eq!(server.received_path(), "/v1/chat/completions");
+        let request = server.received_body();
+        assert_eq!(request["messages"][0]["role"], "user");
+        assert_eq!(request["messages"][0]["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_routes_llama_rendered_prompt_fallback_to_completion_endpoint() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"text\":\"llama says hi\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Llama),
+            },
+        )
+        .expect("backend opens");
+        let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nlookup rust<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{\"name\":\"lookup\",\"parameters\":{\"query\":\"rust\"}}<|eot_id|><|start_header_id|>ipython<|end_header_id|>\n\n{\"answer\":\"systems\"}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: prompt.to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template("llama3/instruct/v1", None),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "llama says hi");
+        assert_eq!(server.received_path(), "/v1/completions");
+        let request = server.received_body();
+        assert_eq!(request["prompt"], prompt);
+        assert!(request.get("messages").is_none());
+    }
+
+    #[tokio::test]
     async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoint() {
         let server = FakeMlxServer::start(
             "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":true}\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n",
@@ -784,12 +865,46 @@ mod tests {
         assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
     }
 
+    #[tokio::test]
+    async fn mlx_backend_strips_llama_control_stop_tokens_from_completion_text() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"text\":\"hello from llama<|eot_id|>\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Llama),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello llama".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "hello from llama");
+        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    }
+
     #[test]
     fn mlx_sse_parser_flushes_non_stop_prefix_at_done() {
         let mut parser = MlxSseParser::new(
             "hello mlx",
             MLX_QWEN_CONTROL_STOP_TOKENS,
-            MlxToolMarkup::Qwen,
+            MlxToolMarkup::Json,
         );
         let chunks = parser
             .push_str(
@@ -859,7 +974,7 @@ mod tests {
     fn mlx_sse_parser_is_chunk_boundary_invariant_for_tool_calls() {
         let payload = "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n";
         let expected =
-            parse_mlx_sse_for_test(&[payload], MlxToolMarkup::Qwen).expect("single chunk parses");
+            parse_mlx_sse_for_test(&[payload], MlxToolMarkup::Json).expect("single chunk parses");
 
         for split in payload
             .char_indices()
@@ -868,7 +983,7 @@ mod tests {
         {
             let actual = parse_mlx_sse_for_test(
                 &[&payload[..split], &payload[split..]],
-                MlxToolMarkup::Qwen,
+                MlxToolMarkup::Json,
             )
             .unwrap_or_else(|err| panic!("split at byte {split} failed: {err}"));
             assert_eq!(actual, expected, "split at byte {split}");
@@ -1108,6 +1223,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mlx_backend_preserves_structured_llama_tool_call_response() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"llama\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Llama),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "lookup llama".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+        assert!(output.text.starts_with("<tool_call>"));
+        assert!(output.text.contains("\"name\":\"lookup\""));
+        assert!(output.text.contains("\"query\":\"llama\""));
+    }
+
+    #[tokio::test]
     async fn mlx_backend_rejects_model_mismatch_before_http_request() {
         let snapshot = tempfile::tempdir().expect("snapshot tempdir");
         let backend = MlxBackend::open_with_options(
@@ -1215,9 +1366,27 @@ mod tests {
     }
 
     #[test]
+    fn mlx_backend_accepts_llama_requested_family() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                family: Some(ModelFamily::Llama),
+            },
+        )
+        .expect("Llama MLX backend opens");
+
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("llama"));
+        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
+    }
+
+    #[test]
     fn mlx_backend_rejects_unknown_manifest_family() {
         let snapshot = tempfile::tempdir().expect("snapshot tempdir");
-        write_mlx_manifest(snapshot.path(), "mlx", "llama");
+        write_mlx_manifest(snapshot.path(), "mlx", "glm");
 
         let err = MlxBackend::open_with_options(
             "local-mlx",
@@ -1229,7 +1398,7 @@ mod tests {
         )
         .expect_err("unknown manifest family is rejected");
 
-        assert!(err.to_string().contains("unsupported model family `llama`"));
+        assert!(err.to_string().contains("unsupported model family `glm`"));
     }
 
     #[tokio::test]

@@ -221,11 +221,11 @@ fn serve_help_prints_without_backend_validation() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("--family <qwen|deep_seek|gemma>"),
+        stdout.contains("--family <qwen|deep_seek|gemma|llama>"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("Qwen, DeepSeek, and Gemma are serveable through MLX"),
+        stdout.contains("Qwen, DeepSeek, Gemma, and Llama are serveable through MLX"),
         "stdout: {stdout}"
     );
     assert!(

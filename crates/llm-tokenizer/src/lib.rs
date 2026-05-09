@@ -22,6 +22,11 @@ pub struct DeepSeekPromptOptions {
     pub add_generation_prompt: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlamaPromptOptions {
+    pub add_generation_prompt: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum TemplateError {
     #[error("tool serialization failed: {0}")]
@@ -30,7 +35,7 @@ pub enum TemplateError {
     ReservedControlToken(&'static str),
     #[error("message role `{0}` cannot be rendered in chat template")]
     UnsupportedRole(String),
-    #[error("{0} chat template support is deferred until Qwen production parity")]
+    #[error("{0} chat template support is deferred until a production template is implemented")]
     UnsupportedFamily(&'static str),
 }
 
@@ -251,6 +256,60 @@ pub fn render_deepseek_chat_template(
     Ok(out)
 }
 
+pub fn render_llama3_chat_template(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &LlamaPromptOptions,
+) -> Result<String, TemplateError> {
+    let mut out = String::from("<|begin_of_text|>");
+    let mut message_index = 0;
+
+    if matches!(
+        messages.first().map(|message| &message.role),
+        Some(ChatRole::System)
+    ) || !tools.is_empty()
+    {
+        out.push_str("<|start_header_id|>system<|end_header_id|>\n\n");
+        if let Some(message) = messages
+            .first()
+            .filter(|message| message.role == ChatRole::System)
+        {
+            if let Some(content) = &message.content {
+                reject_llama3_prompt_controls(content)?;
+                out.push_str(content.trim());
+            }
+            message_index = 1;
+        }
+        if !tools.is_empty() {
+            if message_index == 1 {
+                out.push_str("\n\n");
+            }
+            let tools_json = serde_json::to_string(tools)?;
+            reject_llama3_prompt_controls(&tools_json)?;
+            out.push_str("Tools are available. To call a function, respond with JSON in the form ");
+            out.push_str(r#"{"name":"function_name","parameters":{"argument":"value"}}"#);
+            out.push_str(". Do not use variables.\n");
+            out.push_str(&tools_json);
+        }
+        out.push_str("<|eot_id|>");
+    }
+
+    for message in &messages[message_index..] {
+        match message.role {
+            ChatRole::System => render_llama3_plain_turn(&mut out, "system", message)?,
+            ChatRole::User => render_llama3_plain_turn(&mut out, "user", message)?,
+            ChatRole::Assistant => render_llama3_assistant_turn(&mut out, message)?,
+            ChatRole::Tool => render_llama3_tool_response(&mut out, message)?,
+        }
+    }
+
+    if options.add_generation_prompt {
+        out.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+    }
+
+    Ok(out)
+}
+
 pub fn render_family_chat_template(
     family: ModelFamily,
     messages: &[ChatMessage],
@@ -278,6 +337,13 @@ pub fn render_family_chat_template(
             tools,
             &GemmaPromptOptions {
                 enable_thinking: false,
+                add_generation_prompt: true,
+            },
+        ),
+        ModelFamily::Llama => render_llama3_chat_template(
+            messages,
+            tools,
+            &LlamaPromptOptions {
                 add_generation_prompt: true,
             },
         ),
@@ -314,6 +380,64 @@ fn render_assistant(out: &mut String, message: &ChatMessage) -> Result<(), Templ
         out.push_str("</tool_call>");
     }
     out.push_str("<|im_end|>\n");
+    Ok(())
+}
+
+fn render_llama3_plain_turn(
+    out: &mut String,
+    role: &str,
+    message: &ChatMessage,
+) -> Result<(), TemplateError> {
+    out.push_str("<|start_header_id|>");
+    out.push_str(role);
+    out.push_str("<|end_header_id|>\n\n");
+    if let Some(content) = &message.content {
+        reject_llama3_prompt_controls(content)?;
+        out.push_str(content.trim());
+    }
+    out.push_str("<|eot_id|>");
+    Ok(())
+}
+
+fn render_llama3_assistant_turn(
+    out: &mut String,
+    message: &ChatMessage,
+) -> Result<(), TemplateError> {
+    out.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+    if let Some(content) = &message.content {
+        reject_llama3_prompt_controls(content)?;
+        out.push_str(content.trim());
+    }
+    for (index, call) in message.tool_calls.iter().enumerate() {
+        if message
+            .content
+            .as_deref()
+            .is_some_and(|content| !content.trim().is_empty())
+            || index > 0
+        {
+            out.push('\n');
+        }
+        let payload = serde_json::json!({
+            "name": call.function.name,
+            "parameters": call.function.arguments,
+        });
+        let payload_json = serde_json::to_string(&payload)?;
+        reject_llama3_prompt_controls(&payload_json)?;
+        out.push_str(&payload_json);
+    }
+    out.push_str("<|eot_id|>");
+    Ok(())
+}
+
+fn render_llama3_tool_response(
+    out: &mut String,
+    message: &ChatMessage,
+) -> Result<(), TemplateError> {
+    let content = message.content.as_deref().unwrap_or_default();
+    reject_llama3_prompt_controls(content)?;
+    out.push_str("<|start_header_id|>ipython<|end_header_id|>\n\n");
+    out.push_str(content.trim());
+    out.push_str("<|eot_id|>");
     Ok(())
 }
 
@@ -546,6 +670,26 @@ fn reject_deepseek_prompt_controls(text: &str) -> Result<(), TemplateError> {
         "<｜tool▁output▁end｜>",
         "<think>",
         "</think>",
+    ];
+    if let Some((_, token)) = RESERVED
+        .iter()
+        .filter_map(|token| text.find(token).map(|index| (index, *token)))
+        .min_by_key(|(index, _)| *index)
+    {
+        return Err(TemplateError::ReservedControlToken(token));
+    }
+    Ok(())
+}
+
+fn reject_llama3_prompt_controls(text: &str) -> Result<(), TemplateError> {
+    const RESERVED: [&str; 7] = [
+        "<|begin_of_text|>",
+        "<|end_of_text|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|python_tag|>",
     ];
     if let Some((_, token)) = RESERVED
         .iter()

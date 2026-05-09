@@ -12,7 +12,7 @@ pub type SnapshotBackendLoader = BackendKind;
 pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<ModelFamily> {
     ModelFamily::parse_slug(value).map_err(|_| {
         anyhow::anyhow!(
-            "unsupported snapshot family `{value}`; expected `qwen`, `deep_seek`, or `gemma`"
+            "unsupported snapshot family `{value}`; expected `qwen`, `deep_seek`, `gemma`, or `llama`"
         )
     })
 }
@@ -123,7 +123,7 @@ fn validate_snapshot_loader_has_family(
 ) -> anyhow::Result<()> {
     if loader == SnapshotBackendLoader::Mlx && manifest_family.or(requested_family).is_none() {
         anyhow::bail!(
-            "snapshot loader `mlx` requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
+            "snapshot loader `mlx` requires model family metadata; add --family qwen, deep_seek, gemma, or llama for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
         );
     }
     Ok(())
@@ -164,7 +164,7 @@ fn validate_snapshot_serving_family(family: Option<ModelFamily>) -> anyhow::Resu
     };
     if !family.adapter().capabilities().backend_execution {
         anyhow::bail!(
-            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
+            "model family `{}` is recognized but not serveable yet; {} serving is deferred until a production backend is implemented",
             family.canonical_slug(),
             family.display_name()
         );
@@ -430,6 +430,32 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_backend_factory_opens_llama_mlx_snapshot() {
+        let snapshot = temp_snapshot_dir("mlx-llama-family");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let backend = open_snapshot_backend(
+            "local-llama",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                family: Some(ModelFamily::Llama),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        )
+        .expect("Llama MLX snapshot opens");
+
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("llama"));
+        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
     fn snapshot_backend_factory_rejects_deepseek_for_raw_native_metal_snapshot() {
         let snapshot = temp_snapshot_dir("native-family-override-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
@@ -451,6 +477,32 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("snapshot loader `native-metal` is not supported for family `deep_seek`")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_llama_for_raw_native_metal_snapshot() {
+        let snapshot = temp_snapshot_dir("native-llama-override-mismatch");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let err = match open_snapshot_backend(
+            "local-native",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::NativeMetal),
+                family: Some(ModelFamily::Llama),
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("native-metal Llama family should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("snapshot loader `native-metal` is not supported for family `llama`")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -532,7 +584,7 @@ mod tests {
         let snapshot = temp_snapshot_dir("unknown-family-manifest");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
-        write_manifest_with_family(&snapshot, "mlx", "llama");
+        write_manifest_with_family(&snapshot, "mlx", "glm");
 
         let err = match open_snapshot_backend(
             "local-unknown-family",
@@ -549,7 +601,7 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(err.to_string().contains("unsupported model family `llama`"));
+        assert!(err.to_string().contains("unsupported model family `glm`"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 

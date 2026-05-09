@@ -1,6 +1,6 @@
 use super::{
-    MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_GEMMA_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS,
-    MlxUpstreamProtocol,
+    MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_GEMMA_CONTROL_STOP_TOKENS, MLX_LLAMA_CONTROL_STOP_TOKENS,
+    MLX_QWEN_CONTROL_STOP_TOKENS, MlxUpstreamProtocol,
 };
 use llm_backend::{BackendError, BackendModelMetadata, BackendRequest, BackendStreamChunk};
 use llm_models::ModelFamily;
@@ -261,7 +261,7 @@ impl MlxSseParser {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum MlxToolMarkup {
-    Qwen,
+    Json,
     DeepSeek,
     Gemma,
 }
@@ -372,7 +372,7 @@ pub(super) fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> M
     {
         Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
         Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
-        _ => MlxToolMarkup::Qwen,
+        Some(ModelFamily::Qwen) | Some(ModelFamily::Llama) | None => MlxToolMarkup::Json,
     }
 }
 
@@ -387,7 +387,7 @@ fn render_mlx_tool_call(
     }
     let arguments = parse_mlx_tool_arguments(&call.arguments)?;
     match markup {
-        MlxToolMarkup::Qwen => Ok(format!(
+        MlxToolMarkup::Json => Ok(format!(
             "<tool_call>{}</tool_call>",
             serde_json::json!({
                 "name": call.name.as_str(),
@@ -481,7 +481,8 @@ pub(super) fn mlx_control_stop_tokens_for_metadata(
     {
         Some(ModelFamily::DeepSeek) => MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
         Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
-        _ => MLX_QWEN_CONTROL_STOP_TOKENS,
+        Some(ModelFamily::Llama) => MLX_LLAMA_CONTROL_STOP_TOKENS,
+        Some(ModelFamily::Qwen) | None => MLX_QWEN_CONTROL_STOP_TOKENS,
     }
 }
 
@@ -490,6 +491,17 @@ pub(super) fn mlx_upstream_protocol_for_request(
     request: &BackendRequest,
 ) -> MlxUpstreamProtocol {
     if request.conversation_mode {
+        if request.chat_context.is_none()
+            && matches!(
+                metadata
+                    .family
+                    .as_deref()
+                    .and_then(|family| ModelFamily::parse_slug(family).ok()),
+                Some(ModelFamily::Llama)
+            )
+        {
+            return MlxUpstreamProtocol::Completions;
+        }
         return MlxUpstreamProtocol::ChatCompletions;
     }
     match metadata
@@ -498,6 +510,8 @@ pub(super) fn mlx_upstream_protocol_for_request(
         .and_then(|family| ModelFamily::parse_slug(family).ok())
     {
         Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
-        _ => MlxUpstreamProtocol::Completions,
+        Some(ModelFamily::Qwen) | Some(ModelFamily::DeepSeek) | Some(ModelFamily::Llama) | None => {
+            MlxUpstreamProtocol::Completions
+        }
     }
 }

@@ -126,7 +126,12 @@ impl NativeTextBackend {
             }
             Some(ModelFamily::DeepSeek) => {
                 anyhow::bail!(
-                    "native text execution for family `deep_seek` is deferred until Qwen production parity"
+                    "native text execution for family `deep_seek` is deferred until native DeepSeek tensor support exists"
+                );
+            }
+            Some(ModelFamily::Llama) => {
+                anyhow::bail!(
+                    "native text execution for family `llama` is deferred until native Llama tensor support exists"
                 );
             }
             Some(ModelFamily::Qwen) | None => {

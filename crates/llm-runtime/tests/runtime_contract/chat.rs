@@ -154,3 +154,28 @@ async fn runtime_truncates_content_at_stop_sequence() {
     );
     assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
 }
+
+#[tokio::test]
+async fn runtime_keeps_llama_tool_shaped_json_as_content_without_declared_tools() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text: r#"{"name":"report","parameters":{"status":"ok"}}<|eot_id|>"#,
+        finish_reason: FinishReason::Stop,
+    };
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("report status")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("tool-shaped JSON is normal content without tool declarations");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some(r#"{"name":"report","parameters":{"status":"ok"}}"#)
+    );
+    assert!(response.choices[0].message.tool_calls.is_empty());
+}

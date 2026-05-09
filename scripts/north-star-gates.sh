@@ -162,7 +162,7 @@ run_ci_gates() {
   run_gate "engine_model_cli_contracts" true cargo test -p llm-engine --test model_cli
   run_gate "model_acquisition_contracts" true cargo test -p llm-hub
   run_gate "model_family_backend_profiles" true cargo test -p llm-models --test family_adapter
-  run_gate "deferred_family_contracts" true bash -lc 'cargo test -p llm-tokenizer --test deepseek_template && cargo test -p llm-tokenizer --test gemma_template && cargo test -p llm-tool-parser --test deepseek_parser && cargo test -p llm-tool-parser --test gemma_parser'
+  run_gate "deferred_family_contracts" true bash -lc 'cargo test -p llm-tokenizer --test deepseek_template && cargo test -p llm-tokenizer --test gemma_template && cargo test -p llm-tokenizer --test llama_template && cargo test -p llm-tool-parser --test deepseek_parser && cargo test -p llm-tool-parser --test gemma_parser && cargo test -p llm-tool-parser --test llama_parser'
   run_gate "tokenizer_parser_contracts" true bash -lc 'cargo test -p llm-tokenizer && cargo test -p llm-tool-parser'
 }
 

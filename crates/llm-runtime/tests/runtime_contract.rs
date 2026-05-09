@@ -60,6 +60,7 @@ struct RecordingChatContextBackend {
 struct MlxQwenMetadataBackend;
 struct MlxGemmaMetadataBackend;
 struct MlxDeepSeekMetadataBackend;
+struct MlxLlamaMetadataBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
@@ -281,6 +282,44 @@ impl ModelBackend for MlxDeepSeekMetadataBackend {
         );
         Ok(BackendOutput {
             text: "hello from deepseek<｜end▁of▁sentence｜>".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for MlxLlamaMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-llama"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
+        metadata.family = Some("llama".to_owned());
+        metadata.loader = Some("mlx".to_owned());
+        metadata
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        assert!(
+            request
+                .prompt
+                .contains("<|start_header_id|>user<|end_header_id|>\n\nsay hi<|eot_id|>"),
+            "Llama adapter should render Llama 3 prompt: {}",
+            request.prompt
+        );
+        Ok(BackendOutput {
+            text: "hello from llama<|eot_id|>".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,

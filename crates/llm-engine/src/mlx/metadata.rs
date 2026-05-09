@@ -16,7 +16,7 @@ pub(super) fn mlx_metadata(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let family = requested_family.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "MLX backend requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
+                    "MLX backend requires model family metadata; add --family qwen, deep_seek, gemma, or llama for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
                 )
             })?;
             validate_mlx_serving_family(family)?;
@@ -58,7 +58,7 @@ pub(super) fn mlx_metadata(
 fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
     if !family.adapter().capabilities().backend_execution {
         anyhow::bail!(
-            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
+            "model family `{}` is recognized but not serveable yet; {} serving is deferred until a production backend is implemented",
             family.canonical_slug(),
             family.display_name()
         );

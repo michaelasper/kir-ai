@@ -71,11 +71,12 @@ decoded text.
 ## Run MLX Sidecar Mode
 
 Use MLX sidecar mode when the snapshot manifest has `loader: mlx`, for example
-the `qwen36-mlx-4bit` or `gemma4-e2b-it-mlx-4bit` profiles. Kir remains the
-public OpenAI-compatible server and proxies generation to a loopback MLX
-sidecar. Chat requests use `/v1/chat/completions`; legacy text completion
-requests use a completions-capable sidecar endpoint when the selected family
-exposes one. Qwen and DeepSeek run through `mlx_lm.server`; Gemma 4 runs through
+the `qwen36-mlx-4bit`, `gemma4-e2b-it-mlx-4bit`, or
+`llama32-3b-instruct-mlx-4bit` profiles. Kir remains the public
+OpenAI-compatible server and proxies generation to a loopback MLX sidecar. Chat
+requests use `/v1/chat/completions`; legacy text completion requests use a
+completions-capable sidecar endpoint when the selected family exposes one. Qwen,
+DeepSeek, and Llama run through `mlx_lm.server`; Gemma 4 runs through
 `mlx_vlm.server`.
 
 Start the Qwen MLX sidecar separately:
@@ -97,8 +98,8 @@ cargo run -p llm-engine -- serve \
 
 If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
 select the MLX loader and model family explicitly. Raw MLX snapshots without
-`--family` fail at startup. Qwen, DeepSeek, and Gemma are serveable runtime
-chat families through family-specific MLX sidecars:
+`--family` fail at startup. Qwen, DeepSeek, Gemma, and Llama are serveable
+runtime chat families through family-specific MLX sidecars:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>
@@ -124,6 +125,20 @@ cargo run -p llm-engine -- serve \
   --loader mlx \
   --family gemma \
   --model-id local-gemma4-e2b \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+For Llama 3.2 Instruct, use the standard MLX LM sidecar and `--family llama`:
+
+```sh
+SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Llama-3.2-3B-Instruct-4bit/snapshots/<resolved-commit>
+mlx_lm.server --model "$SNAPSHOT"
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family llama \
+  --model-id local-llama32-3b \
   --mlx-endpoint http://127.0.0.1:8080/v1
 ```
 
