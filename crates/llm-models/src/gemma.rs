@@ -1,0 +1,343 @@
+use crate::{ModelFamily, ModelSpecError, SafetensorsIndex};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GemmaAttentionKind {
+    SlidingAttention,
+    FullAttention,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GemmaModelSpec {
+    pub family: ModelFamily,
+    pub architecture: String,
+    pub model_type: String,
+    pub text_model_type: String,
+    pub hidden_size: u32,
+    pub hidden_size_per_layer_input: u32,
+    pub rms_norm_eps: f32,
+    pub tie_word_embeddings: bool,
+    pub full_rope_theta: f32,
+    pub full_partial_rotary_factor: f32,
+    pub sliding_rope_theta: f32,
+    pub sliding_window: u32,
+    pub num_hidden_layers: u32,
+    pub num_attention_heads: u32,
+    pub num_key_value_heads: u32,
+    pub num_global_key_value_heads: Option<u32>,
+    pub num_kv_shared_layers: u32,
+    pub head_dim: u32,
+    pub global_head_dim: Option<u32>,
+    pub intermediate_size: u32,
+    pub max_position_embeddings: u32,
+    pub vocab_size: u32,
+    pub vocab_size_per_layer_input: u32,
+    pub attention_k_eq_v: bool,
+    pub enable_moe_block: bool,
+    pub num_experts: Option<u32>,
+    pub top_k_experts: Option<u32>,
+    pub moe_intermediate_size: Option<u32>,
+    pub use_double_wide_mlp: bool,
+    pub layer_kinds: Vec<GemmaAttentionKind>,
+}
+
+impl GemmaModelSpec {
+    pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
+        let config: RawGemmaConfig = serde_json::from_str(json)
+            .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        let architecture = config
+            .architectures
+            .first()
+            .ok_or_else(|| ModelSpecError::unsupported("gemma config missing architecture"))?
+            .clone();
+        if architecture != "Gemma4ForConditionalGeneration" || config.model_type != "gemma4" {
+            return Err(ModelSpecError::unsupported(
+                "config is not a supported Gemma 4 conditional generation architecture",
+            ));
+        }
+        let text = config
+            .text_config
+            .ok_or_else(|| ModelSpecError::unsupported("gemma4 config missing text_config"))?;
+        if text.model_type != "gemma4_text" {
+            return Err(ModelSpecError::unsupported(format!(
+                "unsupported gemma text model_type `{}`",
+                text.model_type
+            )));
+        }
+        validate_supported_gemma4_text_options(&text)?;
+        let layer_kinds = text
+            .layer_types
+            .iter()
+            .map(|kind| match kind.as_str() {
+                "sliding_attention" => Ok(GemmaAttentionKind::SlidingAttention),
+                "full_attention" => Ok(GemmaAttentionKind::FullAttention),
+                other => Err(ModelSpecError::unsupported(format!(
+                    "unsupported gemma layer type `{other}`"
+                ))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if layer_kinds.len() != text.num_hidden_layers as usize {
+            return Err(ModelSpecError::invalid_request(
+                "gemma layer_types length does not match num_hidden_layers",
+            ));
+        }
+        let num_kv_shared_layers = text.num_kv_shared_layers.unwrap_or(0);
+        if num_kv_shared_layers > text.num_hidden_layers {
+            return Err(ModelSpecError::invalid_request(
+                "gemma num_kv_shared_layers cannot exceed num_hidden_layers",
+            ));
+        }
+        if text.enable_moe_block.unwrap_or(false)
+            && (text.num_experts.is_none()
+                || text.top_k_experts.is_none()
+                || text.moe_intermediate_size.is_none())
+        {
+            return Err(ModelSpecError::unsupported(
+                "gemma MoE config missing num_experts, top_k_experts, or moe_intermediate_size",
+            ));
+        }
+        Ok(Self {
+            family: ModelFamily::Gemma,
+            architecture,
+            model_type: config.model_type,
+            text_model_type: text.model_type,
+            hidden_size: text.hidden_size,
+            hidden_size_per_layer_input: text.hidden_size_per_layer_input.unwrap_or(0),
+            rms_norm_eps: text.rms_norm_eps,
+            tie_word_embeddings: text
+                .tie_word_embeddings
+                .or(config.tie_word_embeddings)
+                .unwrap_or(true),
+            full_rope_theta: text.rope_parameters.full_attention.rope_theta,
+            full_partial_rotary_factor: text
+                .rope_parameters
+                .full_attention
+                .partial_rotary_factor
+                .unwrap_or(1.0),
+            sliding_rope_theta: text.rope_parameters.sliding_attention.rope_theta,
+            sliding_window: text.sliding_window,
+            num_hidden_layers: text.num_hidden_layers,
+            num_attention_heads: text.num_attention_heads,
+            num_key_value_heads: text.num_key_value_heads,
+            num_global_key_value_heads: text.num_global_key_value_heads,
+            num_kv_shared_layers,
+            head_dim: text.head_dim,
+            global_head_dim: text.global_head_dim,
+            intermediate_size: text.intermediate_size,
+            max_position_embeddings: text.max_position_embeddings,
+            vocab_size: text.vocab_size,
+            vocab_size_per_layer_input: text.vocab_size_per_layer_input.unwrap_or(text.vocab_size),
+            attention_k_eq_v: text.attention_k_eq_v.unwrap_or(false),
+            enable_moe_block: text.enable_moe_block.unwrap_or(false),
+            num_experts: text.num_experts,
+            top_k_experts: text.top_k_experts,
+            moe_intermediate_size: text.moe_intermediate_size,
+            use_double_wide_mlp: text.use_double_wide_mlp.unwrap_or(false),
+            layer_kinds,
+        })
+    }
+
+    pub fn tensor_root(&self) -> &'static str {
+        "model.language_model"
+    }
+
+    pub fn embed_tokens_weight(&self) -> String {
+        format!("{}.embed_tokens.weight", self.tensor_root())
+    }
+
+    pub fn embed_tokens_per_layer_weight(&self) -> String {
+        format!("{}.embed_tokens_per_layer.weight", self.tensor_root())
+    }
+
+    pub fn per_layer_model_projection_weight(&self) -> String {
+        format!("{}.per_layer_model_projection.weight", self.tensor_root())
+    }
+
+    pub fn per_layer_projection_norm_weight(&self) -> String {
+        format!("{}.per_layer_projection_norm.weight", self.tensor_root())
+    }
+
+    pub fn final_norm_weight(&self) -> String {
+        format!("{}.norm.weight", self.tensor_root())
+    }
+
+    pub fn lm_head_weight(&self) -> String {
+        if self.tie_word_embeddings {
+            self.embed_tokens_weight()
+        } else {
+            "lm_head.weight".to_owned()
+        }
+    }
+
+    pub fn layer_tensor(&self, layer_idx: usize, suffix: &str) -> String {
+        format!("{}.layers.{layer_idx}.{suffix}", self.tensor_root())
+    }
+
+    pub fn mlp_tensor(&self, layer_idx: usize, suffix: &str) -> String {
+        self.layer_tensor(layer_idx, &format!("mlp.{suffix}"))
+    }
+
+    pub fn self_attn_tensor(&self, layer_idx: usize, suffix: &str) -> String {
+        self.layer_tensor(layer_idx, &format!("self_attn.{suffix}"))
+    }
+
+    pub fn uses_per_layer_input(&self) -> bool {
+        self.hidden_size_per_layer_input > 0
+    }
+
+    pub fn uses_moe(&self) -> bool {
+        self.enable_moe_block
+    }
+
+    pub fn is_kv_shared_layer(&self, layer_idx: usize) -> bool {
+        if self.num_kv_shared_layers == 0 {
+            return false;
+        }
+        let first_shared = self
+            .num_hidden_layers
+            .saturating_sub(self.num_kv_shared_layers) as usize;
+        layer_idx >= first_shared
+    }
+
+    pub fn requires_key_value_projection(&self, layer_idx: usize) -> bool {
+        !self.is_kv_shared_layer(layer_idx)
+    }
+
+    pub fn requires_value_projection(&self, layer_idx: usize) -> bool {
+        if !self.requires_key_value_projection(layer_idx) {
+            return false;
+        }
+        !matches!(
+            self.layer_kinds[layer_idx],
+            GemmaAttentionKind::FullAttention
+        ) || !self.attention_k_eq_v
+    }
+}
+
+impl SafetensorsIndex {
+    pub fn validate_gemma4_text_weights(
+        &self,
+        spec: &GemmaModelSpec,
+    ) -> Result<(), ModelSpecError> {
+        self.require(spec.embed_tokens_weight())?;
+        self.require(spec.final_norm_weight())?;
+        if !spec.tie_word_embeddings {
+            self.require(spec.lm_head_weight())?;
+        }
+        if spec.uses_per_layer_input() {
+            self.require(spec.embed_tokens_per_layer_weight())?;
+            self.require(spec.per_layer_model_projection_weight())?;
+            self.require(spec.per_layer_projection_norm_weight())?;
+        }
+        for layer in 0..spec.num_hidden_layers as usize {
+            self.require(spec.layer_tensor(layer, "input_layernorm.weight"))?;
+            self.require(spec.layer_tensor(layer, "layer_scalar"))?;
+            self.require(spec.layer_tensor(layer, "post_attention_layernorm.weight"))?;
+            self.require(spec.layer_tensor(layer, "pre_feedforward_layernorm.weight"))?;
+            self.require(spec.layer_tensor(layer, "post_feedforward_layernorm.weight"))?;
+            self.require(spec.self_attn_tensor(layer, "q_proj.weight"))?;
+            self.require(spec.self_attn_tensor(layer, "o_proj.weight"))?;
+            self.require(spec.self_attn_tensor(layer, "q_norm.weight"))?;
+            if spec.requires_key_value_projection(layer) {
+                self.require(spec.self_attn_tensor(layer, "k_proj.weight"))?;
+                self.require(spec.self_attn_tensor(layer, "k_norm.weight"))?;
+            }
+            if spec.requires_value_projection(layer) {
+                self.require(spec.self_attn_tensor(layer, "v_proj.weight"))?;
+            }
+            self.require(spec.mlp_tensor(layer, "gate_proj.weight"))?;
+            self.require(spec.mlp_tensor(layer, "up_proj.weight"))?;
+            self.require(spec.mlp_tensor(layer, "down_proj.weight"))?;
+            if spec.uses_per_layer_input() {
+                self.require(spec.layer_tensor(layer, "per_layer_input_gate.weight"))?;
+                self.require(spec.layer_tensor(layer, "per_layer_projection.weight"))?;
+                self.require(spec.layer_tensor(layer, "post_per_layer_input_norm.weight"))?;
+            }
+            if spec.uses_moe() {
+                self.require(spec.layer_tensor(layer, "experts.down_proj"))?;
+                self.require(spec.layer_tensor(layer, "experts.gate_up_proj"))?;
+                self.require(spec.layer_tensor(layer, "router.per_expert_scale"))?;
+                self.require(spec.layer_tensor(layer, "router.proj.weight"))?;
+                self.require(spec.layer_tensor(layer, "router.scale"))?;
+                self.require(spec.layer_tensor(layer, "pre_feedforward_layernorm_2.weight"))?;
+                self.require(spec.layer_tensor(layer, "post_feedforward_layernorm_1.weight"))?;
+                self.require(spec.layer_tensor(layer, "post_feedforward_layernorm_2.weight"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_supported_gemma4_text_options(text: &RawGemmaTextConfig) -> Result<(), ModelSpecError> {
+    if let Some(hidden_activation) = text.hidden_activation.as_deref()
+        && hidden_activation != "gelu_pytorch_tanh"
+    {
+        return Err(ModelSpecError::unsupported(format!(
+            "gemma4 hidden_activation `{hidden_activation}` is unsupported; only `gelu_pytorch_tanh` is supported"
+        )));
+    }
+    if text.attention_bias.unwrap_or(false) {
+        return Err(ModelSpecError::unsupported(
+            "gemma4 attention_bias=true is unsupported",
+        ));
+    }
+    if text.attention_dropout.unwrap_or(0.0) != 0.0 {
+        return Err(ModelSpecError::unsupported(
+            "gemma4 attention_dropout other than 0.0 is unsupported",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGemmaConfig {
+    architectures: Vec<String>,
+    model_type: String,
+    text_config: Option<RawGemmaTextConfig>,
+    tie_word_embeddings: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGemmaTextConfig {
+    model_type: String,
+    attention_bias: Option<bool>,
+    attention_dropout: Option<f32>,
+    attention_k_eq_v: Option<bool>,
+    enable_moe_block: Option<bool>,
+    global_head_dim: Option<u32>,
+    head_dim: u32,
+    hidden_activation: Option<String>,
+    hidden_size: u32,
+    hidden_size_per_layer_input: Option<u32>,
+    intermediate_size: u32,
+    layer_types: Vec<String>,
+    max_position_embeddings: u32,
+    moe_intermediate_size: Option<u32>,
+    num_attention_heads: u32,
+    num_experts: Option<u32>,
+    num_global_key_value_heads: Option<u32>,
+    num_hidden_layers: u32,
+    num_key_value_heads: u32,
+    num_kv_shared_layers: Option<u32>,
+    rms_norm_eps: f32,
+    rope_parameters: RawGemmaRopeParameters,
+    sliding_window: u32,
+    tie_word_embeddings: Option<bool>,
+    top_k_experts: Option<u32>,
+    use_double_wide_mlp: Option<bool>,
+    vocab_size: u32,
+    vocab_size_per_layer_input: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGemmaRopeParameters {
+    full_attention: RawGemmaRopeKindParameters,
+    sliding_attention: RawGemmaRopeKindParameters,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawGemmaRopeKindParameters {
+    rope_theta: f32,
+    partial_rotary_factor: Option<f32>,
+}

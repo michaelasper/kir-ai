@@ -97,13 +97,13 @@ fn native_text_model_spec_routes_qwen_config_through_family_contract() {
 #[test]
 fn native_text_model_spec_rejects_deferred_families_before_qwen_parity() {
     let err = NativeTextModelSpec::from_config_json(
-        ModelFamily::Gemma,
-        r#"{"architectures":["GemmaForCausalLM"],"model_type":"gemma"}"#,
+        ModelFamily::DeepSeek,
+        r#"{"architectures":["DeepseekV3ForCausalLM"],"model_type":"deepseek_v3"}"#,
     )
     .expect_err("deferred native text family fails closed");
 
     assert_eq!(err.code(), "unsupported_capability");
-    assert!(err.to_string().contains("gemma"));
+    assert!(err.to_string().contains("deep_seek"));
 }
 
 #[test]

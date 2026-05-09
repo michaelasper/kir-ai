@@ -1822,6 +1822,8 @@ impl NativeQwenBackend {
         let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
         let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
+        let spec = NativeTextModelSpec::from_config_json(ModelFamily::Qwen, &config_json)?;
+        spec.validate_text_weights(store.index())?;
         if options.eager_materialize_shards {
             let materialized_bytes = store.materialize_all_shards()?;
             tracing::info!(
@@ -1850,7 +1852,7 @@ impl NativeQwenBackend {
         let adapter = NativeQwenAdapter {
             model_id: model_id.clone(),
             metadata: metadata.clone(),
-            spec: NativeTextModelSpec::from_config_json(ModelFamily::Qwen, &config_json)?,
+            spec,
             store,
             matvec,
             max_prefill_tokens: 32,
@@ -3203,22 +3205,9 @@ mod tests {
         let snapshot = temp_snapshot_dir("eager-materialize");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
-        copy_fixture("config.json", snapshot.join("config.json"));
         copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
-        std::fs::write(
-            snapshot.join("model.safetensors.index.json"),
-            serde_json::json!({
-                "metadata": { "total_size": 2 },
-                "weight_map": { "dummy.weight": "dummy.safetensors" }
-            })
-            .to_string(),
-        )
-        .expect("index");
-        std::fs::write(
-            snapshot.join("dummy.safetensors"),
-            tiny_safetensors_bf16("dummy.weight", &[1], &[1.0]),
-        )
-        .expect("dummy shard");
+        write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
+        write_tiny_qwen3_dense_model_index(&snapshot);
 
         let backend = NativeQwenBackend::open_with_options(
             "local-qwen36",
@@ -3581,6 +3570,41 @@ mod tests {
         .expect("single safetensors");
     }
 
+    fn write_tiny_qwen3_dense_model_index(root: &Path) {
+        let weight_map = [
+            "model.embed_tokens.weight",
+            "model.norm.weight",
+            "model.layers.0.input_layernorm.weight",
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.k_proj.weight",
+            "model.layers.0.self_attn.v_proj.weight",
+            "model.layers.0.self_attn.q_norm.weight",
+            "model.layers.0.self_attn.k_norm.weight",
+            "model.layers.0.self_attn.o_proj.weight",
+            "model.layers.0.post_attention_layernorm.weight",
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.up_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+        ]
+        .into_iter()
+        .map(|tensor| {
+            (
+                tensor.to_owned(),
+                serde_json::Value::String("model.safetensors".to_owned()),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+        std::fs::write(
+            root.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": { "total_size": 1 },
+                "weight_map": weight_map
+            })
+            .to_string(),
+        )
+        .expect("tiny Qwen index");
+    }
+
     fn tiny_multi_safetensors_bf16(tensors: &[(&str, &[usize], &[f32])]) -> Vec<u8> {
         let mut header = serde_json::Map::new();
         let mut data = Vec::new();
@@ -3600,27 +3624,6 @@ mod tests {
             );
         }
         let header = serde_json::Value::Object(header).to_string();
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(header.as_bytes());
-        bytes.extend_from_slice(&data);
-        bytes
-    }
-
-    fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
-        let mut data = Vec::with_capacity(values.len() * 2);
-        for value in values {
-            data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
-        }
-        let data_len = data.len();
-        let header = serde_json::json!({
-            name: {
-                "dtype": "BF16",
-                "shape": shape,
-                "data_offsets": [0, data_len]
-            }
-        })
-        .to_string();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
         bytes.extend_from_slice(header.as_bytes());

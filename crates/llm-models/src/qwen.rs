@@ -157,7 +157,7 @@ impl SafetensorsIndex {
         Ok(())
     }
 
-    fn require(&self, tensor: impl AsRef<str>) -> Result<(), ModelSpecError> {
+    pub(crate) fn require(&self, tensor: impl AsRef<str>) -> Result<(), ModelSpecError> {
         let tensor = tensor.as_ref();
         if self.contains(tensor) {
             Ok(())

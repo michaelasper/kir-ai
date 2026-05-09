@@ -12,6 +12,7 @@ pub fn native_layer_caches_for_spec(
 ) -> Result<Vec<QwenLayerCache>, TensorLoadError> {
     match spec {
         NativeTextModelSpec::Qwen(spec) => qwen_layer_caches_for_spec(spec, max_tokens),
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
 }
 
@@ -41,6 +42,7 @@ pub fn native_prefill_sequence_with_cache_with_matvec(
         NativeTextModelSpec::Qwen(spec) => {
             qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
         }
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
 }
 
@@ -64,6 +66,7 @@ pub fn native_decode_token_with_cache_with_matvec(
         NativeTextModelSpec::Qwen(spec) => {
             qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec)
         }
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
 }
 
@@ -85,6 +88,7 @@ pub fn native_final_norm_for_spec_with_matvec(
         NativeTextModelSpec::Qwen(spec) => {
             qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, matvec)
         }
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
 }
 
@@ -122,6 +126,7 @@ pub fn native_lm_head_top_k_for_spec_with_matvec(
             chunk_rows,
             matvec,
         ),
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
 }
 
@@ -151,5 +156,13 @@ pub fn native_lm_head_logits_for_spec_with_matvec(
         NativeTextModelSpec::Qwen(spec) => {
             qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec)
         }
+        NativeTextModelSpec::Gemma(_) => Err(unsupported_native_text_execution(spec)),
     }
+}
+
+fn unsupported_native_text_execution(spec: &NativeTextModelSpec) -> TensorLoadError {
+    TensorLoadError::unsupported(format!(
+        "native text execution for family `{}` is not implemented",
+        spec.family().canonical_slug()
+    ))
 }

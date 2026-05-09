@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, SamplingConfig,
+    ModelBackend, SafeTensorShardStore, SamplingConfig,
 };
+use llm_models::{ModelFamily, NativeTextModelSpec};
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -16,12 +17,18 @@ pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeTextLoadOptions {
+    pub family: Option<ModelFamily>,
     pub qwen: NativeQwenLoadOptions,
 }
 
 impl NativeTextLoadOptions {
     pub fn with_qwen_options(qwen: NativeQwenLoadOptions) -> Self {
-        Self { qwen }
+        Self { family: None, qwen }
+    }
+
+    pub fn with_family(mut self, family: ModelFamily) -> Self {
+        self.family = Some(family);
+        self
     }
 }
 
@@ -48,11 +55,28 @@ impl NativeTextBackend {
         snapshot_path: impl AsRef<Path>,
         options: NativeTextLoadOptions,
     ) -> anyhow::Result<Self> {
-        let driver = NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)?
-            .into_driver();
-        Ok(Self {
-            inner: NativeTextBackendInner::Qwen(driver),
-        })
+        let snapshot_path = snapshot_path.as_ref();
+        match options.family {
+            Some(ModelFamily::Gemma) => {
+                validate_native_text_artifact_layout(snapshot_path, ModelFamily::Gemma)?;
+                anyhow::bail!(
+                    "native text execution for family `gemma` is not implemented yet; Gemma 4 native execution is tracked by issue #109"
+                );
+            }
+            Some(ModelFamily::DeepSeek) => {
+                anyhow::bail!(
+                    "native text execution for family `deep_seek` is deferred until Qwen production parity"
+                );
+            }
+            Some(ModelFamily::Qwen) | None => {
+                let driver =
+                    NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)?
+                        .into_driver();
+                Ok(Self {
+                    inner: NativeTextBackendInner::Qwen(driver),
+                })
+            }
+        }
     }
 
     pub fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
@@ -72,6 +96,17 @@ impl NativeTextBackend {
         };
         self
     }
+}
+
+fn validate_native_text_artifact_layout(
+    snapshot_path: &Path,
+    family: ModelFamily,
+) -> anyhow::Result<NativeTextModelSpec> {
+    let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
+    let spec = NativeTextModelSpec::from_config_json(family, &config_json)?;
+    let store = SafeTensorShardStore::open(snapshot_path)?;
+    spec.validate_text_weights(store.index())?;
+    Ok(spec)
 }
 
 #[async_trait]

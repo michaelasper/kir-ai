@@ -65,15 +65,17 @@ pub fn open_snapshot_backend(
                 mlx_options,
             )?))
         }
-        SnapshotBackendLoader::NativeMetal => Ok(Box::new(
-            NativeTextBackend::open_with_options(
-                model_id,
-                snapshot_path,
-                NativeTextLoadOptions::with_qwen_options(options.native_qwen),
-            )?
-            .with_max_new_tokens(options.max_new_tokens)
-            .with_max_prefill_tokens(options.max_prefill_tokens),
-        )),
+        SnapshotBackendLoader::NativeMetal => {
+            let mut native_options = NativeTextLoadOptions::with_qwen_options(options.native_qwen);
+            if let Some(family) = requested_family.or(manifest_family) {
+                native_options = native_options.with_family(family);
+            }
+            Ok(Box::new(
+                NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)?
+                    .with_max_new_tokens(options.max_new_tokens)
+                    .with_max_prefill_tokens(options.max_prefill_tokens),
+            ))
+        }
     }
 }
 
@@ -133,6 +135,10 @@ fn validate_snapshot_loader_family(
     requested_family: Option<ModelFamily>,
 ) -> anyhow::Result<()> {
     let effective_family = requested_family.or(manifest_family);
+    if loader == SnapshotBackendLoader::NativeMetal && effective_family == Some(ModelFamily::Gemma)
+    {
+        return Ok(());
+    }
     if let Some(family) = effective_family
         && !family.adapter().production_backends().contains(&loader)
     {
@@ -395,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backend_factory_rejects_non_qwen_family_for_raw_native_metal_snapshot() {
+    fn snapshot_backend_factory_rejects_deferred_family_for_raw_native_metal_snapshot() {
         let snapshot = temp_snapshot_dir("native-family-override-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -405,40 +411,92 @@ mod tests {
             &snapshot,
             SnapshotBackendOptions {
                 loader: Some(SnapshotBackendLoader::NativeMetal),
-                family: Some(ModelFamily::Gemma),
+                family: Some(ModelFamily::DeepSeek),
                 ..SnapshotBackendOptions::default()
             },
         ) {
-            Ok(_) => panic!("native-metal non-Qwen family should fail closed"),
+            Ok(_) => panic!("native-metal deferred family should fail closed"),
             Err(err) => err,
         };
 
         assert!(
             err.to_string()
-                .contains("snapshot loader `native-metal` is not supported for family `gemma`")
+                .contains("DeepSeek serving is deferred until Qwen production parity")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
 
     #[test]
-    fn snapshot_backend_factory_rejects_non_qwen_family_for_native_metal_manifest() {
+    fn snapshot_backend_factory_rejects_deferred_family_for_native_metal_manifest() {
         let snapshot = temp_snapshot_dir("native-family-manifest-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
-        write_manifest_with_family(&snapshot, "native-metal", "gemma");
+        write_manifest_with_family(&snapshot, "native-metal", "deep_seek");
 
         let err = match open_snapshot_backend(
             "local-native",
             &snapshot,
             SnapshotBackendOptions::default(),
         ) {
-            Ok(_) => panic!("native-metal Gemma manifest should fail closed"),
+            Ok(_) => panic!("native-metal DeepSeek manifest should fail closed"),
             Err(err) => err,
         };
 
         assert!(
             err.to_string()
-                .contains("snapshot loader `native-metal` is not supported for family `gemma`")
+                .contains("DeepSeek serving is deferred until Qwen production parity")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_reports_gemma_native_layout_errors_before_execution_gate() {
+        let snapshot = temp_snapshot_dir("native-gemma-invalid-layout");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest_with_family(&snapshot, "native-metal", "gemma");
+        write_gemma4_native_config(&snapshot);
+        write_gemma4_native_index(&snapshot, false);
+
+        let err = match open_snapshot_backend(
+            "local-gemma",
+            &snapshot,
+            SnapshotBackendOptions::default(),
+        ) {
+            Ok(_) => panic!("native Gemma snapshot missing text tensors should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("model.language_model.layers.0.self_attn.k_proj.weight"),
+            "expected missing Gemma text tensor error, got {err}"
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_reports_gemma_native_execution_gate_after_layout_validation() {
+        let snapshot = temp_snapshot_dir("native-gemma-execution-gate");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest_with_family(&snapshot, "native-metal", "gemma");
+        write_gemma4_native_config(&snapshot);
+        write_gemma4_native_index(&snapshot, true);
+
+        let err = match open_snapshot_backend(
+            "local-gemma",
+            &snapshot,
+            SnapshotBackendOptions::default(),
+        ) {
+            Ok(_) => panic!("native Gemma execution should remain gated until #109"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("native text execution for family `gemma` is not implemented"),
+            "expected Gemma execution gate error, got {err}"
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -523,6 +581,144 @@ mod tests {
             .to_string(),
         )
         .expect("manifest");
+    }
+
+    fn write_gemma4_native_config(root: &Path) {
+        std::fs::write(
+            root.join("config.json"),
+            serde_json::json!({
+                "architectures": ["Gemma4ForConditionalGeneration"],
+                "model_type": "gemma4",
+                "text_config": {
+                    "attention_bias": false,
+                    "attention_dropout": 0.0,
+                    "attention_k_eq_v": true,
+                    "dtype": "bfloat16",
+                    "enable_moe_block": false,
+                    "final_logit_softcapping": 30.0,
+                    "global_head_dim": 512,
+                    "head_dim": 256,
+                    "hidden_activation": "gelu_pytorch_tanh",
+                    "hidden_size": 5376,
+                    "hidden_size_per_layer_input": 0,
+                    "intermediate_size": 21504,
+                    "layer_types": ["sliding_attention"],
+                    "max_position_embeddings": 262144,
+                    "model_type": "gemma4_text",
+                    "num_attention_heads": 32,
+                    "num_global_key_value_heads": 4,
+                    "num_hidden_layers": 1,
+                    "num_key_value_heads": 16,
+                    "num_kv_shared_layers": 0,
+                    "rms_norm_eps": 1e-6,
+                    "rope_parameters": {
+                        "full_attention": {
+                            "partial_rotary_factor": 0.25,
+                            "rope_theta": 1000000.0,
+                            "rope_type": "proportional"
+                        },
+                        "sliding_attention": {
+                            "rope_theta": 10000.0,
+                            "rope_type": "default"
+                        }
+                    },
+                    "sliding_window": 1024,
+                    "tie_word_embeddings": true,
+                    "use_cache": true,
+                    "use_double_wide_mlp": false,
+                    "vocab_size": 262144,
+                    "vocab_size_per_layer_input": 262144
+                },
+                "tie_word_embeddings": true,
+                "vision_config": {"model_type": "gemma4_vision"}
+            })
+            .to_string(),
+        )
+        .expect("Gemma config");
+    }
+
+    fn write_gemma4_native_index(root: &Path, include_key_projection: bool) {
+        let mut weight_map = serde_json::Map::from_iter([
+            (
+                "model.embed_vision.embedding_projection.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.embed_tokens.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.norm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.input_layernorm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.layer_scalar".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.mlp.down_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.mlp.gate_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.mlp.up_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.post_attention_layernorm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.post_feedforward_layernorm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.pre_feedforward_layernorm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.self_attn.k_norm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.self_attn.o_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.self_attn.q_norm.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.self_attn.q_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+            (
+                "model.language_model.layers.0.self_attn.v_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            ),
+        ]);
+        if include_key_projection {
+            weight_map.insert(
+                "model.language_model.layers.0.self_attn.k_proj.weight".to_owned(),
+                serde_json::json!("model.safetensors"),
+            );
+        }
+        std::fs::write(
+            root.join("model.safetensors.index.json"),
+            serde_json::json!({
+                "metadata": {"total_size": 1},
+                "weight_map": weight_map
+            })
+            .to_string(),
+        )
+        .expect("Gemma safetensors index");
     }
 
     fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {

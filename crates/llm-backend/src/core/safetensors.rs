@@ -511,6 +511,10 @@ impl SafeTensorShardStore {
         self.index.tensor_names()
     }
 
+    pub fn index(&self) -> &SafetensorsIndex {
+        &self.index
+    }
+
     fn resolve_shard_path(&self, shard: &str) -> Result<PathBuf, TensorLoadError> {
         let root = fs::canonicalize(&self.root).map_err(|err| {
             TensorLoadError::missing(format!(
