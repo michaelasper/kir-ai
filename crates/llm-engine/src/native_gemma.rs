@@ -277,7 +277,6 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             prompt_template: backend_request_cache_prompt_template(request),
             tool_schema: request.cache_context.tool_schema.clone(),
             request_mode: native_gemma_prefix_request_mode(request),
-            sampling: native_gemma_prefix_sampling_key(request.sampling),
             cache_layout_version: NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION,
             cache_tokens,
             max_prefill_tokens: self.max_prefill_tokens,
@@ -561,19 +560,6 @@ fn native_gemma_prefix_request_mode(request: &BackendRequest) -> String {
         "conversation={},json_object={},required_tool={:?}",
         request.conversation_mode, request.json_object_mode, request.required_tool_choice
     )
-}
-
-fn native_gemma_prefix_sampling_key(sampling: SamplingConfig) -> String {
-    match sampling {
-        SamplingConfig::Greedy => "greedy".to_owned(),
-        SamplingConfig::TopP { temperature, top_p } => {
-            format!(
-                "top_p:{:08x}:{:08x}",
-                temperature.to_bits(),
-                top_p.to_bits()
-            )
-        }
-    }
 }
 
 #[async_trait]

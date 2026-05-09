@@ -7,6 +7,7 @@ use llm_backend::{
 use llm_hub::SnapshotManifest;
 use llm_models::{BackendKind, ModelFamily};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -181,7 +182,11 @@ impl MlxBackend {
             let status = response.status();
             if status.is_success() {
                 let mut bytes = response.bytes_stream();
-                let mut parser = MlxSseParser::new(&request.prompt, self.control_stop_tokens);
+                let mut parser = MlxSseParser::new(
+                    &request.prompt,
+                    self.control_stop_tokens,
+                    mlx_tool_markup_for_metadata(&self.metadata),
+                );
                 loop {
                     let item = tokio::select! {
                         item = bytes.next() => Ok(item),
@@ -329,6 +334,19 @@ struct MlxCompletionChoice {
 #[derive(Debug, Deserialize)]
 struct MlxMessage {
     content: Option<String>,
+    tool_calls: Option<Vec<MlxToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MlxToolCall {
+    index: Option<usize>,
+    function: Option<MlxToolCallFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MlxToolCallFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,10 +375,12 @@ struct MlxSseParser {
     saw_done: bool,
     line_buffer: String,
     stop_filter: MlxControlStopFilter,
+    tool_markup: MlxToolMarkup,
+    tool_calls: Vec<MlxToolCallAccumulator>,
 }
 
 impl MlxSseParser {
-    fn new(prompt: &str, stop_tokens: &'static [&'static str]) -> Self {
+    fn new(prompt: &str, stop_tokens: &'static [&'static str], tool_markup: MlxToolMarkup) -> Self {
         Self {
             prompt_tokens: count_whitespace_tokens(prompt),
             estimated_completion_tokens: 0,
@@ -369,6 +389,8 @@ impl MlxSseParser {
             saw_done: false,
             line_buffer: String::new(),
             stop_filter: MlxControlStopFilter::new(stop_tokens),
+            tool_markup,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -440,12 +462,25 @@ impl MlxSseParser {
             .as_ref()
             .and_then(|usage| usage.completion_tokens);
         let choice = completion.first_choice()?;
+        if let Some(tool_calls) = choice
+            .delta
+            .as_ref()
+            .and_then(|message| message.tool_calls.as_ref())
+            .or_else(|| {
+                choice
+                    .message
+                    .as_ref()
+                    .and_then(|message| message.tool_calls.as_ref())
+            })
+        {
+            self.push_tool_calls(tool_calls);
+        }
         let text = choice
             .text
             .or_else(|| choice.delta.and_then(|message| message.content))
             .or_else(|| choice.message.and_then(|message| message.content))
             .unwrap_or_default();
-        let text = self.stop_filter.push_str(&text);
+        let mut text = self.stop_filter.push_str(&text);
         self.estimated_completion_tokens += count_visible_tokens(&text);
         let finish_reason = choice
             .finish_reason
@@ -457,6 +492,11 @@ impl MlxSseParser {
                 .is_stopped()
                 .then_some(llm_api::FinishReason::Stop)
         });
+        if matches!(finish_reason, Some(llm_api::FinishReason::ToolCalls)) {
+            let tool_text = self.render_tool_calls()?;
+            self.estimated_completion_tokens += count_visible_tokens(&tool_text);
+            text.push_str(&tool_text);
+        }
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, finish_reason.is_some());
         if text.is_empty() && finish_reason.is_none() && completion_tokens == 0 {
@@ -468,6 +508,36 @@ impl MlxSseParser {
             completion_tokens,
             finish_reason,
         }))
+    }
+
+    fn push_tool_calls(&mut self, tool_calls: &[MlxToolCall]) {
+        for call in tool_calls {
+            let index = call.index.unwrap_or(self.tool_calls.len());
+            if self.tool_calls.len() <= index {
+                self.tool_calls
+                    .resize_with(index + 1, MlxToolCallAccumulator::default);
+            }
+            let accumulator = &mut self.tool_calls[index];
+            if let Some(function) = &call.function {
+                if let Some(name) = &function.name {
+                    accumulator.name.push_str(name);
+                }
+                if let Some(arguments) = &function.arguments {
+                    accumulator.arguments.push_str(arguments);
+                }
+            }
+        }
+    }
+
+    fn render_tool_calls(&mut self) -> Result<String, BackendError> {
+        if self.tool_calls.is_empty() {
+            return Ok(String::new());
+        }
+        let mut rendered = String::new();
+        for call in std::mem::take(&mut self.tool_calls) {
+            rendered.push_str(&render_mlx_tool_call(&call, self.tool_markup)?);
+        }
+        Ok(rendered)
     }
 
     fn completion_token_delta(
@@ -490,6 +560,18 @@ impl MlxSseParser {
         self.emitted_completion_tokens = self.estimated_completion_tokens;
         delta
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MlxToolMarkup {
+    Qwen,
+    Gemma,
+}
+
+#[derive(Debug, Default, Clone)]
+struct MlxToolCallAccumulator {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Clone)]
@@ -579,6 +661,101 @@ fn mlx_finish_reason(reason: Option<&str>) -> Result<llm_api::FinishReason, Back
         Some(other) => Err(BackendError::Other(format!(
             "unsupported MLX finish reason `{other}`"
         ))),
+    }
+}
+
+fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> MlxToolMarkup {
+    match metadata
+        .family
+        .as_deref()
+        .and_then(|family| ModelFamily::parse_slug(family).ok())
+    {
+        Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
+        _ => MlxToolMarkup::Qwen,
+    }
+}
+
+fn render_mlx_tool_call(
+    call: &MlxToolCallAccumulator,
+    markup: MlxToolMarkup,
+) -> Result<String, BackendError> {
+    if call.name.trim().is_empty() {
+        return Err(BackendError::Other(
+            "MLX structured tool call was missing a function name".to_owned(),
+        ));
+    }
+    let arguments = parse_mlx_tool_arguments(&call.arguments)?;
+    match markup {
+        MlxToolMarkup::Qwen => Ok(format!(
+            "<tool_call>{}</tool_call>",
+            serde_json::json!({
+                "name": call.name.as_str(),
+                "arguments": arguments,
+            })
+        )),
+        MlxToolMarkup::Gemma => {
+            let Value::Object(arguments) = arguments else {
+                return Err(BackendError::Other(
+                    "MLX structured Gemma tool arguments must be a JSON object".to_owned(),
+                ));
+            };
+            Ok(format!(
+                "<|tool_call>call:{}{}<tool_call|>",
+                call.name,
+                render_gemma_tool_object(&arguments)?
+            ))
+        }
+    }
+}
+
+fn parse_mlx_tool_arguments(arguments: &str) -> Result<Value, BackendError> {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str::<Value>(trimmed).map_err(|err| {
+        BackendError::Other(format!(
+            "invalid MLX structured tool call arguments `{trimmed}`: {err}"
+        ))
+    })
+}
+
+fn render_gemma_tool_object(
+    object: &serde_json::Map<String, Value>,
+) -> Result<String, BackendError> {
+    let mut rendered = String::from("{");
+    for (index, (key, value)) in object.iter().enumerate() {
+        if index > 0 {
+            rendered.push(',');
+        }
+        rendered.push_str(
+            &serde_json::to_string(key).map_err(|err| {
+                BackendError::Other(format!("Gemma tool key render failed: {err}"))
+            })?,
+        );
+        rendered.push(':');
+        rendered.push_str(&render_gemma_tool_value(value)?);
+    }
+    rendered.push('}');
+    Ok(rendered)
+}
+
+fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
+    match value {
+        Value::Object(object) => render_gemma_tool_object(object),
+        Value::Array(values) => {
+            let mut rendered = String::from("[");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    rendered.push(',');
+                }
+                rendered.push_str(&render_gemma_tool_value(value)?);
+            }
+            rendered.push(']');
+            Ok(rendered)
+        }
+        _ => serde_json::to_string(value)
+            .map_err(|err| BackendError::Other(format!("Gemma tool value render failed: {err}"))),
     }
 }
 
@@ -982,7 +1159,11 @@ mod tests {
 
     #[test]
     fn mlx_sse_parser_flushes_non_stop_prefix_at_done() {
-        let mut parser = MlxSseParser::new("hello mlx", MLX_QWEN_CONTROL_STOP_TOKENS);
+        let mut parser = MlxSseParser::new(
+            "hello mlx",
+            MLX_QWEN_CONTROL_STOP_TOKENS,
+            MlxToolMarkup::Qwen,
+        );
         let chunks = parser
             .push_str(
                 "data:{\"choices\":[{\"text\":\"keep <|im\",\"finish_reason\":null}]}\n\ndata:[DONE]\n\n",
@@ -1051,6 +1232,123 @@ mod tests {
         assert_eq!(second.text, "two");
         assert_eq!(second.completion_tokens, 3);
         assert_eq!(second.finish_reason, Some(llm_api::FinishReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "read a file".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+        assert!(output.text.starts_with("<tool_call>"));
+        assert!(output.text.contains("\"name\":\"read_file\""));
+        assert!(output.text.contains("\"path\":\"Cargo.toml\""));
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+
+        let chunks = backend
+            .generate_stream(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "read a file".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("mlx stream succeeds");
+
+        let text = chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("\"name\":\"read_file\""));
+        assert!(text.contains("\"path\":\"Cargo.toml\""));
+        assert_eq!(
+            chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
+            Some(llm_api::FinishReason::ToolCalls)
+        );
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"message\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"rust\\\",\\\"limit\\\":3}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":5}}\n\ndata:[DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Gemma),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "lookup rust".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+        assert!(output.text.starts_with("<|tool_call>call:lookup"));
+        assert!(output.text.contains("\"query\":\"rust\""));
+        assert!(output.text.contains("\"limit\":3"));
     }
 
     #[tokio::test]

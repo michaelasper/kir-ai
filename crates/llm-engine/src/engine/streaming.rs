@@ -392,6 +392,7 @@ fn mark_active_request_finished_for_stream_stall(
     active_request: &ActiveRequest,
     scheduler_slot: &mut SchedulerPermit,
 ) -> Vec<Result<Event, Infallible>> {
+    active_request.cancellation.cancel();
     match active_request.mark_finished() {
         super::requests::RequestFinishResult::Finished => {
             scheduler_slot.mark_failed();

@@ -198,6 +198,47 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
 }
 
 #[tokio::test]
+async fn chat_stream_stall_cancels_backend_work() {
+    let cancelled = Arc::new(Notify::new());
+    let response = build_router_with_backend_and_options(
+        Box::new(CancellableStreamBackend {
+            cancelled: cancelled.clone(),
+        }),
+        EngineOptions {
+            stream_stall_timeout: Some(Duration::from_millis(50)),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": "local-qwen36",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
+        .await
+        .expect("stall response completes");
+    assert!(body.contains("\"code\":\"stream_stalled\""));
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("stream stall cancels backend token");
+}
+
+#[tokio::test]
 async fn chat_stream_runtime_errors_include_stable_metadata() {
     let response = build_router_with_backend(Box::new(FailingStreamBackend))
         .oneshot(

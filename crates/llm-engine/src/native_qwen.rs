@@ -108,7 +108,6 @@ fn native_qwen_prefix_namespace(
         prompt_template: backend_request_cache_prompt_template(request),
         tool_schema: request.cache_context.tool_schema.clone(),
         request_mode: native_qwen_prefix_request_mode(request),
-        sampling: native_qwen_prefix_sampling_key(request.sampling),
         cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
         cache_tokens,
         max_prefill_tokens: adapter.max_prefill_tokens,
@@ -127,19 +126,6 @@ fn backend_request_cache_prompt_template(request: &BackendRequest) -> String {
         BackendCacheContext::raw_prompt().prompt_template
     } else {
         request.cache_context.prompt_template.clone()
-    }
-}
-
-fn native_qwen_prefix_sampling_key(sampling: SamplingConfig) -> String {
-    match sampling {
-        SamplingConfig::Greedy => "greedy".to_owned(),
-        SamplingConfig::TopP { temperature, top_p } => {
-            format!(
-                "top_p:{:08x}:{:08x}",
-                temperature.to_bits(),
-                top_p.to_bits()
-            )
-        }
     }
 }
 
@@ -1274,6 +1260,11 @@ mod tests {
             64,
         );
         let request = native_qwen_test_request("local-qwen36");
+        let mut top_p_request = request.clone();
+        top_p_request.sampling = SamplingConfig::TopP {
+            temperature: 0.2,
+            top_p: 0.9,
+        };
         let before_hits = native_prefix_metric_counter("hits");
 
         let first = backend
@@ -1281,7 +1272,7 @@ mod tests {
             .expect("first decode session starts");
         drop(first);
         let second = backend
-            .start_decode_session(&[0, 1, 0], 8, &request, &CancellationToken::new())
+            .start_decode_session(&[0, 1, 0], 8, &top_p_request, &CancellationToken::new())
             .expect("second decode session starts");
 
         assert!(
@@ -2160,7 +2151,6 @@ mod tests {
             prompt_template: QwenFamilyAdapter.cache_template_id().to_owned(),
             tool_schema: Some("tool-schema-v1".to_owned()),
             request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
-            sampling: "greedy".to_owned(),
             cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
             cache_tokens: 8,
             max_prefill_tokens: 8,
