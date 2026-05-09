@@ -1,0 +1,205 @@
+use super::{
+    AppState, EngineError, lifecycle, parse_json_request, record_failure_metrics,
+    record_success_metrics,
+};
+use axum::{
+    Json,
+    extract::{State, rejection::JsonRejection},
+    http::HeaderMap,
+    response::{IntoResponse, Response, sse::Sse},
+};
+use futures::StreamExt;
+use llm_api::{ChatCompletionRequest, CompletionRequest, ValidateRequest};
+use llm_runtime::{RuntimeError, chat_stream_requires_buffering};
+
+pub(super) async fn chat_completions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Result<Json<ChatCompletionRequest>, JsonRejection>,
+) -> Result<Response, EngineError> {
+    let request = parse_json_request(request, &state)?;
+    validate_api_request(&request, &state)?;
+    let streamed = request.stream;
+    if request.stream {
+        let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
+        if chat_stream_requires_buffering(&request) {
+            let response = match state
+                .runtime
+                .chat_stream_buffered_with_cancel(request, run.cancellation())
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => return Err(run.finish_runtime_error(&state, err)),
+            };
+            let stream_run = run.into_streaming();
+            let lifecycle::StreamingGenerationRun {
+                request_id,
+                active_request,
+                scheduler_slot,
+                phase,
+                request_started,
+            } = stream_run;
+            let events = super::streaming::stream_runtime_events(
+                state.clone(),
+                active_request,
+                scheduler_slot,
+                phase,
+                response.into_events(),
+                request_started,
+                streamed,
+            );
+            let mut response = Sse::new(events)
+                .keep_alive(super::streaming::engine_sse_keep_alive())
+                .into_response();
+            lifecycle::insert_request_id_header(&mut response, &request_id);
+            return Ok(response);
+        }
+        let request_id = run.request_id().to_owned();
+        let stream_run = run.into_streaming();
+        let stream_state = state.clone();
+        let events = async_stream::stream! {
+            let lifecycle::StreamingGenerationRun {
+                active_request,
+                mut scheduler_slot,
+                phase,
+                request_started,
+                ..
+            } = stream_run;
+            match stream_state
+                .runtime
+                .chat_stream_with_cancel(request, active_request.cancellation.clone())
+                .await
+            {
+                Ok(response) => {
+                    let events = super::streaming::stream_runtime_events(
+                        stream_state.clone(),
+                        active_request,
+                        scheduler_slot,
+                        phase,
+                        response.into_events(),
+                        request_started,
+                        streamed,
+                    );
+                    tokio::pin!(events);
+                    while let Some(event) = events.next().await {
+                        yield event;
+                    }
+                }
+                Err(err) => {
+                    for event in super::streaming::stream_runtime_error_events(
+                        &stream_state,
+                        &active_request,
+                        &mut scheduler_slot,
+                        err,
+                    ) {
+                        yield event;
+                    }
+                }
+            }
+        };
+        let mut response = Sse::new(events)
+            .keep_alive(super::streaming::engine_sse_keep_alive())
+            .into_response();
+        lifecycle::insert_request_id_header(&mut response, &request_id);
+        return Ok(response);
+    }
+    let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
+    let response = match state
+        .runtime
+        .chat_with_cancel(request, run.cancellation())
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => return Err(run.finish_runtime_error(&state, err)),
+    };
+    let finished = run.finish_success(&state)?;
+    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
+    let mut response = Json(response).into_response();
+    lifecycle::insert_request_id_header(&mut response, finished.request_id());
+    Ok(response)
+}
+
+pub(super) async fn completions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Result<Json<CompletionRequest>, JsonRejection>,
+) -> Result<Response, EngineError> {
+    let request = parse_json_request(request, &state)?;
+    validate_api_request(&request, &state)?;
+    let streamed = request.stream;
+    if request.stream {
+        let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
+        let request_id = run.request_id().to_owned();
+        let stream_run = run.into_streaming();
+        let stream_state = state.clone();
+        let events = async_stream::stream! {
+            let lifecycle::StreamingGenerationRun {
+                active_request,
+                mut scheduler_slot,
+                phase,
+                request_started,
+                ..
+            } = stream_run;
+            match stream_state
+                .runtime
+                .completion_stream_with_cancel(request, active_request.cancellation.clone())
+                .await
+            {
+                Ok(response) => {
+                    let events = super::streaming::stream_runtime_events(
+                        stream_state.clone(),
+                        active_request,
+                        scheduler_slot,
+                        phase,
+                        response.into_events(),
+                        request_started,
+                        streamed,
+                    );
+                    tokio::pin!(events);
+                    while let Some(event) = events.next().await {
+                        yield event;
+                    }
+                }
+                Err(err) => {
+                    for event in super::streaming::stream_runtime_error_events(
+                        &stream_state,
+                        &active_request,
+                        &mut scheduler_slot,
+                        err,
+                    ) {
+                        yield event;
+                    }
+                }
+            }
+        };
+        let mut response = Sse::new(events)
+            .keep_alive(super::streaming::engine_sse_keep_alive())
+            .into_response();
+        lifecycle::insert_request_id_header(&mut response, &request_id);
+        return Ok(response);
+    }
+    let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
+    let response = match state
+        .runtime
+        .completion_with_cancel(request, run.cancellation())
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => return Err(run.finish_runtime_error(&state, err)),
+    };
+    let finished = run.finish_success(&state)?;
+    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
+    let mut response = Json(response).into_response();
+    lifecycle::insert_request_id_header(&mut response, finished.request_id());
+    Ok(response)
+}
+
+fn validate_api_request<T: ValidateRequest>(
+    request: &T,
+    state: &AppState,
+) -> Result<(), EngineError> {
+    request.validate().map_err(|err| {
+        record_failure_metrics(state);
+        RuntimeError::Api(err).into()
+    })
+}
