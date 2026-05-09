@@ -36,6 +36,7 @@ pub struct NativeFullAttentionSequenceParts<'a> {
     pub values: &'a [Vec<f32>],
     pub gates: Option<&'a [Vec<f32>]>,
     pub output_projection: &'a [f32],
+    pub score_scale: f32,
 }
 
 pub struct NativeFullAttentionStepParts<'a> {
@@ -44,11 +45,33 @@ pub struct NativeFullAttentionStepParts<'a> {
     pub value: &'a [f32],
     pub gate: Option<&'a [f32]>,
     pub output_projection: &'a [f32],
+    pub score_scale: f32,
+}
+
+pub struct NativeFullAttentionCacheSequenceParts<'a> {
+    pub queries: &'a [Vec<f32>],
+    pub gates: Option<&'a [Vec<f32>]>,
+    pub source_counts: &'a [usize],
+    pub output_projection: &'a [f32],
+    pub score_scale: f32,
 }
 
 struct NativeFullAttentionInlineSource<'a> {
     keys: &'a [Vec<f32>],
     values: &'a [Vec<f32>],
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeFullAttentionMixInput<'a> {
+    query: &'a [f32],
+    gate: Option<&'a [f32]>,
+    score_scale: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeFullAttentionCacheSource<'a> {
+    cache: &'a LayerKvCache,
     count: usize,
 }
 
@@ -102,6 +125,87 @@ pub fn native_full_attention_step_with_cache_from_parts(
     )
 }
 
+pub fn native_full_attention_sequence_from_cache_parts_with_matvec(
+    dims: NativeFullAttentionDims,
+    parts: &NativeFullAttentionCacheSequenceParts<'_>,
+    cache: &LayerKvCache,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<Vec<f32>>, MathError> {
+    if parts.queries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shape = validate_full_attention_shape(dims)?;
+    require_full_attention_cache_shape(dims, cache)?;
+    let seq_len = parts.queries.len();
+    if parts.source_counts.len() != seq_len {
+        return Err(MathError::InvalidShape(
+            "full attention cache source counts must match queries".to_owned(),
+        ));
+    }
+    if let Some(gates) = parts.gates
+        && gates.len() != seq_len
+    {
+        return Err(MathError::InvalidShape(
+            "full attention gate sequence length must match queries".to_owned(),
+        ));
+    }
+    require_len(
+        "output projection weight",
+        parts.output_projection.len(),
+        dims.hidden_size
+            .checked_mul(shape.attention_dim)
+            .ok_or_else(|| {
+                MathError::InvalidShape("output projection shape overflow".to_owned())
+            })?,
+    )?;
+    for token_idx in 0..seq_len {
+        require_len(
+            "query projection",
+            parts.queries[token_idx].len(),
+            shape.attention_dim,
+        )?;
+        if let Some(gates) = parts.gates {
+            require_len(
+                "gate projection",
+                gates[token_idx].len(),
+                shape.attention_dim,
+            )?;
+        }
+    }
+
+    let mut outputs = Vec::with_capacity(seq_len);
+    for token_idx in 0..seq_len {
+        let source_count = parts.source_counts[token_idx];
+        if source_count > cache.token_count() {
+            return Err(MathError::InvalidShape(format!(
+                "full attention source count {source_count} exceeds cache token count {}",
+                cache.token_count()
+            )));
+        }
+        let attended = native_full_attention_mix_from_cache(
+            dims,
+            shape,
+            NativeFullAttentionMixInput {
+                query: &parts.queries[token_idx],
+                gate: parts.gates.map(|gates| gates[token_idx].as_slice()),
+                score_scale: parts.score_scale,
+            },
+            NativeFullAttentionCacheSource {
+                cache,
+                count: source_count,
+            },
+            matvec,
+        )?;
+        outputs.push(matvec.matvec_row_major_f32(
+            &attended,
+            parts.output_projection,
+            dims.hidden_size,
+            shape.attention_dim,
+        )?);
+    }
+    Ok(outputs)
+}
+
 pub fn native_full_attention_step_with_cache_from_parts_with_matvec(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
@@ -134,10 +238,15 @@ pub fn native_full_attention_step_with_cache_from_parts_with_matvec(
     let attended = native_full_attention_mix_from_cache(
         dims,
         shape,
-        parts.query,
-        parts.gate,
-        cache,
-        cache.token_count(),
+        NativeFullAttentionMixInput {
+            query: parts.query,
+            gate: parts.gate,
+            score_scale: parts.score_scale,
+        },
+        NativeFullAttentionCacheSource {
+            cache,
+            count: cache.token_count(),
+        },
         matvec,
     )?;
     matvec.matvec_row_major_f32(
@@ -206,18 +315,26 @@ fn native_full_attention_sequence_impl(
             native_full_attention_mix_from_cache(
                 dims,
                 shape,
-                query,
-                gate,
-                cache,
-                cache.token_count(),
+                NativeFullAttentionMixInput {
+                    query,
+                    gate,
+                    score_scale: parts.score_scale,
+                },
+                NativeFullAttentionCacheSource {
+                    cache,
+                    count: cache.token_count(),
+                },
                 matvec,
             )?
         } else {
             native_full_attention_mix_from_inline(
                 dims,
                 shape,
-                query,
-                gate,
+                NativeFullAttentionMixInput {
+                    query,
+                    gate,
+                    score_scale: parts.score_scale,
+                },
                 NativeFullAttentionInlineSource {
                     keys: parts.keys,
                     values: parts.values,
@@ -305,43 +422,42 @@ fn require_full_attention_cache_shape(
 fn native_full_attention_mix_from_cache(
     dims: NativeFullAttentionDims,
     shape: NativeFullAttentionShape,
-    query: &[f32],
-    gate: Option<&[f32]>,
-    cache: &LayerKvCache,
-    source_count: usize,
+    input: NativeFullAttentionMixInput<'_>,
+    source: NativeFullAttentionCacheSource<'_>,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
-    let scale = (dims.head_dim as f32).sqrt().recip();
     let mut attended = vec![0.0; shape.attention_dim];
     for head in 0..dims.num_attention_heads {
         let kv_head = head / shape.groups;
         let q_start = head * dims.head_dim;
         let kv_start = kv_head * dims.head_dim;
         let key_rows = matvec.select_kv_cache_head_rows_f32(
-            cache,
+            source.cache,
             NativeKvCacheTensor::Key,
-            source_count,
+            source.count,
             kv_start,
             dims.head_dim,
         )?;
         let scores = scaled_full_attention_scores_with_matvec(
-            &query[q_start..q_start + dims.head_dim],
+            &input.query[q_start..q_start + dims.head_dim],
             &key_rows,
-            source_count,
-            scale,
+            source.count,
+            input.score_scale,
             matvec,
         )?;
         let weights = matvec.softmax_f32(&scores)?;
         let value_rows = matvec.select_kv_cache_head_rows_f32(
-            cache,
+            source.cache,
             NativeKvCacheTensor::Value,
-            source_count,
+            source.count,
             kv_start,
             dims.head_dim,
         )?;
         let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
         for offset in 0..dims.head_dim {
-            let gate = gate.map_or(1.0, |gate| sigmoid_f32(gate[q_start + offset]));
+            let gate = input
+                .gate
+                .map_or(1.0, |gate| sigmoid_f32(gate[q_start + offset]));
             attended[q_start + offset] = mixed[offset] * gate;
         }
     }
@@ -351,12 +467,10 @@ fn native_full_attention_mix_from_cache(
 fn native_full_attention_mix_from_inline(
     dims: NativeFullAttentionDims,
     shape: NativeFullAttentionShape,
-    query: &[f32],
-    gate: Option<&[f32]>,
+    input: NativeFullAttentionMixInput<'_>,
     source: NativeFullAttentionInlineSource<'_>,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
-    let scale = (dims.head_dim as f32).sqrt().recip();
     let mut attended = vec![0.0; shape.attention_dim];
     for head in 0..dims.num_attention_heads {
         let kv_head = head / shape.groups;
@@ -367,10 +481,10 @@ fn native_full_attention_mix_from_inline(
             key_rows.extend_from_slice(&key[kv_start..kv_start + dims.head_dim]);
         }
         let scores = scaled_full_attention_scores_with_matvec(
-            &query[q_start..q_start + dims.head_dim],
+            &input.query[q_start..q_start + dims.head_dim],
             &key_rows,
             source.count,
-            scale,
+            input.score_scale,
             matvec,
         )?;
         let weights = matvec.softmax_f32(&scores)?;
@@ -380,7 +494,9 @@ fn native_full_attention_mix_from_inline(
         }
         let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
         for offset in 0..dims.head_dim {
-            let gate = gate.map_or(1.0, |gate| sigmoid_f32(gate[q_start + offset]));
+            let gate = input
+                .gate
+                .map_or(1.0, |gate| sigmoid_f32(gate[q_start + offset]));
             attended[q_start + offset] = mixed[offset] * gate;
         }
     }
@@ -434,6 +550,7 @@ mod tests {
                 values: &values,
                 gates: None,
                 output_projection: &output_projection,
+                score_scale: 1.0,
             },
         )
         .expect("attention succeeds");
@@ -461,6 +578,7 @@ mod tests {
             values: &values,
             gates: Some(&gates),
             output_projection: &output_projection,
+            score_scale: 1.0,
         };
 
         let uncached =
@@ -475,5 +593,91 @@ mod tests {
                 assert_close(*uncached, cached);
             }
         }
+    }
+
+    #[test]
+    fn native_full_attention_uses_caller_score_scale() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let queries = vec![vec![1.0], vec![1.0]];
+        let keys = vec![vec![0.0], vec![10.0]];
+        let values = vec![vec![0.0], vec![100.0]];
+        let output_projection = vec![1.0];
+
+        let flat_scaled = native_full_attention_sequence_from_parts(
+            dims,
+            &NativeFullAttentionSequenceParts {
+                queries: &queries,
+                keys: &keys,
+                values: &values,
+                gates: None,
+                output_projection: &output_projection,
+                score_scale: 0.0,
+            },
+        )
+        .expect("flat scale attention succeeds");
+        let sharp_scaled = native_full_attention_sequence_from_parts(
+            dims,
+            &NativeFullAttentionSequenceParts {
+                queries: &queries,
+                keys: &keys,
+                values: &values,
+                gates: None,
+                output_projection: &output_projection,
+                score_scale: 1.0,
+            },
+        )
+        .expect("sharp scale attention succeeds");
+
+        assert_close(flat_scaled[1][0], 50.0);
+        assert!(
+            sharp_scaled[1][0] > 99.0,
+            "positive score scale should strongly prefer the matching key"
+        );
+    }
+
+    #[test]
+    fn native_full_attention_cache_sequence_reads_without_appending() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
+        cache
+            .append_sliding(&[1.0], &[10.0])
+            .expect("first cache append");
+        cache
+            .append_sliding(&[3.0], &[30.0])
+            .expect("second cache append");
+        let queries = vec![vec![1.0], vec![1.0]];
+        let source_counts = vec![1, 2];
+        let output_projection = vec![1.0];
+
+        let output = native_full_attention_sequence_from_cache_parts_with_matvec(
+            dims,
+            &NativeFullAttentionCacheSequenceParts {
+                queries: &queries,
+                gates: None,
+                source_counts: &source_counts,
+                output_projection: &output_projection,
+                score_scale: 1.0,
+            },
+            &cache,
+            &CpuNativeMatvecBackend,
+        )
+        .expect("cache-only sequence attention succeeds");
+
+        assert_eq!(cache.token_count(), 2);
+        assert_close(output[0][0], 10.0);
+        assert!(
+            output[1][0] > 27.0,
+            "second token should read the larger source window"
+        );
     }
 }

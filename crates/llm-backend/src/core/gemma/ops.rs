@@ -1,10 +1,10 @@
-use super::super::math::{
-    MathError, TopKLogit, apply_rope_to_head, matvec_row_major_f32, require_len, rms_norm_f32,
-    softmax_f32, weighted_sum_f32,
-};
+use super::super::math::{MathError, TopKLogit, apply_rope_to_head, require_len, rms_norm_f32};
 use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError,
+    CpuNativeMatvecBackend, LayerKvCache, NativeFullAttentionCacheSequenceParts,
+    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
+    native_full_attention_sequence_from_cache_parts_with_matvec,
+    native_full_attention_sequence_with_cache_from_parts_with_matvec,
 };
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
@@ -58,6 +58,15 @@ impl GemmaAttentionDims {
         self.num_key_value_heads
             .checked_mul(self.head_dim)
             .ok_or_else(|| MathError::InvalidShape("Gemma KV dimension overflow".to_owned()))
+    }
+
+    fn native(self) -> NativeFullAttentionDims {
+        NativeFullAttentionDims {
+            hidden_size: self.hidden_size,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: self.num_key_value_heads,
+            head_dim: self.head_dim,
+        }
     }
 }
 
@@ -513,17 +522,22 @@ fn gemma_layer_attention_sequence_with_cache_with_matvec(
         cache.next_position()
     };
     let rotary = gemma_rotary_config(spec, kind);
-    let groups = dims.num_attention_heads / dims.num_key_value_heads;
-    if groups == 0
-        || !dims
-            .num_attention_heads
-            .is_multiple_of(dims.num_key_value_heads)
-    {
-        return Err(TensorLoadError::integrity(
-            "Gemma attention heads must be divisible by key/value heads",
-        ));
-    }
-    let mut outputs = Vec::with_capacity(hidden_states.len());
+    let mut queries = Vec::with_capacity(hidden_states.len());
+    let mut keys = if is_shared_layer {
+        Vec::new()
+    } else {
+        Vec::with_capacity(hidden_states.len())
+    };
+    let mut values = if is_shared_layer {
+        Vec::new()
+    } else {
+        Vec::with_capacity(hidden_states.len())
+    };
+    let mut source_counts = if is_shared_layer {
+        Vec::with_capacity(hidden_states.len())
+    } else {
+        Vec::new()
+    };
     for token_idx in 0..hidden_states.len() {
         require_len("Gemma q projection", q_proj[token_idx].len(), attention_dim)
             .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
@@ -539,6 +553,7 @@ fn gemma_layer_attention_sequence_with_cache_with_matvec(
             position,
             rotary,
         )?;
+        queries.push(query);
 
         if !is_shared_layer {
             require_len("Gemma k projection", k_proj[token_idx].len(), key_value_dim)
@@ -565,61 +580,50 @@ fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 dims.head_dim,
                 spec.rms_norm_eps,
             )?;
-            cache.append_sliding(&key, &value).map_err(|err| {
-                TensorLoadError::integrity(format!("Gemma KV cache append failed: {err}"))
-            })?;
-        }
-
-        let source_count = if is_shared_layer {
-            position
-                .checked_add(1)
-                .unwrap_or(cache.token_count())
-                .min(cache.token_count())
+            keys.push(key);
+            values.push(value);
         } else {
-            cache.token_count()
-        };
-        let mut attended = vec![0.0; attention_dim];
-        for head in 0..dims.num_attention_heads {
-            let kv_head = head / groups;
-            let q_start = head * dims.head_dim;
-            let kv_start = kv_head * dims.head_dim;
-            let key_rows = select_gemma_cache_head_rows(
-                cache.keys(),
-                source_count,
-                cache.vector_len(),
-                kv_start,
-                dims.head_dim,
-            )?;
-            let scores = scaled_attention_scores(
-                &query[q_start..q_start + dims.head_dim],
-                &key_rows,
-                source_count,
-                1.0,
-            )?;
-            let weights = softmax_f32(&scores).map_err(|err| {
-                TensorLoadError::integrity(format!("Gemma softmax failed: {err}"))
-            })?;
-            let value_rows = select_gemma_cache_head_rows(
-                cache.values(),
-                source_count,
-                cache.vector_len(),
-                kv_start,
-                dims.head_dim,
-            )?;
-            let mixed = weighted_sum_f32(&value_rows, &weights, dims.head_dim).map_err(|err| {
-                TensorLoadError::integrity(format!("Gemma attention weighted sum failed: {err}"))
-            })?;
-            attended[q_start..q_start + dims.head_dim].copy_from_slice(&mixed);
+            source_counts.push(
+                position
+                    .checked_add(1)
+                    .unwrap_or(cache.token_count())
+                    .min(cache.token_count()),
+            );
         }
-        outputs.push(
-            matvec
-                .matvec_row_major_f32(&attended, &o_proj_weight, dims.hidden_size, attention_dim)
-                .map_err(|err| {
-                    TensorLoadError::integrity(format!("Gemma o projection failed: {err}"))
-                })?,
-        );
     }
-    Ok(outputs)
+
+    let attention_output = if is_shared_layer {
+        native_full_attention_sequence_from_cache_parts_with_matvec(
+            dims.native(),
+            &NativeFullAttentionCacheSequenceParts {
+                queries: &queries,
+                gates: None,
+                source_counts: &source_counts,
+                output_projection: &o_proj_weight,
+                score_scale: 1.0,
+            },
+            cache,
+            matvec,
+        )
+    } else {
+        native_full_attention_sequence_with_cache_from_parts_with_matvec(
+            dims.native(),
+            &NativeFullAttentionSequenceParts {
+                queries: &queries,
+                keys: &keys,
+                values: &values,
+                gates: None,
+                output_projection: &o_proj_weight,
+                score_scale: 1.0,
+            },
+            cache,
+            matvec,
+        )
+    }
+    .map_err(|err| {
+        TensorLoadError::integrity(format!("Gemma layer{layer_idx} attention failed: {err}"))
+    })?;
+    Ok(attention_output)
 }
 
 fn gemma_layer_dense_mlp_with_matvec(
@@ -900,54 +904,6 @@ fn rms_norm_no_scale_f32(input: &[f32], eps: f32) -> Result<Vec<f32>, MathError>
     let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
     let scale = (mean_square + eps).sqrt().recip();
     Ok(input.iter().map(|value| value * scale).collect())
-}
-
-fn scaled_attention_scores(
-    query_head: &[f32],
-    key_rows: &[f32],
-    row_count: usize,
-    scale: f32,
-) -> Result<Vec<f32>, TensorLoadError> {
-    let mut scores = matvec_row_major_f32(query_head, key_rows, row_count, query_head.len())
-        .map_err(|err| {
-            TensorLoadError::integrity(format!("Gemma attention scores failed: {err}"))
-        })?;
-    for score in &mut scores {
-        *score *= scale;
-    }
-    Ok(scores)
-}
-
-fn select_gemma_cache_head_rows(
-    values: &[f32],
-    row_count: usize,
-    row_len: usize,
-    head_start: usize,
-    head_len: usize,
-) -> Result<Vec<f32>, TensorLoadError> {
-    let used_len = row_count
-        .checked_mul(row_len)
-        .ok_or_else(|| TensorLoadError::integrity("Gemma cache row selection overflow"))?;
-    if values.len() < used_len {
-        return Err(TensorLoadError::integrity(format!(
-            "Gemma cache values length {} is shorter than row_count {row_count} * row_len {row_len}",
-            values.len()
-        )));
-    }
-    let head_end = head_start
-        .checked_add(head_len)
-        .ok_or_else(|| TensorLoadError::integrity("Gemma cache head range overflow"))?;
-    if head_end > row_len {
-        return Err(TensorLoadError::integrity(format!(
-            "Gemma cache head range {head_start}..{head_end} exceeds row length {row_len}"
-        )));
-    }
-    let mut output = Vec::with_capacity(row_count * head_len);
-    for row_idx in 0..row_count {
-        let row_start = row_idx * row_len + head_start;
-        output.extend_from_slice(&values[row_start..row_start + head_len]);
-    }
-    Ok(output)
 }
 
 fn require_gemma_attention_cache_shape(

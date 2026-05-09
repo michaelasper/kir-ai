@@ -1297,6 +1297,7 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
             value: parts.v_proj,
             gate: config.q_projection_gate.then_some(gate.as_slice()),
             output_projection: parts.o_proj_weight,
+            score_scale: (dims.head_dim as f32).sqrt().recip(),
         },
         cache,
         matvec,
@@ -1432,6 +1433,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
         values: v_proj,
         gates: config.q_projection_gate.then_some(gates.as_slice()),
         output_projection: parts.o_proj_weight,
+        score_scale: (dims.head_dim as f32).sqrt().recip(),
     };
     if let Some(cache) = cache {
         native_full_attention_sequence_with_cache_from_parts_with_matvec(
