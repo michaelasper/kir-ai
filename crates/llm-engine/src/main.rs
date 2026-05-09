@@ -164,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
                 )?
             } else {
                 anyhow::bail!(
-                    "llm-engine serve requires --snapshot <path> for native Qwen serving; use --deterministic-test-backend only for protocol tests"
+                    "llm-engine serve requires --snapshot <path> for inference serving; use --deterministic-test-backend only for protocol tests"
                 );
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -185,13 +185,14 @@ Usage: llm-engine serve [OPTIONS]
 
 Options:
   --addr <host:port>                         Listen address [default: 127.0.0.1:3000]
-  --snapshot <path>                          Native Qwen snapshot path
+  --snapshot <path>                          Inference snapshot path
   --snapshot-alias <alias>                   Resolve snapshot path from the model store
   --model-alias <alias>                      Alias for --snapshot-alias
   --model-id <id>                            Served model id [default: local-qwen36]
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
+                                             Qwen is serveable today; DeepSeek and Gemma are recognized but deferred
   --deterministic-test-backend               Use deterministic protocol backend
   --max-new-tokens <n>                       Native Qwen maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens

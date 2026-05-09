@@ -92,7 +92,10 @@ cargo run -p llm-engine -- serve \
 ```
 
 If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
-select the MLX loader and model family explicitly:
+select the MLX loader and model family explicitly. Raw MLX snapshots without
+`--family` fail at startup. Qwen is the only serveable runtime chat family today;
+DeepSeek and Gemma are recognized but fail closed until Kir has adapters or a
+chat-sidecar path for those families:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>

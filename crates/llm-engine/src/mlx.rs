@@ -5,6 +5,7 @@ use llm_backend::{
     ModelBackend, SamplingConfig,
 };
 use llm_hub::SnapshotManifest;
+use llm_models::{BackendKind, ModelFamily};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
@@ -13,7 +14,7 @@ use url::Url;
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
     pub endpoint: Url,
-    pub family: Option<String>,
+    pub family: Option<ModelFamily>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +51,7 @@ impl MlxBackend {
         let completions_url = mlx_endpoint_url(&options.endpoint, "completions");
         Ok(Self {
             model_id: model_id.clone(),
-            metadata: mlx_metadata(&model_id, snapshot_path, options.family.as_deref())?,
+            metadata: mlx_metadata(&model_id, snapshot_path, options.family)?,
             upstream_model,
             completions_url,
             client: reqwest::Client::new(),
@@ -438,7 +439,7 @@ fn is_loopback_endpoint(endpoint: &Url) -> bool {
 fn mlx_metadata(
     model_id: &str,
     snapshot_path: &Path,
-    requested_family: Option<&str>,
+    requested_family: Option<ModelFamily>,
 ) -> anyhow::Result<BackendModelMetadata> {
     let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "mlx");
     metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
@@ -446,29 +447,56 @@ fn mlx_metadata(
     let manifest_bytes = match std::fs::read(&manifest_path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let family = requested_family.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MLX backend requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
+                )
+            })?;
+            validate_mlx_serving_family(family)?;
             metadata.loader = Some("mlx".to_owned());
-            metadata.family = requested_family.map(str::to_owned);
+            metadata.family = Some(family.canonical_slug().to_owned());
             return Ok(metadata);
         }
         Err(err) => return Err(err.into()),
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
-    if let Some(requested_family) = requested_family
-        && manifest.family != requested_family
-    {
+    let manifest_loader = BackendKind::parse_slug(&manifest.loader)?;
+    if manifest_loader != BackendKind::Mlx {
         anyhow::bail!(
-            "requested snapshot family `{requested_family}` does not match manifest family `{}`",
-            manifest.family
+            "MLX backend requires manifest loader `mlx`, not `{}`",
+            manifest_loader.canonical_slug()
         );
     }
-    metadata.family = Some(manifest.family.clone());
-    metadata.loader = Some(manifest.loader.clone());
+    let manifest_family = ModelFamily::parse_slug(&manifest.family)?;
+    if let Some(requested_family) = requested_family
+        && manifest_family != requested_family
+    {
+        anyhow::bail!(
+            "requested snapshot family `{}` does not match manifest family `{}`",
+            requested_family.canonical_slug(),
+            manifest_family.canonical_slug()
+        );
+    }
+    validate_mlx_serving_family(manifest_family)?;
+    metadata.family = Some(manifest_family.canonical_slug().to_owned());
+    metadata.loader = Some(manifest_loader.canonical_slug().to_owned());
     metadata.quantization = Some(manifest.quantization.clone());
     metadata.repo_id = Some(manifest.repo_id.clone());
     metadata.resolved_commit = Some(manifest.resolved_commit.clone());
     metadata.profile = Some(manifest.profile.clone());
     metadata.manifest_digest = Some(manifest.digest());
     Ok(metadata)
+}
+
+fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
+    if !family.adapter().capabilities().backend_execution {
+        anyhow::bail!(
+            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
+            family.canonical_slug(),
+            family.display_name()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -494,7 +522,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
-                ..MlxBackendOptions::default()
+                family: Some(ModelFamily::Qwen),
             },
         )
         .expect("backend opens");
@@ -546,7 +574,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
-                ..MlxBackendOptions::default()
+                family: Some(ModelFamily::Qwen),
             },
         )
         .expect("backend opens");
@@ -586,7 +614,15 @@ mod tests {
     #[tokio::test]
     async fn mlx_backend_rejects_model_mismatch_before_http_request() {
         let snapshot = tempfile::tempdir().expect("snapshot tempdir");
-        let backend = MlxBackend::open("local-mlx", snapshot.path()).expect("backend opens");
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                family: Some(ModelFamily::Qwen),
+                ..MlxBackendOptions::default()
+            },
+        )
+        .expect("backend opens");
 
         let err = backend
             .generate(BackendRequest {
@@ -622,6 +658,85 @@ mod tests {
         assert!(err.to_string().contains("not loopback"));
     }
 
+    #[test]
+    fn mlx_backend_rejects_manifestless_snapshot_without_family() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+
+        let err = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                ..MlxBackendOptions::default()
+            },
+        )
+        .expect_err("raw MLX family is required");
+
+        assert!(
+            err.to_string()
+                .contains("MLX backend requires model family metadata")
+        );
+    }
+
+    #[test]
+    fn mlx_backend_rejects_deferred_requested_family() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+
+        let err = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                family: Some(ModelFamily::Gemma),
+            },
+        )
+        .expect_err("deferred family is not serveable");
+
+        assert!(
+            err.to_string()
+                .contains("model family `gemma` is recognized but not serveable yet")
+        );
+    }
+
+    #[test]
+    fn mlx_backend_rejects_non_mlx_manifest_loader() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+        write_mlx_manifest(snapshot.path(), "native-metal", "qwen");
+
+        let err = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                ..MlxBackendOptions::default()
+            },
+        )
+        .expect_err("MLX backend rejects native manifest loader");
+
+        assert!(
+            err.to_string()
+                .contains("MLX backend requires manifest loader `mlx`")
+        );
+    }
+
+    #[test]
+    fn mlx_backend_rejects_unknown_manifest_family() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+        write_mlx_manifest(snapshot.path(), "mlx", "llama");
+
+        let err = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                ..MlxBackendOptions::default()
+            },
+        )
+        .expect_err("unknown manifest family is rejected");
+
+        assert!(err.to_string().contains("unsupported model family `llama`"));
+    }
+
     #[tokio::test]
     async fn mlx_backend_rejects_sse_without_done_marker() {
         let server = FakeMlxServer::start(
@@ -632,7 +747,7 @@ mod tests {
             server.snapshot_path(),
             MlxBackendOptions {
                 endpoint: server.endpoint(),
-                ..MlxBackendOptions::default()
+                family: Some(ModelFamily::Qwen),
             },
         )
         .expect("backend opens");
@@ -747,5 +862,30 @@ mod tests {
         bytes
             .windows(needle.len())
             .position(|window| window == needle)
+    }
+
+    fn write_mlx_manifest(snapshot_path: &Path, loader: &str, family: &str) {
+        std::fs::write(
+            snapshot_path.join("llm-engine-manifest.json"),
+            serde_json::json!({
+                "schema_version": 1,
+                "source": "huggingface",
+                "repo_type": "model",
+                "repo_id": "example/model",
+                "requested_revision": "main",
+                "resolved_commit": "0123456789abcdef0123456789abcdef01234567",
+                "profile": "test-mlx",
+                "family": family,
+                "loader": loader,
+                "quantization": "4bit",
+                "created_at": "2026-05-08T00:00:00Z",
+                "snapshot_path": snapshot_path.display().to_string(),
+                "files": [],
+                "allow_patterns": [],
+                "ignore_patterns": []
+            })
+            .to_string(),
+        )
+        .expect("manifest");
     }
 }

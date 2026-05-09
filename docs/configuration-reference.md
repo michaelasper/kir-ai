@@ -51,7 +51,7 @@ Mise tasks:
 | `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--deterministic-test-backend`. |
 | `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
-| `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Conflicting manifest metadata is rejected. |
+| `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Raw MLX snapshots must set this explicitly. Qwen is serveable today; DeepSeek and Gemma are recognized metadata values but rejected for serving until Kir has runtime chat adapters or a chat-sidecar path. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |

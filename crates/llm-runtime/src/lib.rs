@@ -1304,26 +1304,19 @@ fn chat_adapter_for_metadata(
     };
     match parse_metadata_family(family)? {
         ModelFamily::Qwen => Ok(SelectedChatAdapter::Qwen(QwenChatAdapter)),
-        ModelFamily::DeepSeek => Err(unsupported_chat_family("DeepSeek")),
-        ModelFamily::Gemma => Err(unsupported_chat_family("Gemma")),
+        family => Err(unsupported_chat_family(family)),
     }
 }
 
 fn parse_metadata_family(family: &str) -> Result<ModelFamily, RuntimeError> {
-    match family {
-        "qwen" => Ok(ModelFamily::Qwen),
-        "deep_seek" | "deepseek" => Ok(ModelFamily::DeepSeek),
-        "gemma" => Ok(ModelFamily::Gemma),
-        other => Err(ApiError::unsupported_capability(format!(
-            "unknown model family `{other}` for chat rendering"
-        ))
-        .into()),
-    }
+    ModelFamily::parse_slug(family)
+        .map_err(|err| ApiError::unsupported_capability(format!("{err} for chat rendering")).into())
 }
 
-fn unsupported_chat_family(family: &'static str) -> RuntimeError {
+fn unsupported_chat_family(family: ModelFamily) -> RuntimeError {
     ApiError::unsupported_capability(format!(
-        "{family} chat adapter support is deferred until Qwen production parity"
+        "{} chat adapter support is deferred until Qwen production parity",
+        family.display_name()
     ))
     .into()
 }

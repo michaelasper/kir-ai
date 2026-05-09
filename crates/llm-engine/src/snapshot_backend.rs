@@ -4,48 +4,23 @@ use crate::{
 };
 use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
+use llm_models::{BackendKind, ModelFamily};
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotBackendLoader {
-    NativeMetal,
-    Mlx,
-}
+pub type SnapshotBackendLoader = BackendKind;
 
-impl SnapshotBackendLoader {
-    pub fn parse(value: &str) -> anyhow::Result<Self> {
-        match value {
-            "native-metal" => Ok(Self::NativeMetal),
-            "mlx" => Ok(Self::Mlx),
-            other => Err(anyhow::anyhow!(
-                "unsupported snapshot loader `{other}`; expected `native-metal` or `mlx`"
-            )),
-        }
-    }
-
-    fn as_manifest_label(self) -> &'static str {
-        match self {
-            Self::NativeMetal => "native-metal",
-            Self::Mlx => "mlx",
-        }
-    }
-}
-
-pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<String> {
-    match value {
-        "qwen" => Ok("qwen".to_owned()),
-        "deep_seek" | "deepseek" => Ok("deep_seek".to_owned()),
-        "gemma" => Ok("gemma".to_owned()),
-        other => Err(anyhow::anyhow!(
-            "unsupported snapshot family `{other}`; expected `qwen`, `deep_seek`, or `gemma`"
-        )),
-    }
+pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<ModelFamily> {
+    ModelFamily::parse_slug(value).map_err(|_| {
+        anyhow::anyhow!(
+            "unsupported snapshot family `{value}`; expected `qwen`, `deep_seek`, or `gemma`"
+        )
+    })
 }
 
 #[derive(Debug, Clone)]
 pub struct SnapshotBackendOptions {
     pub loader: Option<SnapshotBackendLoader>,
-    pub family: Option<String>,
+    pub family: Option<ModelFamily>,
     pub native_qwen: NativeQwenLoadOptions,
     pub mlx: MlxBackendOptions,
     pub max_new_tokens: u32,
@@ -73,17 +48,17 @@ pub fn open_snapshot_backend(
     let model_id = model_id.into();
     let snapshot_path = snapshot_path.as_ref();
     let manifest = snapshot_manifest(snapshot_path)?;
-    let requested_family = options
-        .family
-        .clone()
-        .or_else(|| options.mlx.family.clone());
+    let requested_family = options.family.or(options.mlx.family);
+    let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
     let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
-    validate_snapshot_family(manifest.as_ref(), requested_family.as_deref())?;
-    validate_snapshot_loader_family(loader, manifest.as_ref(), requested_family.as_deref())?;
+    validate_snapshot_family(manifest_family, requested_family)?;
+    validate_snapshot_loader_has_family(loader, manifest_family, requested_family)?;
+    validate_snapshot_serving_family(manifest_family.or(requested_family))?;
+    validate_snapshot_loader_family(loader, manifest_family, requested_family)?;
     match loader {
         SnapshotBackendLoader::Mlx => {
             let mut mlx_options = options.mlx;
-            mlx_options.family = requested_family;
+            mlx_options.family = requested_family.or(manifest_family);
             Ok(Box::new(MlxBackend::open_with_options(
                 model_id,
                 snapshot_path,
@@ -102,37 +77,47 @@ fn select_snapshot_backend_loader(
     manifest: Option<&SnapshotManifest>,
     requested: Option<SnapshotBackendLoader>,
 ) -> anyhow::Result<SnapshotBackendLoader> {
-    let manifest_loader = manifest.map(|manifest| manifest.loader.as_str());
+    let manifest_loader = snapshot_manifest_loader(manifest)?;
     if let (Some(requested), Some(manifest_loader)) = (requested, manifest_loader)
-        && manifest_loader != requested.as_manifest_label()
+        && manifest_loader != requested
     {
         anyhow::bail!(
             "requested snapshot loader `{}` does not match manifest loader `{manifest_loader}`",
-            requested.as_manifest_label()
+            requested.canonical_slug()
         );
     }
     if let Some(requested) = requested {
         return Ok(requested);
     }
     match manifest_loader {
-        Some("mlx") => Ok(SnapshotBackendLoader::Mlx),
-        Some("native-metal") | None => Ok(SnapshotBackendLoader::NativeMetal),
-        Some(other) => Err(anyhow::anyhow!(
-            "unsupported snapshot loader `{other}` in llm-engine manifest"
-        )),
+        Some(loader) => Ok(loader),
+        None => Ok(SnapshotBackendLoader::NativeMetal),
     }
 }
 
 fn validate_snapshot_family(
-    manifest: Option<&SnapshotManifest>,
-    requested_family: Option<&str>,
+    manifest_family: Option<ModelFamily>,
+    requested_family: Option<ModelFamily>,
 ) -> anyhow::Result<()> {
-    if let (Some(manifest), Some(requested_family)) = (manifest, requested_family)
-        && manifest.family != requested_family
+    if let (Some(manifest_family), Some(requested_family)) = (manifest_family, requested_family)
+        && manifest_family != requested_family
     {
         anyhow::bail!(
             "requested snapshot family `{requested_family}` does not match manifest family `{}`",
-            manifest.family
+            manifest_family.canonical_slug()
+        );
+    }
+    Ok(())
+}
+
+fn validate_snapshot_loader_has_family(
+    loader: SnapshotBackendLoader,
+    manifest_family: Option<ModelFamily>,
+    requested_family: Option<ModelFamily>,
+) -> anyhow::Result<()> {
+    if loader == SnapshotBackendLoader::Mlx && manifest_family.or(requested_family).is_none() {
+        anyhow::bail!(
+            "snapshot loader `mlx` requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
         );
     }
     Ok(())
@@ -140,18 +125,64 @@ fn validate_snapshot_family(
 
 fn validate_snapshot_loader_family(
     loader: SnapshotBackendLoader,
-    manifest: Option<&SnapshotManifest>,
-    requested_family: Option<&str>,
+    manifest_family: Option<ModelFamily>,
+    requested_family: Option<ModelFamily>,
 ) -> anyhow::Result<()> {
-    let effective_family =
-        requested_family.or_else(|| manifest.map(|manifest| manifest.family.as_str()));
-    if loader == SnapshotBackendLoader::NativeMetal
-        && let Some(family) = effective_family
-        && family != "qwen"
+    let effective_family = requested_family.or(manifest_family);
+    if let Some(family) = effective_family
+        && !family.adapter().production_backends().contains(&loader)
     {
-        anyhow::bail!("snapshot loader `native-metal` only supports family `qwen`, not `{family}`");
+        let supported = family
+            .adapter()
+            .production_backends()
+            .iter()
+            .map(|backend| backend.canonical_slug())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "snapshot loader `{}` is not supported for family `{}`; supported loaders: {supported}",
+            loader.canonical_slug(),
+            family.canonical_slug()
+        );
     }
     Ok(())
+}
+
+fn validate_snapshot_serving_family(family: Option<ModelFamily>) -> anyhow::Result<()> {
+    let Some(family) = family else {
+        return Ok(());
+    };
+    if !family.adapter().capabilities().backend_execution {
+        anyhow::bail!(
+            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
+            family.canonical_slug(),
+            family.display_name()
+        );
+    }
+    Ok(())
+}
+
+fn snapshot_manifest_loader(
+    manifest: Option<&SnapshotManifest>,
+) -> anyhow::Result<Option<SnapshotBackendLoader>> {
+    manifest
+        .map(|manifest| {
+            BackendKind::parse_slug(&manifest.loader).map_err(|_| {
+                anyhow::anyhow!(
+                    "unsupported snapshot loader `{}` in llm-engine manifest",
+                    manifest.loader
+                )
+            })
+        })
+        .transpose()
+}
+
+fn snapshot_manifest_family(
+    manifest: Option<&SnapshotManifest>,
+) -> anyhow::Result<Option<ModelFamily>> {
+    manifest
+        .map(|manifest| ModelFamily::parse_slug(&manifest.family).map_err(anyhow::Error::new))
+        .transpose()
 }
 
 fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotManifest>> {
@@ -180,7 +211,7 @@ mod tests {
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
-                family: Some("qwen".to_owned()),
+                family: Some(ModelFamily::Qwen),
                 mlx: crate::MlxBackendOptions {
                     endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
                     ..crate::MlxBackendOptions::default()
@@ -208,7 +239,7 @@ mod tests {
             &snapshot,
             SnapshotBackendOptions {
                 loader: Some(SnapshotBackendLoader::Mlx),
-                family: Some("qwen".to_owned()),
+                family: Some(ModelFamily::Qwen),
                 mlx: crate::MlxBackendOptions {
                     endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
                     ..crate::MlxBackendOptions::default()
@@ -222,6 +253,35 @@ mod tests {
         assert_eq!(metadata.backend, "mlx");
         assert_eq!(metadata.loader.as_deref(), Some("mlx"));
         assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_manifestless_mlx_without_family() {
+        let snapshot = temp_snapshot_dir("mlx-loader-missing-family");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let err = match open_snapshot_backend(
+            "local-mlx",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("manifestless MLX snapshot without family should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("snapshot loader `mlx` requires model family metadata")
+        );
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -264,7 +324,7 @@ mod tests {
             &snapshot,
             SnapshotBackendOptions {
                 loader: Some(SnapshotBackendLoader::Mlx),
-                family: Some("gemma".to_owned()),
+                family: Some(ModelFamily::Gemma),
                 mlx: crate::MlxBackendOptions {
                     endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
                     ..crate::MlxBackendOptions::default()
@@ -281,6 +341,36 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_backend_factory_rejects_deferred_family_for_serving() {
+        let snapshot = temp_snapshot_dir("mlx-deferred-family");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let err = match open_snapshot_backend(
+            "local-gemma",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                family: Some(ModelFamily::Gemma),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("Gemma serving should fail closed until adapter support lands"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("model family `gemma` is recognized but not serveable yet")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
     fn snapshot_backend_factory_rejects_non_qwen_family_for_raw_native_metal_snapshot() {
         let snapshot = temp_snapshot_dir("native-family-override-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
@@ -291,7 +381,7 @@ mod tests {
             &snapshot,
             SnapshotBackendOptions {
                 loader: Some(SnapshotBackendLoader::NativeMetal),
-                family: Some("gemma".to_owned()),
+                family: Some(ModelFamily::Gemma),
                 ..SnapshotBackendOptions::default()
             },
         ) {
@@ -299,7 +389,10 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(err.to_string().contains("only supports family `qwen`"));
+        assert!(
+            err.to_string()
+                .contains("model family `gemma` is recognized but not serveable yet")
+        );
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -319,7 +412,36 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(err.to_string().contains("only supports family `qwen`"));
+        assert!(
+            err.to_string()
+                .contains("model family `gemma` is recognized but not serveable yet")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_unknown_manifest_family_before_opening_mlx() {
+        let snapshot = temp_snapshot_dir("unknown-family-manifest");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest_with_family(&snapshot, "mlx", "llama");
+
+        let err = match open_snapshot_backend(
+            "local-unknown-family",
+            &snapshot,
+            SnapshotBackendOptions {
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("unknown manifest family should fail closed"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("unsupported model family `llama`"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 

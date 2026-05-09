@@ -43,7 +43,7 @@ llm-engine serve \
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native Qwen; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
-| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Fails if it conflicts with an existing manifest. |
+| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw MLX snapshots must set this explicitly. Qwen is serveable today; DeepSeek and Gemma are recognized metadata values but fail closed until Kir has runtime chat adapters or a chat-sidecar path for those families. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; deterministic protocol mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Native Qwen prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
@@ -61,6 +61,9 @@ must include an `llm-engine-manifest.json` whose loader is `mlx`, and an
 `mlx_lm.server` sidecar must already be listening on the configured loopback
 endpoint. Raw Hugging Face cache snapshots need both `--loader mlx` and
 `--family qwen` so chat rendering is selected from explicit model metadata.
+`--loader mlx` without a family fails at startup for raw snapshots. `--family
+deep_seek` and `--family gemma` are intentionally rejected for serving until the
+runtime has first-class adapters or delegates chat templating to the MLX sidecar.
 
 ## `bench qwen-long-context`
 
