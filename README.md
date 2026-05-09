@@ -1,4 +1,16 @@
+<p align="center">
+  <img src="assets/kir-ai.png" alt="kir-ai logo" width="240">
+</p>
+
 # kir-ai
+
+<p align="center">
+  <a href="https://github.com/michaelasper/kir-ai/actions/workflows/north-star-ci.yml"><img alt="North Star CI" src="https://img.shields.io/github/actions/workflow/status/michaelasper/kir-ai/north-star-ci.yml?branch=main&style=flat-square&label=north-star%20ci&logo=githubactions&logoColor=white&color=8bd5ca"></a>
+  <a href="https://www.rust-lang.org/"><img alt="Rust 1.95" src="https://img.shields.io/badge/rust-1.95-f5a97f?style=flat-square&logo=rust&logoColor=white"></a>
+  <a href="https://developer.apple.com/metal/"><img alt="Apple Metal native" src="https://img.shields.io/badge/apple%20metal-native-c6a0f6?style=flat-square&logo=apple&logoColor=white"></a>
+  <a href="docs/getting-started.md"><img alt="Local inference" src="https://img.shields.io/badge/local-inference-91d7e3?style=flat-square"></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-a6da95?style=flat-square"></a>
+</p>
 
 `kir-ai` is a Rust-first local inference engine workspace. Its current centre is
 `llm-engine`, an OpenAI-compatible HTTP server and model tooling CLI for native,
