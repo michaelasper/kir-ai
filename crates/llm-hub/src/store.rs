@@ -4,12 +4,13 @@ use crate::manifest::{
     canonicalize_snapshot_root, manifest_matches_plan, read_promoted_snapshot,
     verify_snapshot_file,
 };
-use crate::plan::snapshot_dir_name;
+use crate::plan::{snapshot_dir_name, validate_artifact_path};
 use crate::{DownloadPlan, HubClient, HubError, HubRepoId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -54,6 +55,43 @@ pub struct QuarantinedSnapshot {
     pub path: PathBuf,
     pub metadata: QuarantineMetadata,
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotReadiness {
+    Ready,
+    MetadataOnly { reason: String },
+    Invalid { reason: String },
+}
+
+impl SnapshotReadiness {
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::MetadataOnly { .. } => "metadata_only",
+            Self::Invalid { .. } => "invalid",
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::MetadataOnly { reason } | Self::Invalid { reason } => Some(reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotRecord {
+    pub snapshot: PromotedSnapshot,
+    pub readiness: SnapshotReadiness,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotInventory {
+    pub ready_snapshots: Vec<PromotedSnapshot>,
+    pub metadata_only_snapshots: Vec<SnapshotRecord>,
+    pub quarantined_snapshots: Vec<QuarantinedSnapshot>,
 }
 
 impl ModelStore {
@@ -280,10 +318,46 @@ impl ModelStore {
         Ok(snapshots)
     }
 
+    pub async fn snapshot_inventory(&self) -> Result<SnapshotInventory, HubError> {
+        let mut ready_snapshots = Vec::new();
+        let mut metadata_only_snapshots = Vec::new();
+        for snapshot in self.list_snapshots().await? {
+            let readiness = snapshot_readiness(&snapshot).await;
+            match readiness {
+                SnapshotReadiness::Ready => ready_snapshots.push(snapshot),
+                SnapshotReadiness::MetadataOnly { .. } => {
+                    metadata_only_snapshots.push(SnapshotRecord {
+                        snapshot,
+                        readiness,
+                    });
+                }
+                SnapshotReadiness::Invalid { reason } => {
+                    self.quarantine_snapshot(&snapshot.path, reason).await?;
+                }
+            }
+        }
+        Ok(SnapshotInventory {
+            ready_snapshots,
+            metadata_only_snapshots,
+            quarantined_snapshots: self.list_quarantined_snapshots().await?,
+        })
+    }
+
     pub async fn inspect_snapshot(
         snapshot: impl AsRef<Path>,
     ) -> Result<PromotedSnapshot, HubError> {
         read_promoted_snapshot(snapshot.as_ref().to_path_buf()).await
+    }
+
+    pub async fn inspect_snapshot_readiness(
+        snapshot: impl AsRef<Path>,
+    ) -> Result<SnapshotRecord, HubError> {
+        let snapshot = Self::inspect_snapshot(snapshot).await?;
+        let readiness = snapshot_readiness(&snapshot).await;
+        Ok(SnapshotRecord {
+            snapshot,
+            readiness,
+        })
     }
 
     pub async fn verify_snapshot(
@@ -310,6 +384,16 @@ impl ModelStore {
             verified_files,
             verified_bytes,
         })
+    }
+
+    pub async fn verify_runnable_snapshot(
+        snapshot: impl AsRef<Path>,
+    ) -> Result<SnapshotVerification, HubError> {
+        let verification = Self::verify_snapshot(snapshot).await?;
+        if let Err(reason) = validate_runnable_snapshot(&verification.snapshot).await {
+            return Err(HubError::integrity_failed(reason));
+        }
+        Ok(verification)
     }
 
     pub async fn mark_snapshot_used(snapshot: impl AsRef<Path>) -> Result<SnapshotUsage, HubError> {
@@ -692,4 +776,174 @@ fn alias_file_name(alias: &str) -> String {
         .collect::<String>();
     let digest = hex::encode(Sha256::digest(alias.as_bytes()));
     format!("{sanitized}.{}.json", &digest[..16])
+}
+
+async fn snapshot_readiness(snapshot: &PromotedSnapshot) -> SnapshotReadiness {
+    match validate_runnable_snapshot(snapshot).await {
+        Ok(()) => SnapshotReadiness::Ready,
+        Err(reason) if is_metadata_only_snapshot(snapshot) && missing_weights_reason(&reason) => {
+            SnapshotReadiness::MetadataOnly { reason }
+        }
+        Err(reason) => SnapshotReadiness::Invalid { reason },
+    }
+}
+
+async fn validate_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    validate_manifest_files(snapshot).await?;
+    validate_builtin_profile_metadata(&snapshot.manifest)?;
+    validate_manifest_file_classes(&snapshot.manifest, &snapshot.path)?;
+    validate_safetensors_index_shards(snapshot).await?;
+    Ok(())
+}
+
+async fn validate_manifest_files(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path)
+        .await
+        .map_err(|err| err.to_string())?;
+    for file in &snapshot.manifest.files {
+        verify_snapshot_file(
+            &snapshot.path,
+            &canonical_snapshot_root,
+            &file.path,
+            file.size,
+            file.sha256.as_deref(),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn validate_builtin_profile_metadata(manifest: &SnapshotManifest) -> Result<(), String> {
+    let Some(profile) = crate::ModelProfile::builtin(&manifest.profile) else {
+        return Ok(());
+    };
+    let mut mismatches = Vec::new();
+    if manifest.family != profile.family {
+        mismatches.push(format!(
+            "family `{}`, expected `{}`",
+            manifest.family, profile.family
+        ));
+    }
+    if manifest.loader != profile.loader {
+        mismatches.push(format!(
+            "loader `{}`, expected `{}`",
+            manifest.loader, profile.loader
+        ));
+    }
+    if manifest.quantization != profile.quantization {
+        mismatches.push(format!(
+            "quantization `{}`, expected `{}`",
+            manifest.quantization, profile.quantization
+        ));
+    }
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "snapshot manifest profile `{}` is stale or inconsistent: {}",
+            manifest.profile,
+            mismatches.join(", ")
+        ))
+    }
+}
+
+fn validate_manifest_file_classes(manifest: &SnapshotManifest, path: &Path) -> Result<(), String> {
+    let has_config = manifest
+        .files
+        .iter()
+        .any(|file| file.class == crate::ArtifactClass::Config);
+    let has_tokenizer = manifest
+        .files
+        .iter()
+        .any(|file| file.class == crate::ArtifactClass::Tokenizer);
+    let has_weights = manifest
+        .files
+        .iter()
+        .any(|file| file.class == crate::ArtifactClass::Weights);
+    if !has_config {
+        return Err(format!(
+            "snapshot `{}` is missing config artifacts",
+            path.display()
+        ));
+    }
+    if !has_tokenizer {
+        return Err(format!(
+            "snapshot `{}` is missing tokenizer artifacts",
+            path.display()
+        ));
+    }
+    if !has_weights {
+        return Err(format!(
+            "snapshot `{}` contains no weight files; pull without --metadata-only before serving",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_safetensors_index_shards(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    for index in snapshot
+        .manifest
+        .files
+        .iter()
+        .filter(|file| file.path.ends_with(".safetensors.index.json"))
+    {
+        let index_path = snapshot.path.join(&index.path);
+        let bytes = tokio::fs::read(&index_path).await.map_err(|err| {
+            format!(
+                "could not read safetensors index `{}`: {err}",
+                index_path.display()
+            )
+        })?;
+        let index = serde_json::from_slice::<RawSafetensorsIndex>(&bytes)
+            .map_err(|err| format!("invalid safetensors index JSON: {err}"))?;
+        let shards = index
+            .weight_map
+            .values()
+            .map(|shard| {
+                validate_artifact_path(shard).map_err(|err| err.to_string())?;
+                Ok(shard.as_str())
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        if shards.is_empty() {
+            return Err("safetensors index does not reference any weight shards".to_owned());
+        }
+        for shard in shards {
+            let Some(file) = snapshot
+                .manifest
+                .files
+                .iter()
+                .find(|file| file.path == shard)
+            else {
+                return Err(format!(
+                    "safetensors index references shard `{shard}` that is not recorded in the snapshot manifest"
+                ));
+            };
+            if file.class != crate::ArtifactClass::Weights {
+                return Err(format!(
+                    "safetensors index references shard `{shard}` recorded as {:?}, expected weights",
+                    file.class
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_metadata_only_snapshot(snapshot: &PromotedSnapshot) -> bool {
+    snapshot
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".metadata-only"))
+}
+
+fn missing_weights_reason(reason: &str) -> bool {
+    reason.contains("contains no weight files")
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSafetensorsIndex {
+    weight_map: std::collections::BTreeMap<String, String>,
 }

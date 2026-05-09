@@ -2,7 +2,28 @@ use llm_hub::{
     HubFile, HubRepoId, ModelProfile, ModelStore, PrunePolicy, SnapshotManifest,
     build_download_plan,
 };
+use std::path::Path;
 use std::time::Duration;
+
+fn runnable_qwen_files() -> Vec<HubFile> {
+    vec![
+        HubFile::new("config.json", 2, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
+        HubFile::new("model.safetensors", 4, Some("\"weights\"")),
+    ]
+}
+
+async fn write_runnable_qwen_files(snapshot_path: &Path) {
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
+        .await
+        .expect("weights");
+}
 
 #[tokio::test]
 async fn promotes_staged_snapshot_with_manifest() {
@@ -213,6 +234,108 @@ async fn lists_promoted_snapshots_from_model_store() {
     assert_eq!(snapshots[0].path, snapshot_path);
     assert_eq!(snapshots[0].manifest.repo_id, "Qwen/Qwen3.6-35B-A3B");
     assert_eq!(snapshots[0].manifest_digest.len(), 64);
+}
+
+#[tokio::test]
+async fn snapshot_inventory_quarantines_stale_builtin_profile_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("mlx-community/Qwen3.6-35B-A3B-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    write_runnable_qwen_files(&snapshot_path).await;
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+
+    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
+    let mut manifest = serde_json::from_slice::<SnapshotManifest>(
+        &tokio::fs::read(&manifest_path)
+            .await
+            .expect("manifest bytes"),
+    )
+    .expect("manifest json");
+    manifest.loader = "native-metal".to_owned();
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest serializes"),
+    )
+    .await
+    .expect("write stale manifest");
+
+    let inventory = store.snapshot_inventory().await.expect("inventory");
+
+    assert!(inventory.ready_snapshots.is_empty());
+    assert!(inventory.metadata_only_snapshots.is_empty());
+    assert_eq!(inventory.quarantined_snapshots.len(), 1);
+    assert!(
+        inventory.quarantined_snapshots[0]
+            .metadata
+            .reason
+            .contains("loader `native-metal`, expected `mlx`"),
+        "reason: {}",
+        inventory.quarantined_snapshots[0].metadata.reason
+    );
+    assert!(!snapshot_path.exists());
+}
+
+#[tokio::test]
+async fn snapshot_inventory_reports_metadata_only_snapshots_without_quarantine() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let full_plan = build_download_plan(
+        HubRepoId::model("mlx-community/Qwen3.6-35B-A3B-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let metadata_plan = full_plan.metadata_only();
+    let snapshot_path = store.snapshot_path(&metadata_plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    store
+        .verify_existing_snapshot(&metadata_plan)
+        .await
+        .expect("snapshot verifies");
+
+    let inventory = store.snapshot_inventory().await.expect("inventory");
+
+    assert!(inventory.ready_snapshots.is_empty());
+    assert_eq!(inventory.metadata_only_snapshots.len(), 1);
+    assert_eq!(
+        inventory.metadata_only_snapshots[0].readiness.status(),
+        "metadata_only"
+    );
+    assert!(
+        inventory.metadata_only_snapshots[0]
+            .readiness
+            .reason()
+            .expect("reason")
+            .contains("contains no weight files")
+    );
+    assert!(inventory.quarantined_snapshots.is_empty());
+    assert!(snapshot_path.exists());
 }
 
 #[tokio::test]

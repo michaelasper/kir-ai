@@ -106,10 +106,11 @@ resume from partially downloaded files.
 cargo run -p llm-engine -- model list --model-home "$LLM_MODEL_HOME"
 ```
 
-The command prints promoted snapshots with repo identity, requested revision,
-resolved commit, profile, family, loader, quantisation, manifest digest, and file
-count. It also prints quarantined snapshots separately with the quarantine
-reason and original path.
+The command prints runnable snapshots with repo identity, requested revision,
+resolved commit, profile, family, loader, quantisation, manifest digest, file
+count, aliases, and readiness status. Metadata-only snapshots are printed under
+`metadata_only_snapshots`; stale or corrupt promoted snapshots are moved to
+quarantine and printed with the quarantine reason and original path.
 
 ## Inspect A Snapshot
 
@@ -134,6 +135,9 @@ Verification checks every manifest file for:
 - file type
 - expected size
 - SHA-256 digest when the manifest contains a normalised 64-character SHA
+- config, tokenizer, and weight artifact presence
+- built-in profile metadata consistency
+- safetensors index shard coverage
 
 Treat `model_integrity_failed` as a signal to pull or restore the snapshot
 again.

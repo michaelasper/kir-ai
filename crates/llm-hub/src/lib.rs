@@ -16,4 +16,7 @@ pub use prune::{
     DeletedSnapshot, ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport,
 };
 pub use repo::{HubFile, HubRepoId, RepoType};
-pub use store::{ModelAlias, ModelStore, QuarantineMetadata, QuarantinedSnapshot, SnapshotUsage};
+pub use store::{
+    ModelAlias, ModelStore, QuarantineMetadata, QuarantinedSnapshot, SnapshotInventory,
+    SnapshotReadiness, SnapshotRecord, SnapshotUsage,
+};

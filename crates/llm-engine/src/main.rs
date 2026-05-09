@@ -12,8 +12,9 @@ use llm_engine::{
     open_snapshot_backend, parse_snapshot_model_family,
 };
 use llm_hub::{
-    DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, ProtectedSnapshot,
-    PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
+    DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
+    ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
+    SnapshotRecord,
 };
 use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -115,6 +116,9 @@ async fn main() -> anyhow::Result<()> {
                 let family = flag_value(&serve_args, "--family")
                     .map(parse_snapshot_model_family)
                     .transpose()?;
+                if tokio::fs::try_exists(snapshot_path.join("llm-engine-manifest.json")).await? {
+                    ModelStore::verify_runnable_snapshot(&snapshot_path).await?;
+                }
                 let backend = open_snapshot_backend(
                     model_id,
                     &snapshot_path,
@@ -226,30 +230,27 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     .or_default()
                     .push(alias.alias);
             }
-            let snapshots = store.list_snapshots().await?;
-            let snapshots = snapshots
+            let inventory = store.snapshot_inventory().await?;
+            let snapshots = inventory
+                .ready_snapshots
                 .into_iter()
                 .map(|snapshot| {
                     let aliases = aliases_by_path.remove(&snapshot.path).unwrap_or_default();
-                    serde_json::json!({
-                        "status": "ready",
-                        "path": snapshot.path,
-                        "repo_id": snapshot.manifest.repo_id,
-                        "requested_revision": snapshot.manifest.requested_revision,
-                        "resolved_commit": snapshot.manifest.resolved_commit,
-                        "profile": snapshot.manifest.profile,
-                        "family": snapshot.manifest.family,
-                        "loader": snapshot.manifest.loader,
-                        "quantization": snapshot.manifest.quantization,
-                        "manifest_digest": snapshot.manifest_digest,
-                        "files": snapshot.manifest.files.len(),
-                        "aliases": aliases,
-                    })
+                    promoted_snapshot_json(snapshot, "ready", None, aliases)
                 })
                 .collect::<Vec<_>>();
-            let quarantined = store
-                .list_quarantined_snapshots()
-                .await?
+            let metadata_only = inventory
+                .metadata_only_snapshots
+                .into_iter()
+                .map(|record| {
+                    let aliases = aliases_by_path
+                        .remove(&record.snapshot.path)
+                        .unwrap_or_default();
+                    snapshot_record_json(record, aliases)
+                })
+                .collect::<Vec<_>>();
+            let quarantined = inventory
+                .quarantined_snapshots
                 .into_iter()
                 .map(quarantined_snapshot_json)
                 .collect::<Vec<_>>();
@@ -257,6 +258,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "snapshots": snapshots,
+                    "metadata_only_snapshots": metadata_only,
                     "quarantined_snapshots": quarantined,
                 }))?
             );
@@ -272,8 +274,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
-            match ModelStore::inspect_snapshot(snapshot_path).await {
-                Ok(snapshot) => {
+            match ModelStore::inspect_snapshot_readiness(snapshot_path).await {
+                Ok(record) => {
+                    let snapshot = record.snapshot;
                     let total_bytes = snapshot
                         .manifest
                         .files
@@ -283,7 +286,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
-                            "status": "ready",
+                            "status": record.readiness.status(),
+                            "readiness_reason": record.readiness.reason(),
                             "snapshot_path": snapshot.path,
                             "repo_id": snapshot.manifest.repo_id,
                             "requested_revision": snapshot.manifest.requested_revision,
@@ -305,7 +309,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let snapshot_path = args
                 .get(1)
                 .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model verify <snapshot-path>"))?;
-            let verification = ModelStore::verify_snapshot(snapshot_path).await?;
+            let verification = ModelStore::verify_runnable_snapshot(snapshot_path).await?;
             ModelStore::mark_snapshot_used(snapshot_path).await?;
             println!(
                 "{}",
@@ -840,6 +844,35 @@ fn deleted_snapshot_json(snapshot: &DeletedSnapshot) -> Value {
     serde_json::json!({
         "path": path_string(&snapshot.path),
         "bytes": snapshot.bytes,
+    })
+}
+
+fn snapshot_record_json(record: SnapshotRecord, aliases: Vec<String>) -> Value {
+    let reason = record.readiness.reason().map(str::to_owned);
+    let status = record.readiness.status();
+    promoted_snapshot_json(record.snapshot, status, reason, aliases)
+}
+
+fn promoted_snapshot_json(
+    snapshot: PromotedSnapshot,
+    status: &str,
+    reason: Option<String>,
+    aliases: Vec<String>,
+) -> Value {
+    serde_json::json!({
+        "status": status,
+        "path": path_string(&snapshot.path),
+        "repo_id": snapshot.manifest.repo_id,
+        "requested_revision": snapshot.manifest.requested_revision,
+        "resolved_commit": snapshot.manifest.resolved_commit,
+        "profile": snapshot.manifest.profile,
+        "family": snapshot.manifest.family,
+        "loader": snapshot.manifest.loader,
+        "quantization": snapshot.manifest.quantization,
+        "manifest_digest": snapshot.manifest_digest,
+        "files": snapshot.manifest.files.len(),
+        "readiness_reason": reason,
+        "aliases": aliases,
     })
 }
 

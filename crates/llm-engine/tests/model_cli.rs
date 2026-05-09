@@ -1,7 +1,28 @@
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::Value;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+
+fn runnable_qwen_files() -> Vec<HubFile> {
+    vec![
+        HubFile::new("config.json", 2, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
+        HubFile::new("model.safetensors", 4, Some("\"weights\"")),
+    ]
+}
+
+async fn write_runnable_qwen_files(snapshot_path: &Path) {
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
+        .await
+        .expect("weights");
+}
 
 #[test]
 fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
@@ -341,7 +362,7 @@ async fn model_list_outputs_promoted_snapshots() {
         "main",
         "0123456789abcdef0123456789abcdef01234567",
         ModelProfile::qwen36_safetensors_bf16(),
-        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        runnable_qwen_files(),
         &[],
     )
     .expect("plan builds");
@@ -349,9 +370,7 @@ async fn model_list_outputs_promoted_snapshots() {
     tokio::fs::create_dir_all(&snapshot_path)
         .await
         .expect("snapshot dir");
-    tokio::fs::write(snapshot_path.join("config.json"), "{}")
-        .await
-        .expect("config");
+    write_runnable_qwen_files(&snapshot_path).await;
     store
         .verify_existing_snapshot(&plan)
         .await
@@ -392,7 +411,7 @@ async fn model_inspect_outputs_snapshot_manifest_summary() {
         "main",
         "0123456789abcdef0123456789abcdef01234567",
         ModelProfile::qwen36_safetensors_bf16(),
-        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        runnable_qwen_files(),
         &[],
     )
     .expect("plan builds");
@@ -400,9 +419,7 @@ async fn model_inspect_outputs_snapshot_manifest_summary() {
     tokio::fs::create_dir_all(&snapshot_path)
         .await
         .expect("snapshot dir");
-    tokio::fs::write(snapshot_path.join("config.json"), "{}")
-        .await
-        .expect("config");
+    write_runnable_qwen_files(&snapshot_path).await;
     store
         .verify_existing_snapshot(&plan)
         .await
@@ -420,9 +437,10 @@ async fn model_inspect_outputs_snapshot_manifest_summary() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["status"], "ready");
     assert_eq!(value["repo_id"], "Qwen/Qwen3.6-35B-A3B");
-    assert_eq!(value["files"], 1);
-    assert_eq!(value["total_bytes"], 2);
+    assert_eq!(value["files"], 3);
+    assert_eq!(value["total_bytes"], 8);
 }
 
 #[tokio::test]
@@ -434,7 +452,7 @@ async fn model_verify_outputs_snapshot_integrity_summary() {
         "main",
         "0123456789abcdef0123456789abcdef01234567",
         ModelProfile::qwen36_safetensors_bf16(),
-        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        runnable_qwen_files(),
         &[],
     )
     .expect("plan builds");
@@ -442,9 +460,7 @@ async fn model_verify_outputs_snapshot_integrity_summary() {
     tokio::fs::create_dir_all(&snapshot_path)
         .await
         .expect("snapshot dir");
-    tokio::fs::write(snapshot_path.join("config.json"), "{}")
-        .await
-        .expect("config");
+    write_runnable_qwen_files(&snapshot_path).await;
     store
         .verify_existing_snapshot(&plan)
         .await
@@ -463,8 +479,8 @@ async fn model_verify_outputs_snapshot_integrity_summary() {
     );
     let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
     assert_eq!(value["status"], "ok");
-    assert_eq!(value["verified_files"], 1);
-    assert_eq!(value["verified_bytes"], 2);
+    assert_eq!(value["verified_files"], 3);
+    assert_eq!(value["verified_bytes"], 8);
 }
 
 #[tokio::test]

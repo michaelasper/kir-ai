@@ -198,7 +198,9 @@ SHA-256 verification happens only when `sha256` is present.
 - every shard file referenced by the index `weight_map`
 
 `llm-engine-manifest.json` is required for `model list`, `model inspect`, and
-`model verify`, but the native server does not read it when opening a snapshot.
+`model verify`. Serving validates runnable readiness for manifest-bearing
+snapshots before opening a backend; raw snapshots without a Kir manifest still
+use the explicit `--loader` and `--family` path.
 
 `generation_config.json` and `chat_template.jinja` may be present, but the
 runtime does not read them.

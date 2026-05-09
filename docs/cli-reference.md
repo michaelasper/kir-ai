@@ -112,7 +112,10 @@ and `finish_reason: "tool_calls"` for tool responses.
 
 ## `model list`
 
-Lists promoted snapshots from a model home.
+Lists runnable snapshots from a model home. The command reconciles promoted
+snapshots before reporting them: stale or corrupt promoted snapshots are moved
+to quarantine, while intentional metadata-only snapshots are reported
+separately and are not advertised as ready for serving.
 
 ```sh
 llm-engine model list [--model-home <path>]
@@ -130,6 +133,7 @@ Output shape:
 {
   "snapshots": [
     {
+      "status": "ready",
       "path": "...",
       "repo_id": "Qwen/Qwen3.6-35B-A3B",
       "requested_revision": "main",
@@ -140,9 +144,11 @@ Output shape:
       "quantization": "bf16",
       "manifest_digest": "...",
       "files": 39,
+      "readiness_reason": null,
       "aliases": ["local-qwen36"]
     }
   ],
+  "metadata_only_snapshots": [],
   "quarantined_snapshots": []
 }
 ```
@@ -160,6 +166,8 @@ contain `llm-engine-quarantine.json` and report `status: "quarantined"`.
 
 Output fields:
 
+- `status`
+- `readiness_reason`
 - `snapshot_path`
 - `repo_id`
 - `requested_revision`
@@ -174,7 +182,10 @@ Output fields:
 
 ## `model verify`
 
-Verifies files recorded in a promoted snapshot manifest.
+Verifies files recorded in a promoted snapshot manifest and checks that the
+snapshot is runnable. Runnable snapshots must include config, tokenizer, and
+weight artifacts. Safetensors indexes must reference weight shards recorded in
+the manifest.
 
 ```sh
 llm-engine model verify <snapshot-path>
@@ -194,7 +205,8 @@ Output shape:
 }
 ```
 
-Verification checks file presence, file type, size, and SHA-256 when available.
+Verification checks file presence, file type, size, SHA-256 when available,
+readiness metadata for built-in profiles, and safetensors index shard coverage.
 Successful verification records the snapshot as recently used for prune
 retention.
 
