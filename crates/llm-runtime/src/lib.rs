@@ -7,25 +7,28 @@ use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
     ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, CompletionStreamResponse,
-    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, ToolDefinition,
-    Usage, ValidateRequest,
+    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, Usage,
+    ValidateRequest,
 };
-use llm_backend::{
-    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
-    BackendModelMetadata,
-};
+use llm_backend::{BackendCacheContext, BackendModelMetadata};
 use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
 };
-use llm_models::ModelFamily;
-use llm_tokenizer::{TemplateError, render_family_chat_template};
-use llm_tool_parser::{ParsedAssistant, ParserError, parse_assistant_for_family};
+use llm_tool_parser::ParsedAssistant;
 use std::collections::BTreeSet;
 use std::fmt;
-use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+mod adapters;
+mod error;
+mod no_progress;
+
+use adapters::{ChatAdapter, SelectedChatAdapter, chat_adapter_for_metadata};
+pub use error::RuntimeError;
+use no_progress::classify_chat_no_progress;
+pub use no_progress::{NoProgressClass, classify_no_progress};
 
 #[derive(Debug, Clone)]
 pub struct Runtime<B> {
@@ -1226,112 +1229,6 @@ fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<Backe
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SelectedChatAdapter {
-    family: ModelFamily,
-}
-
-trait ChatAdapter {
-    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError>;
-    fn backend_chat_context(
-        self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
-    ) -> Option<BackendChatContext>;
-    fn render_prompt(
-        self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
-    ) -> Result<String, RuntimeError>;
-    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError>;
-}
-
-impl ChatAdapter for SelectedChatAdapter {
-    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
-        let tool_schema = if tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(tools)?)
-        };
-        Ok(BackendCacheContext::chat_template(
-            self.family.adapter().cache_template_id(),
-            tool_schema,
-        ))
-    }
-
-    fn backend_chat_context(
-        self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
-    ) -> Option<BackendChatContext> {
-        if !tools.is_empty() {
-            return None;
-        }
-        let messages = messages
-            .iter()
-            .map(backend_chat_message)
-            .collect::<Option<Vec<_>>>()?;
-        Some(BackendChatContext { messages })
-    }
-
-    fn render_prompt(
-        self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
-    ) -> Result<String, RuntimeError> {
-        Ok(render_family_chat_template(self.family, messages, tools)?)
-    }
-
-    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
-        Ok(parse_assistant_for_family(self.family, text)?)
-    }
-}
-
-fn backend_chat_message(message: &ChatMessage) -> Option<BackendChatMessage> {
-    if !message.tool_calls.is_empty() {
-        return None;
-    }
-    let role = match message.role {
-        ChatRole::System => BackendChatRole::System,
-        ChatRole::User => BackendChatRole::User,
-        ChatRole::Assistant => BackendChatRole::Assistant,
-        ChatRole::Tool => return None,
-    };
-    Some(BackendChatMessage {
-        role,
-        content: message.content.clone().unwrap_or_default(),
-    })
-}
-
-fn chat_adapter_for_metadata(
-    metadata: &BackendModelMetadata,
-) -> Result<SelectedChatAdapter, RuntimeError> {
-    let Some(family) = metadata.family.as_deref() else {
-        return Err(ApiError::unsupported_capability(format!(
-            "backend `{}` did not declare a model family for chat rendering",
-            metadata.backend
-        ))
-        .into());
-    };
-    match parse_metadata_family(family)? {
-        family @ (ModelFamily::Qwen | ModelFamily::Gemma) => Ok(SelectedChatAdapter { family }),
-        family => Err(unsupported_chat_family(family)),
-    }
-}
-
-fn parse_metadata_family(family: &str) -> Result<ModelFamily, RuntimeError> {
-    ModelFamily::parse_slug(family)
-        .map_err(|err| ApiError::unsupported_capability(format!("{err} for chat rendering")).into())
-}
-
-fn unsupported_chat_family(family: ModelFamily) -> RuntimeError {
-    ApiError::unsupported_capability(format!(
-        "{} chat adapter support is deferred until Qwen production parity",
-        family.display_name()
-    ))
-    .into()
-}
-
 fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
     if !parsed.content.is_empty() {
         let value = serde_json::from_str::<serde_json::Value>(&parsed.content).map_err(|err| {
@@ -1351,211 +1248,4 @@ fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), Runtime
         ));
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoProgressClass {
-    EmptyCompletion,
-    EmptyHighOutputCompletion,
-    HiddenOnlyOutput,
-    TextFallbackRequiredTool,
-    RepeatedInvalidToolCall,
-    RepeatedAssistantContent,
-    StalledAssistantTurn,
-}
-
-impl NoProgressClass {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::EmptyCompletion => "no_progress_empty_completion",
-            Self::EmptyHighOutputCompletion => "no_progress_empty_high_output_completion",
-            Self::HiddenOnlyOutput => "no_progress_hidden_only_output",
-            Self::TextFallbackRequiredTool => "no_progress_missing_required_tool_call",
-            Self::RepeatedInvalidToolCall => "no_progress_repeated_invalid_tool_call",
-            Self::RepeatedAssistantContent => "no_progress_repeated_assistant_content",
-            Self::StalledAssistantTurn => "no_progress_stalled_assistant_turn",
-        }
-    }
-}
-
-pub fn classify_no_progress(
-    content: &str,
-    completion_tokens: u64,
-    required_tool_pending: bool,
-) -> Option<NoProgressClass> {
-    if content.trim().is_empty() && completion_tokens >= 1024 {
-        return Some(NoProgressClass::EmptyHighOutputCompletion);
-    }
-    if content.trim().is_empty() {
-        return Some(NoProgressClass::EmptyCompletion);
-    }
-    if required_tool_pending && !content.contains("<tool_call>") {
-        return Some(NoProgressClass::TextFallbackRequiredTool);
-    }
-    None
-}
-
-fn classify_chat_no_progress(
-    raw_text: &str,
-    parsed: &ParsedAssistant,
-    completion_tokens: u64,
-    required_tool_pending: bool,
-    request: &ChatCompletionRequest,
-) -> Option<NoProgressClass> {
-    if parsed.tool_calls.is_empty() {
-        if parsed.content.trim().is_empty()
-            && parsed
-                .reasoning
-                .as_deref()
-                .is_some_and(|reasoning| !reasoning.trim().is_empty())
-        {
-            return Some(NoProgressClass::HiddenOnlyOutput);
-        }
-        if let Some(class) =
-            classify_no_progress(&parsed.content, completion_tokens, required_tool_pending)
-        {
-            return Some(class);
-        }
-        if repeated_assistant_content(&parsed.content, request) {
-            return Some(NoProgressClass::RepeatedAssistantContent);
-        }
-        if stalled_assistant_turn(&parsed.content) {
-            return Some(NoProgressClass::StalledAssistantTurn);
-        }
-    } else if repeated_invalid_tool_call(parsed, request) {
-        return Some(NoProgressClass::RepeatedInvalidToolCall);
-    }
-    if raw_text.trim().is_empty() {
-        return classify_no_progress(raw_text, completion_tokens, required_tool_pending);
-    }
-    None
-}
-
-fn repeated_assistant_content(content: &str, request: &ChatCompletionRequest) -> bool {
-    let normalized = normalized_progress_text(content);
-    if normalized.is_empty() {
-        return false;
-    }
-    request
-        .messages
-        .iter()
-        .rev()
-        .filter(|message| message.role == ChatRole::Assistant && message.tool_calls.is_empty())
-        .filter_map(|message| message.content.as_deref())
-        .map(normalized_progress_text)
-        .any(|previous| previous == normalized)
-}
-
-fn repeated_invalid_tool_call(parsed: &ParsedAssistant, request: &ChatCompletionRequest) -> bool {
-    parsed.tool_calls.iter().any(|generated| {
-        request
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .any(|(index, message)| {
-                message.role == ChatRole::Assistant
-                    && message
-                        .tool_calls
-                        .iter()
-                        .any(|previous| same_tool_call(previous, generated))
-                    && following_tool_result_failed(&request.messages[index + 1..])
-            })
-    })
-}
-
-fn same_tool_call(previous: &ToolCall, generated: &ToolCall) -> bool {
-    previous.function.name == generated.function.name
-        && previous.function.arguments == generated.function.arguments
-}
-
-fn following_tool_result_failed(messages: &[ChatMessage]) -> bool {
-    for message in messages {
-        if message.role == ChatRole::User {
-            return false;
-        }
-        if message.role == ChatRole::Tool
-            && message
-                .content
-                .as_deref()
-                .is_some_and(tool_result_indicates_failure)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn tool_result_indicates_failure(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    [
-        "error",
-        "failed",
-        "failure",
-        "invalid",
-        "not found",
-        "no such file",
-        "denied",
-        "timeout",
-        "exception",
-        "panic",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-}
-
-fn stalled_assistant_turn(content: &str) -> bool {
-    let normalized = normalized_progress_text(content);
-    if normalized.is_empty() || normalized.split_whitespace().count() > 16 {
-        return false;
-    }
-    [
-        "i will get started",
-        "i ll get started",
-        "i will check",
-        "i will look",
-        "let me check",
-        "let me look",
-        "working on it",
-        "i can help with that",
-        "sure i can help",
-    ]
-    .iter()
-    .any(|phrase| normalized.contains(phrase))
-}
-
-fn normalized_progress_text(content: &str) -> String {
-    content
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-#[derive(Debug, Error)]
-pub enum RuntimeError {
-    #[error(transparent)]
-    Api(#[from] ApiError),
-    #[error(transparent)]
-    Backend(#[from] BackendError),
-    #[error(transparent)]
-    Template(#[from] TemplateError),
-    #[error(transparent)]
-    Parser(#[from] ParserError),
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-    #[error("{0}")]
-    JsonMode(String),
-    #[error("tool call validation failed: {0}")]
-    ToolCallValidation(String),
-    #[error("no progress classified as {0:?}")]
-    NoProgress(NoProgressClass),
 }

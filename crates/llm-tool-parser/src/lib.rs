@@ -53,7 +53,52 @@ pub enum ToolParserFamily {
     Qwen,
     DeepSeek,
     Gemma,
+    Json,
+    Xlam,
 }
+
+impl ToolParserFamily {
+    pub fn from_vllm_name(name: &str) -> Option<Self> {
+        let normalized = normalize_parser_name(name);
+        VLLM_TOOL_PARSER_ROUTES
+            .iter()
+            .find_map(|(candidate, family)| (normalized == *candidate).then_some(*family))
+    }
+
+    pub fn supported_vllm_names() -> &'static [(&'static str, Self)] {
+        VLLM_TOOL_PARSER_ROUTES
+    }
+}
+
+const VLLM_TOOL_PARSER_ROUTES: &[(&str, ToolParserFamily)] = &[
+    ("deepseek_v3", ToolParserFamily::DeepSeek),
+    ("deepseek_v31", ToolParserFamily::DeepSeek),
+    ("deepseekv31", ToolParserFamily::DeepSeek),
+    ("deepseek_v32", ToolParserFamily::DeepSeek),
+    ("deepseekv32", ToolParserFamily::DeepSeek),
+    ("deepseek_v4", ToolParserFamily::DeepSeek),
+    ("deepseekv4", ToolParserFamily::DeepSeek),
+    ("functiongemma", ToolParserFamily::Gemma),
+    ("gemma4", ToolParserFamily::Gemma),
+    ("hermes", ToolParserFamily::Hermes),
+    ("qwen3coder", ToolParserFamily::Qwen),
+    ("qwen3xml", ToolParserFamily::Qwen),
+    ("xlam", ToolParserFamily::Xlam),
+    ("json", ToolParserFamily::Json),
+    ("openai", ToolParserFamily::Json),
+    ("mistral", ToolParserFamily::Json),
+    ("granite", ToolParserFamily::Json),
+    ("granite_20b_fc", ToolParserFamily::Json),
+    ("hunyuan_a13b", ToolParserFamily::Json),
+    ("kimi_k2", ToolParserFamily::Json),
+    ("minimax", ToolParserFamily::Json),
+    ("minimax_m2", ToolParserFamily::Json),
+    ("olmo3", ToolParserFamily::Json),
+    ("phi4mini", ToolParserFamily::Json),
+    ("seed_oss", ToolParserFamily::Json),
+    ("step3", ToolParserFamily::Json),
+    ("step3p5", ToolParserFamily::Json),
+];
 
 impl QwenParser {
     pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
@@ -147,6 +192,8 @@ pub fn parse_assistant_for_parser_family(
         ToolParserFamily::Hermes | ToolParserFamily::Qwen => QwenParser.parse_complete(text),
         ToolParserFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ToolParserFamily::Gemma => GemmaParser.parse_complete(text),
+        ToolParserFamily::Json => parse_json_tool_output(text),
+        ToolParserFamily::Xlam => parse_xlam_tool_output(text),
     }
 }
 
@@ -160,7 +207,18 @@ fn parse_assistant_auto(text: &str) -> Result<ParsedAssistant, ParserError> {
     if text.contains("<tool_call>") || text.contains("<think>") {
         return QwenParser.parse_complete(text);
     }
+    if text.contains("[TOOL_CALLS]") || text.contains("```json") {
+        return parse_xlam_tool_output(text);
+    }
     Ok(ParsedAssistant::content(text))
+}
+
+fn normalize_parser_name(name: &str) -> String {
+    name.trim()
+        .trim_end_matches("_tool_parser")
+        .trim_end_matches("_parser")
+        .replace('-', "_")
+        .to_ascii_lowercase()
 }
 
 fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {
@@ -242,6 +300,156 @@ fn parse_deepseek_dsml_tool_calls(
         content,
         tool_calls: calls,
     })
+}
+
+fn parse_json_tool_output(text: &str) -> Result<ParsedAssistant, ParserError> {
+    let (reasoning, rest) = split_reasoning(text)?;
+    parse_json_tool_output_with_reasoning(reasoning, &rest)
+}
+
+fn parse_xlam_tool_output(text: &str) -> Result<ParsedAssistant, ParserError> {
+    let (reasoning, rest) = split_reasoning(text)?;
+    if rest.contains("<tool_call>") {
+        return parse_tool_calls(reasoning, &rest);
+    }
+    parse_json_tool_output_with_reasoning(reasoning, &rest)
+}
+
+fn parse_json_tool_output_with_reasoning(
+    reasoning: Option<String>,
+    rest: &str,
+) -> Result<ParsedAssistant, ParserError> {
+    let Some((content, source)) = extract_json_tool_candidate(rest) else {
+        return Ok(ParsedAssistant {
+            reasoning,
+            content: rest.to_owned(),
+            tool_calls: Vec::new(),
+        });
+    };
+    let value: Value = serde_json::from_str(source.trim()).map_err(|err| {
+        ParserError::malformed_tool(format!("invalid JSON tool-call payload: {err}"))
+    })?;
+    let tool_calls = parse_json_tool_value(&value)?;
+    Ok(ParsedAssistant {
+        reasoning,
+        content,
+        tool_calls,
+    })
+}
+
+fn extract_json_tool_candidate(rest: &str) -> Option<(String, &str)> {
+    if let Some(marker_start) = rest.find("[TOOL_CALLS]") {
+        let source_start = marker_start + "[TOOL_CALLS]".len();
+        let source = rest[source_start..].trim_start();
+        let source_end = source.find('\n').unwrap_or(source.len());
+        let mut content = String::new();
+        content.push_str(rest[..marker_start].trim_end());
+        let suffix = source[source_end..].trim_start_matches('\n');
+        if !content.is_empty() && !suffix.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(suffix);
+        return Some((content, &source[..source_end]));
+    }
+
+    if let Some(fence_start) = rest.find("```") {
+        let language_start = fence_start + "```".len();
+        let after_language = rest[language_start..]
+            .strip_prefix("json")
+            .unwrap_or(&rest[language_start..]);
+        let after_newline = after_language
+            .strip_prefix('\n')
+            .unwrap_or(after_language.trim_start());
+        if let Some(fence_end_rel) = after_newline.find("```") {
+            let body_start = rest.len() - after_newline.len();
+            let fence_end = body_start + fence_end_rel + "```".len();
+            let mut content = String::new();
+            content.push_str(rest[..fence_start].trim_end());
+            content.push_str(rest[fence_end..].trim_start());
+            return Some((content, &after_newline[..fence_end_rel]));
+        }
+    }
+
+    let trimmed = rest.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return Some((String::new(), trimmed));
+    }
+    None
+}
+
+fn parse_json_tool_value(value: &Value) -> Result<Vec<ToolCall>, ParserError> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, value)| parse_json_tool_value_as_call(value, index))
+            .collect(),
+        Value::Object(object) => {
+            for key in ["tool_calls", "calls", "tools"] {
+                if let Some(Value::Array(items)) = object.get(key) {
+                    return items
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| parse_json_tool_value_as_call(value, index))
+                        .collect();
+                }
+            }
+            Ok(vec![parse_json_tool_value_as_call(value, 0)?])
+        }
+        _ => Err(ParserError::malformed_tool(
+            "JSON tool-call payload must be an object or array",
+        )),
+    }
+}
+
+fn parse_json_tool_value_as_call(value: &Value, index: usize) -> Result<ToolCall, ParserError> {
+    let Value::Object(object) = value else {
+        return Err(ParserError::malformed_tool(
+            "JSON tool-call entry must be an object",
+        ));
+    };
+    let function = object.get("function").and_then(Value::as_object);
+    let name = function
+        .and_then(|function| function.get("name"))
+        .or_else(|| object.get("name"))
+        .or_else(|| object.get("tool_name"))
+        .or_else(|| object.get("function"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ParserError::malformed_tool("JSON tool-call entry missing name"))?;
+    let arguments = function
+        .and_then(|function| function.get("arguments"))
+        .or_else(|| object.get("arguments"))
+        .or_else(|| object.get("parameters"))
+        .or_else(|| object.get("args"))
+        .map(parse_json_tool_arguments)
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(ToolCall {
+        id: format!("call_{index}"),
+        call_type: ToolCallType::Function,
+        function: ToolCallFunction {
+            name: name.to_owned(),
+            arguments,
+        },
+    })
+}
+
+fn parse_json_tool_arguments(value: &Value) -> Result<Value, ParserError> {
+    match value {
+        Value::String(arguments) => {
+            let trimmed = arguments.trim();
+            if trimmed.is_empty() {
+                Ok(serde_json::json!({}))
+            } else if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                serde_json::from_str(trimmed).map_err(|err| {
+                    ParserError::malformed_tool(format!("invalid JSON tool-call arguments: {err}"))
+                })
+            } else {
+                Ok(Value::String(arguments.clone()))
+            }
+        }
+        other => Ok(other.clone()),
+    }
 }
 
 fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {

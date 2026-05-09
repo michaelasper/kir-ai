@@ -10,6 +10,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod cli;
+
+use cli::{
+    flag_values, normalize_endpoint, parse_f64_flag, parse_u32_flag, parse_u64_flag,
+    print_bench_help,
+};
+
 const GATE_NAME: &str = "qwen-long-context";
 const CACHE_LAYOUT: &str = "shared-prefix-v1";
 const DEFAULT_MODEL_ID: &str = "local-qwen36";
@@ -31,29 +38,6 @@ pub async fn run_bench_command(args: Vec<String>) -> anyhow::Result<()> {
         "qwen-long-context" => run_qwen_long_context_bench(&args[1..]).await,
         other => anyhow::bail!("unknown bench subcommand `{other}`"),
     }
-}
-
-fn print_bench_help() {
-    println!(
-        "\
-Usage: llm-engine bench qwen-long-context [OPTIONS]
-
-Options:
-  --endpoint <url>                    OpenAI-compatible server base URL
-  --model <id>                        Model id to send in requests [default: local-qwen36]
-  --snapshot <path>                   Qwen snapshot path with tokenizer.json and manifest
-  --lane <spec>                       Named lane: name=<id>,endpoint=<url>,snapshot=<path>[,model=<id>]
-  --profile <135k|200k|256k|all>      Benchmark profile [default: 135k]
-  --baseline <path>                   Previous trace JSON for same hardware/model comparison
-  --output <path>                     Write the trace JSON to a file as well as stdout
-  --max-tokens <n>                    Completion token limit per request [default: 128]
-  --admin-token <token>               Optional bearer token for lane /admin/metrics snapshots
-  --timeout-ms <n>                    Whole request timeout [default: 1800000]
-  --connect-timeout-ms <n>            HTTP connect timeout [default: 10000]
-  --latency-regression-threshold <f>  Allowed latency increase over baseline [default: 0.20]
-  --dry-run                           Print the exact gate plan without HTTP requests
-  -h, --help                          Print help"
-    );
 }
 
 async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
@@ -334,12 +318,6 @@ fn parse_lane_config(spec: &str, default_model_id: &str) -> anyhow::Result<Bench
         model_id,
         snapshot_path,
     })
-}
-
-fn flag_values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
-    args.windows(2)
-        .filter_map(|window| (window[0] == flag).then_some(window[1].as_str()))
-        .collect()
 }
 
 async fn capture_lane_admin_metrics(
@@ -1901,48 +1879,6 @@ fn marker_for_case(profile: BenchProfileKind, case: BenchCaseKind) -> String {
     )
 }
 
-fn normalize_endpoint(endpoint: &str) -> String {
-    endpoint.trim_end_matches('/').to_owned()
-}
-
-fn parse_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
-    flag_value(args, flag)
-        .map(str::parse::<u64>)
-        .transpose()
-        .with_context(|| format!("parse {flag}"))?
-        .map_or(Ok(default), |value| {
-            if value == 0 {
-                anyhow::bail!("{flag} must be greater than zero");
-            }
-            Ok(value)
-        })
-}
-
-fn parse_u32_flag(args: &[String], flag: &str, default: u32) -> anyhow::Result<u32> {
-    flag_value(args, flag)
-        .map(str::parse::<u32>)
-        .transpose()
-        .with_context(|| format!("parse {flag}"))?
-        .map_or(Ok(default), |value| {
-            if value == 0 {
-                anyhow::bail!("{flag} must be greater than zero");
-            }
-            Ok(value)
-        })
-}
-
-fn parse_f64_flag(args: &[String], flag: &str, default: f64) -> anyhow::Result<f64> {
-    let value = flag_value(args, flag)
-        .map(str::parse::<f64>)
-        .transpose()
-        .with_context(|| format!("parse {flag}"))?
-        .unwrap_or(default);
-    if !value.is_finite() || value < 0.0 {
-        anyhow::bail!("{flag} must be a finite non-negative number");
-    }
-    Ok(value)
-}
-
 fn unix_now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1983,292 +1919,4 @@ fn command_output(command: &str, args: &[&str]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const MARKER: &str = "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741";
-
-    #[test]
-    fn lane_artifact_mismatch_fails_gate_status() {
-        let lanes = vec![
-            passed_lane(
-                "native",
-                "michaelasper/qwen",
-                "commit-a",
-                "qwen3-bf16",
-                "bf16",
-            ),
-            passed_lane("mlx", "michaelasper/qwen", "commit-b", "qwen3-bf16", "bf16"),
-        ];
-        let comparison = compare_bench_lanes(&lanes);
-
-        assert_eq!(comparison.status, "artifact_identity_mismatch");
-        assert_eq!(
-            bench_gate_failure_classification(false, &comparison),
-            Some("lane_artifact_identity_mismatch")
-        );
-        assert_eq!(bench_gate_status(false, &comparison), "failed");
-    }
-
-    #[test]
-    fn all_profile_selection_includes_256k_characterization() {
-        let profiles = selected_profiles("all").expect("all profiles");
-
-        assert_eq!(
-            profiles
-                .iter()
-                .map(|profile| profile.name())
-                .collect::<Vec<_>>(),
-            [
-                "qwen-135k-promotion",
-                "qwen-200k-characterization",
-                "qwen-256k-characterization"
-            ]
-        );
-        assert_eq!(
-            BenchProfileKind::Characterization256k.target_tokens(),
-            256_000
-        );
-        assert!(!BenchProfileKind::Characterization256k.release_blocking());
-    }
-
-    #[test]
-    fn cache_metrics_summary_extracts_admin_cache_counters() {
-        let admin = serde_json::json!({
-            "native_qwen_prefix_cache": {
-                "hits": 3,
-                "misses": 1,
-                "stores": 2,
-                "evictions": 1,
-                "rejected": 0,
-                "reused_tokens": 42,
-                "resident_bytes": 1024,
-                "resident_entries": 2
-            },
-            "native_qwen_metal": {
-                "bf16_matrix_cache": {
-                    "hits": 7,
-                    "misses": 3,
-                    "uploads": 3,
-                    "bytes_uploaded": 2048,
-                    "evictions": 1,
-                    "bytes_evicted": 512,
-                    "resident_bytes": 1536,
-                    "resident_buffers": 4,
-                    "budget_bytes": 4096
-                },
-                "kv_cache": {
-                    "allocations": 2,
-                    "syncs": 4,
-                    "evictions": 1,
-                    "bytes_uploaded": 4096,
-                    "bytes_evicted": 1024,
-                    "resident_bytes": 3072,
-                    "resident_buffers": 2
-                },
-                "linear_attention_cache": {
-                    "allocations": 1,
-                    "syncs": 3,
-                    "evictions": 0,
-                    "bytes_uploaded": 2048,
-                    "bytes_evicted": 0,
-                    "resident_bytes": 2048,
-                    "resident_buffers": 1
-                }
-            }
-        });
-
-        let summary = cache_metrics_from_admin(&admin).expect("cache summary");
-
-        assert_eq!(summary.prefix_cache.hit_rate, Some(0.75));
-        assert!(
-            (summary.weight_cache.hit_rate.expect("weight hit rate") - 0.7).abs() < f64::EPSILON
-        );
-        assert_eq!(summary.kv_cache.resident_bytes, 3072);
-        assert_eq!(summary.linear_attention_cache.syncs, 3);
-        assert_eq!(summary.readiness.status, "observable");
-        assert!(summary.readiness.missing_signals.is_empty());
-    }
-
-    #[test]
-    fn json_object_recall_rejects_marker_only_contract() {
-        let value = buffered_content_response(serde_json::json!({"marker": MARKER}).to_string());
-
-        let err = validate_buffered_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::JsonObjectRecall,
-            MARKER,
-            &value,
-        )
-        .expect_err("marker-only JSON must fail");
-
-        assert!(err.contains("profile"), "error: {err}");
-    }
-
-    #[test]
-    fn json_object_recall_rejects_wrong_profile_or_case() {
-        let value = buffered_content_response(
-            serde_json::json!({
-                "marker": MARKER,
-                "profile": "qwen-200k-characterization",
-                "case": "json-object-recall"
-            })
-            .to_string(),
-        );
-
-        let err = validate_buffered_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::JsonObjectRecall,
-            MARKER,
-            &value,
-        )
-        .expect_err("wrong profile must fail");
-
-        assert!(err.contains("profile"), "error: {err}");
-    }
-
-    #[test]
-    fn required_tool_recall_requires_tool_finish_reason_and_full_arguments() {
-        let marker_only = buffered_tool_response(
-            "tool_calls",
-            serde_json::json!({"marker": MARKER}).to_string(),
-        );
-        let marker_only_err = validate_buffered_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::RequiredToolRecall,
-            MARKER,
-            &marker_only,
-        )
-        .expect_err("marker-only tool arguments must fail");
-        assert!(
-            marker_only_err.contains("profile"),
-            "error: {marker_only_err}"
-        );
-
-        let wrong_finish = buffered_tool_response(
-            "stop",
-            serde_json::json!({
-                "marker": MARKER,
-                "profile": "qwen-135k-promotion",
-                "case": "required-tool-recall"
-            })
-            .to_string(),
-        );
-        let finish_err = validate_buffered_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::RequiredToolRecall,
-            MARKER,
-            &wrong_finish,
-        )
-        .expect_err("wrong finish_reason must fail");
-        assert!(finish_err.contains("finish_reason"), "error: {finish_err}");
-    }
-
-    #[test]
-    fn streamed_required_tool_recall_requires_tool_finish_reason_and_full_arguments() {
-        let marker_only = StreamAssembly {
-            tool_name: Some("report_long_context_recall".to_owned()),
-            tool_arguments: serde_json::json!({"marker": MARKER}).to_string(),
-            finish_reason: Some("tool_calls".to_owned()),
-            ..StreamAssembly::default()
-        };
-        let marker_only_err = validate_streaming_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::StreamedRequiredToolRecall,
-            MARKER,
-            &marker_only,
-        )
-        .expect_err("marker-only streamed tool arguments must fail");
-        assert!(
-            marker_only_err.contains("profile"),
-            "error: {marker_only_err}"
-        );
-
-        let wrong_finish = StreamAssembly {
-            tool_name: Some("report_long_context_recall".to_owned()),
-            tool_arguments: serde_json::json!({
-                "marker": MARKER,
-                "profile": "qwen-135k-promotion",
-                "case": "streamed-required-tool-recall"
-            })
-            .to_string(),
-            finish_reason: Some("stop".to_owned()),
-            ..StreamAssembly::default()
-        };
-        let finish_err = validate_streaming_case(
-            BenchProfileKind::Promotion135k,
-            BenchCaseKind::StreamedRequiredToolRecall,
-            MARKER,
-            &wrong_finish,
-        )
-        .expect_err("wrong streamed finish_reason must fail");
-        assert!(finish_err.contains("finish_reason"), "error: {finish_err}");
-    }
-
-    fn passed_lane(
-        name: &str,
-        repo_id: &str,
-        resolved_commit: &str,
-        profile: &str,
-        quantization: &str,
-    ) -> BenchLaneReport {
-        let mut report = profile_report(BenchProfileKind::Promotion135k);
-        report.status = "passed".to_owned();
-        for case in &mut report.cases {
-            case.status = "passed".to_owned();
-            case.classification = "passed".to_owned();
-            case.latency_ms = Some(100);
-        }
-        BenchLaneReport {
-            name: name.to_owned(),
-            status: "passed".to_owned(),
-            model: ModelIdentityReport {
-                id: name.to_owned(),
-                endpoint: None,
-                snapshot_path: None,
-                repo_id: Some(repo_id.to_owned()),
-                requested_revision: Some(resolved_commit.to_owned()),
-                resolved_commit: Some(resolved_commit.to_owned()),
-                profile: Some(profile.to_owned()),
-                family: Some("qwen".to_owned()),
-                loader: Some("native-metal".to_owned()),
-                quantization: Some(quantization.to_owned()),
-                manifest_digest: None,
-            },
-            profiles: vec![report],
-            cache_metrics: None,
-            admin_metrics: None,
-            admin_metrics_error: None,
-        }
-    }
-
-    fn buffered_content_response(content: String) -> Value {
-        serde_json::json!({
-            "choices": [{
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": content
-                }
-            }]
-        })
-    }
-
-    fn buffered_tool_response(finish_reason: &str, arguments: String) -> Value {
-        serde_json::json!({
-            "choices": [{
-                "finish_reason": finish_reason,
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "type": "function",
-                        "function": {
-                            "name": "report_long_context_recall",
-                            "arguments": arguments
-                        }
-                    }]
-                }
-            }]
-        })
-    }
-}
+mod tests;

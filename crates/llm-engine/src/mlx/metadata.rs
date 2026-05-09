@@ -1,0 +1,67 @@
+use llm_backend::BackendModelMetadata;
+use llm_hub::SnapshotManifest;
+use llm_models::{BackendKind, ModelFamily};
+use std::path::{Path, PathBuf};
+
+pub(super) fn mlx_metadata(
+    model_id: &str,
+    snapshot_path: &Path,
+    requested_family: Option<ModelFamily>,
+) -> anyhow::Result<BackendModelMetadata> {
+    let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "mlx");
+    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
+    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
+    let manifest_bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let family = requested_family.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MLX backend requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
+                )
+            })?;
+            validate_mlx_serving_family(family)?;
+            metadata.loader = Some("mlx".to_owned());
+            metadata.family = Some(family.canonical_slug().to_owned());
+            return Ok(metadata);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
+    let manifest_loader = BackendKind::parse_slug(&manifest.loader)?;
+    if manifest_loader != BackendKind::Mlx {
+        anyhow::bail!(
+            "MLX backend requires manifest loader `mlx`, not `{}`",
+            manifest_loader.canonical_slug()
+        );
+    }
+    let manifest_family = ModelFamily::parse_slug(&manifest.family)?;
+    if let Some(requested_family) = requested_family
+        && manifest_family != requested_family
+    {
+        anyhow::bail!(
+            "requested snapshot family `{}` does not match manifest family `{}`",
+            requested_family.canonical_slug(),
+            manifest_family.canonical_slug()
+        );
+    }
+    validate_mlx_serving_family(manifest_family)?;
+    metadata.family = Some(manifest_family.canonical_slug().to_owned());
+    metadata.loader = Some(manifest_loader.canonical_slug().to_owned());
+    metadata.quantization = Some(manifest.quantization.clone());
+    metadata.repo_id = Some(manifest.repo_id.clone());
+    metadata.resolved_commit = Some(manifest.resolved_commit.clone());
+    metadata.profile = Some(manifest.profile.clone());
+    metadata.manifest_digest = Some(manifest.digest());
+    Ok(metadata)
+}
+
+fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
+    if !family.adapter().capabilities().backend_execution {
+        anyhow::bail!(
+            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
+            family.canonical_slug(),
+            family.display_name()
+        );
+    }
+    Ok(())
+}

@@ -1,0 +1,350 @@
+use super::*;
+
+#[tokio::test]
+async fn optional_tools_allow_text_completion() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "plain text");
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Auto),
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("optional tools do not require tool calls");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("plain text")
+    );
+    assert!(response.choices[0].message.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn runtime_omits_structured_chat_context_when_tools_require_prompt_rendering() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "gemma",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Gemma chat with tools succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    assert!(observed.chat_context.is_none());
+    assert!(
+        observed
+            .cache_context
+            .tool_schema
+            .as_deref()
+            .is_some_and(|schema| schema.contains("lookup"))
+    );
+}
+
+#[tokio::test]
+async fn required_tool_choice_rejects_text_fallback() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "plain text");
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("required tool choice rejects text fallback");
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::TextFallbackRequiredTool)
+    ));
+}
+
+#[tokio::test]
+async fn protocol_test_backend_returns_tool_call_for_required_tool_choice() {
+    let backend =
+        ProtocolTestBackend::new("local-qwen36", "plain text").with_required_tool_protocol();
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("required tool choice succeeds in protocol test mode");
+
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(FinishReason::ToolCalls)
+    );
+    assert_eq!(response.choices[0].message.tool_calls.len(), 1);
+    assert_eq!(
+        response.choices[0].message.tool_calls[0].function.name,
+        "lookup"
+    );
+}
+
+#[tokio::test]
+async fn chat_stop_sequence_suppresses_later_tool_calls() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"content STOP <tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            stop: vec![" STOP".to_owned()],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("content")
+    );
+    assert!(response.choices[0].message.tool_calls.is_empty());
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
+async fn parses_generated_tool_calls_into_openai_message() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("tool call parses");
+
+    let choice = &response.choices[0];
+    assert_eq!(choice.finish_reason, Some(FinishReason::ToolCalls));
+    assert_eq!(choice.message.tool_calls[0].function.name, "lookup");
+    assert_eq!(
+        choice.message.tool_calls[0].function.arguments,
+        json!({"query": "rust"})
+    );
+}
+
+#[tokio::test]
+async fn rejects_generated_tool_call_missing_required_schema_argument() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read Cargo.toml")],
+            tools: vec![ToolDefinition::function(
+                "read_file",
+                "read file",
+                json!({
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("missing required tool argument is rejected");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("path"));
+}
+
+#[tokio::test]
+async fn rejects_generated_tool_call_for_undeclared_tool() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("undeclared generated tool call is rejected");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("delete_file"));
+}
+
+#[tokio::test]
+async fn rejects_generated_tool_call_that_mismatches_explicit_choice() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("edit Cargo.toml")],
+            tools: vec![
+                ToolDefinition::function("lookup", "lookup", json!({})),
+                ToolDefinition::function("edit_file", "edit file", json!({})),
+            ],
+            tool_choice: Some(ToolChoice::Function {
+                name: "edit_file".to_owned(),
+            }),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("explicit tool choice requires matching generated tool calls");
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+    assert!(err.to_string().contains("edit_file"));
+}
+
+#[tokio::test]
+async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        concat!(
+            r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+            r#"<tool_call>{"name":"edit_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
+        ),
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup then edit")],
+            tools: vec![
+                ToolDefinition::function("lookup", "lookup", json!({})),
+                ToolDefinition::function("edit_file", "edit file", json!({})),
+            ],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("declared tool calls are accepted");
+
+    assert_eq!(response.choices[0].message.tool_calls.len(), 2);
+    assert_eq!(
+        response.choices[0].message.tool_calls[0].function.name,
+        "lookup"
+    );
+    assert_eq!(
+        response.choices[0].message.tool_calls[1].function.name,
+        "edit_file"
+    );
+}
+
+#[tokio::test]
+async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
+    let content = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: "Patched Cargo.toml and added the regression test.".to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 8,
+            finish_reason: FinishReason::Stop,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("What changed?")],
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("normal content is progress");
+    assert_eq!(
+        content.choices[0].message.content.as_deref(),
+        Some("Patched Cargo.toml and added the regression test.")
+    );
+
+    let tool = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text:
+                r#"<tool_call>{"name":"read_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
+                    .to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 5,
+            finish_reason: FinishReason::ToolCalls,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("Read Cargo.toml")],
+        tools: vec![ToolDefinition::function(
+            "read_file",
+            "read a file",
+            json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        )],
+        tool_choice: Some(ToolChoice::Required),
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("valid tool call is progress");
+    assert_eq!(tool.choices[0].message.tool_calls.len(), 1);
+
+    let json_response = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: r#"{"answer":"ok"}"#.to_owned(),
+            prompt_tokens: 4,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        },
+    })
+    .chat(ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("Return JSON")],
+        response_format: Some(ResponseFormat::JsonObject),
+        ..ChatCompletionRequest::default()
+    })
+    .await
+    .expect("valid JSON object is progress");
+    assert_eq!(
+        json_response.choices[0].message.content.as_deref(),
+        Some(r#"{"answer":"ok"}"#)
+    );
+}

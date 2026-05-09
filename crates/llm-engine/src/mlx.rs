@@ -4,13 +4,22 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     ModelBackend, SamplingConfig,
 };
-use llm_hub::SnapshotManifest;
-use llm_models::{BackendKind, ModelFamily};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use llm_models::ModelFamily;
+use serde::Serialize;
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use url::Url;
+
+mod client;
+mod metadata;
+mod sse;
+
+use client::{is_loopback_endpoint, mlx_endpoint_url};
+use metadata::mlx_metadata;
+use sse::{
+    MlxSseParser, count_whitespace_tokens, mlx_control_stop_tokens_for_metadata,
+    mlx_tool_markup_for_metadata, mlx_upstream_protocol_for_metadata,
+};
 
 const MLX_QWEN_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
 const MLX_GEMMA_CONTROL_STOP_TOKENS: &[&str] =
@@ -317,557 +326,9 @@ fn mlx_chat_messages(request: &BackendRequest) -> Vec<MlxChatMessage<'_>> {
     }]
 }
 
-#[derive(Debug, Deserialize)]
-struct MlxCompletionResponse {
-    choices: Vec<MlxCompletionChoice>,
-    usage: Option<MlxUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MlxCompletionChoice {
-    text: Option<String>,
-    message: Option<MlxMessage>,
-    delta: Option<MlxMessage>,
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MlxMessage {
-    content: Option<String>,
-    tool_calls: Option<Vec<MlxToolCall>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MlxToolCall {
-    index: Option<usize>,
-    function: Option<MlxToolCallFunction>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MlxToolCallFunction {
-    name: Option<String>,
-    arguments: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MlxUsage {
-    #[serde(alias = "input_tokens")]
-    prompt_tokens: Option<u64>,
-    #[serde(alias = "output_tokens")]
-    completion_tokens: Option<u64>,
-}
-
-impl MlxCompletionResponse {
-    fn first_choice(self) -> Result<MlxCompletionChoice, BackendError> {
-        self.choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| BackendError::Other("MLX completion response had no choices".to_owned()))
-    }
-}
-
-#[derive(Debug)]
-struct MlxSseParser {
-    prompt_tokens: u64,
-    estimated_completion_tokens: u64,
-    emitted_completion_tokens: u64,
-    uses_upstream_usage: bool,
-    saw_done: bool,
-    line_buffer: String,
-    stop_filter: MlxControlStopFilter,
-    tool_markup: MlxToolMarkup,
-    tool_calls: Vec<MlxToolCallAccumulator>,
-}
-
-impl MlxSseParser {
-    fn new(prompt: &str, stop_tokens: &'static [&'static str], tool_markup: MlxToolMarkup) -> Self {
-        Self {
-            prompt_tokens: count_whitespace_tokens(prompt),
-            estimated_completion_tokens: 0,
-            emitted_completion_tokens: 0,
-            uses_upstream_usage: false,
-            saw_done: false,
-            line_buffer: String::new(),
-            stop_filter: MlxControlStopFilter::new(stop_tokens),
-            tool_markup,
-            tool_calls: Vec::new(),
-        }
-    }
-
-    fn push_str(&mut self, chunk: &str) -> Result<Vec<BackendStreamChunk>, BackendError> {
-        self.line_buffer.push_str(chunk);
-        let mut chunks = Vec::new();
-        while let Some(index) = self.line_buffer.find('\n') {
-            let mut line = self.line_buffer.drain(..=index).collect::<String>();
-            if line.ends_with('\n') {
-                line.pop();
-            }
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            if let Some(chunk) = self.parse_line(&line)? {
-                chunks.push(chunk);
-            }
-        }
-        Ok(chunks)
-    }
-
-    fn finish(&mut self) -> Result<Vec<BackendStreamChunk>, BackendError> {
-        let mut chunks = Vec::new();
-        if !self.line_buffer.is_empty() {
-            let line = std::mem::take(&mut self.line_buffer);
-            if let Some(chunk) = self.parse_line(line.trim_end_matches('\r'))? {
-                chunks.push(chunk);
-            }
-        }
-        if !self.saw_done {
-            return Err(BackendError::Other(
-                "MLX SSE completion ended before data: [DONE]".to_owned(),
-            ));
-        }
-        let text = self.stop_filter.finish();
-        if !text.is_empty() {
-            self.estimated_completion_tokens += count_visible_tokens(&text);
-            let completion_tokens = self.completion_token_delta(None, true);
-            chunks.push(BackendStreamChunk {
-                text,
-                prompt_tokens: self.prompt_tokens,
-                completion_tokens,
-                finish_reason: None,
-            });
-        }
-        Ok(chunks)
-    }
-
-    fn parse_line(&mut self, line: &str) -> Result<Option<BackendStreamChunk>, BackendError> {
-        let Some(data) = mlx_sse_data(line) else {
-            return Ok(None);
-        };
-        if data == "[DONE]" {
-            self.saw_done = true;
-            return Ok(None);
-        }
-        let completion = serde_json::from_str::<MlxCompletionResponse>(data).map_err(|err| {
-            BackendError::Other(format!("invalid MLX SSE completion JSON: {err}"))
-        })?;
-        if let Some(prompt_tokens) = completion
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.prompt_tokens)
-        {
-            self.prompt_tokens = self.prompt_tokens.max(prompt_tokens);
-        }
-        let usage_completion_tokens = completion
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.completion_tokens);
-        let choice = completion.first_choice()?;
-        if let Some(tool_calls) = choice
-            .delta
-            .as_ref()
-            .and_then(|message| message.tool_calls.as_ref())
-            .or_else(|| {
-                choice
-                    .message
-                    .as_ref()
-                    .and_then(|message| message.tool_calls.as_ref())
-            })
-        {
-            self.push_tool_calls(tool_calls);
-        }
-        let text = choice
-            .text
-            .or_else(|| choice.delta.and_then(|message| message.content))
-            .or_else(|| choice.message.and_then(|message| message.content))
-            .unwrap_or_default();
-        let mut text = self.stop_filter.push_str(&text);
-        self.estimated_completion_tokens += count_visible_tokens(&text);
-        let finish_reason = choice
-            .finish_reason
-            .as_deref()
-            .map(|reason| mlx_finish_reason(Some(reason)))
-            .transpose()?;
-        let finish_reason = finish_reason.or_else(|| {
-            self.stop_filter
-                .is_stopped()
-                .then_some(llm_api::FinishReason::Stop)
-        });
-        if matches!(finish_reason, Some(llm_api::FinishReason::ToolCalls)) {
-            let tool_text = self.render_tool_calls()?;
-            self.estimated_completion_tokens += count_visible_tokens(&tool_text);
-            text.push_str(&tool_text);
-        }
-        let completion_tokens =
-            self.completion_token_delta(usage_completion_tokens, finish_reason.is_some());
-        if text.is_empty() && finish_reason.is_none() && completion_tokens == 0 {
-            return Ok(None);
-        }
-        Ok(Some(BackendStreamChunk {
-            text,
-            prompt_tokens: self.prompt_tokens,
-            completion_tokens,
-            finish_reason,
-        }))
-    }
-
-    fn push_tool_calls(&mut self, tool_calls: &[MlxToolCall]) {
-        for call in tool_calls {
-            let index = call.index.unwrap_or(self.tool_calls.len());
-            if self.tool_calls.len() <= index {
-                self.tool_calls
-                    .resize_with(index + 1, MlxToolCallAccumulator::default);
-            }
-            let accumulator = &mut self.tool_calls[index];
-            if let Some(function) = &call.function {
-                if let Some(name) = &function.name {
-                    accumulator.name.push_str(name);
-                }
-                if let Some(arguments) = &function.arguments {
-                    accumulator.arguments.push_str(arguments);
-                }
-            }
-        }
-    }
-
-    fn render_tool_calls(&mut self) -> Result<String, BackendError> {
-        if self.tool_calls.is_empty() {
-            return Ok(String::new());
-        }
-        let mut rendered = String::new();
-        for call in std::mem::take(&mut self.tool_calls) {
-            rendered.push_str(&render_mlx_tool_call(&call, self.tool_markup)?);
-        }
-        Ok(rendered)
-    }
-
-    fn completion_token_delta(
-        &mut self,
-        usage_completion_tokens: Option<u64>,
-        is_final_chunk: bool,
-    ) -> u64 {
-        if let Some(total) = usage_completion_tokens {
-            self.uses_upstream_usage = true;
-            let delta = total.saturating_sub(self.emitted_completion_tokens);
-            self.emitted_completion_tokens = self.emitted_completion_tokens.max(total);
-            return delta;
-        }
-        if self.uses_upstream_usage || !is_final_chunk {
-            return 0;
-        }
-        let delta = self
-            .estimated_completion_tokens
-            .saturating_sub(self.emitted_completion_tokens);
-        self.emitted_completion_tokens = self.estimated_completion_tokens;
-        delta
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MlxToolMarkup {
-    Qwen,
-    Gemma,
-}
-
-#[derive(Debug, Default, Clone)]
-struct MlxToolCallAccumulator {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Clone)]
-struct MlxControlStopFilter {
-    stop_tokens: &'static [&'static str],
-    pending: String,
-    stopped: bool,
-}
-
-impl MlxControlStopFilter {
-    fn new(stop_tokens: &'static [&'static str]) -> Self {
-        Self {
-            stop_tokens,
-            pending: String::new(),
-            stopped: false,
-        }
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.stopped
-    }
-
-    fn push_str(&mut self, text: &str) -> String {
-        if self.stopped || text.is_empty() {
-            return String::new();
-        }
-        self.pending.push_str(text);
-        if let Some((index, token_len)) = self.first_stop_token() {
-            self.stopped = true;
-            let output = self.pending[..index].to_owned();
-            self.pending.drain(..index + token_len);
-            self.pending.clear();
-            return output;
-        }
-        let withheld = self.pending_stop_prefix_len();
-        if withheld == self.pending.len() {
-            return String::new();
-        }
-        let split_at = self.pending.len() - withheld;
-        self.pending.drain(..split_at).collect()
-    }
-
-    fn finish(&mut self) -> String {
-        if self.stopped {
-            self.pending.clear();
-            return String::new();
-        }
-        std::mem::take(&mut self.pending)
-    }
-
-    fn first_stop_token(&self) -> Option<(usize, usize)> {
-        self.stop_tokens
-            .iter()
-            .filter_map(|token| self.pending.find(token).map(|index| (index, token.len())))
-            .min_by_key(|(index, _)| *index)
-    }
-
-    fn pending_stop_prefix_len(&self) -> usize {
-        self.stop_tokens
-            .iter()
-            .flat_map(|token| {
-                (1..token.len()).filter(move |length| self.pending.ends_with(&token[..*length]))
-            })
-            .max()
-            .unwrap_or(0)
-    }
-}
-
-fn mlx_sse_data(line: &str) -> Option<&str> {
-    line.strip_prefix("data:")
-        .map(|data| data.strip_prefix(' ').unwrap_or(data))
-}
-
-fn count_visible_tokens(text: &str) -> u64 {
-    if text.trim().is_empty() {
-        0
-    } else {
-        count_whitespace_tokens(text)
-    }
-}
-
-fn mlx_finish_reason(reason: Option<&str>) -> Result<llm_api::FinishReason, BackendError> {
-    match reason {
-        Some("length") => Ok(llm_api::FinishReason::Length),
-        Some("tool_calls") => Ok(llm_api::FinishReason::ToolCalls),
-        Some("stop") | None => Ok(llm_api::FinishReason::Stop),
-        Some(other) => Err(BackendError::Other(format!(
-            "unsupported MLX finish reason `{other}`"
-        ))),
-    }
-}
-
-fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> MlxToolMarkup {
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
-        _ => MlxToolMarkup::Qwen,
-    }
-}
-
-fn render_mlx_tool_call(
-    call: &MlxToolCallAccumulator,
-    markup: MlxToolMarkup,
-) -> Result<String, BackendError> {
-    if call.name.trim().is_empty() {
-        return Err(BackendError::Other(
-            "MLX structured tool call was missing a function name".to_owned(),
-        ));
-    }
-    let arguments = parse_mlx_tool_arguments(&call.arguments)?;
-    match markup {
-        MlxToolMarkup::Qwen => Ok(format!(
-            "<tool_call>{}</tool_call>",
-            serde_json::json!({
-                "name": call.name.as_str(),
-                "arguments": arguments,
-            })
-        )),
-        MlxToolMarkup::Gemma => {
-            let Value::Object(arguments) = arguments else {
-                return Err(BackendError::Other(
-                    "MLX structured Gemma tool arguments must be a JSON object".to_owned(),
-                ));
-            };
-            Ok(format!(
-                "<|tool_call>call:{}{}<tool_call|>",
-                call.name,
-                render_gemma_tool_object(&arguments)?
-            ))
-        }
-    }
-}
-
-fn parse_mlx_tool_arguments(arguments: &str) -> Result<Value, BackendError> {
-    let trimmed = arguments.trim();
-    if trimmed.is_empty() {
-        return Ok(serde_json::json!({}));
-    }
-    serde_json::from_str::<Value>(trimmed).map_err(|err| {
-        BackendError::Other(format!(
-            "invalid MLX structured tool call arguments `{trimmed}`: {err}"
-        ))
-    })
-}
-
-fn render_gemma_tool_object(
-    object: &serde_json::Map<String, Value>,
-) -> Result<String, BackendError> {
-    let mut rendered = String::from("{");
-    for (index, (key, value)) in object.iter().enumerate() {
-        if index > 0 {
-            rendered.push(',');
-        }
-        rendered.push_str(
-            &serde_json::to_string(key).map_err(|err| {
-                BackendError::Other(format!("Gemma tool key render failed: {err}"))
-            })?,
-        );
-        rendered.push(':');
-        rendered.push_str(&render_gemma_tool_value(value)?);
-    }
-    rendered.push('}');
-    Ok(rendered)
-}
-
-fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
-    match value {
-        Value::Object(object) => render_gemma_tool_object(object),
-        Value::Array(values) => {
-            let mut rendered = String::from("[");
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    rendered.push(',');
-                }
-                rendered.push_str(&render_gemma_tool_value(value)?);
-            }
-            rendered.push(']');
-            Ok(rendered)
-        }
-        _ => serde_json::to_string(value)
-            .map_err(|err| BackendError::Other(format!("Gemma tool value render failed: {err}"))),
-    }
-}
-
-fn count_whitespace_tokens(text: &str) -> u64 {
-    text.split_whitespace().count().max(1) as u64
-}
-
-fn mlx_endpoint_url(base: &Url, suffix: &str) -> Url {
-    let mut url = base.clone();
-    let path = format!("{}/{}", base.path().trim_end_matches('/'), suffix);
-    url.set_path(&path);
-    url
-}
-
-fn is_loopback_endpoint(endpoint: &Url) -> bool {
-    match endpoint.host() {
-        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
-        None => false,
-    }
-}
-
-fn mlx_control_stop_tokens_for_metadata(
-    metadata: &BackendModelMetadata,
-) -> &'static [&'static str] {
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
-        _ => MLX_QWEN_CONTROL_STOP_TOKENS,
-    }
-}
-
-fn mlx_upstream_protocol_for_metadata(metadata: &BackendModelMetadata) -> MlxUpstreamProtocol {
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
-        _ => MlxUpstreamProtocol::Completions,
-    }
-}
-
-fn mlx_metadata(
-    model_id: &str,
-    snapshot_path: &Path,
-    requested_family: Option<ModelFamily>,
-) -> anyhow::Result<BackendModelMetadata> {
-    let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "mlx");
-    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
-    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let manifest_bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let family = requested_family.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "MLX backend requires model family metadata; add --family qwen for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
-                )
-            })?;
-            validate_mlx_serving_family(family)?;
-            metadata.loader = Some("mlx".to_owned());
-            metadata.family = Some(family.canonical_slug().to_owned());
-            return Ok(metadata);
-        }
-        Err(err) => return Err(err.into()),
-    };
-    let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
-    let manifest_loader = BackendKind::parse_slug(&manifest.loader)?;
-    if manifest_loader != BackendKind::Mlx {
-        anyhow::bail!(
-            "MLX backend requires manifest loader `mlx`, not `{}`",
-            manifest_loader.canonical_slug()
-        );
-    }
-    let manifest_family = ModelFamily::parse_slug(&manifest.family)?;
-    if let Some(requested_family) = requested_family
-        && manifest_family != requested_family
-    {
-        anyhow::bail!(
-            "requested snapshot family `{}` does not match manifest family `{}`",
-            requested_family.canonical_slug(),
-            manifest_family.canonical_slug()
-        );
-    }
-    validate_mlx_serving_family(manifest_family)?;
-    metadata.family = Some(manifest_family.canonical_slug().to_owned());
-    metadata.loader = Some(manifest_loader.canonical_slug().to_owned());
-    metadata.quantization = Some(manifest.quantization.clone());
-    metadata.repo_id = Some(manifest.repo_id.clone());
-    metadata.resolved_commit = Some(manifest.resolved_commit.clone());
-    metadata.profile = Some(manifest.profile.clone());
-    metadata.manifest_digest = Some(manifest.digest());
-    Ok(metadata)
-}
-
-fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
-    if !family.adapter().capabilities().backend_execution {
-        anyhow::bail!(
-            "model family `{}` is recognized but not serveable yet; {} serving is deferred until Qwen production parity",
-            family.canonical_slug(),
-            family.display_name()
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::sse::MlxToolMarkup;
     use super::*;
     use llm_backend::{
         BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
@@ -881,6 +342,31 @@ mod tests {
         thread,
     };
     use tempfile::TempDir;
+
+    type ParsedMlxChunkForTest = (String, u64, u64, Option<llm_api::FinishReason>);
+
+    fn parse_mlx_sse_for_test(
+        chunks: &[&str],
+        markup: MlxToolMarkup,
+    ) -> Result<Vec<ParsedMlxChunkForTest>, BackendError> {
+        let mut parser = MlxSseParser::new("hello mlx", MLX_QWEN_CONTROL_STOP_TOKENS, markup);
+        let mut parsed = Vec::new();
+        for chunk in chunks {
+            parsed.extend(parser.push_str(chunk)?);
+        }
+        parsed.extend(parser.finish()?);
+        Ok(parsed
+            .into_iter()
+            .map(|chunk| {
+                (
+                    chunk.text,
+                    chunk.prompt_tokens,
+                    chunk.completion_tokens,
+                    chunk.finish_reason,
+                )
+            })
+            .collect())
+    }
 
     #[tokio::test]
     async fn mlx_backend_posts_prompt_to_completion_endpoint() {
@@ -1184,6 +670,35 @@ mod tests {
                 .sum::<u64>(),
             2
         );
+    }
+
+    #[test]
+    fn mlx_sse_parser_is_chunk_boundary_invariant_for_tool_calls() {
+        let payload = "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n";
+        let expected =
+            parse_mlx_sse_for_test(&[payload], MlxToolMarkup::Qwen).expect("single chunk parses");
+
+        for split in payload
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(payload.len()))
+        {
+            let actual = parse_mlx_sse_for_test(
+                &[&payload[..split], &payload[split..]],
+                MlxToolMarkup::Qwen,
+            )
+            .unwrap_or_else(|err| panic!("split at byte {split} failed: {err}"));
+            assert_eq!(actual, expected, "split at byte {split}");
+        }
+    }
+
+    #[test]
+    fn mlx_production_module_does_not_depend_on_protocol_test_backend() {
+        let source = include_str!("mlx.rs");
+        let production_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!production_source.contains("ProtocolTestBackend"));
+        assert!(!production_source.contains("protocol_test"));
+        assert!(!production_source.contains("fixture"));
     }
 
     #[tokio::test]
