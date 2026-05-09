@@ -11,7 +11,7 @@ use axum::{
 };
 use futures::StreamExt;
 use llm_api::{ChatCompletionRequest, CompletionRequest, ValidateRequest};
-use llm_runtime::{RuntimeError, chat_stream_requires_buffering};
+use llm_runtime::RuntimeError;
 
 pub(super) async fn chat_completions(
     State(state): State<AppState>,
@@ -23,28 +23,6 @@ pub(super) async fn chat_completions(
     let streamed = request.stream;
     if request.stream {
         let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
-        if chat_stream_requires_buffering(&request) {
-            let response = match state
-                .runtime
-                .chat_stream_buffered_with_cancel(request, run.cancellation())
-                .await
-            {
-                Ok(response) => response,
-                Err(err) => return Err(run.finish_runtime_error(&state, err)),
-            };
-            let stream_run = run.into_streaming();
-            let request_id = stream_run.request_id.clone();
-            let events = super::streaming::stream_runtime_events(
-                super::streaming::StreamRunLifecycle::new(state.clone(), stream_run),
-                response.into_events(),
-                streamed,
-            );
-            let mut response = Sse::new(events)
-                .keep_alive(super::streaming::engine_sse_keep_alive())
-                .into_response();
-            lifecycle::insert_request_id_header(&mut response, &request_id);
-            return Ok(response);
-        }
         let request_id = run.request_id().to_owned();
         let stream_run = run.into_streaming();
         let stream_state = state.clone();

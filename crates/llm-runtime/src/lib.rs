@@ -184,11 +184,6 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
-        if chat_stream_requires_buffering(&request) {
-            return self
-                .chat_stream_buffered_with_cancel(request, cancellation)
-                .await;
-        }
         request.validate()?;
         let include_usage = request.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
@@ -854,10 +849,6 @@ fn streaming_chat_stream<'a>(
     ChatCompletionStream {
         events: events.boxed(),
     }
-}
-
-pub fn chat_stream_requires_buffering(_request: &ChatCompletionRequest) -> bool {
-    false
 }
 
 fn parse_chat_text(
