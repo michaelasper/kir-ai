@@ -398,13 +398,13 @@ mod tests {
     }
 
     #[test]
-    fn admin_model_profile_accepts_qwen3_dense_native_profile() {
-        let profile = admin::model_profile("qwen3-dense-safetensors-bf16")
-            .expect("admin profile matcher accepts dense Qwen3");
+    fn admin_model_profile_accepts_built_in_profiles() {
+        for name in llm_hub::ModelProfile::builtin_names() {
+            let profile =
+                admin::model_profile(name).expect("admin profile matcher accepts profile");
 
-        assert_eq!(profile.name, "qwen3-dense-safetensors-bf16");
-        assert_eq!(profile.family, "qwen");
-        assert_eq!(profile.loader, "native-metal");
+            assert_eq!(profile.name, name);
+        }
     }
 }
 

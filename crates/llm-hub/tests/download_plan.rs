@@ -10,6 +10,10 @@ fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
         HubFile::new("config.json", 100, Some("\"cfg\"")),
         HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
         HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        HubFile::new("image_processor_config.json", 300, Some("\"image\"")),
+        HubFile::new("processor_config.json", 400, Some("\"processor\"")),
+        HubFile::new("video_preprocessor_config.json", 500, Some("\"video-pre\"")),
+        HubFile::new("vision_tower.safetensors", 600, Some("\"vision\"")),
         HubFile::new("optimizer.pt", 10_000, Some("\"opt\"")),
     ];
 
@@ -24,7 +28,16 @@ fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
     .expect("plan builds");
 
     assert_eq!(plan.files_to_download.len(), 3);
-    assert_eq!(plan.skipped_files, vec!["optimizer.pt"]);
+    assert_eq!(
+        plan.skipped_files,
+        vec![
+            "image_processor_config.json",
+            "optimizer.pt",
+            "processor_config.json",
+            "video_preprocessor_config.json",
+            "vision_tower.safetensors",
+        ]
+    );
     assert_eq!(plan.total_bytes_to_download, 1_300);
     assert_eq!(plan.files_to_download[0].class, ArtifactClass::Config);
     assert_eq!(plan.files_to_download[1].class, ArtifactClass::Tokenizer);
@@ -33,14 +46,59 @@ fn qwen_mlx_profile_selects_static_artifacts_and_weights() {
 }
 
 #[test]
-fn qwen35_4b_mlx_profile_records_practical_chat_identity() {
-    let profile = ModelProfile::qwen35_4b_mlx_4bit();
+fn qwen35_4b_mlx_profiles_record_practical_chat_quant_identities() {
+    for (profile, name, quantization) in [
+        (
+            ModelProfile::qwen35_4b_mlx_4bit(),
+            "qwen35-4b-mlx-4bit",
+            "4bit",
+        ),
+        (
+            ModelProfile::qwen35_4b_mlx_8bit(),
+            "qwen35-4b-mlx-8bit",
+            "8bit",
+        ),
+        (
+            ModelProfile::qwen35_4b_mlx_optiq_4bit(),
+            "qwen35-4b-mlx-optiq-4bit",
+            "optiq-4bit",
+        ),
+    ] {
+        assert_eq!(profile.name, name);
+        assert_eq!(profile.family, "qwen");
+        assert_eq!(profile.loader, "mlx");
+        assert_eq!(profile.quantization, quantization);
+        assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+    }
+}
 
-    assert_eq!(profile.name, "qwen35-4b-mlx-4bit");
-    assert_eq!(profile.family, "qwen");
-    assert_eq!(profile.loader, "mlx");
-    assert_eq!(profile.quantization, "4bit");
-    assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+#[test]
+fn qwen_optiq_profile_selects_quantization_metadata() {
+    let files = vec![
+        HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
+        HubFile::new("optiq_metadata.json", 300, Some("\"optiq\"")),
+        HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        HubFile::new("optimizer.pt", 10_000, Some("\"opt\"")),
+    ];
+
+    let plan = build_download_plan(
+        HubRepoId::model("mlx-community/Qwen3.5-4B-OptiQ-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen35_4b_mlx_optiq_4bit(),
+        files,
+        &[],
+    )
+    .expect("plan builds");
+
+    assert_eq!(plan.files_to_download.len(), 4);
+    assert_eq!(plan.skipped_files, vec!["optimizer.pt"]);
+    assert_eq!(plan.total_bytes_to_download, 1_600);
+    assert_eq!(plan.files_to_download[0].class, ArtifactClass::Config);
+    assert_eq!(plan.files_to_download[1].class, ArtifactClass::Tokenizer);
+    assert_eq!(plan.files_to_download[2].class, ArtifactClass::Quantization);
+    assert_eq!(plan.files_to_download[3].class, ArtifactClass::Weights);
 }
 
 #[test]
@@ -89,6 +147,7 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
         HubFile::new("mm_projector.safetensors", 3_000, Some("\"projector\"")),
         HubFile::new("image_processor_config.json", 400, Some("\"image\"")),
         HubFile::new("preprocessor_config.json", 500, Some("\"pre\"")),
+        HubFile::new("video_preprocessor_config.json", 600, Some("\"video-pre\"")),
     ];
 
     let plan = build_download_plan(
@@ -112,6 +171,7 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
             "image_processor_config.json",
             "mm_projector.safetensors",
             "preprocessor_config.json",
+            "video_preprocessor_config.json",
             "vision_tower.safetensors",
         ]
     );
@@ -131,6 +191,8 @@ fn builtin_profile_lookup_includes_all_supported_profiles() {
     for name in [
         "gemma4-text-safetensors-bf16",
         "qwen35-4b-mlx-4bit",
+        "qwen35-4b-mlx-8bit",
+        "qwen35-4b-mlx-optiq-4bit",
         "qwen3-dense-safetensors-bf16",
         "qwen36-safetensors-bf16",
         "qwen36-mlx-4bit",
@@ -141,6 +203,15 @@ fn builtin_profile_lookup_includes_all_supported_profiles() {
     }
 
     assert!(ModelProfile::builtin("missing-profile").is_none());
+}
+
+#[test]
+fn builtin_profile_names_match_lookup_table() {
+    for name in ModelProfile::builtin_names() {
+        let profile = ModelProfile::builtin(name).expect("profile exists");
+
+        assert_eq!(profile.name, name);
+    }
 }
 
 #[test]

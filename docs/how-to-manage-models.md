@@ -43,6 +43,22 @@ cargo run -p llm-engine -- model plan mlx-community/Qwen3.5-4B-MLX-4bit \
   --profile qwen35-4b-mlx-4bit
 ```
 
+Plan the matching 8-bit MLX profile when memory allows a larger local quant:
+
+```sh
+cargo run -p llm-engine -- model plan mlx-community/Qwen3.5-4B-MLX-8bit \
+  --revision main \
+  --profile qwen35-4b-mlx-8bit
+```
+
+Plan the Apple-silicon OptiQ mixed 4/8-bit MLX profile:
+
+```sh
+cargo run -p llm-engine -- model plan mlx-community/Qwen3.5-4B-OptiQ-4bit \
+  --revision main \
+  --profile qwen35-4b-mlx-optiq-4bit
+```
+
 Plan the larger Qwen3.6 MoE native BF16 profile when you need that family:
 
 ```sh

@@ -87,6 +87,8 @@ Built-in profiles:
 | --- | --- | --- | --- |
 | `gemma4-text-safetensors-bf16` | `gemma` | `mlx` | `bf16` |
 | `qwen35-4b-mlx-4bit` | `qwen` | `mlx` | `4bit` |
+| `qwen35-4b-mlx-8bit` | `qwen` | `mlx` | `8bit` |
+| `qwen35-4b-mlx-optiq-4bit` | `qwen` | `mlx` | `optiq-4bit` |
 | `qwen3-dense-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-safetensors-bf16` | `qwen` | `native-metal` | `bf16` |
 | `qwen36-mlx-4bit` | `qwen` | `mlx` | `4bit` |
@@ -109,8 +111,10 @@ All built-ins ignore:
 - `optimizer*`
 - `training_args.bin`
 
-The Gemma text-only profile also ignores image processor, preprocessor,
-vision-tower, and projector artifacts.
+Text acquisition profiles also ignore image processor, video preprocessor,
+processor config, and vision-tower artifacts that are present in some
+multimodal Hugging Face repos but are not part of Kir's text runtime contract.
+The Gemma text-only profile additionally ignores projector artifacts.
 
 Pattern matching is simple exact matching, suffix matching for patterns that
 start with `*`, and prefix matching for patterns that end with `*`. It is not a

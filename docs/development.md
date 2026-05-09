@@ -121,7 +121,7 @@ or hardened.
 
 ## Add Or Change Model Acquisition Profiles
 
-Profiles live in `crates/llm-hub/src/lib.rs`.
+Profiles live in `crates/llm-hub/src/profile.rs`.
 
 When adding a profile:
 

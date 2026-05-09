@@ -744,6 +744,45 @@ fn full_snapshot_paths_do_not_collide_across_profiles() {
     assert_ne!(store.snapshot_path(&mlx), store.snapshot_path(&native));
 }
 
+#[test]
+fn qwen_mlx_quant_snapshot_paths_do_not_collide_across_profiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let repo = HubRepoId::model("mlx-community/Qwen3.5-4B-MLX-4bit").expect("repo id");
+    let files = vec![HubFile::new("config.json", 2, Some("\"cfg\""))];
+    let q4 = build_download_plan(
+        repo.clone(),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen35_4b_mlx_4bit(),
+        files.clone(),
+        &[],
+    )
+    .expect("q4 plan builds");
+    let q8 = build_download_plan(
+        repo.clone(),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen35_4b_mlx_8bit(),
+        files.clone(),
+        &[],
+    )
+    .expect("q8 plan builds");
+    let optiq = build_download_plan(
+        repo,
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen35_4b_mlx_optiq_4bit(),
+        files,
+        &[],
+    )
+    .expect("optiq plan builds");
+
+    assert_ne!(store.snapshot_path(&q4), store.snapshot_path(&q8));
+    assert_ne!(store.snapshot_path(&q4), store.snapshot_path(&optiq));
+    assert_ne!(store.snapshot_path(&q8), store.snapshot_path(&optiq));
+}
+
 #[tokio::test]
 async fn resolves_snapshot_alias_and_checks_manifest_digest() {
     let temp = tempfile::tempdir().expect("tempdir");

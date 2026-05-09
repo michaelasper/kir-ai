@@ -234,12 +234,16 @@ Supported profiles:
 
 - `gemma4-text-safetensors-bf16`
 - `qwen35-4b-mlx-4bit`
+- `qwen35-4b-mlx-8bit`
+- `qwen35-4b-mlx-optiq-4bit`
 - `qwen3-dense-safetensors-bf16`
 - `qwen36-safetensors-bf16`
 - `qwen36-mlx-4bit`
 
 `gemma4-text-safetensors-bf16` is an acquisition-planning profile only until a
 Gemma backend is implemented. It excludes vision and projector artifacts.
+`qwen35-4b-mlx-optiq-4bit` targets the Apple-silicon OptiQ mixed 4/8-bit MLX
+snapshot family.
 `qwen3-dense-safetensors-bf16` targets standard dense Qwen3 text checkpoints
 such as `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-4B`.
 

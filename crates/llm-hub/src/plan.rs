@@ -202,7 +202,7 @@ fn classify_artifact(path: &str) -> ArtifactClass {
             ArtifactClass::Tokenizer
         }
         _ if path.ends_with(".safetensors") || path.ends_with(".gguf") => ArtifactClass::Weights,
-        _ if path.contains("quant") => ArtifactClass::Quantization,
+        _ if path == "optiq_metadata.json" || path.contains("quant") => ArtifactClass::Quantization,
         _ => ArtifactClass::Other,
     }
 }

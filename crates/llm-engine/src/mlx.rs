@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+const MLX_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
+
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
     pub endpoint: Url,
@@ -276,6 +278,7 @@ struct MlxSseParser {
     uses_upstream_usage: bool,
     saw_done: bool,
     line_buffer: String,
+    stop_filter: MlxControlStopFilter,
 }
 
 impl MlxSseParser {
@@ -287,6 +290,7 @@ impl MlxSseParser {
             uses_upstream_usage: false,
             saw_done: false,
             line_buffer: String::new(),
+            stop_filter: MlxControlStopFilter::new(MLX_CONTROL_STOP_TOKENS),
         }
     }
 
@@ -321,6 +325,17 @@ impl MlxSseParser {
                 "MLX SSE completion ended before data: [DONE]".to_owned(),
             ));
         }
+        let text = self.stop_filter.finish();
+        if !text.is_empty() {
+            self.estimated_completion_tokens += count_visible_tokens(&text);
+            let completion_tokens = self.completion_token_delta(None, true);
+            chunks.push(BackendStreamChunk {
+                text,
+                prompt_tokens: self.prompt_tokens,
+                completion_tokens,
+                finish_reason: None,
+            });
+        }
         Ok(chunks)
     }
 
@@ -351,12 +366,18 @@ impl MlxSseParser {
             .text
             .or_else(|| choice.message.and_then(|message| message.content))
             .unwrap_or_default();
+        let text = self.stop_filter.push_str(&text);
         self.estimated_completion_tokens += count_visible_tokens(&text);
         let finish_reason = choice
             .finish_reason
             .as_deref()
             .map(|reason| mlx_finish_reason(Some(reason)))
             .transpose()?;
+        let finish_reason = finish_reason.or_else(|| {
+            self.stop_filter
+                .is_stopped()
+                .then_some(llm_api::FinishReason::Stop)
+        });
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, finish_reason.is_some());
         if text.is_empty() && finish_reason.is_none() && completion_tokens == 0 {
@@ -389,6 +410,72 @@ impl MlxSseParser {
             .saturating_sub(self.emitted_completion_tokens);
         self.emitted_completion_tokens = self.estimated_completion_tokens;
         delta
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MlxControlStopFilter {
+    stop_tokens: &'static [&'static str],
+    pending: String,
+    stopped: bool,
+}
+
+impl MlxControlStopFilter {
+    fn new(stop_tokens: &'static [&'static str]) -> Self {
+        Self {
+            stop_tokens,
+            pending: String::new(),
+            stopped: false,
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    fn push_str(&mut self, text: &str) -> String {
+        if self.stopped || text.is_empty() {
+            return String::new();
+        }
+        self.pending.push_str(text);
+        if let Some((index, token_len)) = self.first_stop_token() {
+            self.stopped = true;
+            let output = self.pending[..index].to_owned();
+            self.pending.drain(..index + token_len);
+            self.pending.clear();
+            return output;
+        }
+        let withheld = self.pending_stop_prefix_len();
+        if withheld == self.pending.len() {
+            return String::new();
+        }
+        let split_at = self.pending.len() - withheld;
+        self.pending.drain(..split_at).collect()
+    }
+
+    fn finish(&mut self) -> String {
+        if self.stopped {
+            self.pending.clear();
+            return String::new();
+        }
+        std::mem::take(&mut self.pending)
+    }
+
+    fn first_stop_token(&self) -> Option<(usize, usize)> {
+        self.stop_tokens
+            .iter()
+            .filter_map(|token| self.pending.find(token).map(|index| (index, token.len())))
+            .min_by_key(|(index, _)| *index)
+    }
+
+    fn pending_stop_prefix_len(&self) -> usize {
+        self.stop_tokens
+            .iter()
+            .flat_map(|token| {
+                (1..token.len()).filter(move |length| self.pending.ends_with(&token[..*length]))
+            })
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -562,6 +649,107 @@ mod tests {
         assert_eq!(request["temperature"], 0.7);
         assert_eq!(request["top_p"], 0.9);
         assert_eq!(request["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"text\":\"otter:19<|im_end|>\\n\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":6}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello mlx".to_owned(),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "otter:19");
+        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_strips_split_control_stop_tokens_from_stream() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"text\":\"otter:19<|im\",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\ndata: {\"choices\":[{\"text\":\"_end|>\\n\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":6}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+
+        let chunks = backend
+            .generate_stream(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello mlx".to_owned(),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("mlx stream succeeds");
+
+        let text = chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>();
+        assert_eq!(text, "otter:19");
+        assert_eq!(
+            chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
+            Some(llm_api::FinishReason::Stop)
+        );
+    }
+
+    #[test]
+    fn mlx_sse_parser_flushes_non_stop_prefix_at_done() {
+        let mut parser = MlxSseParser::new("hello mlx");
+        let chunks = parser
+            .push_str(
+                "data:{\"choices\":[{\"text\":\"keep <|im\",\"finish_reason\":null}]}\n\ndata:[DONE]\n\n",
+            )
+            .expect("parse chunk");
+        let final_chunks = parser.finish().expect("finish parser");
+        let chunks = chunks.into_iter().chain(final_chunks).collect::<Vec<_>>();
+
+        let text = chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>();
+        assert_eq!(text, "keep <|im");
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.completion_tokens)
+                .sum::<u64>(),
+            2
+        );
     }
 
     #[tokio::test]

@@ -111,9 +111,12 @@ cargo run -p llm-engine -- serve \
 Cached Hugging Face snapshots without a Kir manifest can be served through the
 same MLX path by selecting the loader and family explicitly. This is the
 practical path for small adaptive chat checks such as
-`mlx-community/Qwen3.5-4B-MLX-4bit`. Raw MLX snapshots must provide `--family`;
-Qwen is the only serveable runtime chat family today, while DeepSeek and Gemma
-are recognized but fail closed until their adapters or sidecar chat path land:
+`mlx-community/Qwen3.5-4B-MLX-4bit`,
+`mlx-community/Qwen3.5-4B-MLX-8bit`, and the Apple-silicon OptiQ snapshot
+`mlx-community/Qwen3.5-4B-OptiQ-4bit`. Raw MLX snapshots must provide
+`--family`; Qwen is the only serveable runtime chat family today, while DeepSeek
+and Gemma are recognized but fail closed until their adapters or sidecar chat
+path land:
 
 ```sh
 SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>"
