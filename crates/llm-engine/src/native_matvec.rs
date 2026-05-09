@@ -1,8 +1,7 @@
 use crate::sync_ext::RecoverPoisonedMutex;
 use llm_backend::{
     CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError, NativeKvCacheTensor,
-    NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore, TensorLoadError, TopKLogit,
-    TopKWeight,
+    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
 };
 use serde_json::{Value, json};
 use std::{
@@ -17,6 +16,42 @@ pub(crate) struct NativeTextMetalState {
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
     kv_caches: Mutex<HashMap<u64, MetalLayerKvCacheMirror>>,
     linear_caches: Mutex<HashMap<u64, MetalLinearAttentionCacheMirror>>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NativeTextCacheMirrorIds {
+    kv: Vec<u64>,
+    linear: Vec<u64>,
+}
+
+impl NativeTextCacheMirrorIds {
+    pub(crate) fn push_kv(&mut self, id: u64) {
+        self.kv.push(id);
+    }
+
+    pub(crate) fn push_linear(&mut self, id: u64) {
+        self.linear.push(id);
+    }
+}
+
+pub(crate) trait NativeTextCacheMirrorSource {
+    fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds);
+}
+
+pub(crate) trait NativeTextCacheMirrorCleaner<C>: Send + Sync
+where
+    C: NativeTextCacheMirrorSource,
+{
+    fn cleanup_cache_mirrors(&self, caches: &[C]);
+}
+
+impl<C> NativeTextCacheMirrorCleaner<C> for NativeTextMetalState
+where
+    C: NativeTextCacheMirrorSource,
+{
+    fn cleanup_cache_mirrors(&self, caches: &[C]) {
+        self.remove_cache_mirrors(caches);
+    }
 }
 
 #[derive(Clone)]
@@ -442,20 +477,19 @@ impl NativeTextMetalState {
         Ok(updated)
     }
 
-    pub(crate) fn remove_cache_mirrors(&self, caches: &[QwenLayerCache]) {
-        let mut kv_removed = Vec::new();
-        let mut linear_removed = Vec::new();
+    pub(crate) fn remove_cache_mirrors<C>(&self, caches: &[C])
+    where
+        C: NativeTextCacheMirrorSource,
+    {
+        let mut removed = NativeTextCacheMirrorIds::default();
         for cache in caches {
-            match cache {
-                QwenLayerCache::Full(cache) => kv_removed.push(cache.id()),
-                QwenLayerCache::Linear(cache) => linear_removed.push(cache.id()),
-            }
+            cache.append_cache_mirror_ids(&mut removed);
         }
-        if !kv_removed.is_empty() {
+        if !removed.kv.is_empty() {
             let mut mirrors = self.kv_caches.lock_or_recover("Metal KV cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
-            for id in kv_removed {
+            for id in removed.kv {
                 if let Some(mirror) = mirrors.remove(&id) {
                     bytes = bytes
                         .saturating_add((mirror.keys.byte_len() + mirror.values.byte_len()) as u64);
@@ -467,13 +501,13 @@ impl NativeTextMetalState {
                 self.record_kv_cache_residency_locked(&mirrors);
             }
         }
-        if !linear_removed.is_empty() {
+        if !removed.linear.is_empty() {
             let mut mirrors = self
                 .linear_caches
                 .lock_or_recover("Metal linear attention cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
-            for id in linear_removed {
+            for id in removed.linear {
                 if let Some(mirror) = mirrors.remove(&id) {
                     bytes = bytes.saturating_add(mirror.recurrent_state.byte_len() as u64);
                     count += 1;
@@ -838,6 +872,16 @@ impl NativeTextMatvecBackend {
             Self::Cpu => None,
             Self::Metal(state) => Some(Arc::clone(state)),
         }
+    }
+
+    pub(crate) fn cache_mirror_cleaner<C>(&self) -> Option<Arc<dyn NativeTextCacheMirrorCleaner<C>>>
+    where
+        C: NativeTextCacheMirrorSource + 'static,
+    {
+        self.metal_state().map(|state| {
+            let cleaner: Arc<dyn NativeTextCacheMirrorCleaner<C>> = state;
+            cleaner
+        })
     }
 
     pub(crate) fn warm_bf16_matrix_cache(
@@ -1783,6 +1827,25 @@ pub(crate) fn native_text_metal_metrics_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_backend::{GemmaLayerCache, LayerKvCache, LinearAttentionCache, QwenLayerCache};
+
+    #[test]
+    fn cache_mirror_sources_collect_qwen_and_gemma_cache_ids() {
+        let qwen_kv = LayerKvCache::new(2, 1, 2).expect("qwen kv cache");
+        let qwen_kv_id = qwen_kv.id();
+        let qwen_linear = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("qwen linear cache");
+        let qwen_linear_id = qwen_linear.id();
+        let gemma_kv = LayerKvCache::new(2, 1, 2).expect("gemma kv cache");
+        let gemma_kv_id = gemma_kv.id();
+
+        let mut ids = NativeTextCacheMirrorIds::default();
+        QwenLayerCache::Full(qwen_kv).append_cache_mirror_ids(&mut ids);
+        QwenLayerCache::Linear(qwen_linear).append_cache_mirror_ids(&mut ids);
+        GemmaLayerCache::Attention(gemma_kv).append_cache_mirror_ids(&mut ids);
+
+        assert_eq!(ids.kv, vec![qwen_kv_id, gemma_kv_id]);
+        assert_eq!(ids.linear, vec![qwen_linear_id]);
+    }
 
     #[test]
     fn native_text_warm_order_recognizes_gemma_text_roots() {

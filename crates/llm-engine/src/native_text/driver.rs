@@ -4,6 +4,7 @@ use super::{
     native_text_prefill_context_with_cache, native_text_worker_stream,
     resolve_native_text_max_tokens, send_backend_stream_chunk,
 };
+use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
@@ -15,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     type DecodeSession: Send + 'static;
-    type LayerCache: NativeTextPrefixCacheValue + Send + 'static;
+    type LayerCache: NativeTextPrefixCacheValue + NativeTextCacheMirrorSource + Send + 'static;
 
     fn family_display_name(&self) -> &'static str;
     fn worker_label(&self) -> &'static str;
@@ -66,6 +67,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         hidden: Vec<f32>,
         caches: Vec<Self::LayerCache>,
     ) -> Self::DecodeSession;
+    fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {}
     fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32];
     fn step(&self, session: &mut Self::DecodeSession, token_id: usize) -> Result<(), BackendError>;
     fn next_token_from_hidden(
@@ -106,6 +108,36 @@ fn native_text_candidate_decision_for_stop_tokens(
         NativeTextCandidateDecision::Stop
     } else {
         NativeTextCandidateDecision::Emit(token_id)
+    }
+}
+
+struct NativeTextCacheMirrorCleanupGuard<'a, A>
+where
+    A: NativeTextAdapter,
+{
+    adapter: &'a A,
+    disarmed: bool,
+}
+
+impl<'a, A> NativeTextCacheMirrorCleanupGuard<'a, A>
+where
+    A: NativeTextAdapter,
+{
+    fn new(adapter: &'a A) -> Self {
+        Self {
+            adapter,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+
+    fn cleanup(&self, caches: &[A::LayerCache]) {
+        if !self.disarmed {
+            self.adapter.cleanup_cache_mirrors(caches);
+        }
     }
 }
 
@@ -397,23 +429,36 @@ where
         } else {
             (None, self.adapter.allocate_caches(cache_tokens)?)
         };
+        let mut cache_cleanup = NativeTextCacheMirrorCleanupGuard::new(&self.adapter);
         if cancellation.is_cancelled() {
+            cache_cleanup.cleanup(&caches);
             return Err(BackendError::Cancelled);
         }
         if cached_prefix_len < context_tokens.len() {
-            hidden = Some(self.prefill_context_with_cache(
+            hidden = match self.prefill_context_with_cache(
                 &context_tokens[cached_prefix_len..],
                 &mut caches,
                 cancellation,
-            )?);
+            ) {
+                Ok(hidden) => Some(hidden),
+                Err(err) => {
+                    cache_cleanup.cleanup(&caches);
+                    return Err(err);
+                }
+            };
         }
-        let hidden = hidden.ok_or_else(|| {
-            BackendError::Other(format!(
-                "{} prefill returned no hidden states",
-                self.adapter.family_display_name()
-            ))
-        })?;
+        let hidden = match hidden {
+            Some(hidden) => hidden,
+            None => {
+                cache_cleanup.cleanup(&caches);
+                return Err(BackendError::Other(format!(
+                    "{} prefill returned no hidden states",
+                    self.adapter.family_display_name()
+                )));
+            }
+        };
         if cancellation.is_cancelled() {
+            cache_cleanup.cleanup(&caches);
             return Err(BackendError::Cancelled);
         }
         self.adapter.prefix_cache().store(
@@ -423,6 +468,7 @@ where
             &caches,
             self.adapter.prefix_cache_metrics(),
         );
+        cache_cleanup.disarm();
         Ok(self.adapter.make_decode_session(hidden, caches))
     }
 

@@ -277,8 +277,13 @@ impl ModelBackend for NativeTextBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
     use llm_backend::SamplingConfig;
     use llm_tokenizer::HuggingFaceTokenizer;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestCache {
@@ -293,6 +298,10 @@ mod tests {
         }
     }
 
+    impl NativeTextCacheMirrorSource for TestCache {
+        fn append_cache_mirror_ids(&self, _ids: &mut NativeTextCacheMirrorIds) {}
+    }
+
     #[derive(Clone)]
     struct TestDecodeSession {
         hidden: Vec<f32>,
@@ -305,6 +314,8 @@ mod tests {
         max_prefill_tokens: usize,
         prefix_cache: std::sync::Arc<NativeTextPrefixCache<TestCache>>,
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
+        cleanup_calls: Arc<AtomicUsize>,
+        fail_prefill: bool,
     }
 
     impl TestAdapter {
@@ -315,12 +326,23 @@ mod tests {
                 max_prefill_tokens: 4,
                 prefix_cache: std::sync::Arc::new(NativeTextPrefixCache::new(1024)),
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
+                cleanup_calls: Arc::new(AtomicUsize::new(0)),
+                fail_prefill: false,
             }
         }
 
         fn with_stop_tokens(mut self, stop_tokens: NativeTextStopTokens) -> Self {
             self.stop_tokens = stop_tokens;
             self
+        }
+
+        fn with_prefill_failure(mut self) -> Self {
+            self.fail_prefill = true;
+            self
+        }
+
+        fn cleanup_calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.cleanup_calls)
         }
     }
 
@@ -409,6 +431,9 @@ mod tests {
             token_ids: &[usize],
             _caches: &mut [Self::LayerCache],
         ) -> Result<Vec<Vec<f32>>, BackendError> {
+            if self.fail_prefill {
+                return Err(BackendError::Other("test prefill failed".to_owned()));
+            }
             Ok(token_ids.iter().map(|_| vec![0.0]).collect())
         }
 
@@ -418,6 +443,10 @@ mod tests {
             _caches: Vec<Self::LayerCache>,
         ) -> Self::DecodeSession {
             TestDecodeSession { hidden }
+        }
+
+        fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {
+            self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         }
 
         fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32] {
@@ -556,6 +585,10 @@ mod tests {
             caches: Vec<Self::LayerCache>,
         ) -> Self::DecodeSession {
             self.base.make_decode_session(hidden, caches)
+        }
+
+        fn cleanup_cache_mirrors(&self, caches: &[Self::LayerCache]) {
+            self.base.cleanup_cache_mirrors(caches);
         }
 
         fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32] {
@@ -774,6 +807,33 @@ mod tests {
         assert_eq!(output.text, "<7>");
         assert_eq!(output.completion_tokens, 1);
         assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    }
+
+    #[test]
+    fn driver_cleans_cache_mirrors_when_prefill_fails_before_session_handoff() {
+        let adapter = TestAdapter::new([1_usize]).with_prefill_failure();
+        let cleanup_calls = adapter.cleanup_calls();
+        let driver = driver_for_test(adapter);
+
+        let err = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect_err("prefill failure is returned");
+
+        assert!(err.to_string().contains("test prefill failed"));
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn driver_does_not_clean_cache_mirrors_after_successful_session_handoff() {
+        let adapter = TestAdapter::new([1_usize]);
+        let cleanup_calls = adapter.cleanup_calls();
+        let driver = driver_for_test(adapter);
+
+        driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("generation succeeds");
+
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

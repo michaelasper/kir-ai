@@ -17,6 +17,23 @@ use llm_backend::{
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+#[derive(Default)]
+struct TestQwenCacheMirrorCleaner {
+    calls: AtomicUsize,
+    cache_count: AtomicUsize,
+}
+
+impl NativeTextCacheMirrorCleaner<QwenLayerCache> for TestQwenCacheMirrorCleaner {
+    fn cleanup_cache_mirrors(&self, caches: &[QwenLayerCache]) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.cache_count.fetch_add(caches.len(), Ordering::SeqCst);
+    }
+}
 
 #[test]
 fn metal_backend_metrics_records_attempt_success_and_fallback_by_kernel() {
@@ -89,6 +106,25 @@ fn metal_backend_metrics_records_resident_attention_cache_activity() {
     assert_eq!(linear["bytes_evicted"], 12);
     assert_eq!(linear["resident_bytes"], 0);
     assert_eq!(linear["resident_buffers"], 0);
+}
+
+#[test]
+fn native_qwen_decode_session_cleans_cache_mirrors_on_drop() {
+    let cleaner = Arc::new(TestQwenCacheMirrorCleaner::default());
+    let session_cleaner: Arc<dyn NativeTextCacheMirrorCleaner<QwenLayerCache>> = cleaner.clone();
+
+    {
+        let cache =
+            QwenLayerCache::Full(LayerKvCache::new(1, 1, 1).expect("test cache shape is valid"));
+        let _session = NativeQwenDecodeSession {
+            hidden: vec![0.0],
+            caches: vec![cache],
+            cache_mirror_cleaner: Some(session_cleaner),
+        };
+    }
+
+    assert_eq!(cleaner.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(cleaner.cache_count.load(Ordering::SeqCst), 1);
 }
 
 #[test]

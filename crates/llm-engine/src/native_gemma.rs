@@ -1,6 +1,9 @@
 use crate::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
-    native_matvec::{NativeTextMatvecBackend, native_text_metal_weight_cache_bytes},
+    native_matvec::{
+        NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
+        NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
+    },
     native_text::{
         NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
         NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
@@ -77,6 +80,14 @@ impl NativeTextPrefixCacheValue for GemmaLayerCache {
                 }
             })
         })
+    }
+}
+
+impl NativeTextCacheMirrorSource for GemmaLayerCache {
+    fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds) {
+        match self {
+            GemmaLayerCache::Attention(cache) => ids.push_kv(cache.id()),
+        }
     }
 }
 
@@ -288,7 +299,17 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         hidden: Vec<f32>,
         caches: Vec<GemmaLayerCache>,
     ) -> NativeGemmaDecodeSession {
-        NativeGemmaDecodeSession { hidden, caches }
+        NativeGemmaDecodeSession {
+            hidden,
+            caches,
+            cache_mirror_cleaner: self.matvec.cache_mirror_cleaner(),
+        }
+    }
+
+    fn cleanup_cache_mirrors(&self, caches: &[GemmaLayerCache]) {
+        if let Some(cleaner) = self.matvec.cache_mirror_cleaner() {
+            cleaner.cleanup_cache_mirrors(caches);
+        }
     }
 
     fn hidden<'a>(&self, session: &'a NativeGemmaDecodeSession) -> &'a [f32] {
@@ -323,6 +344,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
 pub(crate) struct NativeGemmaDecodeSession {
     hidden: Vec<f32>,
     caches: Vec<GemmaLayerCache>,
+    cache_mirror_cleaner: Option<Arc<dyn NativeTextCacheMirrorCleaner<GemmaLayerCache>>>,
 }
 
 impl NativeGemmaDecodeSession {
@@ -346,6 +368,14 @@ impl NativeGemmaDecodeSession {
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
+    }
+}
+
+impl Drop for NativeGemmaDecodeSession {
+    fn drop(&mut self) {
+        if let Some(cleaner) = &self.cache_mirror_cleaner {
+            cleaner.cleanup_cache_mirrors(&self.caches);
+        }
     }
 }
 
@@ -449,9 +479,28 @@ impl ModelBackend for NativeGemmaBackend {
 mod tests {
     use super::*;
     use crate::native_text::{NativeTextCandidateDecision, NativeTextStopTokens};
-    use llm_backend::BackendCacheContext;
+    use llm_backend::{BackendCacheContext, LayerKvCache};
     use serde_json::json;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[derive(Default)]
+    struct TestGemmaCacheMirrorCleaner {
+        calls: AtomicUsize,
+        cache_count: AtomicUsize,
+    }
+
+    impl NativeTextCacheMirrorCleaner<GemmaLayerCache> for TestGemmaCacheMirrorCleaner {
+        fn cleanup_cache_mirrors(&self, caches: &[GemmaLayerCache]) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.cache_count.fetch_add(caches.len(), Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn native_gemma_adapter_stop_tokens_use_eos_mapping() {
@@ -516,6 +565,27 @@ mod tests {
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
         std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_gemma_decode_session_cleans_cache_mirrors_on_drop() {
+        let cleaner = Arc::new(TestGemmaCacheMirrorCleaner::default());
+        let session_cleaner: Arc<dyn NativeTextCacheMirrorCleaner<GemmaLayerCache>> =
+            cleaner.clone();
+
+        {
+            let cache = GemmaLayerCache::Attention(
+                LayerKvCache::new(1, 1, 1).expect("test cache shape is valid"),
+            );
+            let _session = NativeGemmaDecodeSession {
+                hidden: vec![0.0],
+                caches: vec![cache],
+                cache_mirror_cleaner: Some(session_cleaner),
+            };
+        }
+
+        assert_eq!(cleaner.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cleaner.cache_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

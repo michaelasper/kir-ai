@@ -1,6 +1,7 @@
 use crate::{
     native_matvec::{
-        NativeTextMatvecBackend, NativeTextMetalState, native_text_metal_weight_cache_bytes,
+        NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
+        NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
     },
     native_text::{
         NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
@@ -46,8 +47,6 @@ pub(crate) struct NativeQwenAdapter {
     prefix_cache: Arc<NativeQwenPrefixCache>,
 }
 
-pub(crate) type NativeQwenMetalState = NativeTextMetalState;
-
 const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
 
@@ -80,6 +79,15 @@ fn native_qwen_prefix_entry_bytes(hidden: &[f32], caches: &[QwenLayerCache]) -> 
 impl NativeTextPrefixCacheValue for QwenLayerCache {
     fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
         native_qwen_prefix_entry_bytes(hidden, caches)
+    }
+}
+
+impl NativeTextCacheMirrorSource for QwenLayerCache {
+    fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds) {
+        match self {
+            QwenLayerCache::Full(cache) => ids.push_kv(cache.id()),
+            QwenLayerCache::Linear(cache) => ids.push_linear(cache.id()),
+        }
     }
 }
 
@@ -317,7 +325,13 @@ impl NativeTextAdapter for NativeQwenAdapter {
         NativeQwenDecodeSession {
             hidden,
             caches,
-            metal_state: self.matvec.metal_state(),
+            cache_mirror_cleaner: self.matvec.cache_mirror_cleaner(),
+        }
+    }
+
+    fn cleanup_cache_mirrors(&self, caches: &[QwenLayerCache]) {
+        if let Some(cleaner) = self.matvec.cache_mirror_cleaner() {
+            cleaner.cleanup_cache_mirrors(caches);
         }
     }
 
@@ -353,7 +367,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
 pub(crate) struct NativeQwenDecodeSession {
     hidden: Vec<f32>,
     caches: Vec<QwenLayerCache>,
-    metal_state: Option<Arc<NativeQwenMetalState>>,
+    cache_mirror_cleaner: Option<Arc<dyn NativeTextCacheMirrorCleaner<QwenLayerCache>>>,
 }
 
 impl NativeQwenDecodeSession {
@@ -382,8 +396,8 @@ impl NativeQwenDecodeSession {
 
 impl Drop for NativeQwenDecodeSession {
     fn drop(&mut self) {
-        if let Some(state) = &self.metal_state {
-            state.remove_cache_mirrors(&self.caches);
+        if let Some(cleaner) = &self.cache_mirror_cleaner {
+            cleaner.cleanup_cache_mirrors(&self.caches);
         }
     }
 }
