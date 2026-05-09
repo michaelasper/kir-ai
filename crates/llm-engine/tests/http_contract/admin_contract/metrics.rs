@@ -244,8 +244,20 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
             > 0.0
     );
     assert!(
+        body["native_text_metal"]["kernels"].is_object(),
+        "native text Metal metrics are exposed"
+    );
+    assert!(
+        body["native_text_prefix_cache"]["qwen"]["hits"].is_number(),
+        "native text Qwen prefix cache hits are exposed"
+    );
+    assert!(
+        body["native_text_prefix_cache"]["gemma"]["hits"].is_number(),
+        "native text Gemma prefix cache hits are exposed"
+    );
+    assert!(
         body["native_qwen_metal"]["kernels"].is_object(),
-        "native Qwen Metal metrics are exposed"
+        "native Qwen Metal compatibility metrics are exposed"
     );
     assert!(
         body["native_qwen_metal"]["bf16_matrix_cache"].is_object(),

@@ -1,7 +1,6 @@
 use crate::{
     native_matvec::{
-        NativeTextMatvecBackend, NativeTextMetalState, native_text_metal_metrics_snapshot,
-        native_text_metal_weight_cache_bytes,
+        NativeTextMatvecBackend, NativeTextMetalState, native_text_metal_weight_cache_bytes,
     },
     native_text::{
         NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextPrefixCache,
@@ -14,13 +13,12 @@ use futures::stream::BoxStream;
 use llm_backend::{
     BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
     BackendStreamChunk, ModelBackend, QwenLayerCache, QwenMatvecBackend, SafeTensorShardStore,
-    SamplingConfig, native_decode_token_with_cache_with_matvec,
-    native_final_norm_for_spec_with_matvec, native_layer_caches_for_spec,
-    native_lm_head_logits_for_spec_with_matvec, native_lm_head_top_k_for_spec_with_matvec,
-    native_prefill_sequence_with_cache_with_matvec,
+    SamplingConfig, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
+    qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
+    qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::SnapshotManifest;
-use llm_models::{ModelFamily, NativeTextModelSpec};
+use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
@@ -44,7 +42,7 @@ pub struct NativeQwenBackend {
 pub(crate) struct NativeQwenAdapter {
     model_id: String,
     metadata: BackendModelMetadata,
-    spec: NativeTextModelSpec,
+    spec: QwenModelSpec,
     store: SafeTensorShardStore,
     matvec: NativeQwenMatvecBackend,
     max_prefill_tokens: usize,
@@ -154,8 +152,8 @@ impl NativeQwenBackend {
         let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
         let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
-        let spec = NativeTextModelSpec::from_config_json(ModelFamily::Qwen, &config_json)?;
-        spec.validate_text_weights(store.index())?;
+        let spec = QwenModelSpec::from_config_json(&config_json)?;
+        store.index().validate_qwen_text_weights(&spec)?;
         if options.eager_materialize_shards {
             let materialized_bytes = store.materialize_all_shards()?;
             tracing::info!(
@@ -317,7 +315,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             context_tokens,
             max_new_tokens,
             self.max_prefill_tokens,
-            self.spec.max_position_embeddings(),
+            self.spec.max_position_embeddings,
         )
     }
 
@@ -338,11 +336,11 @@ impl NativeTextAdapter for NativeQwenAdapter {
     }
 
     fn layer_count(&self) -> usize {
-        self.spec.num_hidden_layers() as usize
+        self.spec.num_hidden_layers as usize
     }
 
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<QwenLayerCache>, BackendError> {
-        native_layer_caches_for_spec(&self.spec, cache_tokens)
+        qwen_layer_caches_for_spec(&self.spec, cache_tokens)
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
@@ -393,10 +391,10 @@ impl NativeTextAdapter for NativeQwenAdapter {
         sampling: SamplingConfig,
     ) -> Result<usize, BackendError> {
         let final_norm =
-            native_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
+            qwen_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
-            let logits = native_lm_head_logits_for_spec_with_matvec(
+            let logits = qwen_lm_head_logits_for_spec_with_matvec(
                 &self.store,
                 &self.spec,
                 &final_norm,
@@ -412,7 +410,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             return Ok(sampled_token_id);
         }
 
-        let top_logits = native_lm_head_top_k_for_spec_with_matvec(
+        let top_logits = qwen_lm_head_top_k_for_spec_with_matvec(
             &self.store,
             &self.spec,
             &final_norm,
@@ -434,7 +432,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
 
 fn native_qwen_prefill_context_with_cache(
     store: &SafeTensorShardStore,
-    spec: &NativeTextModelSpec,
+    spec: &QwenModelSpec,
     context_tokens: &[usize],
     caches: &mut [QwenLayerCache],
     matvec: &impl QwenMatvecBackend,
@@ -450,7 +448,7 @@ fn native_qwen_prefill_context_with_cache(
             return Err(BackendError::Cancelled);
         }
         let hidden_states =
-            native_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
+            qwen_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
@@ -474,11 +472,11 @@ impl NativeQwenDecodeSession {
     fn step(
         &mut self,
         store: &SafeTensorShardStore,
-        spec: &NativeTextModelSpec,
+        spec: &QwenModelSpec,
         matvec: &impl QwenMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        self.hidden = native_decode_token_with_cache_with_matvec(
+        self.hidden = qwen_decode_token_with_cache_with_matvec(
             store,
             spec,
             token_id,
@@ -672,10 +670,6 @@ fn native_qwen_warmable_bf16_matrix_tensors(
     llm_backend::TensorLoadError,
 > {
     crate::native_matvec::native_text_warmable_bf16_matrix_tensors(store)
-}
-
-pub(crate) fn native_qwen_metal_metrics_snapshot() -> Value {
-    native_text_metal_metrics_snapshot()
 }
 
 pub(crate) fn native_qwen_prefix_cache_metrics_snapshot() -> Value {

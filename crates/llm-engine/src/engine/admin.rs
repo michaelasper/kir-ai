@@ -7,7 +7,8 @@ use super::{
     requests::CancelRequestResult,
 };
 use crate::{
-    native_qwen::{native_qwen_metal_metrics_snapshot, native_qwen_prefix_cache_metrics_snapshot},
+    native_qwen::native_qwen_prefix_cache_metrics_snapshot,
+    native_text::{native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot},
     sync_ext::RecoverPoisonedMutex,
 };
 use axum::{
@@ -258,6 +259,10 @@ pub(super) async fn admin_metrics(
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
+    let native_text_metal = native_text_metal_metrics_snapshot();
+    let native_qwen_prefix_cache = native_qwen_prefix_cache_metrics_snapshot();
+    let native_text_prefix_cache =
+        native_text_prefix_cache_metrics_snapshot(native_qwen_prefix_cache.clone());
     let response = AdminMetricsResponse {
         requests_total: metrics.requests_total(),
         successful_requests: metrics.successful_requests(),
@@ -293,8 +298,10 @@ pub(super) async fn admin_metrics(
         artifact_verification_failures: metrics.artifact_verification_failures(),
         process_rss_bytes: process_rss_bytes(),
         tokens_per_second: metrics.tokens_per_second(),
-        native_qwen_metal: native_qwen_metal_metrics_snapshot(),
-        native_qwen_prefix_cache: native_qwen_prefix_cache_metrics_snapshot(),
+        native_text_metal: native_text_metal.clone(),
+        native_text_prefix_cache,
+        native_qwen_metal: native_text_metal,
+        native_qwen_prefix_cache,
         request_latency_ms: LatencySummary::from_metrics(request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
         tokens: TokenSummary {
@@ -344,6 +351,8 @@ struct AdminMetricsResponse {
     artifact_verification_failures: u64,
     process_rss_bytes: u64,
     tokens_per_second: f64,
+    native_text_metal: Value,
+    native_text_prefix_cache: Value,
     native_qwen_metal: Value,
     native_qwen_prefix_cache: Value,
     request_latency_ms: LatencySummary,

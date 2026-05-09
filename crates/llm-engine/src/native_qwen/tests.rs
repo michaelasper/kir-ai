@@ -529,9 +529,7 @@ fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
     let backend = native_qwen_test_backend(
         &snapshot,
         "local-qwen36",
-        NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
-            llm_models::AttentionKind::LinearAttention,
-        )),
+        tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
         8,
         16,
         2,
@@ -564,9 +562,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
     let backend = native_qwen_test_backend(
         &snapshot,
         "local-qwen36",
-        NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
-            llm_models::AttentionKind::LinearAttention,
-        )),
+        tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
         8,
         1,
         2,
@@ -597,13 +593,13 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
     }
 
-    let mut expected_caches = native_layer_caches_for_spec(
+    let mut expected_caches = qwen_layer_caches_for_spec(
         &backend.driver.adapter.spec,
         native_qwen_cache_token_capacity(
             3,
             8,
             backend.driver.adapter.max_prefill_tokens,
-            backend.driver.adapter.spec.max_position_embeddings(),
+            backend.driver.adapter.spec.max_position_embeddings,
         )
         .expect("expected cache capacity"),
     )
@@ -637,13 +633,12 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
     write_tiny_linear_decoder_snapshot(&snapshot);
     let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
-    let native_spec = NativeTextModelSpec::Qwen(spec.clone());
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
     let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
 
     let hidden = native_qwen_prefill_context_with_cache(
         &store,
-        &native_spec,
+        &spec,
         &[0, 1, 0],
         &mut caches,
         &NativeQwenMatvecBackend::Cpu,
@@ -667,7 +662,6 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
     write_tiny_linear_decoder_snapshot(&snapshot);
     let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
-    let native_spec = NativeTextModelSpec::Qwen(spec.clone());
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
     let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
     let cancellation = CancellationToken::new();
@@ -678,7 +672,7 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
 
     let err = native_qwen_prefill_context_with_cache(
         &store,
-        &native_spec,
+        &spec,
         &[0, 1, 0],
         &mut caches,
         &matvec,
@@ -978,7 +972,7 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
     let backend = native_qwen_test_backend(
         &snapshot,
         "local-qwen36",
-        NativeTextModelSpec::Qwen(QwenModelSpec {
+        QwenModelSpec {
             family: llm_models::ModelFamily::Qwen,
             architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
             model_type: "qwen3_5_moe".to_owned(),
@@ -1004,7 +998,7 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
             max_position_embeddings: 1,
             vocab_size: 221,
             layer_kinds: Vec::new(),
-        }),
+        },
         1,
         1,
         2,
@@ -1404,7 +1398,7 @@ fn tiny_engine_qwen_spec(kind: llm_models::AttentionKind) -> QwenModelSpec {
 fn native_qwen_test_backend(
     snapshot: &Path,
     model_id: &str,
-    spec: NativeTextModelSpec,
+    spec: QwenModelSpec,
     max_new_tokens: u32,
     max_prefill_tokens: usize,
     top_k: usize,

@@ -1,6 +1,6 @@
 use crate::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeQwenLoadOptions,
-    NativeTextBackend, NativeTextLoadOptions,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeTextBackend,
+    NativeTextLoadOptions,
 };
 use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
@@ -21,7 +21,7 @@ pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<ModelFamily> {
 pub struct SnapshotBackendOptions {
     pub loader: Option<SnapshotBackendLoader>,
     pub family: Option<ModelFamily>,
-    pub native_qwen: NativeQwenLoadOptions,
+    pub native_text: NativeTextLoadOptions,
     pub mlx: MlxBackendOptions,
     pub max_new_tokens: u32,
     pub max_prefill_tokens: usize,
@@ -32,7 +32,7 @@ impl Default for SnapshotBackendOptions {
         Self {
             loader: None,
             family: None,
-            native_qwen: NativeQwenLoadOptions::default(),
+            native_text: NativeTextLoadOptions::default(),
             mlx: MlxBackendOptions::default(),
             max_new_tokens: DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
             max_prefill_tokens: 32,
@@ -66,7 +66,7 @@ pub fn open_snapshot_backend(
             )?))
         }
         SnapshotBackendLoader::NativeMetal => {
-            let mut native_options = NativeTextLoadOptions::with_qwen_options(options.native_qwen);
+            let mut native_options = options.native_text;
             if let Some(family) = requested_family.or(manifest_family) {
                 native_options = native_options.with_family(family);
             }

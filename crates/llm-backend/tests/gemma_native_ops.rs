@@ -1,9 +1,14 @@
 use llm_backend::{
-    GemmaLayerCache, SafeTensorShardStore, gemma_decode_token_with_cache,
+    GemmaLayerCache, NativeTextLayerCaches, SafeTensorShardStore, gemma_decode_token_with_cache,
     gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec,
     gemma_prefill_sequence_with_cache,
+    native_decode_token_with_cache as native_text_decode_token_with_cache,
+    native_final_norm_for_spec as native_text_final_norm_for_spec,
+    native_layer_caches_for_spec as native_text_layer_caches_for_spec,
+    native_lm_head_top_k_for_spec as native_text_lm_head_top_k_for_spec,
+    native_prefill_sequence_with_cache as native_text_prefill_sequence_with_cache,
 };
-use llm_models::GemmaModelSpec;
+use llm_models::{GemmaModelSpec, NativeTextModelSpec};
 use serde_json::json;
 use std::{
     path::{Path, PathBuf},
@@ -131,6 +136,48 @@ fn gemma_final_norm_and_tied_lm_head_select_top_token() {
 
     assert_eq!(top[0].index, 2);
     assert!((top[0].logit - 2.0 * 2.0_f32.sqrt()).abs() < 1e-5);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
+    let root = temp_snapshot_dir("native-text-dispatch-gemma");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    write_tiny_gemma4_decoder_snapshot(&root);
+    let spec = GemmaModelSpec::from_config_json(
+        &std::fs::read_to_string(root.join("config.json")).expect("config"),
+    )
+    .expect("tiny Gemma config parses");
+    let native_spec = NativeTextModelSpec::Gemma(spec.clone());
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let mut direct_caches = gemma_layer_caches_for_spec(&spec, 8).expect("direct caches");
+    let direct_prefill =
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut direct_caches)
+            .expect("direct prefill");
+    let direct_decode =
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches).expect("direct decode");
+
+    let mut native_caches =
+        native_text_layer_caches_for_spec(&native_spec, 8).expect("native text caches");
+    assert!(matches!(native_caches, NativeTextLayerCaches::Gemma(_)));
+    let native_prefill =
+        native_text_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
+            .expect("native text prefill");
+    let native_decode =
+        native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches)
+            .expect("native text decode");
+    let native_norm =
+        native_text_final_norm_for_spec(&store, &native_spec, &native_decode).expect("native norm");
+    let native_top = native_text_lm_head_top_k_for_spec(&store, &native_spec, &native_norm, 2, 64)
+        .expect("native top logits");
+
+    assert_eq!(native_prefill.len(), direct_prefill.len());
+    assert_close(&native_prefill[0], &direct_prefill[0], 1e-5);
+    assert_close(&native_prefill[1], &direct_prefill[1], 1e-5);
+    assert_close(&native_decode, &direct_decode, 1e-5);
+    assert_eq!(native_top[0].index, 2);
     std::fs::remove_dir_all(root).ok();
 }
 

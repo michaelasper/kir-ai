@@ -67,6 +67,10 @@ fn native_gemma_prefix_cache_metrics() -> &'static NativeGemmaPrefixCacheMetrics
     METRICS.get_or_init(NativeGemmaPrefixCacheMetrics::default)
 }
 
+pub(crate) fn native_gemma_prefix_cache_metrics_snapshot() -> Value {
+    native_gemma_prefix_cache_metrics().snapshot()
+}
+
 impl NativeTextPrefixCacheValue for GemmaLayerCache {
     fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;

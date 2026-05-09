@@ -1,8 +1,9 @@
 use llm_backend::{
-    CpuQwenMatvecBackend, MathError, NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT,
-    QwenKvCacheTensor, QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,
-    SafeTensorShardStore, TensorLoadError, TopKLogit, native_decode_token_with_cache,
-    native_layer_caches_for_spec, native_prefill_sequence_with_cache, qwen_decode_token_with_cache,
+    CpuQwenMatvecBackend, MathError, NativeMatvecBackend, NativeTextLayerCaches,
+    QWEN_FINAL_NORM_WEIGHT, QwenKvCacheTensor, QwenLayerCache, SafeTensorArchive, SafeTensorFile,
+    SafeTensorHeader, SafeTensorShardStore, TensorLoadError, TopKLogit,
+    native_decode_token_with_cache, native_layer_caches_for_spec,
+    native_prefill_sequence_with_cache, qwen_decode_token_with_cache,
     qwen_decode_token_with_cache_with_matvec, qwen_embedding_and_layer0_norm, qwen_final_norm,
     qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
     qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,

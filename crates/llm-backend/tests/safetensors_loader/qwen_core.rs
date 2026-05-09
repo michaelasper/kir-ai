@@ -327,6 +327,7 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
 
     let mut native_caches =
         native_layer_caches_for_spec(&native_spec, 3).expect("native text caches");
+    assert!(matches!(&native_caches, NativeTextLayerCaches::Qwen(_)));
     let native_prefill =
         native_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
             .expect("native text prefill");

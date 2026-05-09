@@ -49,17 +49,19 @@ fn all_profile_selection_includes_256k_characterization() {
 #[test]
 fn cache_metrics_summary_extracts_admin_cache_counters() {
     let admin = serde_json::json!({
-        "native_qwen_prefix_cache": {
-            "hits": 3,
-            "misses": 1,
-            "stores": 2,
-            "evictions": 1,
-            "rejected": 0,
-            "reused_tokens": 42,
-            "resident_bytes": 1024,
-            "resident_entries": 2
+        "native_text_prefix_cache": {
+            "qwen": {
+                "hits": 3,
+                "misses": 1,
+                "stores": 2,
+                "evictions": 1,
+                "rejected": 0,
+                "reused_tokens": 42,
+                "resident_bytes": 1024,
+                "resident_entries": 2
+            }
         },
-        "native_qwen_metal": {
+        "native_text_metal": {
             "bf16_matrix_cache": {
                 "hits": 7,
                 "misses": 3,

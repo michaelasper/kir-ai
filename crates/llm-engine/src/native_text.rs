@@ -23,7 +23,42 @@ pub struct NativeTextLoadOptions {
     pub gemma: NativeGemmaLoadOptions,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeTextRuntimeOptions {
+    pub eager_materialize_shards: bool,
+    pub metal_weight_cache_bytes: Option<u64>,
+    pub warm_metal_weight_cache: bool,
+}
+
+impl From<NativeTextRuntimeOptions> for NativeQwenLoadOptions {
+    fn from(value: NativeTextRuntimeOptions) -> Self {
+        Self {
+            eager_materialize_shards: value.eager_materialize_shards,
+            metal_weight_cache_bytes: value.metal_weight_cache_bytes,
+            warm_metal_weight_cache: value.warm_metal_weight_cache,
+        }
+    }
+}
+
+impl From<NativeTextRuntimeOptions> for NativeGemmaLoadOptions {
+    fn from(value: NativeTextRuntimeOptions) -> Self {
+        Self {
+            eager_materialize_shards: value.eager_materialize_shards,
+            metal_weight_cache_bytes: value.metal_weight_cache_bytes,
+            warm_metal_weight_cache: value.warm_metal_weight_cache,
+        }
+    }
+}
+
 impl NativeTextLoadOptions {
+    pub fn with_runtime_options(runtime: NativeTextRuntimeOptions) -> Self {
+        Self {
+            family: None,
+            qwen: runtime.into(),
+            gemma: runtime.into(),
+        }
+    }
+
     pub fn with_qwen_options(qwen: NativeQwenLoadOptions) -> Self {
         Self {
             family: None,
@@ -40,6 +75,19 @@ impl NativeTextLoadOptions {
         self.family = Some(family);
         self
     }
+}
+
+pub(crate) fn native_text_metal_metrics_snapshot() -> serde_json::Value {
+    crate::native_matvec::native_text_metal_metrics_snapshot()
+}
+
+pub(crate) fn native_text_prefix_cache_metrics_snapshot(
+    qwen_snapshot: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "qwen": qwen_snapshot,
+        "gemma": crate::native_gemma::native_gemma_prefix_cache_metrics_snapshot(),
+    })
 }
 
 #[derive(Clone)]
@@ -1063,6 +1111,22 @@ mod tests {
             cache_tokens: 16,
             max_prefill_tokens: 4,
         }
+    }
+
+    #[test]
+    fn runtime_options_apply_to_supported_native_text_families() {
+        let options = NativeTextLoadOptions::with_runtime_options(NativeTextRuntimeOptions {
+            eager_materialize_shards: true,
+            metal_weight_cache_bytes: Some(4096),
+            warm_metal_weight_cache: true,
+        });
+
+        assert!(options.qwen.eager_materialize_shards);
+        assert_eq!(options.qwen.metal_weight_cache_bytes, Some(4096));
+        assert!(options.qwen.warm_metal_weight_cache);
+        assert!(options.gemma.eager_materialize_shards);
+        assert_eq!(options.gemma.metal_weight_cache_bytes, Some(4096));
+        assert!(options.gemma.warm_metal_weight_cache);
     }
 
     #[test]

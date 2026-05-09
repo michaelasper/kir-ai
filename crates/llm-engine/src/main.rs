@@ -7,9 +7,9 @@ use llm_backend::{
     qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeQwenLoadOptions,
-    SnapshotBackendLoader, SnapshotBackendOptions, build_router_with_backend_and_options,
-    open_snapshot_backend, parse_snapshot_model_family,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeTextLoadOptions,
+    NativeTextRuntimeOptions, SnapshotBackendLoader, SnapshotBackendOptions,
+    build_router_with_backend_and_options, open_snapshot_backend, parse_snapshot_model_family,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
@@ -125,17 +125,19 @@ async fn main() -> anyhow::Result<()> {
                     SnapshotBackendOptions {
                         loader,
                         family,
-                        native_qwen: NativeQwenLoadOptions {
-                            eager_materialize_shards: has_flag(
-                                &serve_args,
-                                "--eager-materialize-shards",
-                            ),
-                            metal_weight_cache_bytes: native_metal_weight_cache_bytes,
-                            warm_metal_weight_cache: has_flag(
-                                &serve_args,
-                                "--warm-native-metal-weight-cache",
-                            ),
-                        },
+                        native_text: NativeTextLoadOptions::with_runtime_options(
+                            NativeTextRuntimeOptions {
+                                eager_materialize_shards: has_flag(
+                                    &serve_args,
+                                    "--eager-materialize-shards",
+                                ),
+                                metal_weight_cache_bytes: native_metal_weight_cache_bytes,
+                                warm_metal_weight_cache: has_flag(
+                                    &serve_args,
+                                    "--warm-native-metal-weight-cache",
+                                ),
+                            },
+                        ),
                         mlx: MlxBackendOptions {
                             endpoint: mlx_endpoint,
                             ..MlxBackendOptions::default()

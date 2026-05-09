@@ -349,8 +349,13 @@ async fn capture_lane_admin_metrics(
 }
 
 fn cache_metrics_from_admin(metrics: &Value) -> Option<BenchCacheMetricsReport> {
-    let prefix = metrics.get("native_qwen_prefix_cache")?;
-    let metal = metrics.get("native_qwen_metal")?;
+    let prefix = metrics
+        .get("native_text_prefix_cache")
+        .and_then(|native_text| native_text.get("qwen"))
+        .or_else(|| metrics.get("native_qwen_prefix_cache"))?;
+    let metal = metrics
+        .get("native_text_metal")
+        .or_else(|| metrics.get("native_qwen_metal"))?;
     let weight = metal.get("bf16_matrix_cache")?;
     let kv = metal.get("kv_cache")?;
     let linear = metal.get("linear_attention_cache")?;
