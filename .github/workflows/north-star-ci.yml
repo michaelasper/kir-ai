@@ -19,6 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install Rust
@@ -36,6 +37,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Enforce versioning
+        run: bash scripts/check-versioning.sh
+
+      - name: Enforce conventional commits
+        run: bash scripts/check-conventional-commits.sh
 
       - name: Run fast gates
         run: bash scripts/north-star-gates.sh ci

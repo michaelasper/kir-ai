@@ -38,7 +38,7 @@ Mise tasks:
 | `mise run clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | `mise run check` | `fmt-check`, `test`, and `clippy` |
 | `mise run run` | Delegates to `mise run run-inference`; requires `LLM_ENGINE_SNAPSHOT` or `LLM_ENGINE_SNAPSHOT_ALIAS`. |
-| `mise run run-protocol` | `cargo run -p llm-engine -- serve --deterministic-test-backend` |
+| `mise run run-protocol` | `cargo run -p llm-engine -- serve --protocol-test-backend` |
 
 ## Server Configuration
 
@@ -47,8 +47,8 @@ Mise tasks:
 | Flag | Type | Default | Behaviour |
 | --- | --- | --- | --- |
 | `--addr` | socket address | `127.0.0.1:3000` | Address bound by Axum. |
-| `--deterministic-test-backend` | boolean | unset | Enables deterministic protocol mode without model artifacts. |
-| `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--deterministic-test-backend`. |
+| `--protocol-test-backend` | boolean | unset | Enables protocol test mode without model artifacts. |
+| `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--protocol-test-backend`. |
 | `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
 | `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Raw MLX snapshots must set this explicitly. Qwen and Gemma are serveable through MLX; DeepSeek is recognized but rejected for serving until Kir has a runtime chat adapter or chat-sidecar path. Conflicting manifest metadata is rejected. |

@@ -42,9 +42,39 @@ pub struct QwenParser;
 #[derive(Debug, Default, Clone)]
 pub struct GemmaParser;
 
+#[derive(Debug, Default, Clone)]
+pub struct DeepSeekParser;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolParserFamily {
+    Auto,
+    Hermes,
+    Qwen,
+    DeepSeek,
+    Gemma,
+}
+
 impl QwenParser {
     pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
         let (reasoning, rest) = split_reasoning(text)?;
+        if rest.contains("<tool_call>") {
+            return parse_tool_calls(reasoning, &rest);
+        }
+        Ok(ParsedAssistant {
+            reasoning,
+            content: rest,
+            tool_calls: Vec::new(),
+        })
+    }
+}
+
+impl DeepSeekParser {
+    pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
+        let (reasoning, rest) = split_reasoning(text)?;
+        if rest.contains("<dsml_tool_call>") {
+            return parse_deepseek_dsml_tool_calls(reasoning, &rest);
+        }
         if rest.contains("<tool_call>") {
             return parse_tool_calls(reasoning, &rest);
         }
@@ -89,13 +119,6 @@ impl ParserError {
         }
     }
 
-    fn unsupported_family(family: &'static str) -> Self {
-        Self {
-            code: "unsupported_parser_family",
-            message: format!("{family} parser support is deferred until Qwen production parity"),
-        }
-    }
-
     fn unsupported_multimodal(message: impl Into<String>) -> Self {
         Self {
             code: "unsupported_multimodal_output",
@@ -110,9 +133,34 @@ pub fn parse_assistant_for_family(
 ) -> Result<ParsedAssistant, ParserError> {
     match family {
         ModelFamily::Qwen => QwenParser.parse_complete(text),
-        ModelFamily::DeepSeek => Err(ParserError::unsupported_family("DeepSeek")),
+        ModelFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ModelFamily::Gemma => GemmaParser.parse_complete(text),
     }
+}
+
+pub fn parse_assistant_for_parser_family(
+    family: ToolParserFamily,
+    text: &str,
+) -> Result<ParsedAssistant, ParserError> {
+    match family {
+        ToolParserFamily::Auto => parse_assistant_auto(text),
+        ToolParserFamily::Hermes | ToolParserFamily::Qwen => QwenParser.parse_complete(text),
+        ToolParserFamily::DeepSeek => DeepSeekParser.parse_complete(text),
+        ToolParserFamily::Gemma => GemmaParser.parse_complete(text),
+    }
+}
+
+fn parse_assistant_auto(text: &str) -> Result<ParsedAssistant, ParserError> {
+    if text.contains("<|tool_call>") || text.contains("<|channel>thought\n") {
+        return GemmaParser.parse_complete(text);
+    }
+    if text.contains("<dsml_tool_call>") {
+        return DeepSeekParser.parse_complete(text);
+    }
+    if text.contains("<tool_call>") || text.contains("<think>") {
+        return QwenParser.parse_complete(text);
+    }
+    Ok(ParsedAssistant::content(text))
 }
 
 fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {
@@ -167,6 +215,35 @@ fn parse_tool_calls(
     })
 }
 
+fn parse_deepseek_dsml_tool_calls(
+    reasoning: Option<String>,
+    mut rest: &str,
+) -> Result<ParsedAssistant, ParserError> {
+    let mut calls = Vec::new();
+    let mut content = String::new();
+
+    while let Some(start) = rest.find("<dsml_tool_call>") {
+        content.push_str(&rest[..start]);
+        let inner_start = start + "<dsml_tool_call>".len();
+        let Some(end_rel) = rest[inner_start..].find("</dsml_tool_call>") else {
+            return Err(ParserError::malformed_tool(
+                "unterminated DeepSeek dsml_tool_call tag",
+            ));
+        };
+        let inner_end = inner_start + end_rel;
+        let inner = rest[inner_start..inner_end].trim();
+        calls.push(parse_deepseek_json_call(inner, calls.len())?);
+        rest = &rest[inner_end + "</dsml_tool_call>".len()..];
+    }
+    content.push_str(rest);
+
+    Ok(ParsedAssistant {
+        reasoning,
+        content,
+        tool_calls: calls,
+    })
+}
+
 fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
     let value: Value = serde_json::from_str(inner)
         .map_err(|err| ParserError::malformed_tool(format!("invalid qwen tool JSON: {err}")))?;
@@ -174,6 +251,27 @@ fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| ParserError::malformed_tool("qwen tool JSON missing name"))?;
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(ToolCall {
+        id: format!("call_{index}"),
+        call_type: ToolCallType::Function,
+        function: ToolCallFunction {
+            name: name.to_owned(),
+            arguments,
+        },
+    })
+}
+
+fn parse_deepseek_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+    let value: Value = serde_json::from_str(inner)
+        .map_err(|err| ParserError::malformed_tool(format!("invalid DeepSeek tool JSON: {err}")))?;
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ParserError::malformed_tool("DeepSeek tool JSON missing name"))?;
     let arguments = value
         .get("arguments")
         .cloned()

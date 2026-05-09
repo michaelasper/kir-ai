@@ -1,7 +1,7 @@
 # Getting Started
 
 This tutorial gets you from a fresh checkout to a working OpenAI-compatible
-server response. It uses the deterministic Rust backend so the steps are small,
+server response. It uses the protocol test backend so the steps are small,
 repeatable, and do not require a model download.
 
 You will:
@@ -37,7 +37,7 @@ Run the HTTP contract test before starting the server:
 cargo test -p llm-engine --test http_contract
 ```
 
-The test exercises the same deterministic router you will call below. It should
+The test exercises the same protocol-test router you will call below. It should
 finish without a model snapshot.
 
 ## 3. Start The Server
@@ -47,7 +47,7 @@ Open a terminal and run:
 ```sh
 cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
-  --deterministic-test-backend
+  --protocol-test-backend
 ```
 
 You should see a log line similar to:
@@ -82,7 +82,7 @@ You should see:
 curl -s http://127.0.0.1:3000/v1/models | jq
 ```
 
-The deterministic backend serves the `local-qwen36` alias:
+The protocol test backend serves the `local-qwen36` alias:
 
 ```json
 {
@@ -143,7 +143,7 @@ curl -s http://127.0.0.1:3000/v1/completions \
   }' | jq
 ```
 
-The stop sequence truncates the deterministic text:
+The stop sequence truncates the fixed protocol-test text:
 
 ```json
 {
@@ -184,4 +184,4 @@ data: [DONE]
 You have run the Rust HTTP edge, confirmed that it does not depend on Python at
 request time, and exercised the OpenAI-compatible chat, text completion, and SSE
 shapes. Use [how-to-run-server.md](how-to-run-server.md) when you want to switch
-from the deterministic backend to a native Qwen snapshot.
+from the protocol test backend to a native Qwen snapshot.

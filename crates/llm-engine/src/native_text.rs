@@ -1,14 +1,15 @@
 use crate::{
-    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, NativeQwenAdapter, NativeQwenBackend,
-    NativeQwenLoadOptions, sync_ext::RecoverPoisonedMutex,
+    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, NativeGemmaAdapter, NativeGemmaBackend,
+    NativeGemmaLoadOptions, NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions,
+    sync_ext::RecoverPoisonedMutex,
 };
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, SafeTensorShardStore, SamplingConfig,
+    ModelBackend, SamplingConfig,
 };
-use llm_models::{ModelFamily, NativeTextModelSpec};
+use llm_models::ModelFamily;
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -19,11 +20,20 @@ pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_
 pub struct NativeTextLoadOptions {
     pub family: Option<ModelFamily>,
     pub qwen: NativeQwenLoadOptions,
+    pub gemma: NativeGemmaLoadOptions,
 }
 
 impl NativeTextLoadOptions {
     pub fn with_qwen_options(qwen: NativeQwenLoadOptions) -> Self {
-        Self { family: None, qwen }
+        Self {
+            family: None,
+            gemma: NativeGemmaLoadOptions {
+                eager_materialize_shards: qwen.eager_materialize_shards,
+                metal_weight_cache_bytes: qwen.metal_weight_cache_bytes,
+                warm_metal_weight_cache: qwen.warm_metal_weight_cache,
+            },
+            qwen,
+        }
     }
 
     pub fn with_family(mut self, family: ModelFamily) -> Self {
@@ -40,6 +50,7 @@ pub struct NativeTextBackend {
 #[derive(Clone)]
 enum NativeTextBackendInner {
     Qwen(NativeTextDriver<NativeQwenAdapter>),
+    Gemma(NativeTextDriver<NativeGemmaAdapter>),
 }
 
 impl NativeTextBackend {
@@ -58,10 +69,12 @@ impl NativeTextBackend {
         let snapshot_path = snapshot_path.as_ref();
         match options.family {
             Some(ModelFamily::Gemma) => {
-                validate_native_text_artifact_layout(snapshot_path, ModelFamily::Gemma)?;
-                anyhow::bail!(
-                    "native text execution for family `gemma` is not implemented yet; Gemma 4 native execution is tracked by issue #109"
-                );
+                let driver =
+                    NativeGemmaBackend::open_with_options(model_id, snapshot_path, options.gemma)?
+                        .into_driver();
+                Ok(Self {
+                    inner: NativeTextBackendInner::Gemma(driver),
+                })
             }
             Some(ModelFamily::DeepSeek) => {
                 anyhow::bail!(
@@ -84,6 +97,9 @@ impl NativeTextBackend {
             NativeTextBackendInner::Qwen(driver) => {
                 NativeTextBackendInner::Qwen(driver.with_max_new_tokens(max_new_tokens))
             }
+            NativeTextBackendInner::Gemma(driver) => {
+                NativeTextBackendInner::Gemma(driver.with_max_new_tokens(max_new_tokens))
+            }
         };
         self
     }
@@ -93,20 +109,12 @@ impl NativeTextBackend {
             NativeTextBackendInner::Qwen(driver) => {
                 NativeTextBackendInner::Qwen(driver.with_max_prefill_tokens(max_prefill_tokens))
             }
+            NativeTextBackendInner::Gemma(driver) => {
+                NativeTextBackendInner::Gemma(driver.with_max_prefill_tokens(max_prefill_tokens))
+            }
         };
         self
     }
-}
-
-fn validate_native_text_artifact_layout(
-    snapshot_path: &Path,
-    family: ModelFamily,
-) -> anyhow::Result<NativeTextModelSpec> {
-    let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
-    let spec = NativeTextModelSpec::from_config_json(family, &config_json)?;
-    let store = SafeTensorShardStore::open(snapshot_path)?;
-    spec.validate_text_weights(store.index())?;
-    Ok(spec)
 }
 
 #[async_trait]
@@ -114,18 +122,21 @@ impl ModelBackend for NativeTextBackend {
     fn model_id(&self) -> &str {
         match &self.inner {
             NativeTextBackendInner::Qwen(backend) => backend.model_id(),
+            NativeTextBackendInner::Gemma(backend) => backend.model_id(),
         }
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
         match &self.inner {
             NativeTextBackendInner::Qwen(backend) => backend.model_metadata(),
+            NativeTextBackendInner::Gemma(backend) => backend.model_metadata(),
         }
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         match &self.inner {
             NativeTextBackendInner::Qwen(backend) => backend.generate(request).await,
+            NativeTextBackendInner::Gemma(backend) => backend.generate(request).await,
         }
     }
 
@@ -138,6 +149,9 @@ impl ModelBackend for NativeTextBackend {
             NativeTextBackendInner::Qwen(backend) => {
                 backend.generate_with_cancel(request, cancellation).await
             }
+            NativeTextBackendInner::Gemma(backend) => {
+                backend.generate_with_cancel(request, cancellation).await
+            }
         }
     }
 
@@ -147,6 +161,7 @@ impl ModelBackend for NativeTextBackend {
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         match &self.inner {
             NativeTextBackendInner::Qwen(backend) => backend.generate_stream(request),
+            NativeTextBackendInner::Gemma(backend) => backend.generate_stream(request),
         }
     }
 
@@ -157,6 +172,9 @@ impl ModelBackend for NativeTextBackend {
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         match &self.inner {
             NativeTextBackendInner::Qwen(backend) => {
+                backend.generate_stream_with_cancel(request, cancellation)
+            }
+            NativeTextBackendInner::Gemma(backend) => {
                 backend.generate_stream_with_cancel(request, cancellation)
             }
         }

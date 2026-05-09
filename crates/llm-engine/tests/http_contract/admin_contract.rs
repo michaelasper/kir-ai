@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn admin_models_endpoint_reports_ready_model() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models")
@@ -22,7 +22,7 @@ async fn admin_models_endpoint_reports_ready_model() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_ready_model() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/local-qwen36")
@@ -204,7 +204,7 @@ async fn admin_model_plan_endpoint_returns_download_plan() {
 #[test]
 fn engine_options_reject_remote_http_hub_endpoint_with_token() {
     let result = build_router_with_backend_and_options(
-        Box::new(llm_backend::DeterministicBackend::new("local-qwen36", "ok")),
+        Box::new(llm_backend::ProtocolTestBackend::new("local-qwen36", "ok")),
         EngineOptions {
             hub_endpoint: Some("http://example.com".to_owned()),
             hf_token: Some("hf_secret".to_owned()),
@@ -226,7 +226,7 @@ fn engine_options_reject_remote_http_hub_endpoint_with_token() {
 #[test]
 fn engine_options_allow_loopback_http_hub_endpoint_with_token() {
     let result = build_router_with_backend_and_options(
-        Box::new(llm_backend::DeterministicBackend::new("local-qwen36", "ok")),
+        Box::new(llm_backend::ProtocolTestBackend::new("local-qwen36", "ok")),
         EngineOptions {
             hub_endpoint: Some("http://127.0.0.1:8080".to_owned()),
             hf_token: Some("hf_secret".to_owned()),
@@ -436,7 +436,7 @@ async fn admin_metrics_report_quarantined_model_store_usage() {
 
 #[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/not-loaded")
@@ -455,7 +455,7 @@ async fn admin_model_endpoint_uses_stable_missing_model_error() {
 
 #[tokio::test]
 async fn admin_metrics_report_inference_counts_and_tokens() {
-    let app = build_router_with_deterministic_test_backend();
+    let app = build_router_with_protocol_test_backend();
     let response = app
         .clone()
         .oneshot(
@@ -558,7 +558,7 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
 
 #[tokio::test]
 async fn admin_metrics_report_process_rss_bytes() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/metrics")
@@ -580,7 +580,7 @@ async fn admin_metrics_report_process_rss_bytes() {
 
 #[tokio::test]
 async fn admin_metrics_report_stream_time_to_first_token() {
-    let app = build_router_with_deterministic_test_backend();
+    let app = build_router_with_protocol_test_backend();
     let response = app
         .clone()
         .oneshot(
@@ -1185,7 +1185,7 @@ async fn admin_cancel_request_terminates_pending_completion_stream() {
 
 #[tokio::test]
 async fn admin_cancel_request_reports_unknown_request_id() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use llm_api::{ApiError, Usage};
-use llm_backend::{BackendError, DeterministicBackend, ModelBackend};
+use llm_backend::{BackendError, ModelBackend, ProtocolTestBackend};
 use llm_hub::{HubClient, HubError};
 use llm_runtime::{Runtime, RuntimeError};
 use llm_telemetry::{ServerMetrics, TokenCounters};
@@ -86,14 +86,14 @@ const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// explicit inference backend.
 ///
 /// Use `build_router_with_backend` or `build_router_with_backend_and_options`
-/// for real serving. Use `build_router_with_deterministic_test_backend` only
+/// for real serving. Use `build_router_with_protocol_test_backend` only
 /// for protocol tests that intentionally do not exercise model inference.
 pub fn build_router() -> Result<Router, EngineConfigError> {
     Err(EngineConfigError::missing_backend())
 }
 
-pub fn build_router_with_deterministic_test_backend() -> Router {
-    build_router_with_backend(Box::new(deterministic_test_backend()))
+pub fn build_router_with_protocol_test_backend() -> Router {
+    build_router_with_backend(Box::new(protocol_test_backend()))
 }
 
 pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
@@ -172,7 +172,7 @@ pub struct EngineConfigError {
 impl EngineConfigError {
     fn missing_backend() -> Self {
         Self {
-            message: "llm-engine router construction requires an explicit backend; use build_router_with_backend(...) for inference or build_router_with_deterministic_test_backend() for protocol tests"
+            message: "llm-engine router construction requires an explicit backend; use build_router_with_backend(...) for inference or build_router_with_protocol_test_backend() for protocol tests"
                 .to_owned(),
         }
     }
@@ -221,8 +221,8 @@ fn is_loopback_endpoint(endpoint: &url::Url) -> bool {
     }
 }
 
-fn deterministic_test_backend() -> DeterministicBackend {
-    DeterministicBackend::new("local-qwen36", "hello from rust native backend")
+fn protocol_test_backend() -> ProtocolTestBackend {
+    ProtocolTestBackend::new("local-qwen36", "hello from rust native backend")
         .with_required_tool_protocol()
         .with_json_object_protocol()
 }

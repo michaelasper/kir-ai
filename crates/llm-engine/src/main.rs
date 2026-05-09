@@ -154,10 +154,10 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!(error = %err, alias = model_id, snapshot = %snapshot_path.display(), "failed to record model alias");
                 }
                 build_router_with_backend_and_options(backend, options)?
-            } else if has_flag(&serve_args, "--deterministic-test-backend") {
+            } else if has_flag(&serve_args, "--protocol-test-backend") {
                 build_router_with_backend_and_options(
                     Box::new(
-                        llm_backend::DeterministicBackend::new(
+                        llm_backend::ProtocolTestBackend::new(
                             "local-qwen36",
                             "hello from rust native backend",
                         )
@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
                 )?
             } else {
                 anyhow::bail!(
-                    "llm-engine serve requires --snapshot <path> for inference serving; use --deterministic-test-backend only for protocol tests"
+                    "llm-engine serve requires --snapshot <path> for inference serving; use --protocol-test-backend only for protocol tests"
                 );
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -197,9 +197,9 @@ Options:
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
                                              Qwen and Gemma are serveable through MLX; DeepSeek is recognized but deferred
-  --deterministic-test-backend               Use deterministic protocol backend
-  --max-new-tokens <n>                       Native Qwen maximum generated tokens [default: 256]
-  --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens
+  --protocol-test-backend               Use protocol test backend
+  --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
+  --max-prefill-tokens <n>                   Native text maximum prefill tokens
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root

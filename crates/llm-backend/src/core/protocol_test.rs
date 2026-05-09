@@ -7,14 +7,14 @@ use llm_api::{FinishReason, ToolDefinition};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
-pub struct DeterministicBackend {
+pub struct ProtocolTestBackend {
     model_id: String,
     text: String,
     required_tool_protocol: bool,
     json_object_protocol: bool,
 }
 
-impl DeterministicBackend {
+impl ProtocolTestBackend {
     pub fn new(model_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             model_id: model_id.into(),
@@ -36,13 +36,13 @@ impl DeterministicBackend {
 }
 
 #[async_trait]
-impl ModelBackend for DeterministicBackend {
+impl ModelBackend for ProtocolTestBackend {
     fn model_id(&self) -> &str {
         &self.model_id
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata::new(self.model_id.clone(), "deterministic").with_family("qwen")
+        BackendModelMetadata::new(self.model_id.clone(), "protocol-test").with_family("qwen")
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -54,12 +54,12 @@ impl ModelBackend for DeterministicBackend {
         }
         if !request.sampling.is_greedy() {
             return Err(BackendError::UnsupportedRequest(
-                "deterministic backend does not support non-greedy sampling".to_owned(),
+                "protocol test backend does not support non-greedy sampling".to_owned(),
             ));
         }
         let (text, finish_reason) = if self.required_tool_protocol
             && let Some((name, arguments)) =
-                deterministic_tool_call(&request.prompt, request.required_tool_choice.as_ref())
+                protocol_test_tool_call(&request.prompt, request.required_tool_choice.as_ref())
         {
             (
                 serde_json::json!({
@@ -105,7 +105,7 @@ impl ModelBackend for DeterministicBackend {
     }
 }
 
-fn deterministic_tool_call(
+fn protocol_test_tool_call(
     prompt: &str,
     required_choice: Option<&BackendToolChoice>,
 ) -> Option<(String, serde_json::Value)> {
@@ -119,7 +119,7 @@ fn deterministic_tool_call(
     };
     Some((
         tool.function.name.clone(),
-        deterministic_tool_arguments(prompt, tool),
+        protocol_test_tool_arguments(prompt, tool),
     ))
 }
 
@@ -265,7 +265,7 @@ fn is_lexical_stop_word(term: &str) -> bool {
     )
 }
 
-fn deterministic_tool_arguments(prompt: &str, tool: &ToolDefinition) -> serde_json::Value {
+fn protocol_test_tool_arguments(prompt: &str, tool: &ToolDefinition) -> serde_json::Value {
     let user = last_user_message(prompt);
     let mut arguments = serde_json::Map::new();
     for name in required_parameter_names(&tool.function.parameters) {

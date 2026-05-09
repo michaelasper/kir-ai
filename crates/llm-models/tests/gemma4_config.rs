@@ -32,6 +32,46 @@ fn parses_representative_gemma4_dense_text_config() {
 }
 
 #[test]
+fn parses_gemma4_text_only_config_with_model_root_tensors() {
+    let spec = GemmaModelSpec::from_config_json(&gemma4_text_only_config())
+        .expect("Gemma 4 text-only config parses");
+
+    assert_eq!(spec.family, ModelFamily::Gemma);
+    assert_eq!(spec.architecture, "Gemma4TextForCausalLM");
+    assert_eq!(spec.model_type, "gemma4_text");
+    assert_eq!(spec.text_model_type, "gemma4_text");
+    assert_eq!(spec.tensor_root(), "model");
+    assert_eq!(spec.embed_tokens_weight(), "model.embed_tokens.weight");
+    assert_eq!(
+        spec.layer_tensor(0, "layer_scalar"),
+        "model.layers.0.layer_scalar"
+    );
+    assert_eq!(
+        spec.self_attn_tensor(0, "q_proj.weight"),
+        "model.layers.0.self_attn.q_proj.weight"
+    );
+    assert!(spec.uses_per_layer_input());
+}
+
+#[test]
+fn validates_gemma4_text_only_index_with_model_root_tensors() {
+    let spec = GemmaModelSpec::from_config_json(&gemma4_text_only_config())
+        .expect("Gemma 4 text-only config parses");
+    let index = SafetensorsIndex::from_json(
+        &serde_json::json!({
+            "metadata": {"total_size": 1},
+            "weight_map": text_only_gemma4_text_weight_map()
+        })
+        .to_string(),
+    )
+    .expect("index parses");
+
+    index
+        .validate_gemma4_text_weights(&spec)
+        .expect("Gemma 4 text-only tensors validate");
+}
+
+#[test]
 fn validates_gemma4_dense_text_index_without_requiring_multimodal_tensors() {
     let spec = GemmaModelSpec::from_config_json(&dense_gemma4_config_without_ple())
         .expect("representative Gemma 4 dense config parses");
@@ -250,6 +290,59 @@ fn gemma4_config(text_overrides: Value) -> String {
     .to_string()
 }
 
+fn gemma4_text_only_config() -> String {
+    let mut value = serde_json::from_str::<Value>(&gemma4_config(json!({
+        "attention_k_eq_v": false,
+        "enable_moe_block": false,
+        "hidden_size": 1536,
+        "hidden_size_per_layer_input": 256,
+        "intermediate_size": 6144,
+        "layer_types": ["sliding_attention", "full_attention"],
+        "max_position_embeddings": 131072,
+        "num_attention_heads": 8,
+        "num_global_key_value_heads": null,
+        "num_hidden_layers": 2,
+        "num_key_value_heads": 1,
+        "num_kv_shared_layers": 1,
+        "sliding_window": 512,
+        "use_double_wide_mlp": true
+    })))
+    .expect("config json");
+    value
+        .as_object_mut()
+        .expect("config object")
+        .remove("text_config")
+        .expect("text_config exists");
+    value.as_object_mut().expect("config object").extend(
+        serde_json::from_str::<Value>(&gemma4_config(json!({
+            "attention_k_eq_v": false,
+            "enable_moe_block": false,
+            "hidden_size": 1536,
+            "hidden_size_per_layer_input": 256,
+            "intermediate_size": 6144,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "max_position_embeddings": 131072,
+            "num_attention_heads": 8,
+            "num_global_key_value_heads": null,
+            "num_hidden_layers": 2,
+            "num_key_value_heads": 1,
+            "num_kv_shared_layers": 1,
+            "sliding_window": 512,
+            "use_double_wide_mlp": true
+        })))
+        .expect("config json")["text_config"]
+            .as_object()
+            .expect("text config object")
+            .clone(),
+    );
+    value["model_type"] = json!("gemma4_text");
+    value
+        .as_object_mut()
+        .expect("config object")
+        .remove("architectures");
+    value.to_string()
+}
+
 fn dense_gemma4_text_weight_map() -> Value {
     json!({
         "model.embed_vision.embedding_projection.weight": "model.safetensors",
@@ -283,6 +376,32 @@ fn dense_gemma4_text_weight_map() -> Value {
         "model.language_model.layers.1.self_attn.q_norm.weight": "model.safetensors",
         "model.language_model.layers.1.self_attn.q_proj.weight": "model.safetensors"
     })
+}
+
+fn text_only_gemma4_text_weight_map() -> Value {
+    let mut object = dense_gemma4_text_weight_map()
+        .as_object()
+        .expect("weight map object")
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("model.language_model.")
+                .map(|suffix| (format!("model.{suffix}"), value.clone()))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    for tensor in [
+        "model.embed_tokens_per_layer.weight",
+        "model.per_layer_model_projection.weight",
+        "model.per_layer_projection_norm.weight",
+        "model.layers.0.per_layer_input_gate.weight",
+        "model.layers.0.per_layer_projection.weight",
+        "model.layers.0.post_per_layer_input_norm.weight",
+        "model.layers.1.per_layer_input_gate.weight",
+        "model.layers.1.per_layer_projection.weight",
+        "model.layers.1.post_per_layer_input_norm.weight",
+    ] {
+        object.insert(tensor.to_owned(), json!("model.safetensors"));
+    }
+    Value::Object(object)
 }
 
 fn moe_gemma4_text_weight_map() -> Value {

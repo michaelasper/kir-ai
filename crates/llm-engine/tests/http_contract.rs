@@ -11,7 +11,7 @@ use llm_backend::{
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
-    build_router_with_deterministic_test_backend,
+    build_router_with_protocol_test_backend,
 };
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
@@ -790,8 +790,8 @@ async fn protocol_chat_content(messages: Value) -> String {
         .to_owned()
 }
 
-async fn deterministic_protocol_chat_content(messages: Value) -> String {
-    let response = build_router_with_deterministic_test_backend()
+async fn protocol_test_chat_content(messages: Value) -> String {
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

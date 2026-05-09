@@ -8,12 +8,20 @@ pub enum GemmaAttentionKind {
     FullAttention,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GemmaWeightLayout {
+    ConditionalLanguageModel,
+    TextOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GemmaModelSpec {
     pub family: ModelFamily,
     pub architecture: String,
     pub model_type: String,
     pub text_model_type: String,
+    pub weight_layout: GemmaWeightLayout,
     pub hidden_size: u32,
     pub hidden_size_per_layer_input: u32,
     pub rms_norm_eps: f32,
@@ -44,21 +52,66 @@ pub struct GemmaModelSpec {
 
 impl GemmaModelSpec {
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
-        let config: RawGemmaConfig = serde_json::from_str(json)
+        let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
-        let architecture = config
-            .architectures
-            .first()
-            .ok_or_else(|| ModelSpecError::unsupported("gemma config missing architecture"))?
-            .clone();
-        if architecture != "Gemma4ForConditionalGeneration" || config.model_type != "gemma4" {
-            return Err(ModelSpecError::unsupported(
-                "config is not a supported Gemma 4 conditional generation architecture",
-            ));
+        let model_type = value
+            .get("model_type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ModelSpecError::unsupported("gemma config missing model_type"))?;
+        match model_type {
+            "gemma4" => {
+                let config: RawGemmaConfig = serde_json::from_value(value).map_err(|err| {
+                    ModelSpecError::invalid_request(format!("invalid JSON: {err}"))
+                })?;
+                let architecture = config
+                    .architectures
+                    .as_ref()
+                    .and_then(|architectures| architectures.first())
+                    .ok_or_else(|| {
+                        ModelSpecError::unsupported("gemma config missing architecture")
+                    })?
+                    .clone();
+                if architecture != "Gemma4ForConditionalGeneration" {
+                    return Err(ModelSpecError::unsupported(
+                        "config is not a supported Gemma 4 conditional generation architecture",
+                    ));
+                }
+                let text = config.text_config.ok_or_else(|| {
+                    ModelSpecError::unsupported("gemma4 config missing text_config")
+                })?;
+                Self::from_text_config(
+                    architecture,
+                    config.model_type,
+                    GemmaWeightLayout::ConditionalLanguageModel,
+                    config.tie_word_embeddings,
+                    text,
+                )
+            }
+            "gemma4_text" => {
+                let text: RawGemmaTextConfig = serde_json::from_value(value).map_err(|err| {
+                    ModelSpecError::invalid_request(format!("invalid JSON: {err}"))
+                })?;
+                Self::from_text_config(
+                    "Gemma4TextForCausalLM".to_owned(),
+                    "gemma4_text".to_owned(),
+                    GemmaWeightLayout::TextOnly,
+                    None,
+                    text,
+                )
+            }
+            _ => Err(ModelSpecError::unsupported(
+                "config is not a supported Gemma 4 text architecture",
+            )),
         }
-        let text = config
-            .text_config
-            .ok_or_else(|| ModelSpecError::unsupported("gemma4 config missing text_config"))?;
+    }
+
+    fn from_text_config(
+        architecture: String,
+        model_type: String,
+        weight_layout: GemmaWeightLayout,
+        top_level_tie_word_embeddings: Option<bool>,
+        text: RawGemmaTextConfig,
+    ) -> Result<Self, ModelSpecError> {
         if text.model_type != "gemma4_text" {
             return Err(ModelSpecError::unsupported(format!(
                 "unsupported gemma text model_type `{}`",
@@ -100,14 +153,15 @@ impl GemmaModelSpec {
         Ok(Self {
             family: ModelFamily::Gemma,
             architecture,
-            model_type: config.model_type,
+            model_type,
             text_model_type: text.model_type,
+            weight_layout,
             hidden_size: text.hidden_size,
             hidden_size_per_layer_input: text.hidden_size_per_layer_input.unwrap_or(0),
             rms_norm_eps: text.rms_norm_eps,
             tie_word_embeddings: text
                 .tie_word_embeddings
-                .or(config.tie_word_embeddings)
+                .or(top_level_tie_word_embeddings)
                 .unwrap_or(true),
             full_rope_theta: text.rope_parameters.full_attention.rope_theta,
             full_partial_rotary_factor: text
@@ -139,7 +193,10 @@ impl GemmaModelSpec {
     }
 
     pub fn tensor_root(&self) -> &'static str {
-        "model.language_model"
+        match self.weight_layout {
+            GemmaWeightLayout::ConditionalLanguageModel => "model.language_model",
+            GemmaWeightLayout::TextOnly => "model",
+        }
     }
 
     pub fn embed_tokens_weight(&self) -> String {
@@ -292,7 +349,7 @@ fn validate_supported_gemma4_text_options(text: &RawGemmaTextConfig) -> Result<(
 
 #[derive(Debug, Deserialize)]
 struct RawGemmaConfig {
-    architectures: Vec<String>,
+    architectures: Option<Vec<String>>,
     model_type: String,
     text_config: Option<RawGemmaTextConfig>,
     tie_word_embeddings: Option<bool>,

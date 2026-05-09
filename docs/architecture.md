@@ -51,7 +51,7 @@ responses.
 | Crate | Responsibility | Current status |
 | --- | --- | --- |
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
-| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: deterministic protocol mode uses `--deterministic-test-backend`, native Qwen is isolated under the native backend module, and MLX manifests proxy through the MLX backend module. |
+| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend`, native Qwen is isolated under the native backend module, and MLX manifests proxy through the MLX backend module. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
 | `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen ChatML and Gemma 4 text/tool chat templates. DeepSeek template selection is explicit and fails closed until production parity. |
@@ -65,7 +65,7 @@ responses.
 
 ## Protocol Test Backend
 
-The deterministic backend is a protocol test stub, not a chat model and not an
+The protocol test backend is a protocol test stub, not a chat model and not an
 inference path. It lets the HTTP contract mature separately from model execution
 with fast, stable responses for:
 
@@ -91,7 +91,7 @@ model execution explicit.
 Rust callers follow the same rule. `build_router()` fails closed when no backend
 is provided, so callers must migrate to `build_router_with_backend(...)` or
 `build_router_with_backend_and_options(...)` for inference. Protocol-only tests
-can opt into `build_router_with_deterministic_test_backend()`.
+can opt into `build_router_with_protocol_test_backend()`.
 
 ## Fail-Closed Semantics
 

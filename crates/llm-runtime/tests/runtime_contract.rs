@@ -5,7 +5,7 @@ use llm_api::{
 };
 use llm_backend::{
     BackendChatRole, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, DeterministicBackend, ModelBackend, SamplingConfig,
+    BackendStreamChunk, ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn runtime_returns_non_streaming_chat_completion() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello from rust");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello from rust");
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -111,7 +111,7 @@ async fn runtime_forwards_chat_sampling_controls_to_backend() {
 
 #[tokio::test]
 async fn runtime_rejects_chatml_control_tokens_before_prompt_rendering() {
-    let backend = DeterministicBackend::new("local-qwen36", "should not run");
+    let backend = ProtocolTestBackend::new("local-qwen36", "should not run");
     let runtime = Runtime::new(backend);
     let err = runtime
         .chat(ChatCompletionRequest {
@@ -130,7 +130,7 @@ async fn runtime_rejects_chatml_control_tokens_before_prompt_rendering() {
 
 #[tokio::test]
 async fn runtime_returns_text_completion() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello from completion END ignored");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello from completion END ignored");
     let runtime = Runtime::new(backend);
     let response = runtime
         .completion(CompletionRequest {
@@ -185,7 +185,7 @@ async fn runtime_forwards_completion_sampling_controls_to_backend() {
 
 #[tokio::test]
 async fn runtime_returns_streaming_text_completion_chunks() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello from completion END ignored");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello from completion END ignored");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .completion_stream(CompletionRequest {
@@ -362,7 +362,7 @@ async fn runtime_completion_stream_yields_backend_chunks_incrementally() {
 
 #[tokio::test]
 async fn runtime_appends_text_completion_stream_usage_when_requested() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .completion_stream(CompletionRequest {
@@ -385,7 +385,7 @@ async fn runtime_appends_text_completion_stream_usage_when_requested() {
 
 #[tokio::test]
 async fn optional_tools_allow_text_completion() {
-    let backend = DeterministicBackend::new("local-qwen36", "plain text");
+    let backend = ProtocolTestBackend::new("local-qwen36", "plain text");
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -409,7 +409,7 @@ async fn optional_tools_allow_text_completion() {
 #[tokio::test]
 async fn chat_preserves_assistant_text_whitespace() {
     let backend =
-        DeterministicBackend::new("local-qwen36", "  keep leading space\n    indented line\n");
+        ProtocolTestBackend::new("local-qwen36", "  keep leading space\n    indented line\n");
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -578,7 +578,7 @@ async fn runtime_omits_structured_chat_context_when_tools_require_prompt_renderi
 
 #[tokio::test]
 async fn required_tool_choice_rejects_text_fallback() {
-    let backend = DeterministicBackend::new("local-qwen36", "plain text");
+    let backend = ProtocolTestBackend::new("local-qwen36", "plain text");
     let runtime = Runtime::new(backend);
     let err = runtime
         .chat(ChatCompletionRequest {
@@ -599,9 +599,9 @@ async fn required_tool_choice_rejects_text_fallback() {
 }
 
 #[tokio::test]
-async fn deterministic_backend_returns_tool_call_for_required_tool_choice() {
+async fn protocol_test_backend_returns_tool_call_for_required_tool_choice() {
     let backend =
-        DeterministicBackend::new("local-qwen36", "plain text").with_required_tool_protocol();
+        ProtocolTestBackend::new("local-qwen36", "plain text").with_required_tool_protocol();
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -612,7 +612,7 @@ async fn deterministic_backend_returns_tool_call_for_required_tool_choice() {
             ..ChatCompletionRequest::default()
         })
         .await
-        .expect("required tool choice succeeds in deterministic protocol mode");
+        .expect("required tool choice succeeds in protocol test mode");
 
     assert_eq!(
         response.choices[0].finish_reason,
@@ -627,7 +627,7 @@ async fn deterministic_backend_returns_tool_call_for_required_tool_choice() {
 
 #[tokio::test]
 async fn json_object_response_format_accepts_object_content() {
-    let backend = DeterministicBackend::new("local-qwen36", r#"{"answer":"rust"}"#);
+    let backend = ProtocolTestBackend::new("local-qwen36", r#"{"answer":"rust"}"#);
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -646,9 +646,9 @@ async fn json_object_response_format_accepts_object_content() {
 }
 
 #[tokio::test]
-async fn deterministic_backend_returns_json_object_for_json_mode() {
+async fn protocol_test_backend_returns_json_object_for_json_mode() {
     let backend =
-        DeterministicBackend::new("local-qwen36", "plain text").with_json_object_protocol();
+        ProtocolTestBackend::new("local-qwen36", "plain text").with_json_object_protocol();
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -674,7 +674,7 @@ async fn deterministic_backend_returns_json_object_for_json_mode() {
 
 #[tokio::test]
 async fn runtime_truncates_content_at_stop_sequence() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello END trailing");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello END trailing");
     let runtime = Runtime::new(backend);
     let response = runtime
         .chat(ChatCompletionRequest {
@@ -695,7 +695,7 @@ async fn runtime_truncates_content_at_stop_sequence() {
 
 #[tokio::test]
 async fn chat_stop_sequence_suppresses_later_tool_calls() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"content STOP <tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     );
@@ -721,7 +721,7 @@ async fn chat_stop_sequence_suppresses_later_tool_calls() {
 
 #[tokio::test]
 async fn json_object_response_format_rejects_text_content() {
-    let backend = DeterministicBackend::new("local-qwen36", "not json");
+    let backend = ProtocolTestBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);
     let err = runtime
         .chat(ChatCompletionRequest {
@@ -738,7 +738,7 @@ async fn json_object_response_format_rejects_text_content() {
 
 #[tokio::test]
 async fn streaming_json_object_response_format_rejects_text_content() {
-    let backend = DeterministicBackend::new("local-qwen36", "not json");
+    let backend = ProtocolTestBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .chat_stream(ChatCompletionRequest {
@@ -777,7 +777,7 @@ async fn streaming_json_object_response_format_rejects_text_content() {
 
 #[tokio::test]
 async fn parses_generated_tool_calls_into_openai_message() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     );
@@ -805,7 +805,7 @@ async fn parses_generated_tool_calls_into_openai_message() {
 
 #[tokio::test]
 async fn rejects_generated_tool_call_missing_required_schema_argument() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#,
     );
@@ -837,7 +837,7 @@ async fn rejects_generated_tool_call_missing_required_schema_argument() {
 
 #[tokio::test]
 async fn rejects_generated_tool_call_for_undeclared_tool() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
     );
@@ -859,7 +859,7 @@ async fn rejects_generated_tool_call_for_undeclared_tool() {
 
 #[tokio::test]
 async fn rejects_generated_tool_call_that_mismatches_explicit_choice() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     );
@@ -886,7 +886,7 @@ async fn rejects_generated_tool_call_that_mismatches_explicit_choice() {
 
 #[tokio::test]
 async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         concat!(
             r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
@@ -921,7 +921,7 @@ async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
 
 #[tokio::test]
 async fn runtime_returns_text_stream_chunks() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .chat_stream(ChatCompletionRequest {
@@ -946,7 +946,7 @@ async fn runtime_returns_text_stream_chunks() {
 
 #[tokio::test]
 async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"delete_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
     );
@@ -986,7 +986,7 @@ async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
 
 #[tokio::test]
 async fn streaming_required_tool_rejects_text_fallback_without_emitting_content() {
-    let backend = DeterministicBackend::new("local-qwen36", "plain text fallback");
+    let backend = ProtocolTestBackend::new("local-qwen36", "plain text fallback");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .chat_stream(ChatCompletionRequest {
@@ -1034,7 +1034,7 @@ async fn streaming_required_tool_rejects_text_fallback_without_emitting_content(
 
 #[tokio::test]
 async fn streaming_tool_call_rejects_missing_required_schema_argument() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#,
     );
@@ -1089,7 +1089,7 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
 
 #[tokio::test]
 async fn runtime_appends_chat_stream_usage_when_requested() {
-    let backend = DeterministicBackend::new("local-qwen36", "hello");
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
     let stream = runtime
         .chat_stream(ChatCompletionRequest {
@@ -1112,7 +1112,7 @@ async fn runtime_appends_chat_stream_usage_when_requested() {
 
 #[tokio::test]
 async fn runtime_streams_generated_tool_call_delta() {
-    let backend = DeterministicBackend::new(
+    let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     );

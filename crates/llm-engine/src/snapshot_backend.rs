@@ -476,27 +476,24 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backend_factory_reports_gemma_native_execution_gate_after_layout_validation() {
-        let snapshot = temp_snapshot_dir("native-gemma-execution-gate");
+    fn snapshot_backend_factory_opens_gemma_native_snapshot_after_layout_validation() {
+        let snapshot = temp_snapshot_dir("native-gemma-open");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest_with_family(&snapshot, "native-metal", "gemma");
         write_gemma4_native_config(&snapshot);
         write_gemma4_native_index(&snapshot, true);
+        copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-        let err = match open_snapshot_backend(
-            "local-gemma",
-            &snapshot,
-            SnapshotBackendOptions::default(),
-        ) {
-            Ok(_) => panic!("native Gemma execution should remain gated until #109"),
-            Err(err) => err,
-        };
+        let backend =
+            open_snapshot_backend("local-gemma", &snapshot, SnapshotBackendOptions::default())
+                .expect("native Gemma backend opens");
 
-        assert!(
-            err.to_string()
-                .contains("native text execution for family `gemma` is not implemented"),
-            "expected Gemma execution gate error, got {err}"
+        assert_eq!(backend.model_metadata().backend, "native-gemma");
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
+        assert_eq!(
+            backend.model_metadata().loader.as_deref(),
+            Some("native-metal")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }

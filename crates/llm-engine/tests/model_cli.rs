@@ -231,7 +231,7 @@ fn serve_help_prints_without_backend_validation() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("--deterministic-test-backend"),
+        stdout.contains("--protocol-test-backend"),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("--max-new-tokens <n>"), "stdout: {stdout}");
@@ -262,7 +262,7 @@ async fn serve_without_snapshot_requires_explicit_backend() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains("--snapshot"), "stderr: {stderr}");
             assert!(
-                stderr.contains("--deterministic-test-backend"),
+                stderr.contains("--protocol-test-backend"),
                 "stderr: {stderr}"
             );
             return;
@@ -272,7 +272,7 @@ async fn serve_without_snapshot_requires_explicit_backend() {
 
     child.kill().expect("kill hanging serve");
     let _ = child.wait();
-    panic!("serve bound the deterministic backend instead of failing without --snapshot");
+    panic!("serve bound the protocol test backend instead of failing without --snapshot");
 }
 
 #[tokio::test]
@@ -354,7 +354,7 @@ async fn serve_rejects_invalid_hub_endpoint_without_panic() {
             "serve",
             "--addr",
             "127.0.0.1:0",
-            "--deterministic-test-backend",
+            "--protocol-test-backend",
             "--hub-endpoint",
             "not a url",
         ])

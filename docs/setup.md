@@ -19,6 +19,18 @@ rustc --version
 cargo --version
 ```
 
+## Install On macOS With The Script
+
+For a fresh Mac, run the installer script from the repository root:
+
+```sh
+scripts/install-macos.sh
+```
+
+The script installs the pinned Rust toolchain, adds `rustfmt` and `clippy`,
+installs the MLX Python packages used by the MLX backend, builds the workspace,
+and runs focused parser/tokenizer checks.
+
 ## Install Without Mise
 
 If you do not use `mise`, install Rust `1.95.x` with your normal Rust toolchain
@@ -82,11 +94,18 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
+The CI versioning gates can be run directly:
+
+```sh
+scripts/check-versioning.sh
+scripts/check-conventional-commits.sh HEAD~1..HEAD
+```
+
 ## Apple Silicon And Metal
 
-The project targets Apple Silicon first. The current native Qwen path is still
-CPU-oriented, but the workspace includes a Metal smoke crate. The Metal smoke
-test skips itself when no Metal device is available.
+The project targets Apple Silicon first. Native text execution uses shared
+Metal matvec routing with CPU fallback where supported. Metal smoke tests skip
+themselves when no Metal device is available.
 
 For the intended environment, use:
 
@@ -130,10 +149,10 @@ The fastest server path does not require a model:
 ```sh
 cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
-  --deterministic-test-backend
+  --protocol-test-backend
 ```
 
-This starts the deterministic Rust backend explicitly. Use it for HTTP contract
+This starts the protocol test backend explicitly. Use it for HTTP contract
 work, client integration, and API shape checks.
 
 ## Common Setup Problems

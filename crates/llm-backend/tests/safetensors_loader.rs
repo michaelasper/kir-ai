@@ -1,8 +1,8 @@
 use llm_backend::{
-    CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenKvCacheTensor, QwenLayerCache,
-    QwenMatvecBackend, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    TensorLoadError, TopKLogit, native_decode_token_with_cache, native_layer_caches_for_spec,
-    native_prefill_sequence_with_cache, qwen_decode_token_with_cache,
+    CpuQwenMatvecBackend, MathError, NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT,
+    QwenKvCacheTensor, QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,
+    SafeTensorShardStore, TensorLoadError, TopKLogit, native_decode_token_with_cache,
+    native_layer_caches_for_spec, native_prefill_sequence_with_cache, qwen_decode_token_with_cache,
     qwen_decode_token_with_cache_with_matvec, qwen_embedding_and_layer0_norm, qwen_final_norm,
     qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
     qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
@@ -2255,7 +2255,7 @@ struct RecordingMatvecBackend {
     kv_cache_head_row_calls: Cell<usize>,
 }
 
-impl QwenMatvecBackend for RecordingMatvecBackend {
+impl NativeMatvecBackend for RecordingMatvecBackend {
     fn bf16_matvec_row_major_f32(
         &self,
         store: &SafeTensorShardStore,

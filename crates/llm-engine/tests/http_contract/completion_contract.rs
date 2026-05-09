@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn completions_endpoint_returns_openai_text_completion_shape() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -32,7 +32,7 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
 
 #[tokio::test]
 async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -60,7 +60,7 @@ async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
 
 #[tokio::test]
 async fn completions_endpoint_rejects_malformed_json_with_stable_error() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -81,7 +81,7 @@ async fn completions_endpoint_rejects_malformed_json_with_stable_error() {
 
 #[tokio::test]
 async fn streaming_completion_validation_errors_return_json_error() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -158,7 +158,7 @@ async fn invalid_completion_request_validates_before_busy_model_permit() {
 
 #[tokio::test]
 async fn completions_endpoint_streams_openai_sse_chunks() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -198,7 +198,7 @@ async fn completions_endpoint_streams_openai_sse_chunks() {
 
 #[tokio::test]
 async fn completions_endpoint_streams_usage_when_requested() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

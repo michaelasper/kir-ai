@@ -1,6 +1,6 @@
 # How To Run The Server
 
-This guide shows the practical server modes: deterministic protocol mode,
+This guide shows the practical server modes: protocol test mode,
 native Qwen snapshot mode, and the loopback MLX sidecar mode.
 
 ## Run Protocol Mode
@@ -11,18 +11,18 @@ without model artefacts:
 ```sh
 cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
-  --deterministic-test-backend
+  --protocol-test-backend
 ```
 
-With `--deterministic-test-backend` and no `--snapshot`, the server uses a
-deterministic Rust backend. It serves the model alias `local-qwen36` and returns
+With `--protocol-test-backend` and no `--snapshot`, the server uses a
+protocol test backend. It serves the model alias `local-qwen36` and returns
 the fixed text:
 
 ```text
 hello from rust native backend
 ```
 
-Omitting both `--snapshot` and `--deterministic-test-backend` exits with an
+Omitting both `--snapshot` and `--protocol-test-backend` exits with an
 explicit backend requirement.
 
 Confirm the server:
@@ -127,7 +127,7 @@ cargo run -p llm-engine -- serve \
 ```
 
 The MLX endpoint must be loopback. Kir rejects remote MLX endpoints and does
-not fall back to deterministic or native Qwen when an MLX manifest is selected.
+not fall back to protocol-test mode or native Qwen when an MLX manifest is selected.
 This is a bootstrap comparison path; the no-Python production target remains a
 native MLX bridge.
 

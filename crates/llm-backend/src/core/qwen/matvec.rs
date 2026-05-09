@@ -75,7 +75,7 @@ pub fn swiglu_mlp_f32_with_matvec(
     matvec.matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
 }
 
-pub trait QwenMatvecBackend {
+pub trait NativeMatvecBackend {
     fn bf16_matvec_row_major_f32(
         &self,
         store: &SafeTensorShardStore,
@@ -149,6 +149,15 @@ pub trait QwenMatvecBackend {
     }
 
     fn qwen_rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, MathError> {
+        self.rms_norm_one_centered_f32(input, weight, eps)
+    }
+
+    fn rms_norm_one_centered_f32(
         &self,
         input: &[f32],
         weight: &[f32],
@@ -287,10 +296,18 @@ pub enum QwenKvCacheTensor {
     Value,
 }
 
+pub trait QwenMatvecBackend: NativeMatvecBackend {}
+
+impl<T> QwenMatvecBackend for T where T: NativeMatvecBackend + ?Sized {}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CpuNativeMatvecBackend;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CpuQwenMatvecBackend;
 
-impl QwenMatvecBackend for CpuQwenMatvecBackend {}
+impl NativeMatvecBackend for CpuNativeMatvecBackend {}
+impl NativeMatvecBackend for CpuQwenMatvecBackend {}
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,7 @@
 mod core;
 
-pub mod deterministic {
-    pub use super::core::DeterministicBackend;
+pub mod protocol_test {
+    pub use super::core::ProtocolTestBackend;
 }
 
 pub mod traits {

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn streaming_chat_validation_errors_return_json_error() {
-    let response = build_router_with_deterministic_test_backend()
+    let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .method("POST")

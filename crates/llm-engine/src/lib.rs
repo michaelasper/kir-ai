@@ -1,5 +1,7 @@
 mod engine;
 mod mlx;
+mod native_gemma;
+mod native_matvec;
 mod native_qwen;
 mod native_text;
 mod snapshot_backend;
@@ -9,12 +11,13 @@ pub mod route {
     pub use super::engine::{
         EngineOptions, build_router, build_router_with_backend,
         build_router_with_backend_and_concurrency, build_router_with_backend_and_options,
-        build_router_with_deterministic_test_backend,
+        build_router_with_protocol_test_backend,
     };
 }
 
 pub use engine::*;
 pub use mlx::*;
+pub use native_gemma::*;
 pub use native_qwen::*;
 pub use native_text::*;
 pub use snapshot_backend::*;
