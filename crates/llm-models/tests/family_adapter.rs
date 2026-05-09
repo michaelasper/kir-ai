@@ -1,6 +1,6 @@
 use llm_models::{
     BackendKind, DeepSeekFamilyAdapter, GemmaFamilyAdapter, ModelFamily, ModelFamilyAdapter,
-    PromotionStage, QwenFamilyAdapter,
+    NativeTextModelSpec, PromotionStage, QwenFamilyAdapter,
 };
 
 #[test]
@@ -62,6 +62,48 @@ fn qwen_family_declares_mlx_as_required_production_backend() {
     assert_eq!(adapter.tensor_namespace(), "qwen");
     assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
     assert!(adapter.capabilities().backend_execution);
+}
+
+#[test]
+fn native_text_model_spec_routes_qwen_config_through_family_contract() {
+    let spec = NativeTextModelSpec::from_config_json(
+        ModelFamily::Qwen,
+        r#"{
+          "architectures": ["Qwen3ForCausalLM"],
+          "model_type": "qwen3",
+          "hidden_size": 1024,
+          "intermediate_size": 3072,
+          "max_position_embeddings": 40960,
+          "num_attention_heads": 16,
+          "num_hidden_layers": 2,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "rms_norm_eps": 1e-6,
+          "rope_theta": 1000000,
+          "tie_word_embeddings": true,
+          "vocab_size": 151936
+        }"#,
+    )
+    .expect("native Qwen text spec parses");
+
+    assert_eq!(spec.family(), ModelFamily::Qwen);
+    assert_eq!(spec.max_position_embeddings(), 40960);
+    assert_eq!(spec.num_hidden_layers(), 2);
+    assert_eq!(spec.hidden_size(), 1024);
+    assert!(spec.is_qwen3_dense());
+    assert!(spec.as_qwen().is_some());
+}
+
+#[test]
+fn native_text_model_spec_rejects_deferred_families_before_qwen_parity() {
+    let err = NativeTextModelSpec::from_config_json(
+        ModelFamily::Gemma,
+        r#"{"architectures":["GemmaForCausalLM"],"model_type":"gemma"}"#,
+    )
+    .expect_err("deferred native text family fails closed");
+
+    assert_eq!(err.code(), "unsupported_capability");
+    assert!(err.to_string().contains("gemma"));
 }
 
 #[test]

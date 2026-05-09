@@ -1,11 +1,12 @@
-use llm_backend::qwen_final_norm_for_spec;
 use llm_backend::{
     CpuQwenMatvecBackend, MathError, QWEN_FINAL_NORM_WEIGHT, QwenKvCacheTensor, QwenLayerCache,
     QwenMatvecBackend, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    TensorLoadError, TopKLogit, qwen_decode_token_with_cache,
+    TensorLoadError, TopKLogit, native_decode_token_with_cache, native_layer_caches_for_spec,
+    native_prefill_sequence_with_cache, qwen_decode_token_with_cache,
     qwen_decode_token_with_cache_with_matvec, qwen_embedding_and_layer0_norm, qwen_final_norm,
-    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_layer_full_attention_first_token,
-    qwen_layer_full_attention_sequence, qwen_layer_full_attention_sequence_with_cache,
+    qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
+    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
+    qwen_layer_full_attention_sequence_with_cache,
     qwen_layer_full_attention_sequence_with_cache_with_matvec,
     qwen_layer_full_attention_step_with_cache,
     qwen_layer_full_attention_step_with_cache_with_matvec, qwen_layer_linear_attention_first_token,
@@ -22,7 +23,7 @@ use llm_backend::{
 };
 use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
-use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
+use llm_models::{AttentionKind, ModelFamily, NativeTextModelSpec, QwenModelSpec};
 use std::cell::Cell;
 
 #[test]
@@ -1987,6 +1988,36 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
     }
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
+    let root = temp_snapshot_dir("native-text-dispatch-qwen");
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let qwen_spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let native_spec = NativeTextModelSpec::Qwen(qwen_spec.clone());
+
+    let mut direct_caches = qwen_layer_caches_for_spec(&qwen_spec, 3).expect("direct caches");
+    let direct_prefill =
+        qwen_prefill_sequence_with_cache(&store, &qwen_spec, &[0, 1], &mut direct_caches)
+            .expect("direct prefill");
+    let direct_decode = qwen_decode_token_with_cache(&store, &qwen_spec, 0, &mut direct_caches)
+        .expect("direct decode");
+
+    let mut native_caches =
+        native_layer_caches_for_spec(&native_spec, 3).expect("native text caches");
+    let native_prefill =
+        native_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
+            .expect("native text prefill");
+    let native_decode = native_decode_token_with_cache(&store, &native_spec, 0, &mut native_caches)
+        .expect("native text decode");
+
+    assert_eq!(native_prefill.len(), direct_prefill.len());
+    assert_close(&native_prefill[0], &direct_prefill[0], 1e-5);
+    assert_close(&native_prefill[1], &direct_prefill[1], 1e-5);
+    assert_close(&native_decode, &direct_decode, 1e-5);
     std::fs::remove_dir_all(root).ok();
 }
 

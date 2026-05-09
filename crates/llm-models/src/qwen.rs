@@ -469,14 +469,14 @@ impl ModelSpecError {
         self.code
     }
 
-    fn unsupported(message: impl Into<String>) -> Self {
+    pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self {
             code: "unsupported_capability",
             message: message.into(),
         }
     }
 
-    fn invalid_request(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_request(message: impl Into<String>) -> Self {
         Self {
             code: "invalid_request",
             message: message.into(),

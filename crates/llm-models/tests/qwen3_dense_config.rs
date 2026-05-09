@@ -1,4 +1,4 @@
-use llm_models::{AttentionKind, QwenModelSpec, SafetensorsIndex};
+use llm_models::{AttentionKind, NativeTextModelSpec, QwenModelSpec, SafetensorsIndex};
 
 #[test]
 fn parses_official_qwen3_dense_config_as_full_attention_swiglu() {
@@ -77,6 +77,9 @@ fn qwen3_dense_index_accepts_model_namespace_and_tied_embeddings() {
     index
         .validate_qwen_text_weights(&spec)
         .expect("Qwen3 dense tied embedding weights validate without lm_head");
+    NativeTextModelSpec::Qwen(spec)
+        .validate_text_weights(&index)
+        .expect("generic native text validation routes to Qwen weights");
 }
 
 #[test]

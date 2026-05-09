@@ -7,12 +7,12 @@ use llm_backend::{
     BackendStreamChunk, CpuQwenMatvecBackend, LayerKvCache, LinearAttentionCache, MathError,
     ModelBackend, QwenKvCacheTensor, QwenLayerCache, QwenMatvecBackend, SafeTensorShardStore,
     SamplingConfig, TensorLoadError, TopKLogit, TopKWeight,
-    qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
-    qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
-    qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
+    native_decode_token_with_cache_with_matvec, native_final_norm_for_spec_with_matvec,
+    native_layer_caches_for_spec, native_lm_head_logits_for_spec_with_matvec,
+    native_lm_head_top_k_for_spec_with_matvec, native_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::SnapshotManifest;
-use llm_models::QwenModelSpec;
+use llm_models::{ModelFamily, NativeTextModelSpec};
 use llm_sampler::TopPSampler;
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::{Value, json};
@@ -34,7 +34,7 @@ pub struct NativeQwenBackend {
     model_id: String,
     metadata: BackendModelMetadata,
     tokenizer: HuggingFaceTokenizer,
-    spec: QwenModelSpec,
+    spec: NativeTextModelSpec,
     store: SafeTensorShardStore,
     matvec: NativeQwenMatvecBackend,
     max_new_tokens: u32,
@@ -2074,7 +2074,7 @@ impl NativeQwenBackend {
             model_id,
             metadata,
             tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
-            spec: QwenModelSpec::from_config_json(&config_json)?,
+            spec: NativeTextModelSpec::from_config_json(ModelFamily::Qwen, &config_json)?,
             store,
             matvec,
             max_new_tokens: DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
@@ -2304,10 +2304,10 @@ impl NativeQwenBackend {
             context_tokens.len(),
             max_new_tokens,
             self.max_prefill_tokens,
-            self.spec.max_position_embeddings,
+            self.spec.max_position_embeddings(),
         )?;
         let namespace = native_qwen_prefix_namespace(self, request, cache_tokens);
-        let layer_count = self.spec.num_hidden_layers as usize;
+        let layer_count = self.spec.num_hidden_layers() as usize;
         let mut cached_prefix_len = 0_usize;
         let (mut hidden, mut caches) =
             if let Some(hit) = self.prefix_cache.lookup(&namespace, context_tokens) {
@@ -2322,7 +2322,7 @@ impl NativeQwenBackend {
             } else {
                 (
                     None,
-                    qwen_layer_caches_for_spec(&self.spec, cache_tokens)
+                    native_layer_caches_for_spec(&self.spec, cache_tokens)
                         .map_err(|err| BackendError::Other(err.to_string()))?,
                 )
             };
@@ -2361,10 +2361,10 @@ impl NativeQwenBackend {
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
         let final_norm =
-            qwen_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
+            native_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
-            let logits = qwen_lm_head_logits_for_spec_with_matvec(
+            let logits = native_lm_head_logits_for_spec_with_matvec(
                 &self.store,
                 &self.spec,
                 &final_norm,
@@ -2382,7 +2382,7 @@ impl NativeQwenBackend {
             });
         }
 
-        let top_logits = qwen_lm_head_top_k_for_spec_with_matvec(
+        let top_logits = native_lm_head_top_k_for_spec_with_matvec(
             &self.store,
             &self.spec,
             &final_norm,
@@ -2406,7 +2406,7 @@ impl NativeQwenBackend {
 
 fn native_qwen_prefill_context_with_cache(
     store: &SafeTensorShardStore,
-    spec: &QwenModelSpec,
+    spec: &NativeTextModelSpec,
     context_tokens: &[usize],
     caches: &mut [QwenLayerCache],
     matvec: &impl QwenMatvecBackend,
@@ -2422,7 +2422,7 @@ fn native_qwen_prefill_context_with_cache(
             return Err(BackendError::Cancelled);
         }
         let hidden_states =
-            qwen_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
+            native_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
@@ -2493,11 +2493,11 @@ impl NativeQwenDecodeSession {
     fn step(
         &mut self,
         store: &SafeTensorShardStore,
-        spec: &QwenModelSpec,
+        spec: &NativeTextModelSpec,
         matvec: &impl QwenMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        self.hidden = qwen_decode_token_with_cache_with_matvec(
+        self.hidden = native_decode_token_with_cache_with_matvec(
             store,
             spec,
             token_id,
@@ -2850,6 +2850,8 @@ pub(crate) fn native_qwen_prefix_cache_metrics_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_backend::qwen_layer_caches_for_spec;
+    use llm_models::QwenModelSpec;
     use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 
     #[test]
@@ -3366,7 +3368,9 @@ mod tests {
             metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
             tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
                 .expect("tokenizer loads"),
-            spec: tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
+            spec: NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
+                llm_models::AttentionKind::LinearAttention,
+            )),
             store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
             matvec: NativeQwenMatvecBackend::Cpu,
             max_new_tokens: 8,
@@ -3406,7 +3410,9 @@ mod tests {
             metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
             tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
                 .expect("tokenizer loads"),
-            spec: tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
+            spec: NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
+                llm_models::AttentionKind::LinearAttention,
+            )),
             store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
             matvec: NativeQwenMatvecBackend::Cpu,
             max_new_tokens: 8,
@@ -3437,13 +3443,13 @@ mod tests {
             QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
         }
 
-        let mut expected_caches = qwen_layer_caches_for_spec(
+        let mut expected_caches = native_layer_caches_for_spec(
             &backend.spec,
             native_qwen_cache_token_capacity(
                 3,
                 8,
                 backend.max_prefill_tokens,
-                backend.spec.max_position_embeddings,
+                backend.spec.max_position_embeddings(),
             )
             .expect("expected cache capacity"),
         )
@@ -3477,12 +3483,13 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_tiny_linear_decoder_snapshot(&snapshot);
         let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
+        let native_spec = NativeTextModelSpec::Qwen(spec.clone());
         let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
         let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
 
         let hidden = native_qwen_prefill_context_with_cache(
             &store,
-            &spec,
+            &native_spec,
             &[0, 1, 0],
             &mut caches,
             &NativeQwenMatvecBackend::Cpu,
@@ -3506,6 +3513,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_tiny_linear_decoder_snapshot(&snapshot);
         let spec = tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention);
+        let native_spec = NativeTextModelSpec::Qwen(spec.clone());
         let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
         let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
         let cancellation = CancellationToken::new();
@@ -3516,7 +3524,7 @@ mod tests {
 
         let err = native_qwen_prefill_context_with_cache(
             &store,
-            &spec,
+            &native_spec,
             &[0, 1, 0],
             &mut caches,
             &matvec,
@@ -3826,7 +3834,7 @@ mod tests {
             metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
             tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
                 .expect("tokenizer loads"),
-            spec: QwenModelSpec {
+            spec: NativeTextModelSpec::Qwen(QwenModelSpec {
                 family: llm_models::ModelFamily::Qwen,
                 architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
                 model_type: "qwen3_5_moe".to_owned(),
@@ -3852,7 +3860,7 @@ mod tests {
                 max_position_embeddings: 1,
                 vocab_size: 221,
                 layer_kinds: Vec::new(),
-            },
+            }),
             store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
             matvec: NativeQwenMatvecBackend::Cpu,
             max_new_tokens: 1,
