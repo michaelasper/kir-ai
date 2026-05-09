@@ -3,8 +3,11 @@ use super::super::math::{
     sigmoid_f32, silu_f32, softplus_f32,
 };
 use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeKvCacheTensor,
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeFullAttentionDims,
+    NativeFullAttentionSequenceParts, NativeFullAttentionStepParts, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError, native_full_attention_sequence_from_parts_with_matvec,
+    native_full_attention_sequence_with_cache_from_parts_with_matvec,
+    native_full_attention_step_with_cache_from_parts_with_matvec,
 };
 use super::matvec::{
     l2_normalize_f32_with_matvec, l2_normalize_f32_with_matvec_and_weight_scratch,
@@ -177,6 +180,15 @@ impl QwenFullAttentionDims {
             num_attention_heads: spec.num_attention_heads as usize,
             num_key_value_heads: spec.num_key_value_heads as usize,
             head_dim: spec.head_dim as usize,
+        }
+    }
+
+    fn native(self) -> NativeFullAttentionDims {
+        NativeFullAttentionDims {
+            hidden_size: self.hidden_size,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: self.num_key_value_heads,
+            head_dim: self.head_dim,
         }
     }
 
@@ -1277,56 +1289,17 @@ pub fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
             config.rope_theta,
         );
     }
-    cache
-        .append_sliding(&key, parts.v_proj)
-        .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
-
-    let groups = dims.num_attention_heads / dims.num_key_value_heads;
-    let scale = (dims.head_dim as f32).sqrt().recip();
-    let mut attended = vec![0.0; attention_dim];
-    for head in 0..dims.num_attention_heads {
-        let kv_head = head / groups;
-        let q_start = head * dims.head_dim;
-        let kv_start = kv_head * dims.head_dim;
-        let token_count = cache.token_count();
-        let key_rows = matvec.select_kv_cache_head_rows_f32(
-            cache,
-            NativeKvCacheTensor::Key,
-            token_count,
-            kv_start,
-            dims.head_dim,
-        )?;
-        let scores = scaled_full_attention_scores_with_matvec(
-            &query[q_start..q_start + dims.head_dim],
-            &key_rows,
-            token_count,
-            scale,
-            matvec,
-        )?;
-        let weights = matvec.softmax_f32(&scores)?;
-        let value_rows = matvec.select_kv_cache_head_rows_f32(
-            cache,
-            NativeKvCacheTensor::Value,
-            token_count,
-            kv_start,
-            dims.head_dim,
-        )?;
-        let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
-        for offset in 0..dims.head_dim {
-            let gate = if config.q_projection_gate {
-                sigmoid_f32(gate[q_start + offset])
-            } else {
-                1.0
-            };
-            attended[q_start + offset] = mixed[offset] * gate;
-        }
-    }
-
-    matvec.matvec_row_major_f32(
-        &attended,
-        parts.o_proj_weight,
-        dims.hidden_size,
-        attention_dim,
+    native_full_attention_step_with_cache_from_parts_with_matvec(
+        dims.native(),
+        &NativeFullAttentionStepParts {
+            query: &query,
+            key: &key,
+            value: parts.v_proj,
+            gate: config.q_projection_gate.then_some(gate.as_slice()),
+            output_projection: parts.o_proj_weight,
+        },
+        cache,
+        matvec,
     )
 }
 
@@ -1334,7 +1307,7 @@ fn qwen_full_attention_sequence_from_parts_impl(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
-    mut cache: Option<&mut LayerKvCache>,
+    cache: Option<&mut LayerKvCache>,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, MathError> {
     let q_proj = parts.q_proj;
@@ -1453,95 +1426,23 @@ fn qwen_full_attention_sequence_from_parts_impl(
             );
         }
     }
-    let groups = dims.num_attention_heads / dims.num_key_value_heads;
-    let scale = (dims.head_dim as f32).sqrt().recip();
-    let mut outputs = Vec::with_capacity(seq_len);
-    for token_idx in 0..seq_len {
-        if let Some(cache) = cache.as_deref_mut() {
-            cache
-                .append_sliding(&keys[token_idx], &v_proj[token_idx])
-                .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
-        }
-        let source_count = cache
-            .as_deref()
-            .map_or(token_idx + 1, LayerKvCache::token_count);
-        let mut attended = vec![0.0; attention_dim];
-        for head in 0..dims.num_attention_heads {
-            let kv_head = head / groups;
-            let q_start = head * dims.head_dim;
-            let kv_start = kv_head * dims.head_dim;
-            let key_rows = if let Some(cache) = cache.as_deref() {
-                matvec.select_kv_cache_head_rows_f32(
-                    cache,
-                    NativeKvCacheTensor::Key,
-                    source_count,
-                    kv_start,
-                    dims.head_dim,
-                )?
-            } else {
-                let mut key_rows = Vec::with_capacity(source_count * dims.head_dim);
-                for local_key in keys.iter().take(source_count) {
-                    key_rows.extend_from_slice(&local_key[kv_start..kv_start + dims.head_dim]);
-                }
-                key_rows
-            };
-            let scores = scaled_full_attention_scores_with_matvec(
-                &queries[token_idx][q_start..q_start + dims.head_dim],
-                &key_rows,
-                source_count,
-                scale,
-                matvec,
-            )?;
-            let weights = matvec.softmax_f32(&scores)?;
-            let value_rows = if let Some(cache) = cache.as_deref() {
-                matvec.select_kv_cache_head_rows_f32(
-                    cache,
-                    NativeKvCacheTensor::Value,
-                    source_count,
-                    kv_start,
-                    dims.head_dim,
-                )?
-            } else {
-                let mut value_rows = Vec::with_capacity(source_count * dims.head_dim);
-                for local_value in v_proj.iter().take(source_count) {
-                    value_rows.extend_from_slice(&local_value[kv_start..kv_start + dims.head_dim]);
-                }
-                value_rows
-            };
-            let mixed = matvec.weighted_sum_f32(&value_rows, &weights, dims.head_dim)?;
-            for offset in 0..dims.head_dim {
-                let gate = if config.q_projection_gate {
-                    sigmoid_f32(gates[token_idx][q_start + offset])
-                } else {
-                    1.0
-                };
-                attended[q_start + offset] = mixed[offset] * gate;
-            }
-        }
-        outputs.push(matvec.matvec_row_major_f32(
-            &attended,
-            parts.o_proj_weight,
-            dims.hidden_size,
-            attention_dim,
-        )?);
+    let generic_parts = NativeFullAttentionSequenceParts {
+        queries: &queries,
+        keys: &keys,
+        values: v_proj,
+        gates: config.q_projection_gate.then_some(gates.as_slice()),
+        output_projection: parts.o_proj_weight,
+    };
+    if let Some(cache) = cache {
+        native_full_attention_sequence_with_cache_from_parts_with_matvec(
+            dims.native(),
+            &generic_parts,
+            cache,
+            matvec,
+        )
+    } else {
+        native_full_attention_sequence_from_parts_with_matvec(dims.native(), &generic_parts, matvec)
     }
-
-    Ok(outputs)
-}
-
-fn scaled_full_attention_scores_with_matvec(
-    query_head: &[f32],
-    key_rows: &[f32],
-    row_count: usize,
-    scale: f32,
-    matvec: &impl NativeMatvecBackend,
-) -> Result<Vec<f32>, MathError> {
-    let mut scores =
-        matvec.matvec_row_major_f32(query_head, key_rows, row_count, query_head.len())?;
-    for score in &mut scores {
-        *score *= scale;
-    }
-    Ok(scores)
 }
 
 pub fn qwen_layer0_linear_attention_first_token(
