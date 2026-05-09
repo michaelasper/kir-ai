@@ -3,27 +3,17 @@ use axum::{
     Json, Router,
     extract::{State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::{
-        IntoResponse, Response,
-        sse::{Event, KeepAlive, Sse},
-    },
+    response::{IntoResponse, Response, sse::Sse},
     routing::{get, post},
 };
-use futures::{Stream, StreamExt};
-use llm_api::{
-    ApiError, ChatCompletionRequest, ChatCompletionStreamResponse, CompletionRequest,
-    CompletionStreamResponse, Usage, ValidateRequest,
-};
+use futures::StreamExt;
+use llm_api::{ApiError, ChatCompletionRequest, CompletionRequest, Usage, ValidateRequest};
 use llm_backend::{BackendError, DeterministicBackend, ModelBackend};
 use llm_hub::{HubClient, HubError};
-use llm_runtime::{
-    ChatCompletionStreamEvent, CompletionStreamEvent, Runtime, RuntimeError,
-    chat_stream_requires_buffering,
-};
+use llm_runtime::{Runtime, RuntimeError, chat_stream_requires_buffering};
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use serde_json::json;
 use std::{
-    convert::Infallible,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -32,6 +22,7 @@ use std::{
 mod admin;
 mod requests;
 mod scheduler;
+mod streaming;
 use admin::{
     ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_model, admin_model_plan,
     admin_model_pull, admin_model_verify, admin_models, health, models,
@@ -284,254 +275,48 @@ async fn chat_completions(
                     ));
                 }
             };
-            let events = async_stream::stream! {
-                let mut scheduler_slot = scheduler_slot;
-                let _active_request = active_request;
-                let mut phase = phase;
-                let mut events = response.into_events();
-                let mut ttft_recorded = false;
-                loop {
-                    match next_stream_event(
-                        &mut events,
-                        state.stream_stall_timeout,
-                        &_active_request.cancellation,
-                    )
-                    .await
-                    {
-                        Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
-                            if _active_request.cancellation.is_cancelled() {
-                                for event in mark_active_request_finished_for_stream_cancellation(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                    "request was cancelled before stream chunk delivery",
-                                    "decode",
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
-                                phase.transition_to_decode();
-                                scheduler_slot.transition_to_decode();
-                                record_time_to_first_token_metrics(&state, request_started.elapsed());
-                                ttft_recorded = true;
-                            }
-                            yield sse_json_event(chunk);
-                        }
-                        Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                            if let Err(events) =
-                                mark_active_request_finished_for_stream_success(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                )
-                            {
-                                for event in events {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            record_success_metrics(&state, &usage, streamed, request_started.elapsed());
-                            yield Ok(Event::default().data("[DONE]"));
-                        }
-                        Ok(Some(Err(err))) => {
-                            for event in mark_active_request_finished_for_stream_error(
-                                &state,
-                                &_active_request,
-                                &mut scheduler_slot,
-                                err,
-                            ) {
-                                yield event;
-                            }
-                            return;
-                        }
-                        Ok(None) => {
-                            match _active_request.mark_finished() {
-                                RequestFinishResult::Finished => break,
-                                RequestFinishResult::Cancelled => {
-                                    scheduler_slot.mark_cancelled();
-                                    record_failure_metrics(&state);
-                                    for event in request_cancelled_stream_events(
-                                        "request was cancelled before stream completion",
-                                        "decode",
-                                    ) {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                                RequestFinishResult::Missing => {
-                                    scheduler_slot.mark_failed();
-                                    record_failure_metrics(&state);
-                                    for event in runtime_error_stream_events(RuntimeError::Backend(
-                                        BackendError::Other(
-                                            "request lifecycle was missing before stream completion"
-                                                .to_owned(),
-                                        ),
-                                    )) {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-                        Err(StreamWaitError::Stalled) => {
-                            for event in mark_active_request_finished_for_stream_stall(
-                                &state,
-                                &_active_request,
-                                &mut scheduler_slot,
-                            ) {
-                                yield event;
-                            }
-                            return;
-                        }
-                        Err(StreamWaitError::Cancelled) => {
-                            for event in mark_active_request_finished_for_stream_cancellation(
-                                &state,
-                                &_active_request,
-                                &mut scheduler_slot,
-                                "request was cancelled while waiting for stream output",
-                                "decode",
-                            ) {
-                                yield event;
-                            }
-                            return;
-                        }
-                    }
-                }
-            };
+            let events = streaming::stream_runtime_events(
+                state.clone(),
+                active_request,
+                scheduler_slot,
+                phase,
+                response.into_events(),
+                request_started,
+                streamed,
+            );
             let mut response = Sse::new(events)
-                .keep_alive(engine_sse_keep_alive())
+                .keep_alive(streaming::engine_sse_keep_alive())
                 .into_response();
             insert_request_id_header(&mut response, &request_id);
             return Ok(response);
         }
         let events = async_stream::stream! {
             let mut scheduler_slot = scheduler_slot;
-            let _active_request = active_request;
-            let mut phase = phase;
+            let active_request = active_request;
             match state
                 .runtime
-                .chat_stream_with_cancel(request, _active_request.cancellation.clone())
+                .chat_stream_with_cancel(request, active_request.cancellation.clone())
                 .await
             {
                 Ok(response) => {
-                    let mut events = response.into_events();
-                    let mut ttft_recorded = false;
-                    loop {
-                        match next_stream_event(
-                            &mut events,
-                            state.stream_stall_timeout,
-                            &_active_request.cancellation,
-                        )
-                        .await
-                        {
-                            Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
-                                if _active_request.cancellation.is_cancelled() {
-                                    for event in mark_active_request_finished_for_stream_cancellation(
-                                        &state,
-                                        &_active_request,
-                                        &mut scheduler_slot,
-                                        "request was cancelled before stream chunk delivery",
-                                        "decode",
-                                    ) {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                                if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
-                                    phase.transition_to_decode();
-                                    scheduler_slot.transition_to_decode();
-                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
-                                    ttft_recorded = true;
-                                }
-                                yield sse_json_event(chunk);
-                            }
-                            Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
-                                if let Err(events) =
-                                    mark_active_request_finished_for_stream_success(
-                                        &state,
-                                        &_active_request,
-                                        &mut scheduler_slot,
-                                    )
-                                {
-                                    for event in events {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
-                                yield Ok(Event::default().data("[DONE]"));
-                            }
-                            Ok(Some(Err(err))) => {
-                                for event in mark_active_request_finished_for_stream_error(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                    err,
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            Ok(None) => {
-                                match _active_request.mark_finished() {
-                                    RequestFinishResult::Finished => break,
-                                    RequestFinishResult::Cancelled => {
-                                        scheduler_slot.mark_cancelled();
-                                        record_failure_metrics(&state);
-                                        for event in request_cancelled_stream_events(
-                                            "request was cancelled before stream completion",
-                                            "decode",
-                                        ) {
-                                            yield event;
-                                        }
-                                        return;
-                                    }
-                                    RequestFinishResult::Missing => {
-                                        scheduler_slot.mark_failed();
-                                        record_failure_metrics(&state);
-                                        for event in runtime_error_stream_events(RuntimeError::Backend(
-                                            BackendError::Other(
-                                                "request lifecycle was missing before stream completion"
-                                                    .to_owned(),
-                                            ),
-                                        )) {
-                                            yield event;
-                                        }
-                                        return;
-                                    }
-                                }
-                            }
-                            Err(StreamWaitError::Stalled) => {
-                                for event in mark_active_request_finished_for_stream_stall(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            Err(StreamWaitError::Cancelled) => {
-                                for event in mark_active_request_finished_for_stream_cancellation(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                    "request was cancelled while waiting for stream output",
-                                    "decode",
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                        }
+                    let events = streaming::stream_runtime_events(
+                        state.clone(),
+                        active_request,
+                        scheduler_slot,
+                        phase,
+                        response.into_events(),
+                        request_started,
+                        streamed,
+                    );
+                    tokio::pin!(events);
+                    while let Some(event) = events.next().await {
+                        yield event;
                     }
                 }
                 Err(err) => {
-                    for event in mark_active_request_finished_for_stream_error(
+                    for event in streaming::stream_runtime_error_events(
                         &state,
-                        &_active_request,
+                        &active_request,
                         &mut scheduler_slot,
                         err,
                     ) {
@@ -541,7 +326,7 @@ async fn chat_completions(
             }
         };
         let mut response = Sse::new(events)
-            .keep_alive(engine_sse_keep_alive())
+            .keep_alive(streaming::engine_sse_keep_alive())
             .into_response();
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
@@ -605,130 +390,31 @@ async fn completions(
         let request_id = active_request.id.clone();
         let events = async_stream::stream! {
             let mut scheduler_slot = scheduler_slot;
-            let _active_request = active_request;
-            let mut phase = phase;
+            let active_request = active_request;
             match state
                 .runtime
-                .completion_stream_with_cancel(request, _active_request.cancellation.clone())
+                .completion_stream_with_cancel(request, active_request.cancellation.clone())
                 .await
             {
                 Ok(response) => {
-                    let mut events = response.into_events();
-                    let mut ttft_recorded = false;
-                    loop {
-                        match next_stream_event(
-                            &mut events,
-                            state.stream_stall_timeout,
-                            &_active_request.cancellation,
-                        )
-                        .await
-                        {
-                            Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
-                                if _active_request.cancellation.is_cancelled() {
-                                    for event in mark_active_request_finished_for_stream_cancellation(
-                                        &state,
-                                        &_active_request,
-                                        &mut scheduler_slot,
-                                        "request was cancelled before stream chunk delivery",
-                                        "decode",
-                                    ) {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                                if !ttft_recorded && completion_chunk_has_real_delta(&chunk) {
-                                    phase.transition_to_decode();
-                                    scheduler_slot.transition_to_decode();
-                                    record_time_to_first_token_metrics(&state, request_started.elapsed());
-                                    ttft_recorded = true;
-                                }
-                                yield sse_json_event(chunk);
-                            }
-                            Ok(Some(Ok(CompletionStreamEvent::Complete(usage)))) => {
-                                if let Err(events) =
-                                    mark_active_request_finished_for_stream_success(
-                                        &state,
-                                        &_active_request,
-                                        &mut scheduler_slot,
-                                    )
-                                {
-                                    for event in events {
-                                        yield event;
-                                    }
-                                    return;
-                                }
-                                record_success_metrics(&state, &usage, streamed, request_started.elapsed());
-                                yield Ok(Event::default().data("[DONE]"));
-                            }
-                            Ok(Some(Err(err))) => {
-                                for event in mark_active_request_finished_for_stream_error(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                    err,
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            Ok(None) => {
-                                match _active_request.mark_finished() {
-                                    RequestFinishResult::Finished => break,
-                                    RequestFinishResult::Cancelled => {
-                                        scheduler_slot.mark_cancelled();
-                                        record_failure_metrics(&state);
-                                        for event in request_cancelled_stream_events(
-                                            "request was cancelled before stream completion",
-                                            "decode",
-                                        ) {
-                                            yield event;
-                                        }
-                                        return;
-                                    }
-                                    RequestFinishResult::Missing => {
-                                        scheduler_slot.mark_failed();
-                                        record_failure_metrics(&state);
-                                        for event in runtime_error_stream_events(RuntimeError::Backend(
-                                            BackendError::Other(
-                                                "request lifecycle was missing before stream completion"
-                                                    .to_owned(),
-                                            ),
-                                        )) {
-                                            yield event;
-                                        }
-                                        return;
-                                    }
-                                }
-                            }
-                            Err(StreamWaitError::Stalled) => {
-                                for event in mark_active_request_finished_for_stream_stall(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                            Err(StreamWaitError::Cancelled) => {
-                                for event in mark_active_request_finished_for_stream_cancellation(
-                                    &state,
-                                    &_active_request,
-                                    &mut scheduler_slot,
-                                    "request was cancelled while waiting for stream output",
-                                    "decode",
-                                ) {
-                                    yield event;
-                                }
-                                return;
-                            }
-                        }
+                    let events = streaming::stream_runtime_events(
+                        state.clone(),
+                        active_request,
+                        scheduler_slot,
+                        phase,
+                        response.into_events(),
+                        request_started,
+                        streamed,
+                    );
+                    tokio::pin!(events);
+                    while let Some(event) = events.next().await {
+                        yield event;
                     }
                 }
                 Err(err) => {
-                    for event in mark_active_request_finished_for_stream_error(
+                    for event in streaming::stream_runtime_error_events(
                         &state,
-                        &_active_request,
+                        &active_request,
                         &mut scheduler_slot,
                         err,
                     ) {
@@ -738,7 +424,7 @@ async fn completions(
             }
         };
         let mut response = Sse::new(events)
-            .keep_alive(engine_sse_keep_alive())
+            .keep_alive(streaming::engine_sse_keep_alive())
             .into_response();
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
@@ -778,49 +464,15 @@ async fn completions(
     Ok(response)
 }
 
-fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
-    let metadata = runtime_error_metadata(&err);
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": err.to_string(),
-                "code": metadata.code,
-                "phase": metadata.phase,
-                "retryable": metadata.retryable,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
-}
-
-fn request_cancelled_stream_events(
-    message: &'static str,
-    phase: &'static str,
-) -> Vec<Result<Event, Infallible>> {
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": message,
-                "code": "cancelled",
-                "phase": phase,
-                "retryable": false,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
-}
-
 #[derive(Debug, Clone, Copy)]
-struct RuntimeErrorMetadata {
-    status: StatusCode,
-    code: &'static str,
-    phase: &'static str,
-    retryable: bool,
+pub(super) struct RuntimeErrorMetadata {
+    pub(super) status: StatusCode,
+    pub(super) code: &'static str,
+    pub(super) phase: &'static str,
+    pub(super) retryable: bool,
 }
 
-fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
+pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
     let (status, code, phase, retryable) = match err {
         RuntimeError::Api(api) => (
             StatusCode::BAD_REQUEST,
@@ -886,100 +538,6 @@ fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
         phase,
         retryable,
     }
-}
-
-fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, Infallible>> {
-    let message = match timeout {
-        Some(timeout) => format!(
-            "stream stalled for {} ms without backend output",
-            timeout.as_millis()
-        ),
-        None => "stream stalled without backend output".to_owned(),
-    };
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": message,
-                "code": "stream_stalled",
-                "phase": "streaming",
-                "retryable": true,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamWaitError {
-    Stalled,
-    Cancelled,
-}
-
-async fn next_stream_event<S, T>(
-    events: &mut S,
-    timeout: Option<Duration>,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<Option<Result<T, RuntimeError>>, StreamWaitError>
-where
-    S: Stream<Item = Result<T, RuntimeError>> + Unpin,
-{
-    if cancellation.is_cancelled() {
-        return Err(StreamWaitError::Cancelled);
-    }
-    let next = events.next();
-    tokio::pin!(next);
-    match timeout {
-        Some(timeout) => {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => Err(StreamWaitError::Cancelled),
-                result = &mut next => Ok(result),
-                () = tokio::time::sleep(timeout) => Err(StreamWaitError::Stalled),
-            }
-        }
-        None => {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => Err(StreamWaitError::Cancelled),
-                result = &mut next => Ok(result),
-            }
-        }
-    }
-}
-
-fn engine_sse_keep_alive() -> KeepAlive {
-    KeepAlive::new()
-        .interval(Duration::from_millis(100))
-        .text("llm-engine-heartbeat")
-}
-
-fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
-    let data = serde_json::to_string(&value).unwrap_or_else(|err| {
-        json!({
-            "error": {
-                "message": format!("response serialization failed: {err}"),
-                "type": "llm_engine_error"
-            }
-        })
-        .to_string()
-    });
-    Ok(Event::default().data(data))
-}
-
-fn chat_chunk_has_real_delta(chunk: &ChatCompletionStreamResponse) -> bool {
-    chunk.choices.iter().any(|choice| {
-        choice
-            .delta
-            .content
-            .as_ref()
-            .is_some_and(|content| !content.is_empty())
-            || !choice.delta.tool_calls.is_empty()
-    })
-}
-
-fn completion_chunk_has_real_delta(chunk: &CompletionStreamResponse) -> bool {
-    chunk.choices.iter().any(|choice| !choice.text.is_empty())
 }
 
 fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool, latency: Duration) {
@@ -1151,109 +709,6 @@ fn mark_active_request_finished_for_runtime_error(
                 "request lifecycle was missing before error delivery".to_owned(),
             ))
             .into()
-        }
-    }
-}
-
-fn mark_active_request_finished_for_stream_success(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-) -> Result<(), Vec<Result<Event, Infallible>>> {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished => Ok(()),
-        RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            Err(request_cancelled_stream_events(
-                "request was cancelled before response delivery",
-                "decode",
-            ))
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            Err(runtime_error_stream_events(RuntimeError::Backend(
-                BackendError::Other(
-                    "request lifecycle was missing before response delivery".to_owned(),
-                ),
-            )))
-        }
-    }
-}
-
-fn mark_active_request_finished_for_stream_error(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-    err: RuntimeError,
-) -> Vec<Result<Event, Infallible>> {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished => {
-            mark_scheduler_runtime_error(scheduler_slot, &err);
-            record_runtime_error_metrics(state, &err);
-            runtime_error_stream_events(err)
-        }
-        RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            request_cancelled_stream_events("request was cancelled before error delivery", "decode")
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was missing before error delivery".to_owned(),
-            )))
-        }
-    }
-}
-
-fn mark_active_request_finished_for_stream_cancellation(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-    message: &'static str,
-    phase: &'static str,
-) -> Vec<Result<Event, Infallible>> {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished | RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            request_cancelled_stream_events(message, phase)
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was missing before stream cancellation".to_owned(),
-            )))
-        }
-    }
-}
-
-fn mark_active_request_finished_for_stream_stall(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-) -> Vec<Result<Event, Infallible>> {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            stream_stalled_stream_events(state.stream_stall_timeout)
-        }
-        RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            request_cancelled_stream_events("request was cancelled before stream stall", "decode")
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was missing before stream stall".to_owned(),
-            )))
         }
     }
 }
