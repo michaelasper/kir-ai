@@ -24,7 +24,7 @@ async fn optional_tools_allow_text_completion() {
 }
 
 #[tokio::test]
-async fn runtime_omits_structured_chat_context_when_tools_require_prompt_rendering() {
+async fn runtime_preserves_structured_chat_context_when_tools_are_declared() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {
         observed: observed.clone(),
@@ -47,7 +47,12 @@ async fn runtime_omits_structured_chat_context_when_tools_require_prompt_renderi
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
-    assert!(observed.chat_context.is_none());
+    let chat_context = observed
+        .chat_context
+        .expect("structured chat context is available for MLX chat sidecars");
+    assert_eq!(chat_context.messages.len(), 1);
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::User);
+    assert_eq!(chat_context.messages[0].content, "lookup rust");
     assert!(
         observed
             .cache_context

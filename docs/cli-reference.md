@@ -43,7 +43,7 @@ llm-engine serve \
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native Qwen; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
-| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw MLX snapshots must set this explicitly. Qwen and Gemma are serveable through the MLX sidecar; DeepSeek is recognized but fails closed until Kir has a runtime chat adapter or chat-sidecar path for that family. |
+| `--family <qwen\|deep_seek\|gemma>` | manifest metadata | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw MLX snapshots must set this explicitly. Qwen, DeepSeek, and Gemma are serveable through the MLX sidecar. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native Qwen generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Native Qwen prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
@@ -59,13 +59,13 @@ With a native-metal snapshot, the directory must contain `config.json`,
 files. With an MLX snapshot promoted by `llm-engine model pull`, the directory
 must include an `llm-engine-manifest.json` whose loader is `mlx`, and a
 compatible MLX sidecar must already be listening on the configured loopback
-endpoint. Qwen MLX snapshots use `mlx_lm.server` `/v1/completions`; Gemma 4 MLX
-snapshots use `mlx_vlm.server` `/v1/chat/completions`. Raw Hugging Face cache
-snapshots need both `--loader mlx` and a serveable `--family` such as `qwen` or
-`gemma` so chat rendering is selected from explicit model metadata. `--loader
-mlx` without a family fails at startup for raw snapshots. `--family deep_seek`
-is intentionally rejected for serving until the runtime has a first-class
-adapter or delegates chat templating to the MLX sidecar.
+endpoint. Chat requests for Qwen, DeepSeek, and Gemma use OpenAI-compatible
+`/v1/chat/completions` so the MLX sidecar owns model-specific chat templating
+and structured tool metadata; legacy text completion requests use a
+completions-capable sidecar endpoint when the selected family exposes one. Raw
+Hugging Face cache snapshots need both `--loader mlx` and a serveable `--family`
+such as `qwen`, `deep_seek`, or `gemma` so family metadata and parser policy are
+explicit. `--loader mlx` without a family fails at startup for raw snapshots.
 
 ## `bench qwen-long-context`
 

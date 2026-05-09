@@ -1,5 +1,8 @@
-use super::{MLX_GEMMA_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxUpstreamProtocol};
-use llm_backend::{BackendError, BackendModelMetadata, BackendStreamChunk};
+use super::{
+    MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_GEMMA_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS,
+    MlxUpstreamProtocol,
+};
+use llm_backend::{BackendError, BackendModelMetadata, BackendRequest, BackendStreamChunk};
 use llm_models::ModelFamily;
 use serde::Deserialize;
 use serde_json::Value;
@@ -259,6 +262,7 @@ impl MlxSseParser {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum MlxToolMarkup {
     Qwen,
+    DeepSeek,
     Gemma,
 }
 
@@ -327,7 +331,9 @@ impl MlxControlStopFilter {
         self.stop_tokens
             .iter()
             .flat_map(|token| {
-                (1..token.len()).filter(move |length| self.pending.ends_with(&token[..*length]))
+                (1..token.len()).filter(move |length| {
+                    token.is_char_boundary(*length) && self.pending.ends_with(&token[..*length])
+                })
             })
             .max()
             .unwrap_or(0)
@@ -364,6 +370,7 @@ pub(super) fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> M
         .as_deref()
         .and_then(|family| ModelFamily::parse_slug(family).ok())
     {
+        Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
         Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
         _ => MlxToolMarkup::Qwen,
     }
@@ -386,6 +393,13 @@ fn render_mlx_tool_call(
                 "name": call.name.as_str(),
                 "arguments": arguments,
             })
+        )),
+        MlxToolMarkup::DeepSeek => Ok(format!(
+            "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{}\n```json\n{}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
+            call.name,
+            serde_json::to_string(&arguments).map_err(|err| BackendError::Other(format!(
+                "DeepSeek tool argument render failed: {err}"
+            )))?
         )),
         MlxToolMarkup::Gemma => {
             let Value::Object(arguments) = arguments else {
@@ -465,14 +479,19 @@ pub(super) fn mlx_control_stop_tokens_for_metadata(
         .as_deref()
         .and_then(|family| ModelFamily::parse_slug(family).ok())
     {
+        Some(ModelFamily::DeepSeek) => MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
         Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
         _ => MLX_QWEN_CONTROL_STOP_TOKENS,
     }
 }
 
-pub(super) fn mlx_upstream_protocol_for_metadata(
+pub(super) fn mlx_upstream_protocol_for_request(
     metadata: &BackendModelMetadata,
+    request: &BackendRequest,
 ) -> MlxUpstreamProtocol {
+    if request.conversation_mode {
+        return MlxUpstreamProtocol::ChatCompletions;
+    }
     match metadata
         .family
         .as_deref()

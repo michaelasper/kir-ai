@@ -45,6 +45,13 @@ struct FamilyMetadataBackend {
     family: Option<String>,
 }
 
+struct FamilyStreamBackend {
+    model_id: &'static str,
+    family: &'static str,
+    text: &'static str,
+    finish_reason: FinishReason,
+}
+
 struct RecordingChatContextBackend {
     observed: Arc<Mutex<Option<BackendRequest>>>,
     family: &'static str,
@@ -52,6 +59,7 @@ struct RecordingChatContextBackend {
 
 struct MlxQwenMetadataBackend;
 struct MlxGemmaMetadataBackend;
+struct MlxDeepSeekMetadataBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
@@ -147,6 +155,40 @@ impl ModelBackend for FamilyMetadataBackend {
 }
 
 #[async_trait::async_trait]
+impl ModelBackend for FamilyStreamBackend {
+    fn model_id(&self) -> &str {
+        self.model_id
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id, "family-stream").with_family(self.family)
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        if request.model != self.model_id {
+            return Err(BackendError::ModelNotFound {
+                requested: request.model,
+                available: self.model_id.to_owned(),
+            });
+        }
+        Ok(BackendOutput {
+            text: self.text.to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: self.finish_reason.clone(),
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
 impl ModelBackend for MlxQwenMetadataBackend {
     fn model_id(&self) -> &str {
         "local-qwen36"
@@ -203,6 +245,42 @@ impl ModelBackend for MlxGemmaMetadataBackend {
         );
         Ok(BackendOutput {
             text: "hello from gemma<turn|>".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for MlxDeepSeekMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-deepseek"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
+        metadata.family = Some("deep_seek".to_owned());
+        metadata.loader = Some("mlx".to_owned());
+        metadata
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        assert!(
+            request.prompt.contains("<｜User｜>say hi<｜Assistant｜>"),
+            "DeepSeek adapter should render DeepSeek prompt: {}",
+            request.prompt
+        );
+        Ok(BackendOutput {
+            text: "hello from deepseek<｜end▁of▁sentence｜>".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
@@ -314,6 +392,9 @@ struct TwoChunkStreamBackend {
 struct ToolBoundaryStreamBackend {
     first: Arc<Semaphore>,
     finish: Arc<Semaphore>,
+    model_id: &'static str,
+    family: &'static str,
+    text: &'static str,
 }
 
 struct CancellableStreamBackend {
@@ -474,11 +555,11 @@ impl ModelBackend for TwoChunkStreamBackend {
 #[async_trait::async_trait]
 impl ModelBackend for ToolBoundaryStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        self.model_id
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        qwen_test_metadata(self.model_id(), "tool-boundary-stream")
+        BackendModelMetadata::new(self.model_id, "tool-boundary-stream").with_family(self.family)
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -504,7 +585,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
         async_stream::try_stream! {
             let _permit = first.acquire().await.expect("first semaphore open");
             yield BackendStreamChunk {
-                text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#.to_owned(),
+                text: self.text.to_owned(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
                 finish_reason: None,

@@ -83,6 +83,12 @@ struct StaticBackend {
     text: String,
 }
 
+struct FamilyStaticBackend {
+    model_id: &'static str,
+    family: &'static str,
+    text: &'static str,
+}
+
 #[async_trait]
 impl ModelBackend for StaticBackend {
     fn model_id(&self) -> &str {
@@ -96,6 +102,34 @@ impl ModelBackend for StaticBackend {
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: self.text.clone(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for FamilyStaticBackend {
+    fn model_id(&self) -> &str {
+        self.model_id
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id, "family-static").with_family(self.family)
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: self.text.to_owned(),
             prompt_tokens: 1,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,

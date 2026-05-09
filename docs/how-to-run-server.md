@@ -73,8 +73,10 @@ decoded text.
 Use MLX sidecar mode when the snapshot manifest has `loader: mlx`, for example
 the `qwen36-mlx-4bit` or `gemma4-e2b-it-mlx-4bit` profiles. Kir remains the
 public OpenAI-compatible server and proxies generation to a loopback MLX
-sidecar. Qwen snapshots use `mlx_lm.server` `/v1/completions`; Gemma 4
-snapshots use `mlx_vlm.server` `/v1/chat/completions`.
+sidecar. Chat requests use `/v1/chat/completions`; legacy text completion
+requests use a completions-capable sidecar endpoint when the selected family
+exposes one. Qwen and DeepSeek run through `mlx_lm.server`; Gemma 4 runs through
+`mlx_vlm.server`.
 
 Start the Qwen MLX sidecar separately:
 
@@ -95,9 +97,8 @@ cargo run -p llm-engine -- serve \
 
 If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
 select the MLX loader and model family explicitly. Raw MLX snapshots without
-`--family` fail at startup. Qwen and Gemma are serveable runtime chat families
-through family-specific MLX sidecars; DeepSeek is recognized but fails closed
-until Kir has an adapter or chat-sidecar path for that family:
+`--family` fail at startup. Qwen, DeepSeek, and Gemma are serveable runtime
+chat families through family-specific MLX sidecars:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>

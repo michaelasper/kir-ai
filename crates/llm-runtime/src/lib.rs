@@ -648,6 +648,7 @@ fn streaming_chat_stream<'a>(
     cancellation: CancellationToken,
 ) -> ChatCompletionStream<'a> {
     let cancel_on_drop = CancelOnDrop::new(cancellation);
+    let tool_markup_policy = adapter.tool_markup_policy();
     let events = async_stream::try_stream! {
         let _cancel_on_drop = cancel_on_drop;
         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -696,7 +697,7 @@ fn streaming_chat_stream<'a>(
                 }
                 if !json_object_mode && !requires_tool_choice {
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
-                        .min(safe_tool_markup_emit_len(&raw_text));
+                        .min(tool_markup_policy.safe_emit_len(&raw_text));
                     if safe_len > emitted_len {
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
@@ -710,7 +711,7 @@ fn streaming_chat_stream<'a>(
                         emitted_len = safe_len;
                     }
                 }
-                if let Some(tool_prefix_len) = completed_tool_prefix_len(&raw_text)
+                if let Some(tool_prefix_len) = tool_markup_policy.completed_prefix_len(&raw_text)
                     && tool_prefix_len > emitted_len
                 {
                     let parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
@@ -751,7 +752,7 @@ fn streaming_chat_stream<'a>(
             && emitted_len < visible_len
             && !json_object_mode
             && !requires_tool_choice
-            && !contains_tool_call_start(&raw_text[..visible_len])
+            && !tool_markup_policy.contains_start(&raw_text[..visible_len])
         {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                 &completion,
@@ -965,30 +966,6 @@ fn safe_stream_emit_len(content: &str, max_stop_len: usize) -> usize {
         return content.len();
     }
     floor_char_boundary(content, content.len().saturating_sub(max_stop_len - 1))
-}
-
-const TOOL_CALL_START_MARKER: &str = "<tool_call>";
-const TOOL_CALL_END_MARKER: &str = "</tool_call>";
-
-fn safe_tool_markup_emit_len(content: &str) -> usize {
-    if let Some(start) = content.find(TOOL_CALL_START_MARKER) {
-        return start;
-    }
-    let withheld_prefix_len = (1..TOOL_CALL_START_MARKER.len())
-        .rev()
-        .find(|prefix_len| content.ends_with(&TOOL_CALL_START_MARKER[..*prefix_len]))
-        .unwrap_or(0);
-    content.len() - withheld_prefix_len
-}
-
-fn completed_tool_prefix_len(content: &str) -> Option<usize> {
-    content
-        .rfind(TOOL_CALL_END_MARKER)
-        .map(|end| end + TOOL_CALL_END_MARKER.len())
-}
-
-fn contains_tool_call_start(content: &str) -> bool {
-    content.contains(TOOL_CALL_START_MARKER)
 }
 
 fn floor_char_boundary(content: &str, mut index: usize) -> usize {

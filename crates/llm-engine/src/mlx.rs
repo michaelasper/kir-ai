@@ -6,6 +6,7 @@ use llm_backend::{
 };
 use llm_models::ModelFamily;
 use serde::Serialize;
+use serde_json::Value;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -18,10 +19,12 @@ use client::{is_loopback_endpoint, mlx_endpoint_url};
 use metadata::mlx_metadata;
 use sse::{
     MlxSseParser, count_whitespace_tokens, mlx_control_stop_tokens_for_metadata,
-    mlx_tool_markup_for_metadata, mlx_upstream_protocol_for_metadata,
+    mlx_tool_markup_for_metadata, mlx_upstream_protocol_for_request,
 };
 
 const MLX_QWEN_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
+const MLX_DEEPSEEK_CONTROL_STOP_TOKENS: &[&str] =
+    &["<｜end▁of▁sentence｜>", "<｜User｜>", "<|endoftext|>"];
 const MLX_GEMMA_CONTROL_STOP_TOKENS: &[&str] =
     &["<turn|>", "<|tool_response>", "<eos>", "<|endoftext|>"];
 
@@ -36,8 +39,7 @@ pub struct MlxBackend {
     model_id: String,
     metadata: BackendModelMetadata,
     upstream_model: String,
-    upstream_url: Url,
-    upstream_protocol: MlxUpstreamProtocol,
+    endpoint: Url,
     control_stop_tokens: &'static [&'static str],
     client: reqwest::Client,
 }
@@ -80,15 +82,12 @@ impl MlxBackend {
         let snapshot_path = snapshot_path.as_ref();
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = mlx_metadata(&model_id, snapshot_path, options.family)?;
-        let upstream_protocol = mlx_upstream_protocol_for_metadata(&metadata);
-        let upstream_url = mlx_endpoint_url(&options.endpoint, upstream_protocol.endpoint_suffix());
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
         Ok(Self {
             model_id: model_id.clone(),
             metadata,
             upstream_model,
-            upstream_url,
-            upstream_protocol,
+            endpoint: options.endpoint,
             control_stop_tokens,
             client: reqwest::Client::new(),
         })
@@ -108,26 +107,32 @@ impl MlxBackend {
             SamplingConfig::Greedy => (0.0, 1.0),
             SamplingConfig::TopP { temperature, top_p } => (temperature, top_p),
         };
-        let request = match self.upstream_protocol {
+        let upstream_protocol = mlx_upstream_protocol_for_request(&self.metadata, request);
+        let upstream_url = mlx_endpoint_url(&self.endpoint, upstream_protocol.endpoint_suffix());
+        let request = match upstream_protocol {
             MlxUpstreamProtocol::Completions => {
-                self.client
-                    .post(self.upstream_url.clone())
-                    .json(&MlxCompletionRequest {
-                        model: &self.upstream_model,
-                        prompt: &request.prompt,
-                        max_tokens: request.max_tokens,
-                        temperature,
-                        top_p,
-                        stream: true,
-                    })
+                self.client.post(upstream_url).json(&MlxCompletionRequest {
+                    model: &self.upstream_model,
+                    prompt: &request.prompt,
+                    max_tokens: request.max_tokens,
+                    temperature,
+                    top_p,
+                    stream: true,
+                })
             }
             MlxUpstreamProtocol::ChatCompletions => {
                 let messages = mlx_chat_messages(request);
+                let tools = mlx_tool_schema(request)?;
+                let tool_choice = mlx_tool_choice(request);
+                let response_format = mlx_response_format(request);
                 self.client
-                    .post(self.upstream_url.clone())
+                    .post(upstream_url)
                     .json(&MlxChatCompletionRequest {
                         model: &self.upstream_model,
                         messages,
+                        tools,
+                        tool_choice,
+                        response_format,
                         max_tokens: request.max_tokens,
                         temperature,
                         top_p,
@@ -296,6 +301,12 @@ struct MlxCompletionRequest<'a> {
 struct MlxChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<MlxChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
     max_tokens: Option<u32>,
     temperature: f32,
     top_p: f32,
@@ -309,8 +320,7 @@ struct MlxChatMessage<'a> {
 }
 
 fn mlx_chat_messages(request: &BackendRequest) -> Vec<MlxChatMessage<'_>> {
-    if let (None, Some(chat_context)) = (&request.cache_context.tool_schema, &request.chat_context)
-    {
+    if let Some(chat_context) = &request.chat_context {
         return chat_context
             .messages
             .iter()
@@ -324,6 +334,40 @@ fn mlx_chat_messages(request: &BackendRequest) -> Vec<MlxChatMessage<'_>> {
         role: "user",
         content: &request.prompt,
     }]
+}
+
+fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendError> {
+    request
+        .cache_context
+        .tool_schema
+        .as_deref()
+        .map(|schema| {
+            serde_json::from_str::<Value>(schema).map_err(|err| {
+                BackendError::Other(format!("MLX tool schema was not valid JSON: {err}"))
+            })
+        })
+        .transpose()
+}
+
+fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {
+    request
+        .required_tool_choice
+        .as_ref()
+        .map(|choice| match choice {
+            llm_backend::BackendToolChoice::RequiredAny => Value::String("required".to_owned()),
+            llm_backend::BackendToolChoice::RequiredFunction(name) => serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                },
+            }),
+        })
+}
+
+fn mlx_response_format(request: &BackendRequest) -> Option<Value> {
+    request
+        .json_object_mode
+        .then(|| serde_json::json!({"type": "json_object"}))
 }
 
 #[cfg(test)]
@@ -478,7 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mlx_backend_falls_back_to_rendered_prompt_for_gemma_tool_chat() {
+    async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
         let server = FakeMlxServer::start(
             "data: {\"choices\":[{\"delta\":{\"content\":\"tool fallback\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
         );
@@ -518,16 +562,113 @@ mod tests {
         assert_eq!(output.text, "tool fallback");
         let request = server.received_body();
         assert_eq!(request["messages"][0]["role"], "user");
-        assert_eq!(
-            request["messages"][0]["content"],
-            "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n"
-        );
+        assert_eq!(request["messages"][0]["content"], "use lookup");
+        assert_eq!(request["tools"][0]["type"], "function");
         assert_eq!(
             request["messages"]
                 .as_array()
                 .expect("messages array")
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"deepseek says hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::DeepSeek),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>".to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "hello".to_owned(),
+                    }],
+                }),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+                    "lookup".to_owned(),
+                )),
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template(
+                    "deepseek/chat/v1",
+                    Some(
+                        r#"[{"type":"function","function":{"name":"lookup","parameters":{}}}]"#
+                            .to_owned(),
+                    ),
+                ),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "deepseek says hi");
+        assert_eq!(server.received_path(), "/v1/chat/completions");
+        let request = server.received_body();
+        assert_eq!(request["messages"][0]["role"], "user");
+        assert_eq!(request["messages"][0]["content"], "hello");
+        assert_eq!(request["tools"][0]["function"]["name"], "lookup");
+        assert_eq!(
+            request["tool_choice"],
+            serde_json::json!({"type":"function","function":{"name":"lookup"}})
+        );
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoint() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":true}\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n"
+                    .to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "return json".to_owned(),
+                    }],
+                }),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: true,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "{\"ok\":true}");
+        assert_eq!(server.received_path(), "/v1/chat/completions");
+        assert_eq!(
+            server.received_body()["response_format"],
+            serde_json::json!({"type":"json_object"})
         );
     }
 
@@ -673,6 +814,48 @@ mod tests {
     }
 
     #[test]
+    fn mlx_sse_parser_handles_deepseek_non_ascii_stop_prefix_checks() {
+        let mut parser = MlxSseParser::new(
+            "hello deepseek",
+            MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
+            MlxToolMarkup::DeepSeek,
+        );
+        let chunks = parser
+            .push_str("data:{\"choices\":[{\"text\":\"plain answer\",\"finish_reason\":null}]}\n\n")
+            .expect("DeepSeek parser does not panic while checking non-ASCII stop tokens");
+
+        assert_eq!(chunks[0].text, "plain answer");
+    }
+
+    #[test]
+    fn mlx_sse_parser_strips_split_deepseek_control_stop_tokens() {
+        let mut parser = MlxSseParser::new(
+            "hello deepseek",
+            MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
+            MlxToolMarkup::DeepSeek,
+        );
+        let chunks = parser
+            .push_str(
+                "data:{\"choices\":[{\"text\":\"answer <｜end\",\"finish_reason\":null}]}\n\n",
+            )
+            .expect("first split chunk parses");
+        let next_chunks = parser
+            .push_str(
+                "data:{\"choices\":[{\"text\":\"▁of▁sentence｜> ignored\",\"finish_reason\":\"stop\"}]}\n\ndata:[DONE]\n\n",
+            )
+            .expect("second split chunk parses");
+        let final_chunks = parser.finish().expect("finish parser");
+        let text = chunks
+            .into_iter()
+            .chain(next_chunks)
+            .chain(final_chunks)
+            .map(|chunk| chunk.text)
+            .collect::<String>();
+
+        assert_eq!(text, "answer ");
+    }
+
+    #[test]
     fn mlx_sse_parser_is_chunk_boundary_invariant_for_tool_calls() {
         let payload = "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n";
         let expected =
@@ -768,17 +951,39 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "read a file".to_owned(),
-                chat_context: None,
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "read a file".to_owned(),
+                    }],
+                }),
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
-                required_tool_choice: None,
+                required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+                    "read_file".to_owned(),
+                )),
                 json_object_mode: false,
-                conversation_mode: false,
-                cache_context: BackendCacheContext::raw_prompt(),
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template(
+                    "chatml/qwen/v1",
+                    Some(
+                        r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
+                            .to_owned(),
+                    ),
+                ),
             })
             .await
             .expect("mlx generation succeeds");
 
+        assert_eq!(server.received_path(), "/v1/chat/completions");
+        let request = server.received_body();
+        assert_eq!(request["messages"][0]["role"], "user");
+        assert_eq!(request["messages"][0]["content"], "read a file");
+        assert_eq!(request["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(
+            request["tool_choice"],
+            serde_json::json!({"type":"function","function":{"name":"read_file"}})
+        );
         assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
         assert!(output.text.starts_with("<tool_call>"));
         assert!(output.text.contains("\"name\":\"read_file\""));
@@ -864,6 +1069,42 @@ mod tests {
         assert!(output.text.starts_with("<|tool_call>call:lookup"));
         assert!(output.text.contains("\"query\":\"rust\""));
         assert!(output.text.contains("\"limit\":3"));
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"metal\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::DeepSeek),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "lookup metal".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+        assert!(output.text.starts_with("<｜tool▁calls▁begin｜>"));
+        assert!(output.text.contains("<｜tool▁sep｜>lookup"));
+        assert!(output.text.contains("\"query\":\"metal\""));
     }
 
     #[tokio::test]
@@ -1028,6 +1269,7 @@ mod tests {
         endpoint: Url,
         snapshot: TempDir,
         received: Arc<Mutex<Option<Value>>>,
+        received_path: Arc<Mutex<Option<String>>>,
         join: Option<thread::JoinHandle<()>>,
     }
 
@@ -1040,7 +1282,9 @@ mod tests {
             ))
             .expect("endpoint url");
             let received = Arc::new(Mutex::new(None));
+            let received_path = Arc::new(Mutex::new(None));
             let received_for_thread = received.clone();
+            let received_path_for_thread = received_path.clone();
             let join = thread::spawn(move || {
                 let (mut stream, _) = listener.accept().expect("accept fake mlx request");
                 let mut bytes = Vec::new();
@@ -1056,6 +1300,13 @@ mod tests {
                     }
                 }
                 let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let request_path = headers
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("request path")
+                    .to_owned();
+                *received_path_for_thread.lock().expect("received path lock") = Some(request_path);
                 let content_length = headers
                     .lines()
                     .find_map(|line| {
@@ -1084,6 +1335,7 @@ mod tests {
                 endpoint,
                 snapshot: tempfile::tempdir().expect("snapshot tempdir"),
                 received,
+                received_path,
                 join: Some(join),
             }
         }
@@ -1102,6 +1354,14 @@ mod tests {
                 .expect("received lock")
                 .clone()
                 .expect("received request body")
+        }
+
+        fn received_path(&self) -> String {
+            self.received_path
+                .lock()
+                .expect("received path lock")
+                .clone()
+                .expect("received request path")
         }
     }
 

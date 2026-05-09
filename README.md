@@ -128,10 +128,11 @@ practical path for small adaptive chat checks such as
 `mlx-community/Qwen3.5-4B-MLX-8bit`, and the Apple-silicon OptiQ snapshot
 `mlx-community/Qwen3.5-4B-OptiQ-4bit`, plus Gemma 4 MLX text snapshots such as
 `mlx-community/gemma-4-e2b-it-4bit`. Raw MLX snapshots must provide `--family`;
-Qwen and Gemma are serveable runtime chat families through the MLX sidecar. Qwen
-uses `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server` because that sidecar exposes
-OpenAI chat-completions for the any-to-any checkpoint family. DeepSeek is
-recognized but fails closed until its adapter or sidecar chat path lands:
+Qwen, DeepSeek, and Gemma are serveable runtime chat families through the MLX
+sidecar. Chat requests use OpenAI-compatible chat-completions so the sidecar
+owns model-specific chat templating and structured tool metadata; legacy text
+completion requests use a completions-capable sidecar endpoint when the selected
+family exposes one:
 
 ```sh
 SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>"

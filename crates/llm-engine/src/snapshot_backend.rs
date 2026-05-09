@@ -401,7 +401,36 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backend_factory_rejects_deferred_family_for_raw_native_metal_snapshot() {
+    fn snapshot_backend_factory_opens_deepseek_mlx_snapshot() {
+        let snapshot = temp_snapshot_dir("mlx-deepseek-family");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+
+        let backend = open_snapshot_backend(
+            "local-deepseek",
+            &snapshot,
+            SnapshotBackendOptions {
+                loader: Some(SnapshotBackendLoader::Mlx),
+                family: Some(ModelFamily::DeepSeek),
+                mlx: crate::MlxBackendOptions {
+                    endpoint: url::Url::parse("http://127.0.0.1:18080/v1").expect("url"),
+                    ..crate::MlxBackendOptions::default()
+                },
+                ..SnapshotBackendOptions::default()
+            },
+        )
+        .expect("DeepSeek MLX snapshot opens");
+
+        assert_eq!(
+            backend.model_metadata().family.as_deref(),
+            Some("deep_seek")
+        );
+        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_rejects_deepseek_for_raw_native_metal_snapshot() {
         let snapshot = temp_snapshot_dir("native-family-override-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -415,19 +444,19 @@ mod tests {
                 ..SnapshotBackendOptions::default()
             },
         ) {
-            Ok(_) => panic!("native-metal deferred family should fail closed"),
+            Ok(_) => panic!("native-metal DeepSeek family should fail closed"),
             Err(err) => err,
         };
 
         assert!(
             err.to_string()
-                .contains("DeepSeek serving is deferred until Qwen production parity")
+                .contains("snapshot loader `native-metal` is not supported for family `deep_seek`")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
 
     #[test]
-    fn snapshot_backend_factory_rejects_deferred_family_for_native_metal_manifest() {
+    fn snapshot_backend_factory_rejects_deepseek_for_native_metal_manifest() {
         let snapshot = temp_snapshot_dir("native-family-manifest-mismatch");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -444,7 +473,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("DeepSeek serving is deferred until Qwen production parity")
+                .contains("snapshot loader `native-metal` is not supported for family `deep_seek`")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }

@@ -15,7 +15,7 @@ fn model_family_parses_aliases_to_canonical_slugs_and_adapters() {
     assert_eq!(deep_seek, ModelFamily::DeepSeek);
     assert_eq!(gemma, ModelFamily::Gemma);
     assert_eq!(deepseek.canonical_slug(), "deep_seek");
-    assert_eq!(deepseek.adapter().tensor_namespace(), "deepseek_v4");
+    assert_eq!(deepseek.adapter().tensor_namespace(), "deepseek");
 }
 
 #[test]
@@ -107,16 +107,14 @@ fn native_text_model_spec_rejects_deferred_families_before_qwen_parity() {
 }
 
 #[test]
-fn deepseek_family_is_deferred_until_qwen_parity() {
+fn deepseek_family_declares_mlx_production_backend() {
     let adapter = DeepSeekFamilyAdapter;
     let capabilities = adapter.capabilities();
 
     assert_eq!(adapter.family(), ModelFamily::DeepSeek);
-    assert!(adapter.production_backends().is_empty());
-    assert_eq!(
-        adapter.promotion_stage(),
-        PromotionStage::DeferredUntilQwenParity
-    );
+    assert_eq!(adapter.production_backends(), &[BackendKind::Mlx]);
+    assert_eq!(adapter.cache_template_id(), "deepseek/chat/v1");
+    assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
     assert!(capabilities.text);
     assert!(capabilities.reasoning);
     assert!(capabilities.tool_calls);
@@ -124,7 +122,7 @@ fn deepseek_family_is_deferred_until_qwen_parity() {
     assert!(capabilities.raw_completion);
     assert!(!capabilities.reasoning_channels);
     assert!(!capabilities.multimodal_artifacts);
-    assert!(!capabilities.backend_execution);
+    assert!(capabilities.backend_execution);
 }
 
 #[test]

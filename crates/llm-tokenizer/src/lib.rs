@@ -16,6 +16,12 @@ pub struct GemmaPromptOptions {
     pub add_generation_prompt: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeepSeekPromptOptions {
+    pub enable_thinking: bool,
+    pub add_generation_prompt: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum TemplateError {
     #[error("tool serialization failed: {0}")]
@@ -182,6 +188,69 @@ pub fn render_gemma4_chat_template(
     Ok(out)
 }
 
+pub fn render_deepseek_chat_template(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &DeepSeekPromptOptions,
+) -> Result<String, TemplateError> {
+    let mut out = String::from("<｜begin▁of▁sentence｜>");
+    let mut tool_output_open = false;
+
+    for system in messages
+        .iter()
+        .filter(|message| message.role == ChatRole::System)
+        .filter_map(|message| message.content.as_deref())
+    {
+        reject_deepseek_prompt_controls(system)?;
+        out.push_str(system);
+        out.push_str("\n\n");
+    }
+
+    if !tools.is_empty() {
+        let tools_json = serde_json::to_string(tools)?;
+        reject_deepseek_prompt_controls(&tools_json)?;
+        out.push_str(
+            "You may call tools by emitting DeepSeek tool call blocks with exact tool names.\n",
+        );
+        out.push_str(&tools_json);
+        out.push_str("\n\n");
+    }
+
+    for message in messages {
+        match message.role {
+            ChatRole::System => {}
+            ChatRole::User => {
+                if tool_output_open {
+                    out.push_str("<｜tool▁outputs▁end｜>");
+                    tool_output_open = false;
+                }
+                render_deepseek_plain_turn(&mut out, "<｜User｜>", message)?;
+            }
+            ChatRole::Assistant => {
+                if tool_output_open {
+                    out.push_str("<｜tool▁outputs▁end｜>");
+                    tool_output_open = false;
+                }
+                render_deepseek_assistant_turn(&mut out, message)?;
+            }
+            ChatRole::Tool => {
+                render_deepseek_tool_response(&mut out, message, &mut tool_output_open)?;
+            }
+        }
+    }
+
+    if tool_output_open {
+        out.push_str("<｜tool▁outputs▁end｜>");
+    }
+    if options.add_generation_prompt {
+        out.push_str("<｜Assistant｜>");
+        if options.enable_thinking {
+            out.push_str("<think>\n");
+        }
+    }
+    Ok(out)
+}
+
 pub fn render_family_chat_template(
     family: ModelFamily,
     messages: &[ChatMessage],
@@ -196,7 +265,14 @@ pub fn render_family_chat_template(
                 add_generation_prompt: true,
             },
         ),
-        ModelFamily::DeepSeek => Err(TemplateError::UnsupportedFamily("DeepSeek")),
+        ModelFamily::DeepSeek => render_deepseek_chat_template(
+            messages,
+            tools,
+            &DeepSeekPromptOptions {
+                enable_thinking: false,
+                add_generation_prompt: true,
+            },
+        ),
         ModelFamily::Gemma => render_gemma4_chat_template(
             messages,
             tools,
@@ -239,6 +315,69 @@ fn render_assistant(out: &mut String, message: &ChatMessage) -> Result<(), Templ
     }
     out.push_str("<|im_end|>\n");
     Ok(())
+}
+
+fn render_deepseek_plain_turn(
+    out: &mut String,
+    marker: &str,
+    message: &ChatMessage,
+) -> Result<(), TemplateError> {
+    out.push_str(marker);
+    if let Some(content) = &message.content {
+        reject_deepseek_prompt_controls(content)?;
+        out.push_str(content);
+    }
+    Ok(())
+}
+
+fn render_deepseek_assistant_turn(
+    out: &mut String,
+    message: &ChatMessage,
+) -> Result<(), TemplateError> {
+    out.push_str("<｜Assistant｜>");
+    if let Some(content) = &message.content {
+        reject_deepseek_prompt_controls(content)?;
+        out.push_str(strip_deepseek_history_reasoning(content));
+    }
+    if !message.tool_calls.is_empty() {
+        out.push_str("<｜tool▁calls▁begin｜>");
+        for call in &message.tool_calls {
+            reject_deepseek_prompt_controls(&call.function.name)?;
+            let arguments_json = serde_json::to_string(&call.function.arguments)?;
+            reject_deepseek_prompt_controls(&arguments_json)?;
+            out.push_str("<｜tool▁call▁begin｜>function<｜tool▁sep｜>");
+            out.push_str(&call.function.name);
+            out.push_str("\n```json\n");
+            out.push_str(&arguments_json);
+            out.push_str("\n```<｜tool▁call▁end｜>");
+        }
+        out.push_str("<｜tool▁calls▁end｜>");
+    }
+    out.push_str("<｜end▁of▁sentence｜>");
+    Ok(())
+}
+
+fn render_deepseek_tool_response(
+    out: &mut String,
+    message: &ChatMessage,
+    tool_output_open: &mut bool,
+) -> Result<(), TemplateError> {
+    let content = message.content.as_deref().unwrap_or_default();
+    reject_deepseek_prompt_controls(content)?;
+    if !*tool_output_open {
+        out.push_str("<｜tool▁outputs▁begin｜>");
+        *tool_output_open = true;
+    }
+    out.push_str("<｜tool▁output▁begin｜>");
+    out.push_str(content);
+    out.push_str("<｜tool▁output▁end｜>");
+    Ok(())
+}
+
+fn strip_deepseek_history_reasoning(content: &str) -> &str {
+    content
+        .split_once("</think>")
+        .map_or(content, |(_, answer)| answer)
 }
 
 fn render_gemma4_turn(
@@ -379,6 +518,34 @@ fn reject_gemma4_prompt_controls(text: &str) -> Result<(), TemplateError> {
         "<|image|>",
         "<|audio|>",
         "<|video|>",
+    ];
+    if let Some((_, token)) = RESERVED
+        .iter()
+        .filter_map(|token| text.find(token).map(|index| (index, *token)))
+        .min_by_key(|(index, _)| *index)
+    {
+        return Err(TemplateError::ReservedControlToken(token));
+    }
+    Ok(())
+}
+
+fn reject_deepseek_prompt_controls(text: &str) -> Result<(), TemplateError> {
+    const RESERVED: [&str; 15] = [
+        "<｜begin▁of▁sentence｜>",
+        "<｜end▁of▁sentence｜>",
+        "<｜User｜>",
+        "<｜Assistant｜>",
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁calls▁end｜>",
+        "<｜tool▁call▁begin｜>",
+        "<｜tool▁call▁end｜>",
+        "<｜tool▁sep｜>",
+        "<｜tool▁outputs▁begin｜>",
+        "<｜tool▁outputs▁end｜>",
+        "<｜tool▁output▁begin｜>",
+        "<｜tool▁output▁end｜>",
+        "<think>",
+        "</think>",
     ];
     if let Some((_, token)) = RESERVED
         .iter()

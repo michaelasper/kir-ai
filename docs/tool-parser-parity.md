@@ -10,7 +10,7 @@ These vLLM parser names are accepted today:
 
 | vLLM parser name | Kir parser |
 | --- | --- |
-| `deepseek_v3`, `deepseek_v31`, `deepseekv31`, `deepseek_v32`, `deepseekv32`, `deepseek_v4`, `deepseekv4` | `deep_seek` |
+| `deepseek_v3` | `deep_seek` |
 | `functiongemma`, `gemma4` | `gemma` |
 | `hermes` | `hermes` |
 | `qwen3coder`, `qwen3xml` | `qwen` |
@@ -23,6 +23,8 @@ The `xlam` parser adds support for vLLM-style `[TOOL_CALLS]` markers, JSON code
 fences, and `<tool_call>...</tool_call>` blocks.
 
 Names with incompatible grammars stay unsupported until their output format is
-implemented directly. `glm4_moe` is intentionally not routed to a generic
-parser because vLLM documents it as an XML/incremental-string parser family,
-which should not be treated as generic JSON.
+implemented directly. DeepSeek V3.1/V3.2 parser names are not aliases for
+`deepseek_v3`; their tool formats need their own parser variants. `glm4_moe` is
+intentionally not routed to a generic parser because vLLM documents it as an
+XML/incremental-string parser family, which should not be treated as generic
+JSON.

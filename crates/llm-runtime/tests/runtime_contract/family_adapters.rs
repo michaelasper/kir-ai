@@ -17,24 +17,6 @@ async fn chat_rejects_missing_model_family_before_generation() {
 }
 
 #[tokio::test]
-async fn chat_rejects_deepseek_before_generation() {
-    let runtime = Runtime::new(FamilyMetadataBackend {
-        family: Some("deep_seek".to_owned()),
-    });
-    let err = runtime
-        .chat(ChatCompletionRequest {
-            model: "local-qwen36".to_owned(),
-            messages: vec![ChatMessage::user("say hi")],
-            max_tokens: Some(16),
-            ..ChatCompletionRequest::default()
-        })
-        .await
-        .expect_err("unsupported family should fail before generation");
-
-    assert!(err.to_string().contains("DeepSeek"));
-}
-
-#[tokio::test]
 async fn chat_accepts_mlx_backend_when_family_is_qwen() {
     let runtime = Runtime::new(MlxQwenMetadataBackend);
     let response = runtime
@@ -69,5 +51,24 @@ async fn chat_accepts_mlx_backend_when_family_is_gemma() {
     assert_eq!(
         response.choices[0].message.content.as_deref(),
         Some("hello from gemma")
+    );
+}
+
+#[tokio::test]
+async fn chat_accepts_mlx_backend_when_family_is_deepseek() {
+    let runtime = Runtime::new(MlxDeepSeekMetadataBackend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-deepseek".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("DeepSeek MLX metadata selects DeepSeek adapter");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("hello from deepseek")
     );
 }

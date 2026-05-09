@@ -7,7 +7,7 @@ fn vllm_parser_names_route_to_supported_families() {
         Some(ToolParserFamily::Qwen)
     );
     assert_eq!(
-        ToolParserFamily::from_vllm_name("deepseekv32_tool_parser"),
+        ToolParserFamily::from_vllm_name("deepseek_v3_tool_parser"),
         Some(ToolParserFamily::DeepSeek)
     );
     assert_eq!(
@@ -21,6 +21,10 @@ fn vllm_parser_names_route_to_supported_families() {
     assert_eq!(
         ToolParserFamily::from_vllm_name("xlam"),
         Some(ToolParserFamily::Xlam)
+    );
+    assert_eq!(
+        ToolParserFamily::from_vllm_name("deepseekv32_tool_parser"),
+        None
     );
     assert_eq!(ToolParserFamily::from_vllm_name("glm4_moe"), None);
 }

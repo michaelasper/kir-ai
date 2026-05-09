@@ -203,15 +203,15 @@ impl ModelFamilyAdapter for DeepSeekFamilyAdapter {
     }
 
     fn production_backends(&self) -> &'static [BackendKind] {
-        &[]
+        &[BackendKind::Mlx]
     }
 
     fn cache_template_id(&self) -> &'static str {
-        "chatml/deepseek/v1"
+        "deepseek/chat/v1"
     }
 
     fn tensor_namespace(&self) -> &'static str {
-        "deepseek_v4"
+        "deepseek"
     }
 
     fn capabilities(&self) -> FamilyCapabilityFlags {
@@ -223,12 +223,12 @@ impl ModelFamilyAdapter for DeepSeekFamilyAdapter {
             raw_completion: true,
             reasoning_channels: false,
             multimodal_artifacts: false,
-            backend_execution: false,
+            backend_execution: true,
         }
     }
 
     fn promotion_stage(&self) -> PromotionStage {
-        PromotionStage::DeferredUntilQwenParity
+        PromotionStage::Production
     }
 }
 

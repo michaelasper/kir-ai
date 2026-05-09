@@ -196,7 +196,7 @@ Options:
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
-                                             Qwen and Gemma are serveable through MLX; DeepSeek is recognized but deferred
+                                             Qwen, DeepSeek, and Gemma are serveable through MLX
   --protocol-test-backend               Use protocol test backend
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text maximum prefill tokens

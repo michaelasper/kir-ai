@@ -455,6 +455,149 @@ async fn runtime_appends_chat_stream_usage_when_requested() {
 
 #[tokio::test]
 async fn runtime_streams_generated_tool_call_delta() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-qwen36",
+        family: "qwen",
+        text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+        finish_reason: FinishReason::Stop,
+    };
+    assert_streams_tool_call_delta_without_marker_content(backend, "local-qwen36", &[]).await;
+}
+
+#[tokio::test]
+async fn runtime_streams_deepseek_tool_call_delta_without_marker_content() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-deepseek",
+        family: "deep_seek",
+        text: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>lookup\n```json\n{\"query\":\"rust\"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
+        finish_reason: FinishReason::Stop,
+    };
+    assert_streams_tool_call_delta_without_marker_content(
+        backend,
+        "local-deepseek",
+        &["<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_streams_deepseek_dsml_tool_call_delta_without_marker_content() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-deepseek",
+        family: "deep_seek",
+        text: r#"<dsml_tool_call>{"name":"lookup","arguments":{"query":"rust"}}</dsml_tool_call>"#,
+        finish_reason: FinishReason::Stop,
+    };
+    assert_streams_tool_call_delta_with_choice_without_marker_content(
+        backend,
+        "local-deepseek",
+        Some(ToolChoice::Auto),
+        &["<dsml_tool_call>", "</dsml_tool_call>"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_streams_gemma_tool_call_delta_without_marker_content() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-gemma4",
+        family: "gemma",
+        text: "<|tool_call>call:lookup{\"query\":\"rust\"}<tool_call|>",
+        finish_reason: FinishReason::Stop,
+    };
+    assert_streams_tool_call_delta_without_marker_content(
+        backend,
+        "local-gemma4",
+        &["<|tool_call>", "<tool_call|>"],
+    )
+    .await;
+}
+
+async fn assert_streams_tool_call_delta_without_marker_content<B>(
+    backend: B,
+    model_id: &str,
+    forbidden_content: &[&str],
+) where
+    B: ModelBackend,
+{
+    assert_streams_tool_call_delta_with_choice_without_marker_content(
+        backend,
+        model_id,
+        Some(ToolChoice::Required),
+        forbidden_content,
+    )
+    .await;
+}
+
+async fn assert_streams_tool_call_delta_with_choice_without_marker_content<B>(
+    backend: B,
+    model_id: &str,
+    tool_choice: Option<ToolChoice>,
+    forbidden_content: &[&str],
+) where
+    B: ModelBackend,
+{
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: model_id.to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice,
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming tool calls assemble");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let emitted_content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    for marker in forbidden_content {
+        assert!(
+            !emitted_content.contains(marker),
+            "stream content leaked tool marker `{marker}`: {emitted_content}"
+        );
+    }
+
+    let tool_chunks = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter(|choice| !choice.delta.tool_calls.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_chunks.len(), 1);
+    let delta = &tool_chunks[0].delta.tool_calls[0];
+    assert_eq!(delta.index, 0);
+    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("lookup")
+    );
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(r#"{"query":"rust"}"#)
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .next_back()
+            .and_then(|choice| choice.finish_reason.as_ref()),
+        Some(&FinishReason::ToolCalls)
+    );
+}
+
+#[tokio::test]
+async fn protocol_backend_streams_required_tool_call_delta() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",
         r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
@@ -504,6 +647,9 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
     let backend = ToolBoundaryStreamBackend {
         first: first.clone(),
         finish: finish.clone(),
+        model_id: "local-qwen36",
+        family: "qwen",
+        text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
     };
     let runtime = Runtime::new(backend);
     let stream = runtime

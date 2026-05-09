@@ -41,6 +41,23 @@ fn parses_deepseek_dsml_tool_call() {
 }
 
 #[test]
+fn parses_deepseek_native_tool_call_tokens() {
+    let parsed = parse_assistant_for_family(
+        ModelFamily::DeepSeek,
+        "<｜Assistant｜>I need a file.<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n```json\n{\"path\":\"Cargo.toml\"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜><｜end▁of▁sentence｜>",
+    )
+    .expect("DeepSeek native tool call parses");
+
+    assert_eq!(parsed.content, "I need a file.");
+    assert_eq!(parsed.tool_calls.len(), 1);
+    assert_eq!(parsed.tool_calls[0].function.name, "read_file");
+    assert_eq!(
+        parsed.tool_calls[0].function.arguments["path"],
+        "Cargo.toml"
+    );
+}
+
+#[test]
 fn parser_family_supports_hermes_deepseek_gemma_qwen_and_auto() {
     let hermes = parse_assistant_for_parser_family(
         ToolParserFamily::Hermes,

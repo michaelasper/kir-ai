@@ -225,9 +225,7 @@ fn serve_help_prints_without_backend_validation() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains(
-            "Qwen and Gemma are serveable through MLX; DeepSeek is recognized but deferred"
-        ),
+        stdout.contains("Qwen, DeepSeek, and Gemma are serveable through MLX"),
         "stdout: {stdout}"
     );
     assert!(
@@ -325,7 +323,7 @@ async fn serve_rejects_raw_mlx_snapshot_without_family_before_binding() {
 }
 
 #[tokio::test]
-async fn serve_rejects_deferred_deepseek_mlx_family_before_binding() {
+async fn serve_rejects_deepseek_native_metal_family_before_binding() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot = temp.path().join("raw-deepseek");
     tokio::fs::create_dir_all(&snapshot)
@@ -335,14 +333,14 @@ async fn serve_rejects_deferred_deepseek_mlx_family_before_binding() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args(["serve", "--addr", "127.0.0.1:0", "--snapshot"])
         .arg(&snapshot)
-        .args(["--loader", "mlx", "--family", "deep_seek"])
+        .args(["--loader", "native-metal", "--family", "deep_seek"])
         .output()
-        .expect("run serve with deferred MLX family");
+        .expect("run serve with unsupported native DeepSeek family");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("model family `deep_seek` is recognized but not serveable yet"),
+        stderr.contains("snapshot loader `native-metal` is not supported for family `deep_seek`"),
         "stderr: {stderr}"
     );
 }
