@@ -1059,6 +1059,52 @@ pub(crate) struct NativeTextPrefixCacheNamespace {
     pub(crate) max_prefill_tokens: usize,
 }
 
+pub(crate) struct NativeTextPrefixNamespaceContext<'a> {
+    pub(crate) model_id: &'a str,
+    pub(crate) metadata: &'a BackendModelMetadata,
+    pub(crate) request: &'a BackendRequest,
+    pub(crate) cache_layout_version: u32,
+    pub(crate) cache_tokens: usize,
+    pub(crate) max_prefill_tokens: usize,
+}
+
+pub(crate) fn native_text_prefix_namespace(
+    context: NativeTextPrefixNamespaceContext<'_>,
+) -> NativeTextPrefixCacheNamespace {
+    NativeTextPrefixCacheNamespace {
+        model_id: context.model_id.to_owned(),
+        backend: context.metadata.backend.clone(),
+        family: context.metadata.family.clone(),
+        loader: context.metadata.loader.clone(),
+        quantization: context.metadata.quantization.clone(),
+        repo_id: context.metadata.repo_id.clone(),
+        resolved_commit: context.metadata.resolved_commit.clone(),
+        profile: context.metadata.profile.clone(),
+        manifest_digest: context.metadata.manifest_digest.clone(),
+        prompt_template: native_text_cache_prompt_template(context.request),
+        tool_schema: context.request.cache_context.tool_schema.clone(),
+        request_mode: native_text_prefix_request_mode(context.request),
+        cache_layout_version: context.cache_layout_version,
+        cache_tokens: context.cache_tokens,
+        max_prefill_tokens: context.max_prefill_tokens,
+    }
+}
+
+pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> String {
+    format!(
+        "conversation={},json_object={},required_tool={:?}",
+        request.conversation_mode, request.json_object_mode, request.required_tool_choice
+    )
+}
+
+fn native_text_cache_prompt_template(request: &BackendRequest) -> String {
+    if request.cache_context.prompt_template.is_empty() {
+        llm_backend::BackendCacheContext::raw_prompt().prompt_template
+    } else {
+        request.cache_context.prompt_template.clone()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NativeTextPrefixCacheKey {
     pub(crate) namespace: NativeTextPrefixCacheNamespace,
@@ -1323,6 +1369,59 @@ mod tests {
         assert!(options.gemma.eager_materialize_shards);
         assert_eq!(options.gemma.metal_weight_cache_bytes, Some(4096));
         assert!(options.gemma.warm_metal_weight_cache);
+    }
+
+    #[test]
+    fn prefix_namespace_copies_metadata_and_request_context() {
+        let mut metadata = BackendModelMetadata::new("model-a", "native-test").with_family("test");
+        metadata.loader = Some("native-metal".to_owned());
+        metadata.quantization = Some("bf16".to_owned());
+        metadata.repo_id = Some("org/model".to_owned());
+        metadata.resolved_commit = Some("abc123".to_owned());
+        metadata.profile = Some("profile-a".to_owned());
+        metadata.manifest_digest = Some("digest-a".to_owned());
+        let request = BackendRequest {
+            model: "model-a".to_owned(),
+            prompt: "hello".to_owned(),
+            chat_context: None,
+            max_tokens: Some(1),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: true,
+            conversation_mode: true,
+            cache_context: llm_backend::BackendCacheContext {
+                prompt_template: String::new(),
+                tool_schema: Some("schema-a".to_owned()),
+            },
+        };
+
+        let namespace = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+            model_id: "model-a",
+            metadata: &metadata,
+            request: &request,
+            cache_layout_version: 7,
+            cache_tokens: 64,
+            max_prefill_tokens: 8,
+        });
+
+        assert_eq!(namespace.model_id, "model-a");
+        assert_eq!(namespace.backend, "native-test");
+        assert_eq!(namespace.family.as_deref(), Some("test"));
+        assert_eq!(namespace.loader.as_deref(), Some("native-metal"));
+        assert_eq!(namespace.quantization.as_deref(), Some("bf16"));
+        assert_eq!(namespace.repo_id.as_deref(), Some("org/model"));
+        assert_eq!(namespace.resolved_commit.as_deref(), Some("abc123"));
+        assert_eq!(namespace.profile.as_deref(), Some("profile-a"));
+        assert_eq!(namespace.manifest_digest.as_deref(), Some("digest-a"));
+        assert_eq!(namespace.prompt_template, "raw-prompt/v1");
+        assert_eq!(namespace.tool_schema.as_deref(), Some("schema-a"));
+        assert_eq!(
+            namespace.request_mode,
+            "conversation=true,json_object=true,required_tool=None"
+        );
+        assert_eq!(namespace.cache_layout_version, 7);
+        assert_eq!(namespace.cache_tokens, 64);
+        assert_eq!(namespace.max_prefill_tokens, 8);
     }
 
     #[test]

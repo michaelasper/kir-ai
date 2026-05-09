@@ -11,7 +11,7 @@ use crate::native_text::{
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
-    CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
+    BackendCacheContext, CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
     qwen_layer_caches_for_spec,
 };
 use llm_models::QwenModelSpec;

@@ -5,14 +5,15 @@ use crate::{
         NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver,
         NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
         NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
     },
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
-    BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, GemmaLayerCache, ModelBackend, NativeMatvecBackend, SafeTensorShardStore,
-    SamplingConfig, gemma_cache_count_for_spec, gemma_decode_token_with_cache_with_matvec,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    GemmaLayerCache, ModelBackend, NativeMatvecBackend, SafeTensorShardStore, SamplingConfig,
+    gemma_cache_count_for_spec, gemma_decode_token_with_cache_with_matvec,
     gemma_layer_caches_for_spec, gemma_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::SnapshotManifest;
@@ -257,23 +258,14 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace {
-        NativeTextPrefixCacheNamespace {
-            model_id: self.model_id.clone(),
-            backend: self.metadata.backend.clone(),
-            family: self.metadata.family.clone(),
-            loader: self.metadata.loader.clone(),
-            quantization: self.metadata.quantization.clone(),
-            repo_id: self.metadata.repo_id.clone(),
-            resolved_commit: self.metadata.resolved_commit.clone(),
-            profile: self.metadata.profile.clone(),
-            manifest_digest: self.metadata.manifest_digest.clone(),
-            prompt_template: backend_request_cache_prompt_template(request),
-            tool_schema: request.cache_context.tool_schema.clone(),
-            request_mode: native_gemma_prefix_request_mode(request),
+        native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+            model_id: &self.model_id,
+            metadata: &self.metadata,
+            request,
             cache_layout_version: NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION,
             cache_tokens,
             max_prefill_tokens: self.max_prefill_tokens,
-        }
+        })
     }
 
     fn layer_count(&self) -> usize {
@@ -418,21 +410,6 @@ fn reject_native_gemma_quantized_snapshot(snapshot_path: &Path) -> anyhow::Resul
         );
     }
     Ok(())
-}
-
-fn backend_request_cache_prompt_template(request: &BackendRequest) -> String {
-    if request.cache_context.prompt_template.is_empty() {
-        BackendCacheContext::raw_prompt().prompt_template
-    } else {
-        request.cache_context.prompt_template.clone()
-    }
-}
-
-fn native_gemma_prefix_request_mode(request: &BackendRequest) -> String {
-    format!(
-        "conversation={},json_object={},required_tool={:?}",
-        request.conversation_mode, request.json_object_mode, request.required_tool_choice
-    )
 }
 
 #[async_trait]

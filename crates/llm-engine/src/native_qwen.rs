@@ -6,14 +6,15 @@ use crate::{
         NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver,
         NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
         NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
     },
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
-    BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, ModelBackend, NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore,
-    SamplingConfig, qwen_decode_token_with_cache_with_matvec, qwen_layer_caches_for_spec,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    ModelBackend, NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore, SamplingConfig,
+    qwen_decode_token_with_cache_with_matvec, qwen_layer_caches_for_spec,
     qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::SnapshotManifest;
@@ -52,6 +53,7 @@ const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
 
 type NativeQwenPrefixCache = NativeTextPrefixCache<QwenLayerCache>;
+#[cfg(test)]
 type NativeQwenPrefixCacheNamespace = NativeTextPrefixCacheNamespace;
 type NativeQwenPrefixCacheMetrics = NativeTextPrefixCacheMetrics;
 
@@ -79,45 +81,6 @@ fn native_qwen_prefix_entry_bytes(hidden: &[f32], caches: &[QwenLayerCache]) -> 
 impl NativeTextPrefixCacheValue for QwenLayerCache {
     fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
         native_qwen_prefix_entry_bytes(hidden, caches)
-    }
-}
-
-fn native_qwen_prefix_namespace(
-    adapter: &NativeQwenAdapter,
-    request: &BackendRequest,
-    cache_tokens: usize,
-) -> NativeQwenPrefixCacheNamespace {
-    NativeQwenPrefixCacheNamespace {
-        model_id: adapter.model_id.clone(),
-        backend: adapter.metadata.backend.clone(),
-        family: adapter.metadata.family.clone(),
-        loader: adapter.metadata.loader.clone(),
-        quantization: adapter.metadata.quantization.clone(),
-        repo_id: adapter.metadata.repo_id.clone(),
-        resolved_commit: adapter.metadata.resolved_commit.clone(),
-        profile: adapter.metadata.profile.clone(),
-        manifest_digest: adapter.metadata.manifest_digest.clone(),
-        prompt_template: backend_request_cache_prompt_template(request),
-        tool_schema: request.cache_context.tool_schema.clone(),
-        request_mode: native_qwen_prefix_request_mode(request),
-        cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
-        cache_tokens,
-        max_prefill_tokens: adapter.max_prefill_tokens,
-    }
-}
-
-fn native_qwen_prefix_request_mode(request: &BackendRequest) -> String {
-    format!(
-        "conversation={},json_object={},required_tool={:?}",
-        request.conversation_mode, request.json_object_mode, request.required_tool_choice
-    )
-}
-
-fn backend_request_cache_prompt_template(request: &BackendRequest) -> String {
-    if request.cache_context.prompt_template.is_empty() {
-        BackendCacheContext::raw_prompt().prompt_template
-    } else {
-        request.cache_context.prompt_template.clone()
     }
 }
 
@@ -321,7 +284,14 @@ impl NativeTextAdapter for NativeQwenAdapter {
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace {
-        native_qwen_prefix_namespace(self, request, cache_tokens)
+        native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+            model_id: &self.model_id,
+            metadata: &self.metadata,
+            request,
+            cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
+            cache_tokens,
+            max_prefill_tokens: self.max_prefill_tokens,
+        })
     }
 
     fn layer_count(&self) -> usize {
