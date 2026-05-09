@@ -7,16 +7,19 @@ use llm_backend::{
 use llm_models::ModelFamily;
 use serde::Serialize;
 use serde_json::Value;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
 mod client;
 mod metadata;
+mod metrics;
 mod sse;
 
 use client::{is_loopback_endpoint, mlx_endpoint_url};
 use metadata::mlx_metadata;
+pub(crate) use metrics::mlx_backend_metrics_snapshot;
+use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};
 use sse::{
     MlxSseParser, count_whitespace_tokens, mlx_control_stop_tokens_for_metadata,
     mlx_tool_markup_for_metadata, mlx_upstream_protocol_for_request,
@@ -43,6 +46,7 @@ pub struct MlxBackend {
     endpoint: Url,
     control_stop_tokens: &'static [&'static str],
     client: reqwest::Client,
+    metrics: Arc<MlxBackendMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,24 +95,29 @@ impl MlxBackend {
             endpoint: options.endpoint,
             control_stop_tokens,
             client: reqwest::Client::new(),
+            metrics: mlx_backend_metrics(),
         })
     }
 
-    async fn send_completion_request(
-        &self,
-        request: &BackendRequest,
-    ) -> Result<reqwest::Response, BackendError> {
+    fn validate_model(&self, request: &BackendRequest) -> Result<(), BackendError> {
         if request.model != self.model_id {
             return Err(BackendError::ModelNotFound {
                 requested: request.model.clone(),
                 available: self.model_id.clone(),
             });
         }
+        Ok(())
+    }
+
+    fn build_completion_request(
+        &self,
+        request: &BackendRequest,
+        upstream_protocol: MlxUpstreamProtocol,
+    ) -> Result<reqwest::RequestBuilder, BackendError> {
         let (temperature, top_p) = match request.sampling {
             SamplingConfig::Greedy => (0.0, 1.0),
             SamplingConfig::TopP { temperature, top_p } => (temperature, top_p),
         };
-        let upstream_protocol = mlx_upstream_protocol_for_request(&self.metadata, request);
         let upstream_url = mlx_endpoint_url(&self.endpoint, upstream_protocol.endpoint_suffix());
         let request = match upstream_protocol {
             MlxUpstreamProtocol::Completions => {
@@ -143,10 +152,7 @@ impl MlxBackend {
                     })
             }
         };
-        request
-            .send()
-            .await
-            .map_err(|err| BackendError::Other(format!("MLX request failed: {err}")))
+        Ok(request)
     }
 
     async fn generate_once(
@@ -191,11 +197,22 @@ impl MlxBackend {
             if cancellation.is_cancelled() {
                 Err(BackendError::Cancelled)?;
             }
+            self.validate_model(&request)?;
+            let upstream_protocol = mlx_upstream_protocol_for_request(&self.metadata, &request);
+            let upstream_request = self.build_completion_request(&request, upstream_protocol)?;
+            let mut request_metrics = self.metrics.start_request(upstream_protocol);
             let response = tokio::select! {
-                response = self.send_completion_request(&request) => response,
+                response = upstream_request.send() => response
+                    .map_err(|err| BackendError::Other(format!("MLX request failed: {err}"))),
                 _ = cancellation.cancelled() => Err(BackendError::Cancelled),
             };
-            let response = response?;
+            let response = match response {
+                Ok(response) => response,
+                Err(err) => {
+                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                    Err(err)?
+                }
+            };
             let status = response.status();
             if status.is_success() {
                 let mut bytes = response.bytes_stream();
@@ -209,34 +226,89 @@ impl MlxBackend {
                         item = bytes.next() => Ok(item),
                         _ = cancellation.cancelled() => Err(BackendError::Cancelled),
                     };
-                    let item = item?;
+                    let item = match item {
+                        Ok(item) => item,
+                        Err(err) => {
+                            request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                            Err(err)?
+                        }
+                    };
                     let Some(item) = item else {
                         break;
                     };
-                    let bytes = item
-                        .map_err(|err| BackendError::Other(format!("MLX stream read failed: {err}")))?;
-                    let chunk = std::str::from_utf8(&bytes)
-                        .map_err(|err| BackendError::Other(format!("MLX stream was not UTF-8: {err}")))?;
-                    for parsed in parser.push_str(chunk)? {
+                    let bytes = match item {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
+                            Err(BackendError::Other(format!("MLX stream read failed: {err}")))?
+                        }
+                    };
+                    request_metrics.record_response_bytes(bytes.len());
+                    let chunk = match std::str::from_utf8(&bytes) {
+                        Ok(chunk) => chunk,
+                        Err(err) => {
+                            request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
+                            Err(BackendError::Other(format!("MLX stream was not UTF-8: {err}")))?
+                        }
+                    };
+                    let parsed_chunks = match parser.push_str(chunk) {
+                        Ok(chunks) => chunks,
+                        Err(err) => {
+                            request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                            Err(err)?
+                        }
+                    };
+                    request_metrics.record_stream_chunks(parsed_chunks.len());
+                    for parsed in parsed_chunks {
+                        if parsed.finish_reason.is_some() {
+                            request_metrics.record_finish_chunk();
+                        }
                         yield parsed;
                     }
                 }
-                for parsed in parser.finish()? {
+                let final_chunks = match parser.finish() {
+                    Ok(chunks) => chunks,
+                    Err(err) => {
+                        request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                        Err(err)?
+                    }
+                };
+                request_metrics.record_stream_chunks(final_chunks.len());
+                request_metrics.finish_success();
+                for parsed in final_chunks {
+                    if parsed.finish_reason.is_some() {
+                        request_metrics.record_finish_chunk();
+                    }
                     yield parsed;
                 }
             } else {
+                request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
                 let body = tokio::select! {
                     body = response.text() => body
                         .map_err(|err| BackendError::Other(format!("MLX response read failed: {err}"))),
                     _ = cancellation.cancelled() => Err(BackendError::Cancelled),
                 };
-                let body = body?;
+                let body = match body {
+                    Ok(body) => body,
+                    Err(err) => {
+                        request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                        Err(err)?
+                    }
+                };
                 Err(BackendError::Other(format!(
                     "MLX server returned HTTP {status}: {body}"
                 )))?;
             }
         }
         .boxed()
+    }
+}
+
+fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
+    if matches!(err, BackendError::Cancelled) {
+        MlxBackendFailureKind::Cancelled
+    } else {
+        MlxBackendFailureKind::Transport
     }
 }
 
@@ -403,6 +475,7 @@ mod tests {
         net::TcpListener,
         sync::{Arc, Mutex},
         thread,
+        time::Duration,
     };
     use tempfile::TempDir;
 
@@ -436,7 +509,7 @@ mod tests {
         let server = FakeMlxServer::start(
             "data: {\"choices\":[{\"text\":\"MLX says \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":3}}\n\ndata: {\"choices\":[{\"text\":\"hi\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
         );
-        let backend = MlxBackend::open_with_options(
+        let mut backend = MlxBackend::open_with_options(
             "local-mlx",
             server.snapshot_path(),
             MlxBackendOptions {
@@ -445,6 +518,8 @@ mod tests {
             },
         )
         .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
 
         let output = backend
             .generate(BackendRequest {
@@ -482,6 +557,296 @@ mod tests {
         assert_eq!(request["temperature"], 0.7);
         assert_eq!(request["top_p"], 0.9);
         assert_eq!(request["stream"], true);
+
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["successful_requests"], 1);
+        assert_eq!(metrics["failed_requests"], 0);
+        assert_eq!(metrics["completion_requests"], 1);
+        assert_eq!(metrics["chat_completion_requests"], 0);
+        assert_eq!(metrics["stream_chunks"], 2);
+        assert_eq!(metrics["http_error_responses"], 0);
+        assert_eq!(metrics["request_latency_ms"]["count"], 1);
+        assert!(
+            metrics["request_latency_ms"]["max"]
+                .as_f64()
+                .expect("MLX latency max is numeric")
+                >= metrics["request_latency_ms"]["min"]
+                    .as_f64()
+                    .expect("MLX latency min is numeric")
+        );
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_record_http_errors() {
+        let server = FakeMlxServer::start_with_status(
+            503,
+            "Service Unavailable",
+            "{\"error\":\"sidecar warming\"}",
+        );
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+
+        let err = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello mlx".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect_err("HTTP error is surfaced");
+
+        assert!(err.to_string().contains("HTTP 503"));
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["successful_requests"], 0);
+        assert_eq!(metrics["failed_requests"], 1);
+        assert_eq!(metrics["completion_requests"], 1);
+        assert_eq!(metrics["http_error_responses"], 1);
+        assert_eq!(metrics["stream_chunks"], 0);
+        assert_eq!(metrics["request_latency_ms"]["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_skip_local_request_build_errors() {
+        let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            snapshot.path(),
+            MlxBackendOptions {
+                endpoint: Url::parse("http://127.0.0.1:1/v1").expect("url"),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+
+        let err = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "use lookup".to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "use lookup".to_owned(),
+                    }],
+                }),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template(
+                    "chatml/qwen/v1",
+                    Some("not json".to_owned()),
+                ),
+            })
+            .await
+            .expect_err("invalid local request build fails before HTTP");
+
+        assert!(err.to_string().contains("tool schema"));
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 0);
+        assert_eq!(metrics["failed_requests"], 0);
+        assert_eq!(metrics["transport_failures"], 0);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_count_http_status_even_when_error_body_fails() {
+        let server = FakeMlxServer::start_with_response_content_length(
+            503,
+            "Service Unavailable",
+            "{\"error\":\"truncated\"}",
+            1024,
+        );
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+
+        let err = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello mlx".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect_err("truncated HTTP error body is surfaced");
+
+        assert!(err.to_string().contains("response read failed"));
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["failed_requests"], 1);
+        assert_eq!(metrics["http_error_responses"], 1);
+        assert_eq!(metrics["transport_failures"], 0);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_record_dropped_streams() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"text\":\"one \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\ndata: {\"choices\":[{\"text\":\"two\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+        );
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+
+        let mut stream = backend.generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        });
+        let first = stream
+            .next()
+            .await
+            .expect("first stream item")
+            .expect("first chunk");
+        assert_eq!(first.text, "one ");
+        drop(stream);
+
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["successful_requests"], 0);
+        assert_eq!(metrics["failed_requests"], 1);
+        assert_eq!(metrics["dropped_requests"], 1);
+        assert_eq!(metrics["cancelled_requests"], 0);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk() {
+        let server = FakeMlxServer::start(
+            "data:{\"choices\":[{\"text\":\"done\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+        );
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+
+        let mut stream = backend.generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        });
+        let chunk = stream
+            .next()
+            .await
+            .expect("stream item")
+            .expect("finish chunk");
+        assert_eq!(chunk.finish_reason, Some(llm_api::FinishReason::Stop));
+        drop(stream);
+
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["successful_requests"], 1);
+        assert_eq!(metrics["failed_requests"], 0);
+        assert_eq!(metrics["dropped_requests"], 0);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_metrics_record_in_flight_cancellations() {
+        let server = FakeMlxServer::start_with_response_delay(
+            "data:{\"choices\":[{\"text\":\"late\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            Duration::from_millis(100),
+        );
+        let mut backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Qwen),
+            },
+        )
+        .expect("backend opens");
+        backend.metrics = Arc::new(MlxBackendMetrics::default());
+        let metrics = backend.metrics.clone();
+        let cancellation = CancellationToken::new();
+
+        let mut stream = backend.generate_stream_with_cancel(
+            BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello mlx".to_owned(),
+                chat_context: None,
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            },
+            cancellation.clone(),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancellation.cancel();
+        });
+        let err = stream
+            .next()
+            .await
+            .expect("cancelled stream item")
+            .expect_err("stream is cancelled");
+        assert!(matches!(err, BackendError::Cancelled));
+
+        let metrics = metrics.snapshot();
+        assert_eq!(metrics["requests_total"], 1);
+        assert_eq!(metrics["successful_requests"], 0);
+        assert_eq!(metrics["failed_requests"], 1);
+        assert_eq!(metrics["cancelled_requests"], 1);
+        assert_eq!(metrics["dropped_requests"], 0);
     }
 
     #[tokio::test]
@@ -1470,6 +1835,55 @@ mod tests {
 
     impl FakeMlxServer {
         fn start(response_body: &'static str) -> Self {
+            Self::start_with_status(200, "OK", response_body)
+        }
+
+        fn start_with_status(
+            status_code: u16,
+            reason: &'static str,
+            response_body: &'static str,
+        ) -> Self {
+            Self::start_with_response_delay_and_content_length(
+                status_code,
+                reason,
+                response_body,
+                response_body.len(),
+                Duration::ZERO,
+            )
+        }
+
+        fn start_with_response_delay(response_body: &'static str, delay: Duration) -> Self {
+            Self::start_with_response_delay_and_content_length(
+                200,
+                "OK",
+                response_body,
+                response_body.len(),
+                delay,
+            )
+        }
+
+        fn start_with_response_content_length(
+            status_code: u16,
+            reason: &'static str,
+            response_body: &'static str,
+            response_content_length: usize,
+        ) -> Self {
+            Self::start_with_response_delay_and_content_length(
+                status_code,
+                reason,
+                response_body,
+                response_content_length,
+                Duration::ZERO,
+            )
+        }
+
+        fn start_with_response_delay_and_content_length(
+            status_code: u16,
+            reason: &'static str,
+            response_body: &'static str,
+            response_content_length: usize,
+            response_delay: Duration,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake mlx server");
             let endpoint = Url::parse(&format!(
                 "http://{}/v1",
@@ -1502,7 +1916,7 @@ mod tests {
                     .expect("request path")
                     .to_owned();
                 *received_path_for_thread.lock().expect("received path lock") = Some(request_path);
-                let content_length = headers
+                let request_content_length = headers
                     .lines()
                     .find_map(|line| {
                         let (name, value) = line.split_once(':')?;
@@ -1510,21 +1924,20 @@ mod tests {
                             .then(|| value.trim().parse::<usize>().expect("content length"))
                     })
                     .expect("content-length header");
-                while bytes.len() < header_end + content_length {
+                while bytes.len() < header_end + request_content_length {
                     let read = stream.read(&mut buffer).expect("read body");
                     assert!(read > 0, "client closed before body");
                     bytes.extend_from_slice(&buffer[..read]);
                 }
-                let body = &bytes[header_end..header_end + content_length];
+                let body = &bytes[header_end..header_end + request_content_length];
                 *received_for_thread.lock().expect("received lock") =
                     Some(serde_json::from_slice(body).expect("json request body"));
-                write!(
+                thread::sleep(response_delay);
+                let _ = write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                )
-                .expect("write response");
+                    "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_content_length, response_body
+                );
             });
             Self {
                 endpoint,

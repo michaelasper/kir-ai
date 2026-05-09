@@ -7,6 +7,7 @@ use super::{
     requests::CancelRequestResult,
 };
 use crate::{
+    mlx::mlx_backend_metrics_snapshot,
     native_qwen::native_qwen_prefix_cache_metrics_snapshot,
     native_text::{native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot},
     sync_ext::RecoverPoisonedMutex,
@@ -260,6 +261,7 @@ pub(super) async fn admin_metrics(
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
     let native_text_metal = native_text_metal_metrics_snapshot();
+    let mlx = mlx_backend_metrics_snapshot();
     let native_qwen_prefix_cache = native_qwen_prefix_cache_metrics_snapshot();
     let native_text_prefix_cache =
         native_text_prefix_cache_metrics_snapshot(native_qwen_prefix_cache.clone());
@@ -298,6 +300,7 @@ pub(super) async fn admin_metrics(
         artifact_verification_failures: metrics.artifact_verification_failures(),
         process_rss_bytes: process_rss_bytes(),
         tokens_per_second: metrics.tokens_per_second(),
+        mlx,
         native_text_metal: native_text_metal.clone(),
         native_text_prefix_cache,
         native_qwen_metal: native_text_metal,
@@ -351,6 +354,7 @@ struct AdminMetricsResponse {
     artifact_verification_failures: u64,
     process_rss_bytes: u64,
     tokens_per_second: f64,
+    mlx: Value,
     native_text_metal: Value,
     native_text_prefix_cache: Value,
     native_qwen_metal: Value,
