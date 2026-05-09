@@ -23,22 +23,22 @@ use llm_runtime::{
 use llm_telemetry::{ServerMetrics, TokenCounters};
 use serde_json::json;
 use std::{
-    collections::HashMap,
     convert::Infallible,
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
-use tokio_util::sync::CancellationToken;
 
 mod admin;
+mod requests;
 mod scheduler;
 use admin::{
     ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_model, admin_model_plan,
     admin_model_pull, admin_model_verify, admin_models, health, models,
+};
+use requests::{
+    ActiveRequest, ActiveRequestRegistry, RequestFinishResult, RequestRegistrationError,
+    RequestStartResult,
 };
 use scheduler::{
     GenerationPhase, GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions,
@@ -53,29 +53,13 @@ struct AppState {
     metrics: Arc<Mutex<ServerMetrics>>,
     generation_phases: Arc<GenerationPhaseMetrics>,
     model_scheduler: Arc<ModelScheduler>,
-    active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    next_request_id: Arc<AtomicU64>,
+    active_requests: ActiveRequestRegistry,
     admin_token: Option<Arc<str>>,
     model_home: PathBuf,
     model_store_usage: Arc<Mutex<ModelStoreUsageCache>>,
     hub_client: HubClient,
     hf_token: Option<Arc<str>>,
     stream_stall_timeout: Option<Duration>,
-}
-
-#[derive(Debug)]
-struct ActiveRequest {
-    id: String,
-    cancellation: CancellationToken,
-    active_requests: Arc<Mutex<HashMap<String, CancellationToken>>>,
-}
-
-impl Drop for ActiveRequest {
-    fn drop(&mut self) {
-        self.active_requests
-            .lock_or_recover("active request")
-            .remove(&self.id);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,8 +167,7 @@ pub fn build_router_with_backend_and_options(
                 prefill_threshold_chars: options.scheduler_prefill_threshold_chars,
                 prefill_burst: options.scheduler_prefill_burst.max(1),
             })),
-            active_requests: Arc::new(Mutex::new(HashMap::new())),
-            next_request_id: Arc::new(AtomicU64::new(1)),
+            active_requests: ActiveRequestRegistry::default(),
             admin_token: options.admin_token.map(Arc::from),
             model_home: options.model_home.unwrap_or_else(default_model_home),
             model_store_usage: Arc::new(Mutex::new(ModelStoreUsageCache::default())),
@@ -273,18 +256,18 @@ async fn chat_completions(
     let streamed = request.stream;
     let (admission_class, initial_phase) = chat_scheduler_classes(&state, &request);
     if request.stream {
-        let mut scheduler_slot =
-            acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
-        let active_request = match register_active_request(&state, &headers) {
-            Ok(active_request) => active_request,
-            Err(err) => {
-                scheduler_slot.mark_failed();
-                return Err(err);
-            }
-        };
+        let active_request = register_active_request(&state, &headers)?;
+        let request_started = active_request.started_at;
+        let mut scheduler_slot = acquire_scheduler_slot(
+            &state,
+            admission_class,
+            initial_phase,
+            &active_request.cancellation,
+        )
+        .await?;
+        mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
         let phase = state.generation_phases.begin(initial_phase);
         let request_id = active_request.id.clone();
-        let request_started = Instant::now();
         if chat_stream_requires_buffering(&request) {
             let response = match state
                 .runtime
@@ -293,9 +276,12 @@ async fn chat_completions(
             {
                 Ok(response) => response,
                 Err(err) => {
-                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                    record_runtime_error_metrics(&state, &err);
-                    return Err(err.into());
+                    return Err(mark_active_request_finished_for_runtime_error(
+                        &state,
+                        &active_request,
+                        &mut scheduler_slot,
+                        err,
+                    ));
                 }
             };
             let events = async_stream::stream! {
@@ -305,8 +291,26 @@ async fn chat_completions(
                 let mut events = response.into_events();
                 let mut ttft_recorded = false;
                 loop {
-                    match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                    match next_stream_event(
+                        &mut events,
+                        state.stream_stall_timeout,
+                        &_active_request.cancellation,
+                    )
+                    .await
+                    {
                         Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                            if _active_request.cancellation.is_cancelled() {
+                                for event in mark_active_request_finished_for_stream_cancellation(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                    "request was cancelled before stream chunk delivery",
+                                    "decode",
+                                ) {
+                                    yield event;
+                                }
+                                return;
+                            }
                             if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
                                 phase.transition_to_decode();
                                 scheduler_slot.transition_to_decode();
@@ -316,22 +320,79 @@ async fn chat_completions(
                             yield sse_json_event(chunk);
                         }
                         Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
+                            if let Err(events) =
+                                mark_active_request_finished_for_stream_success(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                )
+                            {
+                                for event in events {
+                                    yield event;
+                                }
+                                return;
+                            }
                             record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                             yield Ok(Event::default().data("[DONE]"));
                         }
                         Ok(Some(Err(err))) => {
-                            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                            record_runtime_error_metrics(&state, &err);
-                            for event in runtime_error_stream_events(err) {
+                            for event in mark_active_request_finished_for_stream_error(
+                                &state,
+                                &_active_request,
+                                &mut scheduler_slot,
+                                err,
+                            ) {
                                 yield event;
                             }
                             return;
                         }
-                        Ok(None) => break,
-                        Err(StreamStalled) => {
-                            scheduler_slot.mark_failed();
-                            record_failure_metrics(&state);
-                            for event in stream_stalled_stream_events(state.stream_stall_timeout) {
+                        Ok(None) => {
+                            match _active_request.mark_finished() {
+                                RequestFinishResult::Finished => break,
+                                RequestFinishResult::Cancelled => {
+                                    scheduler_slot.mark_cancelled();
+                                    record_failure_metrics(&state);
+                                    for event in request_cancelled_stream_events(
+                                        "request was cancelled before stream completion",
+                                        "decode",
+                                    ) {
+                                        yield event;
+                                    }
+                                    return;
+                                }
+                                RequestFinishResult::Missing => {
+                                    scheduler_slot.mark_failed();
+                                    record_failure_metrics(&state);
+                                    for event in runtime_error_stream_events(RuntimeError::Backend(
+                                        BackendError::Other(
+                                            "request lifecycle was missing before stream completion"
+                                                .to_owned(),
+                                        ),
+                                    )) {
+                                        yield event;
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        Err(StreamWaitError::Stalled) => {
+                            for event in mark_active_request_finished_for_stream_stall(
+                                &state,
+                                &_active_request,
+                                &mut scheduler_slot,
+                            ) {
+                                yield event;
+                            }
+                            return;
+                        }
+                        Err(StreamWaitError::Cancelled) => {
+                            for event in mark_active_request_finished_for_stream_cancellation(
+                                &state,
+                                &_active_request,
+                                &mut scheduler_slot,
+                                "request was cancelled while waiting for stream output",
+                                "decode",
+                            ) {
                                 yield event;
                             }
                             return;
@@ -358,8 +419,26 @@ async fn chat_completions(
                     let mut events = response.into_events();
                     let mut ttft_recorded = false;
                     loop {
-                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                        match next_stream_event(
+                            &mut events,
+                            state.stream_stall_timeout,
+                            &_active_request.cancellation,
+                        )
+                        .await
+                        {
                             Ok(Some(Ok(ChatCompletionStreamEvent::Chunk(chunk)))) => {
+                                if _active_request.cancellation.is_cancelled() {
+                                    for event in mark_active_request_finished_for_stream_cancellation(
+                                        &state,
+                                        &_active_request,
+                                        &mut scheduler_slot,
+                                        "request was cancelled before stream chunk delivery",
+                                        "decode",
+                                    ) {
+                                        yield event;
+                                    }
+                                    return;
+                                }
                                 if !ttft_recorded && chat_chunk_has_real_delta(&chunk) {
                                     phase.transition_to_decode();
                                     scheduler_slot.transition_to_decode();
@@ -369,22 +448,79 @@ async fn chat_completions(
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(ChatCompletionStreamEvent::Complete(usage)))) => {
+                                if let Err(events) =
+                                    mark_active_request_finished_for_stream_success(
+                                        &state,
+                                        &_active_request,
+                                        &mut scheduler_slot,
+                                    )
+                                {
+                                    for event in events {
+                                        yield event;
+                                    }
+                                    return;
+                                }
                                 record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
-                                mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                                record_runtime_error_metrics(&state, &err);
-                                for event in runtime_error_stream_events(err) {
+                                for event in mark_active_request_finished_for_stream_error(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                    err,
+                                ) {
                                     yield event;
                                 }
                                 return;
                             }
-                            Ok(None) => break,
-                            Err(StreamStalled) => {
-                                scheduler_slot.mark_failed();
-                                record_failure_metrics(&state);
-                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
+                            Ok(None) => {
+                                match _active_request.mark_finished() {
+                                    RequestFinishResult::Finished => break,
+                                    RequestFinishResult::Cancelled => {
+                                        scheduler_slot.mark_cancelled();
+                                        record_failure_metrics(&state);
+                                        for event in request_cancelled_stream_events(
+                                            "request was cancelled before stream completion",
+                                            "decode",
+                                        ) {
+                                            yield event;
+                                        }
+                                        return;
+                                    }
+                                    RequestFinishResult::Missing => {
+                                        scheduler_slot.mark_failed();
+                                        record_failure_metrics(&state);
+                                        for event in runtime_error_stream_events(RuntimeError::Backend(
+                                            BackendError::Other(
+                                                "request lifecycle was missing before stream completion"
+                                                    .to_owned(),
+                                            ),
+                                        )) {
+                                            yield event;
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(StreamWaitError::Stalled) => {
+                                for event in mark_active_request_finished_for_stream_stall(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                ) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                            Err(StreamWaitError::Cancelled) => {
+                                for event in mark_active_request_finished_for_stream_cancellation(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                    "request was cancelled while waiting for stream output",
+                                    "decode",
+                                ) {
                                     yield event;
                                 }
                                 return;
@@ -393,9 +529,12 @@ async fn chat_completions(
                     }
                 }
                 Err(err) => {
-                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                    record_runtime_error_metrics(&state, &err);
-                    for event in runtime_error_stream_events(err) {
+                    for event in mark_active_request_finished_for_stream_error(
+                        &state,
+                        &_active_request,
+                        &mut scheduler_slot,
+                        err,
+                    ) {
                         yield event;
                     }
                 }
@@ -407,17 +546,18 @@ async fn chat_completions(
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let mut scheduler_slot = acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
-    let active_request = match register_active_request(&state, &headers) {
-        Ok(active_request) => active_request,
-        Err(err) => {
-            scheduler_slot.mark_failed();
-            return Err(err);
-        }
-    };
+    let active_request = register_active_request(&state, &headers)?;
+    let request_started = active_request.started_at;
+    let mut scheduler_slot = acquire_scheduler_slot(
+        &state,
+        admission_class,
+        initial_phase,
+        &active_request.cancellation,
+    )
+    .await?;
+    mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
     let _phase = state.generation_phases.begin(initial_phase);
     let request_id = active_request.id.clone();
-    let request_started = Instant::now();
     let response = match state
         .runtime
         .chat_with_cancel(request, active_request.cancellation.clone())
@@ -425,11 +565,15 @@ async fn chat_completions(
     {
         Ok(response) => response,
         Err(err) => {
-            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-            record_runtime_error_metrics(&state, &err);
-            return Err(err.into());
+            return Err(mark_active_request_finished_for_runtime_error(
+                &state,
+                &active_request,
+                &mut scheduler_slot,
+                err,
+            ));
         }
     };
+    mark_active_request_finished_for_success(&state, &active_request, &mut scheduler_slot)?;
     drop(active_request);
     record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
     let mut response = Json(response).into_response();
@@ -447,18 +591,18 @@ async fn completions(
     let streamed = request.stream;
     let (admission_class, initial_phase) = completion_scheduler_classes(&state, &request);
     if request.stream {
-        let mut scheduler_slot =
-            acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
-        let active_request = match register_active_request(&state, &headers) {
-            Ok(active_request) => active_request,
-            Err(err) => {
-                scheduler_slot.mark_failed();
-                return Err(err);
-            }
-        };
+        let active_request = register_active_request(&state, &headers)?;
+        let request_started = active_request.started_at;
+        let mut scheduler_slot = acquire_scheduler_slot(
+            &state,
+            admission_class,
+            initial_phase,
+            &active_request.cancellation,
+        )
+        .await?;
+        mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
         let phase = state.generation_phases.begin(initial_phase);
         let request_id = active_request.id.clone();
-        let request_started = Instant::now();
         let events = async_stream::stream! {
             let mut scheduler_slot = scheduler_slot;
             let _active_request = active_request;
@@ -472,8 +616,26 @@ async fn completions(
                     let mut events = response.into_events();
                     let mut ttft_recorded = false;
                     loop {
-                        match next_stream_event(&mut events, state.stream_stall_timeout).await {
+                        match next_stream_event(
+                            &mut events,
+                            state.stream_stall_timeout,
+                            &_active_request.cancellation,
+                        )
+                        .await
+                        {
                             Ok(Some(Ok(CompletionStreamEvent::Chunk(chunk)))) => {
+                                if _active_request.cancellation.is_cancelled() {
+                                    for event in mark_active_request_finished_for_stream_cancellation(
+                                        &state,
+                                        &_active_request,
+                                        &mut scheduler_slot,
+                                        "request was cancelled before stream chunk delivery",
+                                        "decode",
+                                    ) {
+                                        yield event;
+                                    }
+                                    return;
+                                }
                                 if !ttft_recorded && completion_chunk_has_real_delta(&chunk) {
                                     phase.transition_to_decode();
                                     scheduler_slot.transition_to_decode();
@@ -483,22 +645,79 @@ async fn completions(
                                 yield sse_json_event(chunk);
                             }
                             Ok(Some(Ok(CompletionStreamEvent::Complete(usage)))) => {
+                                if let Err(events) =
+                                    mark_active_request_finished_for_stream_success(
+                                        &state,
+                                        &_active_request,
+                                        &mut scheduler_slot,
+                                    )
+                                {
+                                    for event in events {
+                                        yield event;
+                                    }
+                                    return;
+                                }
                                 record_success_metrics(&state, &usage, streamed, request_started.elapsed());
                                 yield Ok(Event::default().data("[DONE]"));
                             }
                             Ok(Some(Err(err))) => {
-                                mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                                record_runtime_error_metrics(&state, &err);
-                                for event in runtime_error_stream_events(err) {
+                                for event in mark_active_request_finished_for_stream_error(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                    err,
+                                ) {
                                     yield event;
                                 }
                                 return;
                             }
-                            Ok(None) => break,
-                            Err(StreamStalled) => {
-                                scheduler_slot.mark_failed();
-                                record_failure_metrics(&state);
-                                for event in stream_stalled_stream_events(state.stream_stall_timeout) {
+                            Ok(None) => {
+                                match _active_request.mark_finished() {
+                                    RequestFinishResult::Finished => break,
+                                    RequestFinishResult::Cancelled => {
+                                        scheduler_slot.mark_cancelled();
+                                        record_failure_metrics(&state);
+                                        for event in request_cancelled_stream_events(
+                                            "request was cancelled before stream completion",
+                                            "decode",
+                                        ) {
+                                            yield event;
+                                        }
+                                        return;
+                                    }
+                                    RequestFinishResult::Missing => {
+                                        scheduler_slot.mark_failed();
+                                        record_failure_metrics(&state);
+                                        for event in runtime_error_stream_events(RuntimeError::Backend(
+                                            BackendError::Other(
+                                                "request lifecycle was missing before stream completion"
+                                                    .to_owned(),
+                                            ),
+                                        )) {
+                                            yield event;
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(StreamWaitError::Stalled) => {
+                                for event in mark_active_request_finished_for_stream_stall(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                ) {
+                                    yield event;
+                                }
+                                return;
+                            }
+                            Err(StreamWaitError::Cancelled) => {
+                                for event in mark_active_request_finished_for_stream_cancellation(
+                                    &state,
+                                    &_active_request,
+                                    &mut scheduler_slot,
+                                    "request was cancelled while waiting for stream output",
+                                    "decode",
+                                ) {
                                     yield event;
                                 }
                                 return;
@@ -507,9 +726,12 @@ async fn completions(
                     }
                 }
                 Err(err) => {
-                    mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-                    record_runtime_error_metrics(&state, &err);
-                    for event in runtime_error_stream_events(err) {
+                    for event in mark_active_request_finished_for_stream_error(
+                        &state,
+                        &_active_request,
+                        &mut scheduler_slot,
+                        err,
+                    ) {
                         yield event;
                     }
                 }
@@ -521,17 +743,18 @@ async fn completions(
         insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let mut scheduler_slot = acquire_scheduler_slot(&state, admission_class, initial_phase).await?;
-    let active_request = match register_active_request(&state, &headers) {
-        Ok(active_request) => active_request,
-        Err(err) => {
-            scheduler_slot.mark_failed();
-            return Err(err);
-        }
-    };
+    let active_request = register_active_request(&state, &headers)?;
+    let request_started = active_request.started_at;
+    let mut scheduler_slot = acquire_scheduler_slot(
+        &state,
+        admission_class,
+        initial_phase,
+        &active_request.cancellation,
+    )
+    .await?;
+    mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
     let _phase = state.generation_phases.begin(initial_phase);
     let request_id = active_request.id.clone();
-    let request_started = Instant::now();
     let response = match state
         .runtime
         .completion_with_cancel(request, active_request.cancellation.clone())
@@ -539,11 +762,15 @@ async fn completions(
     {
         Ok(response) => response,
         Err(err) => {
-            mark_scheduler_runtime_error(&mut scheduler_slot, &err);
-            record_runtime_error_metrics(&state, &err);
-            return Err(err.into());
+            return Err(mark_active_request_finished_for_runtime_error(
+                &state,
+                &active_request,
+                &mut scheduler_slot,
+                err,
+            ));
         }
     };
+    mark_active_request_finished_for_success(&state, &active_request, &mut scheduler_slot)?;
     drop(active_request);
     record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
     let mut response = Json(response).into_response();
@@ -560,6 +787,24 @@ fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallibl
                 "code": metadata.code,
                 "phase": metadata.phase,
                 "retryable": metadata.retryable,
+                "type": "llm_engine_error"
+            }
+        })),
+        Ok(Event::default().data("[DONE]")),
+    ]
+}
+
+fn request_cancelled_stream_events(
+    message: &'static str,
+    phase: &'static str,
+) -> Vec<Result<Event, Infallible>> {
+    vec![
+        sse_json_event(json!({
+            "error": {
+                "message": message,
+                "code": "cancelled",
+                "phase": phase,
+                "retryable": false,
                 "type": "llm_engine_error"
             }
         })),
@@ -666,20 +911,40 @@ fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StreamStalled;
+enum StreamWaitError {
+    Stalled,
+    Cancelled,
+}
 
 async fn next_stream_event<S, T>(
     events: &mut S,
     timeout: Option<Duration>,
-) -> Result<Option<Result<T, RuntimeError>>, StreamStalled>
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<Option<Result<T, RuntimeError>>, StreamWaitError>
 where
     S: Stream<Item = Result<T, RuntimeError>> + Unpin,
 {
+    if cancellation.is_cancelled() {
+        return Err(StreamWaitError::Cancelled);
+    }
+    let next = events.next();
+    tokio::pin!(next);
     match timeout {
-        Some(timeout) => tokio::time::timeout(timeout, events.next())
-            .await
-            .map_err(|_| StreamStalled),
-        None => Ok(events.next().await),
+        Some(timeout) => {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => Err(StreamWaitError::Cancelled),
+                result = &mut next => Ok(result),
+                () = tokio::time::sleep(timeout) => Err(StreamWaitError::Stalled),
+            }
+        }
+        None => {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => Err(StreamWaitError::Cancelled),
+                result = &mut next => Ok(result),
+            }
+        }
     }
 }
 
@@ -776,11 +1041,12 @@ async fn acquire_scheduler_slot(
     state: &AppState,
     admission_class: SchedulerClass,
     initial_phase: GenerationPhase,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<SchedulerPermit, EngineError> {
     match state
         .model_scheduler
         .clone()
-        .acquire(admission_class, initial_phase)
+        .acquire(admission_class, initial_phase, cancellation)
         .await
     {
         Ok(permit) => Ok(permit),
@@ -795,6 +1061,199 @@ async fn acquire_scheduler_slot(
             Err(EngineError::Overloaded(
                 "model scheduler queue timed out; retry the request later".to_owned(),
             ))
+        }
+        Err(SchedulerAcquireError::Cancelled) => {
+            record_failure_metrics(state);
+            Err(EngineError::RequestCancelled {
+                phase: "scheduler",
+                message: "request was cancelled before scheduler admission",
+            })
+        }
+    }
+}
+
+fn mark_active_request_running(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+) -> Result<(), EngineError> {
+    match active_request.mark_running() {
+        RequestStartResult::Running => Ok(()),
+        RequestStartResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            Err(EngineError::RequestCancelled {
+                phase: "scheduler",
+                message: "request was cancelled before runtime execution",
+            })
+        }
+        RequestStartResult::Finished | RequestStartResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            Err(RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was not runnable after scheduler admission".to_owned(),
+            ))
+            .into())
+        }
+    }
+}
+
+fn mark_active_request_finished_for_success(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+) -> Result<(), EngineError> {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished => Ok(()),
+        RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            Err(EngineError::RequestCancelled {
+                phase: "decode",
+                message: "request was cancelled before response delivery",
+            })
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            Err(RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was missing before response delivery".to_owned(),
+            ))
+            .into())
+        }
+    }
+}
+
+fn mark_active_request_finished_for_runtime_error(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+    err: RuntimeError,
+) -> EngineError {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished => {
+            mark_scheduler_runtime_error(scheduler_slot, &err);
+            record_runtime_error_metrics(state, &err);
+            err.into()
+        }
+        RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            EngineError::RequestCancelled {
+                phase: "decode",
+                message: "request was cancelled before error delivery",
+            }
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was missing before error delivery".to_owned(),
+            ))
+            .into()
+        }
+    }
+}
+
+fn mark_active_request_finished_for_stream_success(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+) -> Result<(), Vec<Result<Event, Infallible>>> {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished => Ok(()),
+        RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            Err(request_cancelled_stream_events(
+                "request was cancelled before response delivery",
+                "decode",
+            ))
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            Err(runtime_error_stream_events(RuntimeError::Backend(
+                BackendError::Other(
+                    "request lifecycle was missing before response delivery".to_owned(),
+                ),
+            )))
+        }
+    }
+}
+
+fn mark_active_request_finished_for_stream_error(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+    err: RuntimeError,
+) -> Vec<Result<Event, Infallible>> {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished => {
+            mark_scheduler_runtime_error(scheduler_slot, &err);
+            record_runtime_error_metrics(state, &err);
+            runtime_error_stream_events(err)
+        }
+        RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            request_cancelled_stream_events("request was cancelled before error delivery", "decode")
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was missing before error delivery".to_owned(),
+            )))
+        }
+    }
+}
+
+fn mark_active_request_finished_for_stream_cancellation(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+    message: &'static str,
+    phase: &'static str,
+) -> Vec<Result<Event, Infallible>> {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished | RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            request_cancelled_stream_events(message, phase)
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was missing before stream cancellation".to_owned(),
+            )))
+        }
+    }
+}
+
+fn mark_active_request_finished_for_stream_stall(
+    state: &AppState,
+    active_request: &ActiveRequest,
+    scheduler_slot: &mut SchedulerPermit,
+) -> Vec<Result<Event, Infallible>> {
+    match active_request.mark_finished() {
+        RequestFinishResult::Finished => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            stream_stalled_stream_events(state.stream_stall_timeout)
+        }
+        RequestFinishResult::Cancelled => {
+            scheduler_slot.mark_cancelled();
+            record_failure_metrics(state);
+            request_cancelled_stream_events("request was cancelled before stream stall", "decode")
+        }
+        RequestFinishResult::Missing => {
+            scheduler_slot.mark_failed();
+            record_failure_metrics(state);
+            runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                "request lifecycle was missing before stream stall".to_owned(),
+            )))
         }
     }
 }
@@ -837,25 +1296,14 @@ fn register_active_request(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<ActiveRequest, EngineError> {
-    let id = match request_id_from_headers(state, headers) {
-        Ok(id) => id,
-        Err(err) => {
-            record_failure_metrics(state);
-            return Err(err);
-        }
-    };
-    let cancellation = CancellationToken::new();
-    let mut active_requests = state.active_requests.lock_or_recover("active request");
-    if active_requests.contains_key(&id) {
+    let id = request_id_from_headers(state, headers).inspect_err(|_| {
         record_failure_metrics(state);
-        return Err(EngineError::RequestConflict(id));
-    }
-    active_requests.insert(id.clone(), cancellation.clone());
-    drop(active_requests);
-    Ok(ActiveRequest {
-        id,
-        cancellation,
-        active_requests: state.active_requests.clone(),
+    })?;
+    state.active_requests.register(id).map_err(|err| {
+        record_failure_metrics(state);
+        match err {
+            RequestRegistrationError::Conflict(id) => EngineError::RequestConflict(id),
+        }
     })
 }
 
@@ -864,8 +1312,7 @@ fn request_id_from_headers(state: &AppState, headers: &HeaderMap) -> Result<Stri
         .get("x-request-id")
         .or_else(|| headers.get("x-llm-request-id"))
     else {
-        let next = state.next_request_id.fetch_add(1, Ordering::Relaxed);
-        return Ok(format!("req-{next}"));
+        return Ok(state.active_requests.next_request_id());
     };
     let request_id = value
         .to_str()
@@ -949,6 +1396,10 @@ enum EngineError {
     Runtime(RuntimeError),
     ModelStore(HubError),
     Overloaded(String),
+    RequestCancelled {
+        phase: &'static str,
+        message: &'static str,
+    },
     RequestNotFound(String),
     RequestConflict(String),
     InvalidRequestId(String),
@@ -991,6 +1442,13 @@ impl IntoResponse for EngineError {
                 "scheduler",
                 true,
                 message,
+            ),
+            Self::RequestCancelled { phase, message } => (
+                StatusCode::REQUEST_TIMEOUT,
+                "cancelled",
+                phase,
+                false,
+                message.to_owned(),
             ),
             Self::RequestNotFound(request_id) => (
                 StatusCode::NOT_FOUND,

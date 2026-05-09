@@ -269,6 +269,42 @@ impl ModelBackend for AdminCancellableBackend {
     }
 }
 
+struct AdminLateErrorBackend {
+    entered: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl ModelBackend for AdminLateErrorBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "admin-late-error")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        self.entered.notify_waiters();
+        let _permit = self
+            .release
+            .acquire()
+            .await
+            .expect("release semaphore open");
+        Err(BackendError::Other("late backend failure".to_owned()))
+    }
+}
+
 struct NoProgressBackend;
 
 #[async_trait]

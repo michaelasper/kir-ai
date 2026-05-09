@@ -1,3 +1,4 @@
+use super::requests::CancelRequestResult;
 use super::{
     AppState, EngineError, record_artifact_verification_failure_metrics,
     record_cancellation_metrics, record_model_pull_failure_metrics,
@@ -254,10 +255,7 @@ pub(super) async fn admin_metrics(
     let time_to_first_token = metrics.time_to_first_token();
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
-    let active_requests = state
-        .active_requests
-        .lock_or_recover("active request")
-        .len();
+    let active_requests = state.active_requests.active_count();
     Ok(Json(json!({
         "requests_total": metrics.requests_total(),
         "successful_requests": metrics.successful_requests(),
@@ -448,18 +446,19 @@ pub(super) async fn admin_cancel_request(
     AxumPath(request_id): AxumPath<String>,
 ) -> Result<Json<Value>, EngineError> {
     require_admin(&state, &headers)?;
-    let cancellation = state
-        .active_requests
-        .lock_or_recover("active request")
-        .get(&request_id)
-        .cloned()
-        .ok_or_else(|| EngineError::RequestNotFound(request_id.clone()))?;
-    cancellation.cancel();
-    record_cancellation_metrics(&state);
+    let status = match state.active_requests.cancel(&request_id) {
+        CancelRequestResult::Cancelled => {
+            record_cancellation_metrics(&state);
+            "cancelled"
+        }
+        CancelRequestResult::AlreadyCancelled => "already_cancelled",
+        CancelRequestResult::Finished => "already_finished",
+        CancelRequestResult::NotFound => return Err(EngineError::RequestNotFound(request_id)),
+    };
     Ok(Json(json!({
         "object": "admin.request_cancellation",
         "request_id": request_id,
-        "status": "cancelled"
+        "status": status
     })))
 }
 

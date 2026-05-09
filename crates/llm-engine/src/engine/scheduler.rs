@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub(super) struct GenerationPhaseMetrics {
@@ -315,6 +316,7 @@ impl ModelSchedulerSnapshot {
 pub(super) enum SchedulerAcquireError {
     QueueFull,
     QueueTimedOut,
+    Cancelled,
 }
 
 impl ModelScheduler {
@@ -357,9 +359,13 @@ impl ModelScheduler {
         self: &Arc<Self>,
         admission_class: SchedulerClass,
         initial_phase: GenerationPhase,
+        cancellation: &CancellationToken,
     ) -> Result<SchedulerPermit, SchedulerAcquireError> {
+        if cancellation.is_cancelled() {
+            return Err(SchedulerAcquireError::Cancelled);
+        }
         if let Some(permit) = self.try_acquire_immediate(admission_class, initial_phase) {
-            return Ok(permit);
+            return Self::admit_unless_cancelled(permit, cancellation);
         }
         let mut ticket = self.enqueue(admission_class)?;
         let deadline = self
@@ -367,24 +373,46 @@ impl ModelScheduler {
             .queue_timeout
             .map(|timeout| tokio::time::Instant::now() + timeout);
         loop {
+            if cancellation.is_cancelled() {
+                return Err(SchedulerAcquireError::Cancelled);
+            }
             let notified = self.notify.notified();
             tokio::pin!(notified);
             if let Some(permit) = self.try_admit_queued(ticket.id, admission_class, initial_phase) {
                 ticket.admitted();
-                return Ok(permit);
+                return Self::admit_unless_cancelled(permit, cancellation);
             }
             if let Some(deadline) = deadline {
                 tokio::select! {
                     () = &mut notified => {}
+                    () = cancellation.cancelled() => {
+                        return Err(SchedulerAcquireError::Cancelled);
+                    }
                     () = tokio::time::sleep_until(deadline) => {
                         ticket.timed_out();
                         return Err(SchedulerAcquireError::QueueTimedOut);
                     }
                 }
             } else {
-                notified.await;
+                tokio::select! {
+                    () = &mut notified => {}
+                    () = cancellation.cancelled() => {
+                        return Err(SchedulerAcquireError::Cancelled);
+                    }
+                }
             }
         }
+    }
+
+    fn admit_unless_cancelled(
+        mut permit: SchedulerPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<SchedulerPermit, SchedulerAcquireError> {
+        if cancellation.is_cancelled() {
+            permit.mark_cancelled();
+            return Err(SchedulerAcquireError::Cancelled);
+        }
+        Ok(permit)
     }
 
     fn try_acquire_immediate(
@@ -466,5 +494,37 @@ impl ModelScheduler {
             queued_cancelled: state.queued_cancelled,
             queue_timeouts: state.queue_timeouts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_options() -> ModelSchedulerOptions {
+        ModelSchedulerOptions {
+            concurrency_limit: 1,
+            queue_limit: 1,
+            queue_timeout: None,
+            prefill_threshold_chars: 16,
+            prefill_burst: 1,
+        }
+    }
+
+    #[test]
+    fn admitted_permit_is_cancelled_when_token_cancels_before_return() {
+        let scheduler = Arc::new(ModelScheduler::new(test_options()));
+        let cancellation = CancellationToken::new();
+        let permit = scheduler
+            .try_acquire_immediate(SchedulerClass::Decode, GenerationPhase::Decode)
+            .expect("permit is admitted");
+
+        cancellation.cancel();
+        let result = ModelScheduler::admit_unless_cancelled(permit, &cancellation);
+
+        assert_eq!(result.unwrap_err(), SchedulerAcquireError::Cancelled);
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.active_decode, 0);
+        assert_eq!(snapshot.cancelled, 1);
     }
 }
