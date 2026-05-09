@@ -1,9 +1,5 @@
-use super::{
-    MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_GEMMA_CONTROL_STOP_TOKENS, MLX_LLAMA_CONTROL_STOP_TOKENS,
-    MLX_QWEN_CONTROL_STOP_TOKENS, MlxUpstreamProtocol,
-};
-use llm_backend::{BackendError, BackendModelMetadata, BackendRequest, BackendStreamChunk};
-use llm_models::ModelFamily;
+use super::protocol::MlxToolMarkup;
+use llm_backend::{BackendError, BackendStreamChunk};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -259,13 +255,6 @@ impl MlxSseParser {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum MlxToolMarkup {
-    Json,
-    DeepSeek,
-    Gemma,
-}
-
 #[derive(Debug, Default, Clone)]
 struct MlxToolCallAccumulator {
     name: String,
@@ -364,18 +353,6 @@ fn mlx_finish_reason(reason: Option<&str>) -> Result<llm_api::FinishReason, Back
     }
 }
 
-pub(super) fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> MlxToolMarkup {
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
-        Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
-        Some(ModelFamily::Qwen) | Some(ModelFamily::Llama) | None => MlxToolMarkup::Json,
-    }
-}
-
 fn render_mlx_tool_call(
     call: &MlxToolCallAccumulator,
     markup: MlxToolMarkup,
@@ -469,49 +446,4 @@ fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
 
 pub(super) fn count_whitespace_tokens(text: &str) -> u64 {
     text.split_whitespace().count().max(1) as u64
-}
-
-pub(super) fn mlx_control_stop_tokens_for_metadata(
-    metadata: &BackendModelMetadata,
-) -> &'static [&'static str] {
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::DeepSeek) => MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Llama) => MLX_LLAMA_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Qwen) | None => MLX_QWEN_CONTROL_STOP_TOKENS,
-    }
-}
-
-pub(super) fn mlx_upstream_protocol_for_request(
-    metadata: &BackendModelMetadata,
-    request: &BackendRequest,
-) -> MlxUpstreamProtocol {
-    if request.conversation_mode {
-        if request.chat_context.is_none()
-            && matches!(
-                metadata
-                    .family
-                    .as_deref()
-                    .and_then(|family| ModelFamily::parse_slug(family).ok()),
-                Some(ModelFamily::Llama)
-            )
-        {
-            return MlxUpstreamProtocol::Completions;
-        }
-        return MlxUpstreamProtocol::ChatCompletions;
-    }
-    match metadata
-        .family
-        .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
-    {
-        Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
-        Some(ModelFamily::Qwen) | Some(ModelFamily::DeepSeek) | Some(ModelFamily::Llama) | None => {
-            MlxUpstreamProtocol::Completions
-        }
-    }
 }

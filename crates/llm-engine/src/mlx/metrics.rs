@@ -1,4 +1,4 @@
-use super::MlxUpstreamProtocol;
+use super::protocol::MlxUpstreamProtocol;
 use crate::sync_ext::RecoverPoisonedMutex;
 use llm_telemetry::LatencyMetrics;
 use serde_json::{Value, json};
