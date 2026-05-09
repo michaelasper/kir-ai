@@ -306,6 +306,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         &self,
         token_ids: &[usize],
         caches: &mut [QwenLayerCache],
+        scratch: &mut InferenceScratchpad,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
         native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
             &self.store,
@@ -313,6 +314,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             token_ids,
             NativeTextLayerCachesMut::Qwen(caches),
             &self.matvec,
+            scratch,
         )
         .await
         .map_err(|err| BackendError::Other(err.to_string()))
@@ -344,14 +346,16 @@ impl NativeTextAdapter for NativeQwenAdapter {
         &self,
         session: &mut NativeQwenDecodeSession,
         token_id: usize,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
-        session.step(&self.store, &self.spec, &self.matvec, token_id).await
+        session.step(&self.store, &self.spec, &self.matvec, token_id, scratch).await
     }
 
     async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<usize, BackendError> {
         NativeTextNextTokenContext {
             store: &self.store,
@@ -361,7 +365,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             matvec: &self.matvec,
             family_display_name: "Qwen",
         }
-        .select_next_token(hidden, sampling)
+        .select_next_token(hidden, sampling, scratch)
         .await
     }
 }
@@ -383,6 +387,7 @@ impl NativeQwenDecodeSession {
         spec: &QwenModelSpec,
         matvec: &impl NativeMatvecBackend,
         token_id: usize,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
         self.hidden = native_decode_token_with_cache_for_spec_ref_with_matvec(
             store,
@@ -390,6 +395,7 @@ impl NativeQwenDecodeSession {
             token_id,
             NativeTextLayerCachesMut::Qwen(&mut self.caches),
             matvec,
+            scratch,
         )
         .await
         .map_err(|err| BackendError::Other(err.to_string()))?;

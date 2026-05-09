@@ -103,6 +103,18 @@ impl MetalDevice {
         start: usize,
         len: usize,
     ) -> Result<Vec<f32>, MetalError> {
+        let mut output = vec![0.0; len];
+        self.read_f32_buffer_range_in_place(buffer, start, len, &mut output)?;
+        Ok(output)
+    }
+
+    pub fn read_f32_buffer_range_in_place(
+        &self,
+        buffer: &F32Buffer,
+        start: usize,
+        len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let end = start.checked_add(len).ok_or_else(|| {
             MetalError::InvalidShape("f32 buffer read range overflows usize".to_owned())
         })?;
@@ -112,8 +124,14 @@ impl MetalDevice {
                 buffer.len
             )));
         }
+        if output.len() < len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than requested read length {len}",
+                output.len()
+            )));
+        }
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let Some(metal_buffer) = buffer.buffer.as_ref() else {
             return Err(MetalError::InvalidShape(
@@ -122,10 +140,11 @@ impl MetalDevice {
         };
         // SAFETY: the requested range is bounds-checked above against the f32
         // length used to allocate the StorageModeShared buffer.
-        let values = unsafe {
+        unsafe {
             let ptr = metal_buffer.contents().cast::<f32>().add(start);
-            std::slice::from_raw_parts(ptr, len).to_vec()
+            let values = std::slice::from_raw_parts(ptr, len);
+            output[..len].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 }

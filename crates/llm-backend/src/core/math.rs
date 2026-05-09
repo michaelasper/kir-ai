@@ -6,8 +6,41 @@ pub enum MathError {
     InvalidShape(String),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InferenceScratchpad {
+    pub buf0: Vec<f32>,
+    pub buf1: Vec<f32>,
+    pub buf2: Vec<f32>,
+    pub buf3: Vec<f32>,
+    pub buf4: Vec<f32>,
+}
+
+impl InferenceScratchpad {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn get_mut(buf: &mut Vec<f32>, len: usize) -> &mut [f32] {
+        if buf.len() < len {
+            buf.resize(len, 0.0);
+        }
+        &mut buf[..len]
+    }
+}
+
 pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
-    rms_norm_with_weight_offset_f32(input, weight, eps, 0.0)
+    let mut out = vec![0.0; input.len()];
+    rms_norm_f32_in_place(input, weight, eps, &mut out)?;
+    Ok(out)
+}
+
+pub fn rms_norm_f32_in_place(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    rms_norm_with_weight_offset_f32_in_place(input, weight, eps, 0.0, output)
 }
 
 pub fn rms_norm_one_centered_f32(
@@ -15,22 +48,39 @@ pub fn rms_norm_one_centered_f32(
     weight: &[f32],
     eps: f32,
 ) -> Result<Vec<f32>, MathError> {
-    rms_norm_with_weight_offset_f32(input, weight, eps, 1.0)
+    let mut out = vec![0.0; input.len()];
+    rms_norm_one_centered_f32_in_place(input, weight, eps, &mut out)?;
+    Ok(out)
 }
 
-fn rms_norm_with_weight_offset_f32(
+pub fn rms_norm_one_centered_f32_in_place(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    rms_norm_with_weight_offset_f32_in_place(input, weight, eps, 1.0, output)
+}
+
+fn rms_norm_with_weight_offset_f32_in_place(
     input: &[f32],
     weight: &[f32],
     eps: f32,
     weight_offset: f32,
-) -> Result<Vec<f32>, MathError> {
+    output: &mut [f32],
+) -> Result<(), MathError> {
     if input.len() != weight.len() {
         return Err(MathError::InvalidShape(
             "input and weight must have the same length".to_owned(),
         ));
     }
+    if output.len() < input.len() {
+        return Err(MathError::InvalidShape(
+            "output buffer is too small".to_owned(),
+        ));
+    }
     if input.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     if eps < 0.0 {
         return Err(MathError::InvalidShape(
@@ -39,11 +89,21 @@ fn rms_norm_with_weight_offset_f32(
     }
     let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
     let scale = (mean_square + eps).sqrt().recip();
-    Ok(input
-        .iter()
-        .zip(weight)
-        .map(|(value, weight)| value * scale * (weight_offset + weight))
-        .collect())
+    for ((out, val), w) in output.iter_mut().zip(input).zip(weight) {
+        *out = val * scale * (weight_offset + w);
+    }
+    Ok(())
+}
+
+fn rms_norm_with_weight_offset_f32(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+    weight_offset: f32,
+) -> Result<Vec<f32>, MathError> {
+    let mut out = vec![0.0; input.len()];
+    rms_norm_with_weight_offset_f32_in_place(input, weight, eps, weight_offset, &mut out)?;
+    Ok(out)
 }
 
 pub fn matvec_row_major_f32(
@@ -52,6 +112,18 @@ pub fn matvec_row_major_f32(
     rows: usize,
     columns: usize,
 ) -> Result<Vec<f32>, MathError> {
+    let mut out = vec![0.0; rows];
+    matvec_row_major_f32_in_place(input, weights, rows, columns, &mut out)?;
+    Ok(out)
+}
+
+pub fn matvec_row_major_f32_in_place(
+    input: &[f32],
+    weights: &[f32],
+    rows: usize,
+    columns: usize,
+    output: &mut [f32],
+) -> Result<(), MathError> {
     if input.len() != columns {
         return Err(MathError::InvalidShape(format!(
             "input length {} does not match matvec columns {columns}",
@@ -67,15 +139,16 @@ pub fn matvec_row_major_f32(
             weights.len()
         )));
     }
-    Ok(weights
-        .chunks_exact(columns)
-        .map(|row| {
-            row.iter()
-                .zip(input)
-                .map(|(weight, value)| weight * value)
-                .sum()
-        })
-        .collect())
+    if output.len() < rows {
+        return Err(MathError::InvalidShape("output buffer too small".to_owned()));
+    }
+    for (out, row) in output.iter_mut().zip(weights.chunks_exact(columns)) {
+        *out = row.iter()
+            .zip(input)
+            .map(|(weight, value)| weight * value)
+            .sum();
+    }
+    Ok(())
 }
 
 pub fn matvecs_row_major_f32(
@@ -97,13 +170,29 @@ pub fn swiglu_mlp_f32(
     down_weight: &[f32],
     intermediate_size: usize,
 ) -> Result<Vec<f32>, MathError> {
-    let gate = matvec_row_major_f32(input, gate_weight, intermediate_size, input.len())?;
-    let up = matvec_row_major_f32(input, up_weight, intermediate_size, input.len())?;
-    let activated = gate
-        .iter()
-        .zip(up)
-        .map(|(gate, up)| silu_f32(*gate) * up)
-        .collect::<Vec<_>>();
+    let mut scratch = InferenceScratchpad::new();
+    let mut out = vec![0.0; down_weight.len() / intermediate_size];
+    swiglu_mlp_f32_in_place(input, gate_weight, up_weight, down_weight, intermediate_size, &mut scratch, &mut out)?;
+    Ok(out)
+}
+
+pub fn swiglu_mlp_f32_in_place(
+    input: &[f32],
+    gate_weight: &[f32],
+    up_weight: &[f32],
+    down_weight: &[f32],
+    intermediate_size: usize,
+    scratch: &mut InferenceScratchpad,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    let gate = InferenceScratchpad::get_mut(&mut scratch.buf0, intermediate_size);
+    matvec_row_major_f32_in_place(input, gate_weight, intermediate_size, input.len(), gate)?;
+    let up = InferenceScratchpad::get_mut(&mut scratch.buf1, intermediate_size);
+    matvec_row_major_f32_in_place(input, up_weight, intermediate_size, input.len(), up)?;
+    let activated = InferenceScratchpad::get_mut(&mut scratch.buf2, intermediate_size);
+    for (a, (g, u)) in activated.iter_mut().zip(gate.iter().zip(up.iter())) {
+        *a = silu_f32(*g) * *u;
+    }
     if !down_weight.len().is_multiple_of(intermediate_size) {
         return Err(MathError::InvalidShape(format!(
             "down projection length {} is not divisible by intermediate size {intermediate_size}",
@@ -111,7 +200,7 @@ pub fn swiglu_mlp_f32(
         )));
     }
     let rows = down_weight.len() / intermediate_size;
-    matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
+    matvec_row_major_f32_in_place(activated, down_weight, rows, intermediate_size, output)
 }
 
 pub fn silu_f32(value: f32) -> f32 {

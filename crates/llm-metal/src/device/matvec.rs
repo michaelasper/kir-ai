@@ -10,7 +10,8 @@ impl MetalDevice {
         rows: usize,
         cols: usize,
         vector: &[f32],
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let expected_matrix_len = rows
             .checked_mul(cols)
             .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
@@ -26,11 +27,18 @@ impl MetalDevice {
                 vector.len()
             )));
         }
+        if output.len() < rows {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than rows {rows}",
+                output.len()
+            )));
+        }
         if rows == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if cols == 0 {
-            return Ok(vec![0.0; rows]);
+            output[..rows].fill(0.0);
+            return Ok(());
         }
         let rows_u32 = u32::try_from(rows).map_err(|err| {
             MetalError::InvalidShape(format!("row count does not fit u32: {err}"))
@@ -95,11 +103,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, rows).to_vec()
+            let values = std::slice::from_raw_parts(ptr, rows);
+            output[..rows].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
     pub async fn matvec_bf16_f32(
@@ -108,9 +117,10 @@ impl MetalDevice {
         rows: usize,
         cols: usize,
         vector: &[f32],
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.matvec_bf16_f32_buffered(&matrix_buffer, vector).await
+        self.matvec_bf16_f32_buffered(&matrix_buffer, vector, output).await
     }
 
     pub fn new_bf16_matrix_buffer(
@@ -150,7 +160,8 @@ impl MetalDevice {
         &self,
         matrix: &Bf16MatrixBuffer,
         vector: &[f32],
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let rows = matrix.rows;
         let cols = matrix.columns;
         if vector.len() != cols {
@@ -159,11 +170,18 @@ impl MetalDevice {
                 vector.len()
             )));
         }
+        if output.len() < rows {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than rows {rows}",
+                output.len()
+            )));
+        }
         if rows == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if cols == 0 {
-            return Ok(vec![0.0; rows]);
+            output[..rows].fill(0.0);
+            return Ok(());
         }
         let rows_u32 = u32::try_from(rows).map_err(|err| {
             MetalError::InvalidShape(format!("row count does not fit u32: {err}"))
@@ -227,11 +245,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, rows).to_vec()
+            let values = std::slice::from_raw_parts(ptr, rows);
+            output[..rows].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
     pub async fn batched_matvec_bf16_f32(
@@ -241,9 +260,10 @@ impl MetalDevice {
         cols: usize,
         vectors: &[f32],
         vector_count: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count).await
+        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count, output).await
     }
 
     pub async fn batched_matvec_bf16_f32_buffered(
@@ -251,7 +271,8 @@ impl MetalDevice {
         matrix: &Bf16MatrixBuffer,
         vectors: &[f32],
         vector_count: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let rows = matrix.rows;
         let cols = matrix.columns;
         let expected_matrix_len = rows
@@ -273,11 +294,18 @@ impl MetalDevice {
         let output_len = vector_count.checked_mul(rows).ok_or_else(|| {
             MetalError::InvalidShape("batched output shape overflows usize".to_owned())
         })?;
+        if output.len() < output_len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than expected {output_len}",
+                output.len()
+            )));
+        }
         if rows == 0 || vector_count == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if cols == 0 {
-            return Ok(vec![0.0; output_len]);
+            output[..output_len].fill(0.0);
+            return Ok(());
         }
         let rows_u32 = u32::try_from(rows).map_err(|err| {
             MetalError::InvalidShape(format!("row count does not fit u32: {err}"))
@@ -349,10 +377,11 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing vector_count * rows f32 values in input-major order.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, output_len).to_vec()
+            let values = std::slice::from_raw_parts(ptr, output_len);
+            output[..output_len].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 }

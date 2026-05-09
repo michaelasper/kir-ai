@@ -4,14 +4,26 @@ use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
 impl MetalDevice {
-    pub async fn add_f32(&self, left: &[f32], right: &[f32]) -> Result<Vec<f32>, MetalError> {
+    pub async fn add_f32(
+        &self,
+        left: &[f32],
+        right: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if left.len() != right.len() {
             return Err(MetalError::InvalidShape(
                 "left and right inputs must have the same length".to_owned(),
             ));
         }
+        if output.len() < left.len() {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than input length {}",
+                output.len(),
+                left.len()
+            )));
+        }
         if left.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
 
         let byte_len = std::mem::size_of_val(left) as u64;
@@ -58,16 +70,24 @@ impl MetalDevice {
         // byte_len bytes above. The command buffer has completed, and the buffer
         // remains alive for the duration of this read. The pointer is interpreted
         // as f32 values matching the byte length used to allocate it.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, left.len()).to_vec()
+            let values = std::slice::from_raw_parts(ptr, left.len());
+            output[..left.len()].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
-    pub async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MetalError> {
+    pub async fn softmax_f32(&self, scores: &[f32], output: &mut [f32]) -> Result<(), MetalError> {
         if scores.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
+        }
+        if output.len() < scores.len() {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than scores length {}",
+                output.len(),
+                scores.len()
+            )));
         }
         if let Some((index, _)) = scores
             .iter()
@@ -118,11 +138,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input scores.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, scores.len()).to_vec()
+            let values = std::slice::from_raw_parts(ptr, scores.len());
+            output[..scores.len()].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
     pub async fn weighted_sum_f32(
@@ -130,7 +151,8 @@ impl MetalDevice {
         values: &[f32],
         weights: &[f32],
         vector_len: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let expected_values = weights.len().checked_mul(vector_len).ok_or_else(|| {
             MetalError::InvalidShape("weighted sum shape overflows usize".to_owned())
         })?;
@@ -141,11 +163,18 @@ impl MetalDevice {
                 weights.len()
             )));
         }
+        if output.len() < vector_len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than vector length {vector_len}",
+                output.len()
+            )));
+        }
         if vector_len == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if weights.is_empty() {
-            return Ok(vec![0.0; vector_len]);
+            output[..vector_len].fill(0.0);
+            return Ok(());
         }
         let row_count_u32 = u32::try_from(weights.len()).map_err(|err| {
             MetalError::InvalidShape(format!("weighted sum row count does not fit u32: {err}"))
@@ -209,11 +238,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per output column.
-        let output = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, vector_len).to_vec()
+            let values = std::slice::from_raw_parts(ptr, vector_len);
+            output[..vector_len].copy_from_slice(values);
         };
-        Ok(output)
+        Ok(())
     }
 
     pub async fn select_head_rows_f32(
@@ -223,9 +253,10 @@ impl MetalDevice {
         row_len: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let values_buffer = self.new_f32_buffer(values)?;
-        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len).await
+        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len, output).await
     }
 
     pub async fn select_head_rows_f32_buffered(
@@ -235,7 +266,8 @@ impl MetalDevice {
         row_len: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
             MetalError::InvalidShape("head row selection shape overflows usize".to_owned())
         })?;
@@ -256,8 +288,14 @@ impl MetalDevice {
         let output_len = row_count.checked_mul(head_len).ok_or_else(|| {
             MetalError::InvalidShape("head row selection output shape overflows usize".to_owned())
         })?;
+        if output.len() < output_len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than expected {output_len}",
+                output.len()
+            )));
+        }
         if output_len == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let row_len_u32 = u32::try_from(row_len).map_err(|err| {
             MetalError::InvalidShape(format!("head row length does not fit u32: {err}"))
@@ -327,10 +365,11 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per selected row element.
-        let output = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, output_len).to_vec()
+            let values = std::slice::from_raw_parts(ptr, output_len);
+            output[..output_len].copy_from_slice(values);
         };
-        Ok(output)
+        Ok(())
     }
 }

@@ -9,11 +9,19 @@ impl MetalDevice {
         input: &[f32],
         weight: &[f32],
         eps: f32,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if input.len() != weight.len() {
             return Err(MetalError::InvalidShape(
                 "input and weight must have the same length".to_owned(),
             ));
+        }
+        if output.len() < input.len() {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than input length {}",
+                output.len(),
+                input.len()
+            )));
         }
         if !eps.is_finite() || eps < 0.0 {
             return Err(MetalError::InvalidShape(
@@ -21,7 +29,7 @@ impl MetalDevice {
             ));
         }
         if input.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let len = u32::try_from(input.len()).map_err(|err| {
             MetalError::InvalidShape(format!("input length does not fit u32: {err}"))
@@ -78,11 +86,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input slice.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, input.len()).to_vec()
+            let values = std::slice::from_raw_parts(ptr, input.len());
+            output[..input.len()].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
     pub async fn linear_attention_conv1d_silu_f32(
@@ -91,7 +100,8 @@ impl MetalDevice {
         weights: &[f32],
         conv_dim: usize,
         kernel_size: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if kernel_size == 0 {
             return Err(MetalError::InvalidShape(
                 "linear attention conv kernel size must be non-zero".to_owned(),
@@ -112,8 +122,14 @@ impl MetalDevice {
                 weights.len()
             )));
         }
+        if output.len() < conv_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than conv_dim {conv_dim}",
+                output.len()
+            )));
+        }
         if conv_dim == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let conv_dim_u32 = u32::try_from(conv_dim)
             .map_err(|err| MetalError::InvalidShape(format!("conv dim does not fit u32: {err}")))?;
@@ -176,11 +192,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per convolution channel.
-        let values = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, conv_dim).to_vec()
+            let values = std::slice::from_raw_parts(ptr, conv_dim);
+            output[..conv_dim].copy_from_slice(values);
         };
-        Ok(values)
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -194,7 +211,8 @@ impl MetalDevice {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if key_head_dim == 0 || value_head_dim == 0 {
             return Err(MetalError::InvalidShape(
                 "linear attention recurrent update dimensions must be non-zero".to_owned(),
@@ -227,6 +245,12 @@ impl MetalDevice {
             return Err(MetalError::InvalidShape(format!(
                 "linear attention recurrent memory length {} does not match value_head_dim {value_head_dim}",
                 memory.len()
+            )));
+        }
+        if output.len() < element_count {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than state element count {element_count}",
+                output.len()
             )));
         }
         let value_head_dim_u32 = u32::try_from(value_head_dim).map_err(|err| {
@@ -318,11 +342,12 @@ impl MetalDevice {
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per recurrent-state element.
-        let output = unsafe {
+        unsafe {
             let ptr = output_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(ptr, element_count).to_vec()
+            let values = std::slice::from_raw_parts(ptr, element_count);
+            output[..element_count].copy_from_slice(values);
         };
-        Ok(output)
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -337,7 +362,7 @@ impl MetalDevice {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, MetalError> {
+    ) -> Result<(), MetalError> {
         if key_head_dim == 0 || value_head_dim == 0 {
             return Err(MetalError::InvalidShape(
                 "linear attention recurrent update dimensions must be non-zero".to_owned(),
@@ -346,7 +371,7 @@ impl MetalDevice {
         let element_count = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
             MetalError::InvalidShape(
                 "linear attention recurrent update shape overflows usize".to_owned(),
-)
+            )
         })?;
         let state_end = state_start.checked_add(element_count).ok_or_else(|| {
             MetalError::InvalidShape(
@@ -378,7 +403,7 @@ impl MetalDevice {
             )));
         }
         if element_count == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let Some(state_buffer) = state.buffer.as_ref() else {
             return Err(MetalError::InvalidShape(
@@ -475,6 +500,6 @@ impl MetalDevice {
             command_buffer,
             "linear_attention_recurrent_update_state_f32",
         ).await?;
-        self.read_f32_buffer_range(state, state_start, element_count)
+        Ok(())
     }
 }

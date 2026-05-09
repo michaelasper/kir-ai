@@ -388,7 +388,8 @@ impl NativeTextMetalState {
         row_count: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, llm_metal::MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), llm_metal::MetalError> {
         self.sync_kv_cache(cache).await?;
         let caches = self.kv_caches.lock_or_recover("Metal KV cache mirror");
         let mirror = caches.get(&cache.id()).ok_or_else(|| {
@@ -408,6 +409,7 @@ impl NativeTextMetalState {
                 cache.vector_len(),
                 head_start,
                 head_len,
+                output,
             )
             .await
     }
@@ -455,7 +457,8 @@ impl NativeTextMetalState {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, llm_metal::MetalError> {
+        output: &mut [f32],
+    ) -> Result<(), llm_metal::MetalError> {
         self.sync_linear_cache(cache).await?;
         let mut caches = self
             .linear_caches
@@ -466,8 +469,7 @@ impl NativeTextMetalState {
                 cache.id()
             ))
         })?;
-        let updated = self
-            .device
+        self.device
             .linear_attention_recurrent_update_f32_buffered_state(
                 &mirror.recurrent_state,
                 state_start,
@@ -481,7 +483,7 @@ impl NativeTextMetalState {
             )
             .await?;
         mirror.revision = cache.revision().saturating_add(1);
-        Ok(updated)
+        self.device.read_f32_buffer_range_in_place(&mirror.recurrent_state, state_start, output.len(), output)
     }
 
     pub(crate) fn remove_cache_mirrors<C>(&self, caches: &[C])
@@ -986,9 +988,93 @@ impl NativeTextMatvecBackend {
             }
         }
     }
+
+    async fn run_metal_math_in_place<Fut>(
+        kernel: &'static str,
+        bucket: impl Into<String>,
+        metal: impl FnOnce() -> Fut,
+        cpu: impl FnOnce() -> Result<(), MathError>,
+    ) -> Result<(), MathError>
+    where
+        Fut: std::future::Future<Output = Result<(), llm_metal::MetalError>>,
+    {
+        let metrics = native_text_metal_metrics();
+        metrics.record_attempt(kernel);
+        match metal().await {
+            Ok(()) => {
+                metrics.record_success(kernel);
+                Ok(())
+            }
+            Err(err) => {
+                metrics.record_fallback(kernel, bucket, err);
+                cpu()
+            }
+        }
+    }
+
+    async fn run_metal_tensor_in_place<Fut>(
+        kernel: &'static str,
+        bucket: impl Into<String>,
+        metal: impl FnOnce() -> Fut,
+        cpu: impl FnOnce() -> Result<(), TensorLoadError>,
+    ) -> Result<(), TensorLoadError>
+    where
+        Fut: std::future::Future<Output = Result<(), llm_metal::MetalError>>,
+    {
+        let metrics = native_text_metal_metrics();
+        metrics.record_attempt(kernel);
+        match metal().await {
+            Ok(()) => {
+                metrics.record_success(kernel);
+                Ok(())
+            }
+            Err(err) => {
+                metrics.record_fallback(kernel, bucket, err);
+                cpu()
+            }
+        }
+    }
 }
 
 impl NativeMatvecBackend for NativeTextMatvecBackend {
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let Self::Metal(state) = self else {
+            return Self::cpu().bf16_matvec_row_major_f32_in_place(store, tensor, input, output).await;
+        };
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
+            Self::record_metal_fallback(
+                "matvec_bf16_f32",
+                format!("tensor={tensor},input_len={}", input.len()),
+                "unsupported BF16 matrix shape or input length",
+            );
+            return Self::cpu().bf16_matvec_row_major_f32_in_place(store, tensor, input, output).await;
+        };
+        let matrix = match state.bf16_matrix_buffer(store, tensor, 0, rows, columns).await {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "matvec_bf16_f32",
+                    format!("tensor={tensor},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Self::cpu().bf16_matvec_row_major_f32_in_place(store, tensor, input, output).await;
+            }
+        };
+        Self::run_metal_tensor_in_place(
+            "matvec_bf16_f32",
+            format!("tensor={tensor},rows={rows},cols={columns}"),
+            || state.device.matvec_bf16_f32_buffered(&matrix, input, output),
+            || Self::cpu().bf16_matvec_row_major_f32_in_place(store, tensor, input, output),
+        )
+        .await
+    }
+
     async fn bf16_matvec_row_major_f32(
         &self,
         store: &SafeTensorShardStore,
@@ -1020,7 +1106,11 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         Self::run_metal_tensor(
             "matvec_bf16_f32",
             format!("tensor={tensor},rows={rows},cols={columns}"),
-            || state.device.matvec_bf16_f32_buffered(&matrix, input),
+            || async {
+                let mut output = vec![0.0; rows];
+                state.device.matvec_bf16_f32_buffered(&matrix, input, &mut output).await?;
+                Ok(output)
+            },
             || Self::cpu().bf16_matvec_row_major_f32(store, tensor, input),
         )
         .await
@@ -1092,6 +1182,89 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         .await
     }
 
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let Self::Metal(state) = self else {
+            return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+        };
+        if chunk_rows == 0 {
+            Self::record_metal_fallback(
+                "matvec_bf16_f32",
+                format!("tensor={tensor},input_len={},chunk_rows=0", input.len()),
+                "zero chunk rows",
+            );
+            return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+        }
+        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, input) else {
+            Self::record_metal_fallback(
+                "matvec_bf16_f32",
+                format!(
+                    "tensor={tensor},input_len={},chunk_rows={chunk_rows}",
+                    input.len()
+                ),
+                "unsupported BF16 matrix shape or input length",
+            );
+            return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+        };
+        if output.len() < rows {
+            return Err(TensorLoadError::integrity("output buffer too small"));
+        }
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
+            let Some(element_offset) = row_start.checked_mul(columns) else {
+                Self::record_metal_fallback(
+                    "matvec_bf16_f32",
+                    format!("tensor={tensor},row_start={row_start},rows={rows},cols={columns}"),
+                    "BF16 row offset overflow",
+                );
+                return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+            };
+            let matrix = match state.bf16_matrix_buffer(
+                store,
+                tensor,
+                element_offset,
+                rows_in_chunk,
+                columns,
+            ).await {
+                Ok(matrix) => matrix,
+                Err(err) => {
+                    Self::record_metal_fallback(
+                        "matvec_bf16_f32",
+                        format!(
+                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
+                        ),
+                        err,
+                    );
+                    return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+                }
+            };
+            let metrics = native_text_metal_metrics();
+            metrics.record_attempt("matvec_bf16_f32");
+            match state.device.matvec_bf16_f32_buffered(&matrix, input, &mut output[row_start..row_start + rows_in_chunk]).await {
+                Ok(()) => {
+                    metrics.record_success("matvec_bf16_f32");
+                }
+                Err(err) => {
+                    metrics.record_fallback(
+                        "matvec_bf16_f32",
+                        format!(
+                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
+                        ),
+                        err,
+                    );
+                    return Self::cpu().bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await;
+                }
+            };
+        }
+        Ok(())
+    }
+
     async fn bf16_matvec_rows_f32(
         &self,
         store: &SafeTensorShardStore,
@@ -1121,57 +1294,87 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             );
             return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows).await;
         };
-        let mut output = Vec::with_capacity(rows);
-        for row_start in (0..rows).step_by(chunk_rows) {
-            let rows_in_chunk = chunk_rows.min(rows - row_start);
-            let Some(element_offset) = row_start.checked_mul(columns) else {
-                Self::record_metal_fallback(
-                    "matvec_bf16_f32",
-                    format!("tensor={tensor},row_start={row_start},rows={rows},cols={columns}"),
-                    "BF16 row offset overflow",
-                );
-                return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows).await;
-            };
-            let matrix = match state.bf16_matrix_buffer(
+        let mut output = vec![0.0; rows];
+        self.bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, &mut output).await?;
+        Ok(output)
+    }
+
+    async fn bf16_matvec_range_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let Self::Metal(state) = self else {
+            return Self::cpu().bf16_matvec_range_row_major_f32_in_place(
                 store,
                 tensor,
                 element_offset,
-                rows_in_chunk,
+                rows,
                 columns,
-            ).await {
-                Ok(matrix) => matrix,
-                Err(err) => {
-                    Self::record_metal_fallback(
-                        "matvec_bf16_f32",
-                        format!(
-                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
-                        ),
-                        err,
-                    );
-                    return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows).await;
-                }
-            };
-            let metrics = native_text_metal_metrics();
-            metrics.record_attempt("matvec_bf16_f32");
-            let logits = match state.device.matvec_bf16_f32_buffered(&matrix, input).await {
-                Ok(logits) => {
-                    metrics.record_success("matvec_bf16_f32");
-                    logits
-                }
-                Err(err) => {
-                    metrics.record_fallback(
-                        "matvec_bf16_f32",
-                        format!(
-                            "tensor={tensor},row_start={row_start},rows_in_chunk={rows_in_chunk},cols={columns}"
-                        ),
-                        err,
-                    );
-                    return Self::cpu().bf16_matvec_rows_f32(store, tensor, input, chunk_rows).await;
-                }
-            };
-            output.extend(logits);
+                input,
+                output,
+            ).await;
+        };
+        if input.len() != columns {
+            Self::record_metal_fallback(
+                "matvec_bf16_f32",
+                format!(
+                    "tensor={tensor},offset={element_offset},rows={rows},cols={columns},input_len={}",
+                    input.len()
+                ),
+                "BF16 range input width mismatch",
+            );
+            return Self::cpu().bf16_matvec_range_row_major_f32_in_place(
+                store,
+                tensor,
+                element_offset,
+                rows,
+                columns,
+                input,
+                output,
+            ).await;
         }
-        Ok(output)
+        let matrix = match state.bf16_matrix_buffer(store, tensor, element_offset, rows, columns).await {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "matvec_bf16_f32",
+                    format!("tensor={tensor},offset={element_offset},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Self::cpu().bf16_matvec_range_row_major_f32_in_place(
+                    store,
+                    tensor,
+                    element_offset,
+                    rows,
+                    columns,
+                    input,
+                    output,
+                ).await;
+            }
+        };
+        Self::run_metal_tensor_in_place(
+            "matvec_bf16_f32",
+            format!("tensor={tensor},offset={element_offset},rows={rows},cols={columns}"),
+            || state.device.matvec_bf16_f32_buffered(&matrix, input, output),
+            || {
+                Self::cpu().bf16_matvec_range_row_major_f32_in_place(
+                    store,
+                    tensor,
+                    element_offset,
+                    rows,
+                    columns,
+                    input,
+                    output,
+                )
+            },
+        )
+        .await
     }
 
     async fn bf16_matvec_range_row_major_f32(
@@ -1232,7 +1435,11 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         Self::run_metal_tensor(
             "matvec_bf16_f32",
             format!("tensor={tensor},offset={element_offset},rows={rows},cols={columns}"),
-            || state.device.matvec_bf16_f32_buffered(&matrix, input),
+            || async {
+                let mut output = vec![0.0; rows];
+                state.device.matvec_bf16_f32_buffered(&matrix, input, &mut output).await?;
+                Ok(output)
+            },
             || {
                 Self::cpu().bf16_matvec_range_row_major_f32(
                     store,
@@ -1372,6 +1579,25 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         Ok(top)
     }
 
+    async fn matvec_row_major_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => Self::cpu().matvec_row_major_f32_in_place(input, weights, rows, columns, output).await,
+            Self::Metal(metal) => Self::run_metal_math_in_place(
+                "matvec_f32",
+                format!("rows={rows},cols={columns},input_len={}", input.len()),
+                || metal.device.matvec_f32(weights, rows, columns, input, output),
+                || async { Self::cpu().matvec_row_major_f32_in_place(input, weights, rows, columns, output).await },
+            ).await,
+        }
+    }
+
     async fn matvec_row_major_f32(
         &self,
         input: &[f32],
@@ -1384,8 +1610,30 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             Self::Metal(metal) => Self::run_metal_math(
                 "matvec_f32",
                 format!("rows={rows},cols={columns},input_len={}", input.len()),
-                || metal.device.matvec_f32(weights, rows, columns, input),
+                || async {
+                    let mut output = vec![0.0; rows];
+                    metal.device.matvec_f32(weights, rows, columns, input, &mut output).await?;
+                    Ok(output)
+                },
                 || async { Self::cpu().matvec_row_major_f32(input, weights, rows, columns).await },
+            ).await,
+        }
+    }
+
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => Self::cpu().rms_norm_one_centered_f32_in_place(input, weight, eps, output).await,
+            Self::Metal(metal) => Self::run_metal_math_in_place(
+                "qwen_rms_norm",
+                format!("len={},weight_len={}", input.len(), weight.len()),
+                || metal.device.qwen_rms_norm_f32(input, weight, eps, output),
+                || async { Self::cpu().rms_norm_one_centered_f32_in_place(input, weight, eps, output).await },
             ).await,
         }
     }
@@ -1401,8 +1649,28 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             Self::Metal(metal) => Self::run_metal_math(
                 "qwen_rms_norm",
                 format!("len={},weight_len={}", input.len(), weight.len()),
-                || metal.device.qwen_rms_norm_f32(input, weight, eps),
+                || async {
+                    let mut output = vec![0.0; input.len()];
+                    metal.device.qwen_rms_norm_f32(input, weight, eps, &mut output).await?;
+                    Ok(output)
+                },
                 || async { Self::cpu().rms_norm_one_centered_f32(input, weight, eps).await },
+            ).await,
+        }
+    }
+
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => Self::cpu().softmax_f32_in_place(scores, output).await,
+            Self::Metal(metal) => Self::run_metal_math_in_place(
+                "softmax_f32",
+                format!("len={}", scores.len()),
+                || metal.device.softmax_f32(scores, output),
+                || async { Self::cpu().softmax_f32_in_place(scores, output).await },
             ).await,
         }
     }
@@ -1413,8 +1681,53 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             Self::Metal(metal) => Self::run_metal_math(
                 "softmax_f32",
                 format!("len={}", scores.len()),
-                || metal.device.softmax_f32(scores),
+                || async {
+                    let mut output = vec![0.0; scores.len()];
+                    metal.device.softmax_f32(scores, &mut output).await?;
+                    Ok(output)
+                },
                 || async { Self::cpu().softmax_f32(scores).await },
+            ).await,
+        }
+    }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu().linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output).await
+            }
+            Self::Metal(metal) => Self::run_metal_math_in_place(
+                "linear_attention_conv1d_silu_f32",
+                format!(
+                    "window_len={},weight_len={},conv_dim={conv_dim},kernel_size={kernel_size}",
+                    window.len(),
+                    weights.len()
+                ),
+                || {
+                    metal.device.linear_attention_conv1d_silu_f32(
+                        window,
+                        weights,
+                        conv_dim,
+                        kernel_size,
+                        output,
+                    )
+                },
+                || async {
+                    Self::cpu().linear_attention_conv1d_silu_f32_in_place(
+                        window,
+                        weights,
+                        conv_dim,
+                        kernel_size,
+                        output,
+                    ).await
+                },
             ).await,
         }
     }
@@ -1437,13 +1750,16 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                     window.len(),
                     weights.len()
                 ),
-                || {
+                || async {
+                    let mut output = vec![0.0; conv_dim];
                     metal.device.linear_attention_conv1d_silu_f32(
                         window,
                         weights,
                         conv_dim,
                         kernel_size,
-                    )
+                        &mut output,
+                    ).await?;
+                    Ok(output)
                 },
                 || async {
                     Self::cpu().linear_attention_conv1d_silu_f32(
@@ -1507,6 +1823,28 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         }
     }
 
+    async fn weighted_sum_f32_in_place(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => Self::cpu().weighted_sum_f32_in_place(values, weights, vector_len, output).await,
+            Self::Metal(metal) => Self::run_metal_math_in_place(
+                "weighted_sum_f32",
+                format!(
+                    "values_len={},weights_len={},vector_len={vector_len}",
+                    values.len(),
+                    weights.len()
+                ),
+                || metal.device.weighted_sum_f32(values, weights, vector_len, output),
+                || async { Self::cpu().weighted_sum_f32_in_place(values, weights, vector_len, output).await },
+            ).await,
+        }
+    }
+
     async fn weighted_sum_f32(
         &self,
         values: &[f32],
@@ -1522,14 +1860,18 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                     values.len(),
                     weights.len()
                 ),
-                || metal.device.weighted_sum_f32(values, weights, vector_len),
+                || async {
+                    let mut output = vec![0.0; vector_len];
+                    metal.device.weighted_sum_f32(values, weights, vector_len, &mut output).await?;
+                    Ok(output)
+                },
                 || async { Self::cpu().weighted_sum_f32(values, weights, vector_len).await },
             ).await,
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn linear_attention_recurrent_update_f32(
+    async fn linear_attention_recurrent_update_f32_in_place(
         &self,
         state: &[f32],
         key: &[f32],
@@ -1539,9 +1881,10 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, MathError> {
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         match self {
-            Self::Cpu => Self::cpu().linear_attention_recurrent_update_f32(
+            Self::Cpu => Self::cpu().linear_attention_recurrent_update_f32_in_place(
                 state,
                 key,
                 value,
@@ -1550,8 +1893,9 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 decay,
                 key_head_dim,
                 value_head_dim,
+                output,
             ).await,
-            Self::Metal(metal) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math_in_place(
                 "linear_attention_recurrent_update_f32",
                 format!(
                     "state_len={},key_len={},value_len={},memory_len={},key_head_dim={key_head_dim},value_head_dim={value_head_dim}",
@@ -1570,10 +1914,11 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                         decay,
                         key_head_dim,
                         value_head_dim,
+                        output,
                     )
                 },
                 || async {
-                    Self::cpu().linear_attention_recurrent_update_f32(
+                    Self::cpu().linear_attention_recurrent_update_f32_in_place(
                         state,
                         key,
                         value,
@@ -1582,25 +1927,27 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                         decay,
                         key_head_dim,
                         value_head_dim,
+                        output,
                     ).await
                 },
             ).await,
         }
     }
 
-    async fn select_head_rows_f32(
+    async fn select_head_rows_f32_in_place(
         &self,
         values: &[f32],
         row_count: usize,
         row_len: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         match self {
             Self::Cpu => {
-                Self::cpu().select_head_rows_f32(values, row_count, row_len, head_start, head_len).await
+                Self::cpu().select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output).await
             }
-            Self::Metal(metal) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math_in_place(
                 "select_head_rows_f32",
                 format!(
                     "values_len={},row_count={row_count},row_len={row_len},head_start={head_start},head_len={head_len}",
@@ -1609,38 +1956,39 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 || {
                     metal
                         .device
-                        .select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+                        .select_head_rows_f32(values, row_count, row_len, head_start, head_len, output)
                 },
                 || async {
                     Self::cpu()
-                        .select_head_rows_f32(values, row_count, row_len, head_start, head_len).await
+                        .select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output).await
                 },
             ).await,
         }
     }
 
-    async fn select_kv_cache_head_rows_f32(
+    async fn select_kv_cache_head_rows_f32_in_place(
         &self,
         cache: &LayerKvCache,
         tensor: NativeKvCacheTensor,
         row_count: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         match self {
             Self::Cpu => Self::cpu()
-                .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len).await,
-            Self::Metal(metal) => Self::run_metal_math(
+                .select_kv_cache_head_rows_f32_in_place(cache, tensor, row_count, head_start, head_len, output).await,
+            Self::Metal(metal) => Self::run_metal_math_in_place(
                 "select_head_rows_f32",
                 format!(
                     "cache_id={},tensor={tensor:?},row_count={row_count},row_len={},head_start={head_start},head_len={head_len}",
                     cache.id(),
                     cache.vector_len()
                 ),
-                || metal.select_kv_cache_head_rows(cache, tensor, row_count, head_start, head_len),
+                || metal.select_kv_cache_head_rows(cache, tensor, row_count, head_start, head_len, output),
                 || async {
-                    Self::cpu().select_kv_cache_head_rows_f32(
-                        cache, tensor, row_count, head_start, head_len,
+                    Self::cpu().select_kv_cache_head_rows_f32_in_place(
+                        cache, tensor, row_count, head_start, head_len, output,
                     ).await
                 },
             ).await,
@@ -1648,7 +1996,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn linear_attention_recurrent_cache_update_f32(
+    async fn linear_attention_recurrent_cache_update_f32_in_place(
         &self,
         cache: &LinearAttentionCache,
         state_start: usize,
@@ -1659,9 +2007,10 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, MathError> {
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         match self {
-            Self::Cpu => Self::cpu().linear_attention_recurrent_cache_update_f32(
+            Self::Cpu => Self::cpu().linear_attention_recurrent_cache_update_f32_in_place(
                 cache,
                 state_start,
                 key,
@@ -1671,8 +2020,9 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 decay,
                 key_head_dim,
                 value_head_dim,
+                output,
             ).await,
-            Self::Metal(metal) => Self::run_metal_math(
+            Self::Metal(metal) => Self::run_metal_math_in_place(
                 "linear_attention_recurrent_update_state_f32",
                 format!(
                     "cache_id={},state_start={state_start},key_head_dim={key_head_dim},value_head_dim={value_head_dim}",
@@ -1689,10 +2039,11 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                         decay,
                         key_head_dim,
                         value_head_dim,
+                        output,
                     )
                 },
                 || async {
-                    Self::cpu().linear_attention_recurrent_cache_update_f32(
+                    Self::cpu().linear_attention_recurrent_cache_update_f32_in_place(
                         cache,
                         state_start,
                         key,
@@ -1702,6 +2053,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                         decay,
                         key_head_dim,
                         value_head_dim,
+                        output,
                     ).await
                 },
             ).await,

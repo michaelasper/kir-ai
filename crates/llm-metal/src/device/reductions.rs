@@ -111,9 +111,14 @@ impl MetalDevice {
         Ok(best)
     }
 
-    pub async fn top_k_f32(&self, logits: &[f32], k: usize) -> Result<Vec<TopKResult>, MetalError> {
+    pub async fn top_k_f32(
+        &self,
+        logits: &[f32],
+        k: usize,
+        output: &mut [TopKResult],
+    ) -> Result<(), MetalError> {
         if k == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if logits.is_empty() {
             return Err(MetalError::InvalidShape(
@@ -123,6 +128,12 @@ impl MetalDevice {
         if k > MAX_METAL_TOP_K {
             return Err(MetalError::InvalidShape(format!(
                 "top-k count {k} exceeds maximum {MAX_METAL_TOP_K}"
+            )));
+        }
+        if output.len() < k {
+            return Err(MetalError::InvalidShape(format!(
+                "output buffer size {} is smaller than k {k}",
+                output.len()
             )));
         }
         if let Some((index, _)) = logits.iter().enumerate().find(|(_, value)| value.is_nan()) {
@@ -228,6 +239,7 @@ impl MetalDevice {
                 .then_with(|| left.index.cmp(&right.index))
         });
         candidates.truncate(final_k);
-        Ok(candidates)
+        output[..final_k].copy_from_slice(&candidates);
+        Ok(())
     }
 }

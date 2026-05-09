@@ -1,95 +1,83 @@
 use crate::{
-    CpuNativeMatvecBackend, GemmaLayerCache, NativeMatvecBackend, QwenLayerCache,
-    SafeTensorShardStore, TensorLoadError, TopKLogit, gemma_decode_token_with_cache_with_matvec,
-    gemma_final_norm_for_spec, gemma_layer_caches_for_spec,
-    gemma_lm_head_logits_for_spec_with_matvec, gemma_lm_head_top_k_for_spec_with_matvec,
-    gemma_prefill_sequence_with_cache_with_matvec, qwen_decode_token_with_cache_with_matvec,
-    qwen_final_norm_for_spec_with_matvec, qwen_layer_caches_for_spec,
-    qwen_lm_head_logits_for_spec_with_matvec, qwen_lm_head_top_k_for_spec_with_matvec,
-    qwen_prefill_sequence_with_cache_with_matvec,
+    CpuNativeMatvecBackend, GemmaLayerCache, InferenceScratchpad, NativeMatvecBackend,
+    QwenLayerCache, SafeTensorShardStore, TensorLoadError, TopKLogit,
+    gemma_decode_token_with_cache_with_matvec, gemma_final_norm_for_spec,
+    gemma_layer_caches_for_spec, gemma_lm_head_logits_for_spec_with_matvec,
+    gemma_lm_head_top_k_for_spec_with_matvec, gemma_prefill_sequence_with_cache_with_matvec,
+    qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
+    qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
+    qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
 };
-use llm_models::{GemmaModelSpec, ModelFamily, NativeTextModelSpec, QwenModelSpec};
+use llm_models::ModelFamily;
 
-#[derive(Debug, Clone, Copy)]
-pub enum NativeTextModelSpecRef<'a> {
-    Qwen(&'a QwenModelSpec),
-    Gemma(&'a GemmaModelSpec),
+pub enum NativeTextModelSpec {
+    Qwen(llm_models::QwenModelSpec),
+    Gemma(llm_models::GemmaModelSpec),
 }
 
-impl NativeTextModelSpecRef<'_> {
-    pub fn family(self) -> ModelFamily {
+impl NativeTextModelSpec {
+    pub fn family(&self) -> ModelFamily {
         match self {
-            Self::Qwen(spec) => spec.family,
-            Self::Gemma(spec) => spec.family,
-        }
-    }
-
-    pub fn vocab_size(self) -> u32 {
-        match self {
-            Self::Qwen(spec) => spec.vocab_size,
-            Self::Gemma(spec) => spec.vocab_size,
+            Self::Qwen(_) => ModelFamily::Qwen,
+            Self::Gemma(_) => ModelFamily::Gemma,
         }
     }
 }
 
-impl<'a> From<&'a NativeTextModelSpec> for NativeTextModelSpecRef<'a> {
-    fn from(value: &'a NativeTextModelSpec) -> Self {
-        match value {
-            NativeTextModelSpec::Qwen(spec) => Self::Qwen(spec),
-            NativeTextModelSpec::Gemma(spec) => Self::Gemma(spec),
-        }
-    }
-}
-
-impl<'a> From<&'a QwenModelSpec> for NativeTextModelSpecRef<'a> {
-    fn from(value: &'a QwenModelSpec) -> Self {
-        Self::Qwen(value)
-    }
-}
-
-impl<'a> From<&'a GemmaModelSpec> for NativeTextModelSpecRef<'a> {
-    fn from(value: &'a GemmaModelSpec) -> Self {
-        Self::Gemma(value)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum NativeTextLayerCaches {
     Qwen(Vec<QwenLayerCache>),
     Gemma(Vec<GemmaLayerCache>),
 }
 
 impl NativeTextLayerCaches {
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Qwen(caches) => caches.len(),
-            Self::Gemma(caches) => caches.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     pub fn as_mut_refs(&mut self) -> NativeTextLayerCachesMut<'_> {
         match self {
-            Self::Qwen(caches) => NativeTextLayerCachesMut::Qwen(caches.as_mut_slice()),
-            Self::Gemma(caches) => NativeTextLayerCachesMut::Gemma(caches.as_mut_slice()),
+            Self::Qwen(caches) => NativeTextLayerCachesMut::Qwen(caches),
+            Self::Gemma(caches) => NativeTextLayerCachesMut::Gemma(caches),
         }
     }
 }
 
-#[derive(Debug)]
 pub enum NativeTextLayerCachesMut<'a> {
     Qwen(&'a mut [QwenLayerCache]),
     Gemma(&'a mut [GemmaLayerCache]),
 }
 
 impl NativeTextLayerCachesMut<'_> {
-    fn family_slug(&self) -> &'static str {
+    pub fn family_slug(&self) -> &'static str {
         match self {
-            Self::Qwen(_) => "qwen",
-            Self::Gemma(_) => "gemma",
+            Self::Qwen(_) => ModelFamily::Qwen.canonical_slug(),
+            Self::Gemma(_) => ModelFamily::Gemma.canonical_slug(),
+        }
+    }
+}
+
+pub enum NativeTextModelSpecRef<'a> {
+    Qwen(&'a llm_models::QwenModelSpec),
+    Gemma(&'a llm_models::GemmaModelSpec),
+}
+
+impl From<&NativeTextModelSpec> for NativeTextModelSpecRef<'_> {
+    fn from(spec: &NativeTextModelSpec) -> Self {
+        match spec {
+            NativeTextModelSpec::Qwen(spec) => Self::Qwen(spec),
+            NativeTextModelSpec::Gemma(spec) => Self::Gemma(spec),
+        }
+    }
+}
+
+impl NativeTextModelSpecRef<'_> {
+    pub fn family(&self) -> ModelFamily {
+        match self {
+            Self::Qwen(_) => ModelFamily::Qwen,
+            Self::Gemma(_) => ModelFamily::Gemma,
+        }
+    }
+
+    pub fn vocab_size(&self) -> u32 {
+        match self {
+            Self::Qwen(spec) => spec.vocab_size,
+            Self::Gemma(spec) => spec.vocab_size,
         }
     }
 }
@@ -113,6 +101,7 @@ pub async fn native_prefill_sequence_with_cache(
     spec: &NativeTextModelSpec,
     token_ids: &[usize],
     caches: &mut NativeTextLayerCaches,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     native_prefill_sequence_with_cache_with_matvec(
         store,
@@ -120,6 +109,7 @@ pub async fn native_prefill_sequence_with_cache(
         token_ids,
         caches,
         &CpuNativeMatvecBackend,
+        scratch,
     )
     .await
 }
@@ -130,6 +120,7 @@ pub async fn native_prefill_sequence_with_cache_with_matvec(
     token_ids: &[usize],
     caches: &mut NativeTextLayerCaches,
     matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
         store,
@@ -137,6 +128,7 @@ pub async fn native_prefill_sequence_with_cache_with_matvec(
         token_ids,
         caches.as_mut_refs(),
         matvec,
+        scratch,
     )
     .await
 }
@@ -147,14 +139,15 @@ pub async fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
     token_ids: &[usize],
     caches: NativeTextLayerCachesMut<'_>,
     matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec).await
+            qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec, scratch).await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
+            gemma_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec, scratch)
                 .await
         }
         (spec, _) => Err(cache_family_mismatch("prefill", spec, cache_family)),
@@ -166,6 +159,7 @@ pub async fn native_decode_token_with_cache(
     spec: &NativeTextModelSpec,
     token_id: usize,
     caches: &mut NativeTextLayerCaches,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<f32>, TensorLoadError> {
     native_decode_token_with_cache_with_matvec(
         store,
@@ -173,6 +167,7 @@ pub async fn native_decode_token_with_cache(
         token_id,
         caches,
         &CpuNativeMatvecBackend,
+        scratch,
     )
     .await
 }
@@ -183,6 +178,7 @@ pub async fn native_decode_token_with_cache_with_matvec(
     token_id: usize,
     caches: &mut NativeTextLayerCaches,
     matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<f32>, TensorLoadError> {
     native_decode_token_with_cache_for_spec_ref_with_matvec(
         store,
@@ -190,6 +186,7 @@ pub async fn native_decode_token_with_cache_with_matvec(
         token_id,
         caches.as_mut_refs(),
         matvec,
+        scratch,
     )
     .await
 }
@@ -200,14 +197,15 @@ pub async fn native_decode_token_with_cache_for_spec_ref_with_matvec(
     token_id: usize,
     caches: NativeTextLayerCachesMut<'_>,
     matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec).await
+            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec, scratch).await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec).await
+            gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec, scratch).await
         }
         (spec, _) => Err(cache_family_mismatch("decode", spec, cache_family)),
     }

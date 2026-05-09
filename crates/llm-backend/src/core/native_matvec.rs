@@ -1,7 +1,8 @@
 use super::math::{
-    MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
-    linear_attention_recurrent_update_f32, matvec_row_major_f32, rms_norm_one_centered_f32,
-    select_head_rows_f32, silu_f32, softmax_f32, softmax_top_k_f32, weighted_sum_f32,
+    InferenceScratchpad, MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
+    linear_attention_recurrent_update_f32, matvec_row_major_f32, matvec_row_major_f32_in_place,
+    rms_norm_one_centered_f32, rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32,
+    softmax_f32, softmax_top_k_f32, weighted_sum_f32,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
@@ -12,18 +13,21 @@ pub async fn swiglu_mlp_f32_with_matvec(
     down_weight: &[f32],
     intermediate_size: usize,
     matvec: &impl NativeMatvecBackend,
-) -> Result<Vec<f32>, MathError> {
-    let gate = matvec
-        .matvec_row_major_f32(input, gate_weight, intermediate_size, input.len())
+    scratch: &mut InferenceScratchpad,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    let gate = InferenceScratchpad::get_mut(&mut scratch.buf0, intermediate_size);
+    matvec
+        .matvec_row_major_f32_in_place(input, gate_weight, intermediate_size, input.len(), gate)
         .await?;
-    let up = matvec
-        .matvec_row_major_f32(input, up_weight, intermediate_size, input.len())
+    let up = InferenceScratchpad::get_mut(&mut scratch.buf1, intermediate_size);
+    matvec
+        .matvec_row_major_f32_in_place(input, up_weight, intermediate_size, input.len(), up)
         .await?;
-    let activated = gate
-        .iter()
-        .zip(up)
-        .map(|(gate, up)| silu_f32(*gate) * up)
-        .collect::<Vec<_>>();
+    let activated = InferenceScratchpad::get_mut(&mut scratch.buf2, intermediate_size);
+    for (a, (g, u)) in activated.iter_mut().zip(gate.iter().zip(up.iter())) {
+        *a = silu_f32(*g) * *u;
+    }
     if !down_weight.len().is_multiple_of(intermediate_size) {
         return Err(MathError::InvalidShape(format!(
             "down projection length {} is not divisible by intermediate size {intermediate_size}",
@@ -32,7 +36,7 @@ pub async fn swiglu_mlp_f32_with_matvec(
     }
     let rows = down_weight.len() / intermediate_size;
     matvec
-        .matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
+        .matvec_row_major_f32_in_place(activated, down_weight, rows, intermediate_size, output)
         .await
 }
 
@@ -43,8 +47,19 @@ pub trait NativeMatvecBackend {
         tensor: &str,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
-        store.bf16_matvec_row_major_f32(tensor, input)
+        let mut output = vec![0.0; store.index().tensor_shape(tensor)?[0]];
+        self.bf16_matvec_row_major_f32_in_place(store, tensor, input, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError>;
 
     async fn bf16_matvecs_row_major_f32(
         &self,
@@ -62,8 +77,20 @@ pub trait NativeMatvecBackend {
         input: &[f32],
         chunk_rows: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
-        store.bf16_matvec_rows_f32(tensor, input, chunk_rows)
+        let mut output = vec![0.0; store.index().tensor_shape(tensor)?[0]];
+        self.bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError>;
 
     async fn bf16_matvec_range_row_major_f32(
         &self,
@@ -74,6 +101,30 @@ pub trait NativeMatvecBackend {
         columns: usize,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
+        let mut output = vec![0.0; rows];
+        self.bf16_matvec_range_row_major_f32_in_place(
+            store,
+            tensor,
+            element_offset,
+            rows,
+            columns,
+            input,
+            &mut output,
+        )
+        .await?;
+        Ok(output)
+    }
+
+    async fn bf16_matvec_range_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
         if input.len() != columns {
             return Err(TensorLoadError::integrity(format!(
                 "BF16 range matvec input length {} must match columns {columns}",
@@ -84,7 +135,7 @@ pub trait NativeMatvecBackend {
             .checked_mul(columns)
             .ok_or_else(|| TensorLoadError::integrity("BF16 range matvec shape overflow"))?;
         let weights = store.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-        self.matvec_row_major_f32(input, &weights, rows, columns)
+        self.matvec_row_major_f32_in_place(input, &weights, rows, columns, output)
             .await
             .map_err(|err| TensorLoadError::integrity(format!("BF16 range matvec failed: {err}")))
     }
@@ -107,8 +158,20 @@ pub trait NativeMatvecBackend {
         rows: usize,
         columns: usize,
     ) -> Result<Vec<f32>, MathError> {
-        matvec_row_major_f32(input, weights, rows, columns)
+        let mut output = vec![0.0; rows];
+        self.matvec_row_major_f32_in_place(input, weights, rows, columns, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn matvec_row_major_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     async fn rms_norm_one_centered_f32(
         &self,
@@ -116,12 +179,31 @@ pub trait NativeMatvecBackend {
         weight: &[f32],
         eps: f32,
     ) -> Result<Vec<f32>, MathError> {
-        rms_norm_one_centered_f32(input, weight, eps)
+        let mut output = vec![0.0; input.len()];
+        self.rms_norm_one_centered_f32_in_place(input, weight, eps, &mut output)
+            .await?;
+        Ok(output)
     }
 
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
+
     async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
-        softmax_f32(scores)
+        let mut output = vec![0.0; scores.len()];
+        self.softmax_f32_in_place(scores, &mut output).await?;
+        Ok(output)
     }
+
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     async fn linear_attention_conv1d_silu_f32(
         &self,
@@ -130,8 +212,20 @@ pub trait NativeMatvecBackend {
         conv_dim: usize,
         kernel_size: usize,
     ) -> Result<Vec<f32>, MathError> {
-        linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
+        let mut output = vec![0.0; conv_dim];
+        self.linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     async fn weighted_sum_f32(
         &self,
@@ -139,8 +233,19 @@ pub trait NativeMatvecBackend {
         weights: &[f32],
         vector_len: usize,
     ) -> Result<Vec<f32>, MathError> {
-        weighted_sum_f32(values, weights, vector_len)
+        let mut output = vec![0.0; vector_len];
+        self.weighted_sum_f32_in_place(values, weights, vector_len, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn weighted_sum_f32_in_place(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn linear_attention_recurrent_update_f32(
@@ -154,7 +259,8 @@ pub trait NativeMatvecBackend {
         key_head_dim: usize,
         value_head_dim: usize,
     ) -> Result<Vec<f32>, MathError> {
-        linear_attention_recurrent_update_f32(
+        let mut output = vec![0.0; state.len()];
+        self.linear_attention_recurrent_update_f32_in_place(
             state,
             key,
             value,
@@ -163,8 +269,25 @@ pub trait NativeMatvecBackend {
             decay,
             key_head_dim,
             value_head_dim,
+            &mut output,
         )
+        .await?;
+        Ok(output)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_update_f32_in_place(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     async fn select_head_rows_f32(
         &self,
@@ -174,8 +297,21 @@ pub trait NativeMatvecBackend {
         head_start: usize,
         head_len: usize,
     ) -> Result<Vec<f32>, MathError> {
-        select_head_rows_f32(values, row_count, row_len, head_start, head_len)
+        let mut output = vec![0.0; row_count * head_len];
+        self.select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, &mut output)
+            .await?;
+        Ok(output)
     }
+
+    async fn select_head_rows_f32_in_place(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError>;
 
     async fn select_kv_cache_head_rows_f32(
         &self,
@@ -185,12 +321,41 @@ pub trait NativeMatvecBackend {
         head_start: usize,
         head_len: usize,
     ) -> Result<Vec<f32>, MathError> {
+        let mut output = vec![0.0; row_count * head_len];
+        self.select_kv_cache_head_rows_f32_in_place(
+            cache,
+            tensor,
+            row_count,
+            head_start,
+            head_len,
+            &mut output,
+        )
+        .await?;
+        Ok(output)
+    }
+
+    async fn select_kv_cache_head_rows_f32_in_place(
+        &self,
+        cache: &LayerKvCache,
+        tensor: NativeKvCacheTensor,
+        row_count: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         let values = match tensor {
             NativeKvCacheTensor::Key => cache.keys(),
             NativeKvCacheTensor::Value => cache.values(),
         };
-        self.select_head_rows_f32(values, row_count, cache.vector_len(), head_start, head_len)
-            .await
+        self.select_head_rows_f32_in_place(
+            values,
+            row_count,
+            cache.vector_len(),
+            head_start,
+            head_len,
+            output,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -206,6 +371,37 @@ pub trait NativeMatvecBackend {
         key_head_dim: usize,
         value_head_dim: usize,
     ) -> Result<Vec<f32>, MathError> {
+        let mut output = vec![0.0; key_head_dim * value_head_dim];
+        self.linear_attention_recurrent_cache_update_f32_in_place(
+            cache,
+            state_start,
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+            &mut output,
+        )
+        .await?;
+        Ok(output)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_cache_update_f32_in_place(
+        &self,
+        cache: &LinearAttentionCache,
+        state_start: usize,
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         let state_len = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
             MathError::InvalidShape(
                 "linear attention recurrent cache state shape overflows usize".to_owned(),
@@ -223,7 +419,7 @@ pub trait NativeMatvecBackend {
                 recurrent_state.len()
             )));
         }
-        self.linear_attention_recurrent_update_f32(
+        self.linear_attention_recurrent_update_f32_in_place(
             &recurrent_state[state_start..state_end],
             key,
             value,
@@ -232,6 +428,7 @@ pub trait NativeMatvecBackend {
             decay,
             key_head_dim,
             value_head_dim,
+            output,
         )
         .await
     }
@@ -254,4 +451,146 @@ pub enum NativeKvCacheTensor {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CpuNativeMatvecBackend;
 
-impl NativeMatvecBackend for CpuNativeMatvecBackend {}
+impl NativeMatvecBackend for CpuNativeMatvecBackend {
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let vec = store.bf16_matvec_row_major_f32(tensor, input)?;
+        if output.len() < vec.len() {
+            return Err(TensorLoadError::integrity("output buffer too small"));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let vec = store.bf16_matvec_rows_f32(tensor, input, chunk_rows)?;
+        if output.len() < vec.len() {
+            return Err(TensorLoadError::integrity("output buffer too small"));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn matvec_row_major_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+    }
+
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+    }
+
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        let vec = softmax_f32(scores)?;
+        if output.len() < vec.len() {
+            return Err(MathError::InvalidShape("output too small".to_owned()));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        let vec = linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)?;
+        if output.len() < vec.len() {
+            return Err(MathError::InvalidShape("output too small".to_owned()));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn weighted_sum_f32_in_place(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        let vec = weighted_sum_f32(values, weights, vector_len)?;
+        if output.len() < vec.len() {
+            return Err(MathError::InvalidShape("output too small".to_owned()));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn linear_attention_recurrent_update_f32_in_place(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        let vec = linear_attention_recurrent_update_f32(
+            state,
+            key,
+            value,
+            memory,
+            beta,
+            decay,
+            key_head_dim,
+            value_head_dim,
+        )?;
+        if output.len() < vec.len() {
+            return Err(MathError::InvalidShape("output too small".to_owned()));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+
+    async fn select_head_rows_f32_in_place(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        let vec = select_head_rows_f32(values, row_count, row_len, head_start, head_len)?;
+        if output.len() < vec.len() {
+            return Err(MathError::InvalidShape("output too small".to_owned()));
+        }
+        output[..vec.len()].copy_from_slice(&vec);
+        Ok(())
+    }
+}

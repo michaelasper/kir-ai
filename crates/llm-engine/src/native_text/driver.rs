@@ -1,17 +1,20 @@
 use super::{
     NativeStreamTextDeltas, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
     NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, native_text_cache_token_capacity,
-    native_text_prefill_context_with_cache, native_text_worker_stream,
-    resolve_native_text_max_tokens, send_backend_stream_chunk,
+    native_text_prefill_context_with_cache,
 };
-use crate::native_matvec::NativeTextCacheMirrorSource;
+use crate::native_matvec::{
+    NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
+};
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, SamplingConfig,
+    InferenceScratchpad, ModelBackend, SamplingConfig,
 };
 use llm_tokenizer::HuggingFaceTokenizer;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[async_trait]
@@ -62,6 +65,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         &self,
         token_ids: &[usize],
         caches: &mut [Self::LayerCache],
+        scratch: &mut InferenceScratchpad,
     ) -> Result<Vec<Vec<f32>>, BackendError>;
     fn make_decode_session(
         &self,
@@ -70,11 +74,12 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> Self::DecodeSession;
     fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {}
     fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32];
-    async fn step(&self, session: &mut Self::DecodeSession, token_id: usize) -> Result<(), BackendError>;
+    async fn step(&self, session: &mut Self::DecodeSession, token_id: usize, scratch: &mut InferenceScratchpad) -> Result<(), BackendError>;
     async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<usize, BackendError>;
 }
 
@@ -89,57 +94,20 @@ pub(crate) struct NativeTextStopTokens {
     pub(crate) token_strings: &'static [&'static str],
 }
 
-impl NativeTextStopTokens {
-    pub(crate) fn contains(self, tokenizer: &HuggingFaceTokenizer, token_id: usize) -> bool {
-        self.token_ids.contains(&token_id)
-            || self.token_strings.iter().any(|token| {
-                tokenizer
-                    .token_to_id(token)
-                    .is_some_and(|stop_id| token_id == stop_id as usize)
-            })
-    }
-}
-
-fn native_text_candidate_decision_for_stop_tokens(
+pub(crate) fn native_text_candidate_decision_for_stop_tokens(
     stop_tokens: NativeTextStopTokens,
     tokenizer: &HuggingFaceTokenizer,
     token_id: usize,
 ) -> NativeTextCandidateDecision {
-    if stop_tokens.contains(tokenizer, token_id) {
-        NativeTextCandidateDecision::Stop
-    } else {
-        NativeTextCandidateDecision::Emit(token_id)
+    if stop_tokens.token_ids.contains(&token_id) {
+        return NativeTextCandidateDecision::Stop;
     }
-}
-
-struct NativeTextCacheMirrorCleanupGuard<'a, A>
-where
-    A: NativeTextAdapter,
-{
-    adapter: &'a A,
-    disarmed: bool,
-}
-
-impl<'a, A> NativeTextCacheMirrorCleanupGuard<'a, A>
-where
-    A: NativeTextAdapter,
-{
-    fn new(adapter: &'a A) -> Self {
-        Self {
-            adapter,
-            disarmed: false,
+    if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false) {
+        if stop_tokens.token_strings.contains(&token_string.as_str()) {
+            return NativeTextCandidateDecision::Stop;
         }
     }
-
-    fn disarm(&mut self) {
-        self.disarmed = true;
-    }
-
-    fn cleanup(&self, caches: &[A::LayerCache]) {
-        if !self.disarmed {
-            self.adapter.cleanup_cache_mirrors(caches);
-        }
-    }
+    NativeTextCandidateDecision::Emit(token_id)
 }
 
 #[derive(Clone)]
@@ -170,12 +138,12 @@ where
             metadata,
             tokenizer,
             adapter,
-            max_new_tokens: max_new_tokens.max(1),
+            max_new_tokens,
         }
     }
 
     pub(crate) fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
-        self.max_new_tokens = max_new_tokens.max(1);
+        self.max_new_tokens = max_new_tokens;
         self
     }
 
@@ -215,8 +183,9 @@ where
             self.max_new_tokens,
             self.adapter.family_display_name(),
         )?;
+        let mut scratch = InferenceScratchpad::new();
         let mut decode =
-            self.start_decode_session(&context_tokens, requested, &request, &cancellation).await?;
+            self.start_decode_session(&context_tokens, requested, &request, &cancellation, &mut scratch).await?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -227,7 +196,7 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling).await?;
+                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling, &mut scratch).await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -249,7 +218,7 @@ where
                 ))
             })?);
             if step_idx + 1 < requested {
-                self.adapter.step(&mut decode, token_id).await?;
+                self.adapter.step(&mut decode, token_id, &mut scratch).await?;
             }
         }
 
@@ -295,8 +264,9 @@ where
             self.max_new_tokens,
             self.adapter.family_display_name(),
         )?;
+        let mut scratch = InferenceScratchpad::new();
         let mut decode =
-            match self.start_decode_session(&context_tokens, requested, &request, &cancellation).await {
+            match self.start_decode_session(&context_tokens, requested, &request, &cancellation, &mut scratch).await {
                 Ok(decode) => decode,
                 Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
                     return Err(BackendError::Cancelled);
@@ -313,7 +283,7 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling).await?;
+                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling, &mut scratch).await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -352,7 +322,7 @@ where
                 if cancellation.is_cancelled() {
                     return Err(BackendError::Cancelled);
                 }
-                self.adapter.step(&mut decode, token_id).await?;
+                self.adapter.step(&mut decode, token_id, &mut scratch).await?;
             }
         }
 
@@ -394,6 +364,7 @@ where
         max_new_tokens: u32,
         request: &BackendRequest,
         cancellation: &CancellationToken,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<A::DecodeSession, BackendError> {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
@@ -435,6 +406,7 @@ where
                 &context_tokens[cached_prefix_len..],
                 &mut caches,
                 cancellation,
+                scratch,
             ).await {
                 Ok(hidden) => Some(hidden),
                 Err(err) => {
@@ -473,6 +445,7 @@ where
         context_tokens: &[usize],
         caches: &mut [A::LayerCache],
         cancellation: &CancellationToken,
+        scratch: &mut InferenceScratchpad,
     ) -> Result<Vec<f32>, BackendError> {
         native_text_prefill_context_with_cache(
             self.adapter.family_display_name(),
@@ -480,7 +453,7 @@ where
             context_tokens,
             caches,
             cancellation,
-            |chunk, caches| self.adapter.prefill_chunk_with_cache(chunk, caches),
+            |chunk, caches| self.adapter.prefill_chunk_with_cache(chunk, caches, scratch),
         ).await
     }
 }
@@ -535,11 +508,75 @@ where
     }
 }
 
-impl<A> NativeTextDriver<A>
-where
-    A: NativeTextAdapter,
-{
-    fn worker_label(&self) -> &'static str {
-        self.adapter.worker_label()
+pub(crate) struct NativeTextCacheMirrorCleanupGuard<'a, A: NativeTextAdapter> {
+    adapter: &'a A,
+    armed: bool,
+}
+
+impl<'a, A: NativeTextAdapter> NativeTextCacheMirrorCleanupGuard<'a, A> {
+    pub(crate) fn new(adapter: &'a A) -> Self {
+        Self {
+            adapter,
+            armed: true,
+        }
     }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    pub(crate) fn cleanup(&self, caches: &[A::LayerCache]) {
+        if self.armed {
+            self.adapter.cleanup_cache_mirrors(caches);
+        }
+    }
+}
+
+pub(crate) fn native_text_worker_stream<'a, T, Fut>(
+    label: &'static str,
+    rx: tokio::sync::mpsc::Receiver<Result<T, BackendError>>,
+    worker: tokio::task::JoinHandle<Fut>,
+) -> BoxStream<'a, Result<T, BackendError>>
+where
+    T: Send + 'static,
+    Fut: Send + 'static,
+{
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let worker_guard = StreamWorkerGuard { label, worker };
+    stream
+        .map(move |item| {
+            let _ = &worker_guard;
+            item
+        })
+        .boxed()
+}
+
+struct StreamWorkerGuard<T> {
+    label: &'static str,
+    worker: tokio::task::JoinHandle<T>,
+}
+
+impl<T> Drop for StreamWorkerGuard<T> {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
+}
+
+fn resolve_native_text_max_tokens(
+    requested: Option<u32>,
+    driver_max: u32,
+    family_display_name: &str,
+) -> Result<u32, BackendError> {
+    let requested = requested.unwrap_or(driver_max);
+    if requested == 0 {
+        return Err(BackendError::Other(format!(
+            "{family_display_name} cannot generate zero tokens"
+        )));
+    }
+    if requested > driver_max {
+        return Err(BackendError::Other(format!(
+            "{family_display_name} requested {requested} tokens, but max is {driver_max}"
+        )));
+    }
+    Ok(requested)
 }
