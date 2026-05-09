@@ -313,6 +313,10 @@ impl NativeTextAdapter for NativeQwenAdapter {
         )
     }
 
+    fn max_prefill_tokens(&self) -> usize {
+        self.max_prefill_tokens
+    }
+
     fn prefix_cache(&self) -> &NativeTextPrefixCache<QwenLayerCache> {
         &self.prefix_cache
     }
@@ -338,21 +342,19 @@ impl NativeTextAdapter for NativeQwenAdapter {
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
-    fn prefill_context_with_cache(
+    fn prefill_chunk_with_cache(
         &self,
-        context_tokens: &[usize],
+        token_ids: &[usize],
         caches: &mut [QwenLayerCache],
-        cancellation: &CancellationToken,
-    ) -> Result<Vec<f32>, BackendError> {
-        native_qwen_prefill_context_with_cache(
+    ) -> Result<Vec<Vec<f32>>, BackendError> {
+        qwen_prefill_sequence_with_cache_with_matvec(
             &self.store,
             &self.spec,
-            context_tokens,
+            token_ids,
             caches,
             &self.matvec,
-            self.max_prefill_tokens,
-            cancellation,
         )
+        .map_err(|err| BackendError::Other(err.to_string()))
     }
 
     fn make_decode_session(
@@ -394,34 +396,6 @@ impl NativeTextAdapter for NativeQwenAdapter {
         }
         .select_next_token(hidden, sampling)
     }
-}
-
-fn native_qwen_prefill_context_with_cache(
-    store: &SafeTensorShardStore,
-    spec: &QwenModelSpec,
-    context_tokens: &[usize],
-    caches: &mut [QwenLayerCache],
-    matvec: &impl NativeMatvecBackend,
-    prefill_chunk_tokens: usize,
-    cancellation: &CancellationToken,
-) -> Result<Vec<f32>, BackendError> {
-    if cancellation.is_cancelled() {
-        return Err(BackendError::Cancelled);
-    }
-    let mut hidden = None;
-    for chunk in context_tokens.chunks(prefill_chunk_tokens.max(1)) {
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        let hidden_states =
-            qwen_prefill_sequence_with_cache_with_matvec(store, spec, chunk, caches, matvec)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        hidden = hidden_states.last().cloned();
-    }
-    hidden.ok_or_else(|| BackendError::Other("Qwen prefill returned no hidden states".to_owned()))
 }
 
 pub(crate) struct NativeQwenDecodeSession {

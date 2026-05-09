@@ -283,6 +283,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         context_tokens: usize,
         max_new_tokens: u32,
     ) -> Result<usize, BackendError>;
+    fn max_prefill_tokens(&self) -> usize;
     fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache>;
     fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics;
     fn prefix_cache_namespace(
@@ -292,12 +293,11 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> NativeTextPrefixCacheNamespace;
     fn layer_count(&self) -> usize;
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<Self::LayerCache>, BackendError>;
-    fn prefill_context_with_cache(
+    fn prefill_chunk_with_cache(
         &self,
-        context_tokens: &[usize],
+        token_ids: &[usize],
         caches: &mut [Self::LayerCache],
-        cancellation: &CancellationToken,
-    ) -> Result<Vec<f32>, BackendError>;
+    ) -> Result<Vec<Vec<f32>>, BackendError>;
     fn make_decode_session(
         &self,
         hidden: Vec<f32>,
@@ -605,7 +605,7 @@ where
             return Err(BackendError::Cancelled);
         }
         if cached_prefix_len < context_tokens.len() {
-            hidden = Some(self.adapter.prefill_context_with_cache(
+            hidden = Some(self.prefill_context_with_cache(
                 &context_tokens[cached_prefix_len..],
                 &mut caches,
                 cancellation,
@@ -628,6 +628,22 @@ where
             self.adapter.prefix_cache_metrics(),
         );
         Ok(self.adapter.make_decode_session(hidden, caches))
+    }
+
+    pub(crate) fn prefill_context_with_cache(
+        &self,
+        context_tokens: &[usize],
+        caches: &mut [A::LayerCache],
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, BackendError> {
+        native_text_prefill_context_with_cache(
+            self.adapter.family_display_name(),
+            self.adapter.max_prefill_tokens(),
+            context_tokens,
+            caches,
+            cancellation,
+            |chunk, caches| self.adapter.prefill_chunk_with_cache(chunk, caches),
+        )
     }
 }
 
@@ -758,6 +774,35 @@ pub(crate) fn resolve_native_text_max_tokens(
         ))),
         Some(value) => Ok(value),
     }
+}
+
+pub(crate) fn native_text_prefill_context_with_cache<C>(
+    family_display_name: &str,
+    prefill_chunk_tokens: usize,
+    context_tokens: &[usize],
+    caches: &mut [C],
+    cancellation: &CancellationToken,
+    mut prefill_chunk: impl FnMut(&[usize], &mut [C]) -> Result<Vec<Vec<f32>>, BackendError>,
+) -> Result<Vec<f32>, BackendError> {
+    if cancellation.is_cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    let mut hidden = None;
+    for chunk in context_tokens.chunks(prefill_chunk_tokens.max(1)) {
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        let hidden_states = prefill_chunk(chunk, caches)?;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        hidden = hidden_states.last().cloned();
+    }
+    hidden.ok_or_else(|| {
+        BackendError::Other(format!(
+            "{family_display_name} prefill returned no hidden states"
+        ))
+    })
 }
 
 pub(crate) fn sample_token_id_with_draw(
@@ -1239,6 +1284,61 @@ mod tests {
         assert!(options.gemma.eager_materialize_shards);
         assert_eq!(options.gemma.metal_weight_cache_bytes, Some(4096));
         assert!(options.gemma.warm_metal_weight_cache);
+    }
+
+    #[test]
+    fn prefill_context_returns_last_hidden_from_last_chunk() {
+        let cancellation = CancellationToken::new();
+        let mut observed_chunks = Vec::new();
+
+        let hidden = native_text_prefill_context_with_cache(
+            "Test",
+            2,
+            &[1, 2, 3],
+            &mut [TestCache {
+                bytes: 0,
+                marker: 0,
+            }],
+            &cancellation,
+            |chunk, _caches| {
+                observed_chunks.push(chunk.to_vec());
+                Ok(chunk
+                    .iter()
+                    .map(|token| vec![*token as f32, (*token * 10) as f32])
+                    .collect())
+            },
+        )
+        .expect("prefill succeeds");
+
+        assert_eq!(observed_chunks, vec![vec![1, 2], vec![3]]);
+        assert_eq!(hidden, vec![3.0, 30.0]);
+    }
+
+    #[test]
+    fn prefill_context_observes_cancellation_between_chunks() {
+        let cancellation = CancellationToken::new();
+        let mut calls = 0;
+
+        let err = native_text_prefill_context_with_cache(
+            "Test",
+            1,
+            &[1, 2],
+            &mut [TestCache {
+                bytes: 0,
+                marker: 0,
+            }],
+            &cancellation,
+            |chunk, _caches| {
+                calls += 1;
+                assert_eq!(chunk, &[1]);
+                cancellation.cancel();
+                Ok(vec![vec![1.0]])
+            },
+        )
+        .expect_err("cancelled after first chunk");
+
+        assert!(matches!(err, BackendError::Cancelled));
+        assert_eq!(calls, 1);
     }
 
     #[test]

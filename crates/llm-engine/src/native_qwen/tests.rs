@@ -4,7 +4,9 @@ use crate::native_matvec::{
     DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES as DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES,
     MetalBackendMetrics, NativeTextMetalWarmup as NativeQwenMetalWarmup,
 };
-use crate::native_text::{NativeStreamTextDeltas, sample_token_id_with_draw};
+use crate::native_text::{
+    NativeStreamTextDeltas, native_text_prefill_context_with_cache, sample_token_id_with_draw,
+};
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
@@ -605,14 +607,22 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
         .expect("expected cache capacity"),
     )
     .expect("expected caches allocate");
-    let expected_hidden = native_qwen_prefill_context_with_cache(
-        &backend.driver.adapter.store,
-        &backend.driver.adapter.spec,
+    let expected_hidden = native_text_prefill_context_with_cache(
+        "Qwen",
+        1,
         &[0, 1, 0],
         &mut expected_caches,
-        &NativeTextMatvecBackend::Cpu,
-        1,
         &CancellationToken::new(),
+        |chunk, caches| {
+            qwen_prefill_sequence_with_cache_with_matvec(
+                &backend.driver.adapter.store,
+                &backend.driver.adapter.spec,
+                chunk,
+                caches,
+                &NativeTextMatvecBackend::Cpu,
+            )
+            .map_err(|err| BackendError::Other(err.to_string()))
+        },
     )
     .expect("fresh prefill succeeds");
     assert_close_vec(second.hidden(), &expected_hidden);
@@ -637,14 +647,22 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
     let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
 
-    let hidden = native_qwen_prefill_context_with_cache(
-        &store,
-        &spec,
+    let hidden = native_text_prefill_context_with_cache(
+        "Qwen",
+        1,
         &[0, 1, 0],
         &mut caches,
-        &NativeTextMatvecBackend::Cpu,
-        1,
         &CancellationToken::new(),
+        |chunk, caches| {
+            qwen_prefill_sequence_with_cache_with_matvec(
+                &store,
+                &spec,
+                chunk,
+                caches,
+                &NativeTextMatvecBackend::Cpu,
+            )
+            .map_err(|err| BackendError::Other(err.to_string()))
+        },
     )
     .expect("sequence prefill succeeds");
 
@@ -671,14 +689,16 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
         conv_calls: std::cell::Cell::new(0),
     };
 
-    let err = native_qwen_prefill_context_with_cache(
-        &store,
-        &spec,
+    let err = native_text_prefill_context_with_cache(
+        "Qwen",
+        1,
         &[0, 1, 0],
         &mut caches,
-        &matvec,
-        1,
         &cancellation,
+        |chunk, caches| {
+            qwen_prefill_sequence_with_cache_with_matvec(&store, &spec, chunk, caches, &matvec)
+                .map_err(|err| BackendError::Other(err.to_string()))
+        },
     )
     .expect_err("cancelled after first chunk");
 
