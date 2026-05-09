@@ -2,7 +2,7 @@ use crate::sync_ext::RecoverPoisonedMutex;
 use axum::{
     Json, Router,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, sse::Sse},
     routing::{get, post},
 };
@@ -20,6 +20,7 @@ use std::{
 };
 
 mod admin;
+mod lifecycle;
 mod requests;
 mod scheduler;
 mod streaming;
@@ -27,14 +28,8 @@ use admin::{
     ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_model, admin_model_plan,
     admin_model_pull, admin_model_verify, admin_models, health, models,
 };
-use requests::{
-    ActiveRequest, ActiveRequestRegistry, RequestFinishResult, RequestRegistrationError,
-    RequestStartResult,
-};
-use scheduler::{
-    GenerationPhase, GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions,
-    SchedulerAcquireError, SchedulerClass, SchedulerPermit,
-};
+use requests::ActiveRequestRegistry;
+use scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions};
 
 type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -245,36 +240,25 @@ async fn chat_completions(
     let request = parse_json_request(request, &state)?;
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
-    let (admission_class, initial_phase) = chat_scheduler_classes(&state, &request);
     if request.stream {
-        let active_request = register_active_request(&state, &headers)?;
-        let request_started = active_request.started_at;
-        let mut scheduler_slot = acquire_scheduler_slot(
-            &state,
-            admission_class,
-            initial_phase,
-            &active_request.cancellation,
-        )
-        .await?;
-        mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
-        let phase = state.generation_phases.begin(initial_phase);
-        let request_id = active_request.id.clone();
+        let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
         if chat_stream_requires_buffering(&request) {
             let response = match state
                 .runtime
-                .chat_stream_buffered_with_cancel(request, active_request.cancellation.clone())
+                .chat_stream_buffered_with_cancel(request, run.cancellation())
                 .await
             {
                 Ok(response) => response,
-                Err(err) => {
-                    return Err(mark_active_request_finished_for_runtime_error(
-                        &state,
-                        &active_request,
-                        &mut scheduler_slot,
-                        err,
-                    ));
-                }
+                Err(err) => return Err(run.finish_runtime_error(&state, err)),
             };
+            let stream_run = run.into_streaming();
+            let lifecycle::StreamingGenerationRun {
+                request_id,
+                active_request,
+                scheduler_slot,
+                phase,
+                request_started,
+            } = stream_run;
             let events = streaming::stream_runtime_events(
                 state.clone(),
                 active_request,
@@ -287,20 +271,28 @@ async fn chat_completions(
             let mut response = Sse::new(events)
                 .keep_alive(streaming::engine_sse_keep_alive())
                 .into_response();
-            insert_request_id_header(&mut response, &request_id);
+            lifecycle::insert_request_id_header(&mut response, &request_id);
             return Ok(response);
         }
+        let request_id = run.request_id().to_owned();
+        let stream_run = run.into_streaming();
+        let stream_state = state.clone();
         let events = async_stream::stream! {
-            let mut scheduler_slot = scheduler_slot;
-            let active_request = active_request;
-            match state
+            let lifecycle::StreamingGenerationRun {
+                active_request,
+                mut scheduler_slot,
+                phase,
+                request_started,
+                ..
+            } = stream_run;
+            match stream_state
                 .runtime
                 .chat_stream_with_cancel(request, active_request.cancellation.clone())
                 .await
             {
                 Ok(response) => {
                     let events = streaming::stream_runtime_events(
-                        state.clone(),
+                        stream_state.clone(),
                         active_request,
                         scheduler_slot,
                         phase,
@@ -315,7 +307,7 @@ async fn chat_completions(
                 }
                 Err(err) => {
                     for event in streaming::stream_runtime_error_events(
-                        &state,
+                        &stream_state,
                         &active_request,
                         &mut scheduler_slot,
                         err,
@@ -328,41 +320,22 @@ async fn chat_completions(
         let mut response = Sse::new(events)
             .keep_alive(streaming::engine_sse_keep_alive())
             .into_response();
-        insert_request_id_header(&mut response, &request_id);
+        lifecycle::insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let active_request = register_active_request(&state, &headers)?;
-    let request_started = active_request.started_at;
-    let mut scheduler_slot = acquire_scheduler_slot(
-        &state,
-        admission_class,
-        initial_phase,
-        &active_request.cancellation,
-    )
-    .await?;
-    mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
-    let _phase = state.generation_phases.begin(initial_phase);
-    let request_id = active_request.id.clone();
+    let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
     let response = match state
         .runtime
-        .chat_with_cancel(request, active_request.cancellation.clone())
+        .chat_with_cancel(request, run.cancellation())
         .await
     {
         Ok(response) => response,
-        Err(err) => {
-            return Err(mark_active_request_finished_for_runtime_error(
-                &state,
-                &active_request,
-                &mut scheduler_slot,
-                err,
-            ));
-        }
+        Err(err) => return Err(run.finish_runtime_error(&state, err)),
     };
-    mark_active_request_finished_for_success(&state, &active_request, &mut scheduler_slot)?;
-    drop(active_request);
-    record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
+    let finished = run.finish_success(&state)?;
+    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
     let mut response = Json(response).into_response();
-    insert_request_id_header(&mut response, &request_id);
+    lifecycle::insert_request_id_header(&mut response, finished.request_id());
     Ok(response)
 }
 
@@ -374,31 +347,27 @@ async fn completions(
     let request = parse_json_request(request, &state)?;
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
-    let (admission_class, initial_phase) = completion_scheduler_classes(&state, &request);
     if request.stream {
-        let active_request = register_active_request(&state, &headers)?;
-        let request_started = active_request.started_at;
-        let mut scheduler_slot = acquire_scheduler_slot(
-            &state,
-            admission_class,
-            initial_phase,
-            &active_request.cancellation,
-        )
-        .await?;
-        mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
-        let phase = state.generation_phases.begin(initial_phase);
-        let request_id = active_request.id.clone();
+        let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
+        let request_id = run.request_id().to_owned();
+        let stream_run = run.into_streaming();
+        let stream_state = state.clone();
         let events = async_stream::stream! {
-            let mut scheduler_slot = scheduler_slot;
-            let active_request = active_request;
-            match state
+            let lifecycle::StreamingGenerationRun {
+                active_request,
+                mut scheduler_slot,
+                phase,
+                request_started,
+                ..
+            } = stream_run;
+            match stream_state
                 .runtime
                 .completion_stream_with_cancel(request, active_request.cancellation.clone())
                 .await
             {
                 Ok(response) => {
                     let events = streaming::stream_runtime_events(
-                        state.clone(),
+                        stream_state.clone(),
                         active_request,
                         scheduler_slot,
                         phase,
@@ -413,7 +382,7 @@ async fn completions(
                 }
                 Err(err) => {
                     for event in streaming::stream_runtime_error_events(
-                        &state,
+                        &stream_state,
                         &active_request,
                         &mut scheduler_slot,
                         err,
@@ -426,41 +395,22 @@ async fn completions(
         let mut response = Sse::new(events)
             .keep_alive(streaming::engine_sse_keep_alive())
             .into_response();
-        insert_request_id_header(&mut response, &request_id);
+        lifecycle::insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let active_request = register_active_request(&state, &headers)?;
-    let request_started = active_request.started_at;
-    let mut scheduler_slot = acquire_scheduler_slot(
-        &state,
-        admission_class,
-        initial_phase,
-        &active_request.cancellation,
-    )
-    .await?;
-    mark_active_request_running(&state, &active_request, &mut scheduler_slot)?;
-    let _phase = state.generation_phases.begin(initial_phase);
-    let request_id = active_request.id.clone();
+    let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
     let response = match state
         .runtime
-        .completion_with_cancel(request, active_request.cancellation.clone())
+        .completion_with_cancel(request, run.cancellation())
         .await
     {
         Ok(response) => response,
-        Err(err) => {
-            return Err(mark_active_request_finished_for_runtime_error(
-                &state,
-                &active_request,
-                &mut scheduler_slot,
-                err,
-            ));
-        }
+        Err(err) => return Err(run.finish_runtime_error(&state, err)),
     };
-    mark_active_request_finished_for_success(&state, &active_request, &mut scheduler_slot)?;
-    drop(active_request);
-    record_success_metrics(&state, &response.usage, streamed, request_started.elapsed());
+    let finished = run.finish_success(&state)?;
+    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
     let mut response = Json(response).into_response();
-    insert_request_id_header(&mut response, &request_id);
+    lifecycle::insert_request_id_header(&mut response, finished.request_id());
     Ok(response)
 }
 
@@ -593,203 +543,6 @@ fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
         .metrics
         .lock_or_recover("metrics")
         .record_time_to_first_token(latency);
-}
-
-async fn acquire_scheduler_slot(
-    state: &AppState,
-    admission_class: SchedulerClass,
-    initial_phase: GenerationPhase,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<SchedulerPermit, EngineError> {
-    match state
-        .model_scheduler
-        .clone()
-        .acquire(admission_class, initial_phase, cancellation)
-        .await
-    {
-        Ok(permit) => Ok(permit),
-        Err(SchedulerAcquireError::QueueFull) => {
-            record_failure_metrics(state);
-            Err(EngineError::Overloaded(
-                "model scheduler queue is full; retry the request later".to_owned(),
-            ))
-        }
-        Err(SchedulerAcquireError::QueueTimedOut) => {
-            record_failure_metrics(state);
-            Err(EngineError::Overloaded(
-                "model scheduler queue timed out; retry the request later".to_owned(),
-            ))
-        }
-        Err(SchedulerAcquireError::Cancelled) => {
-            record_failure_metrics(state);
-            Err(EngineError::RequestCancelled {
-                phase: "scheduler",
-                message: "request was cancelled before scheduler admission",
-            })
-        }
-    }
-}
-
-fn mark_active_request_running(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-) -> Result<(), EngineError> {
-    match active_request.mark_running() {
-        RequestStartResult::Running => Ok(()),
-        RequestStartResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            Err(EngineError::RequestCancelled {
-                phase: "scheduler",
-                message: "request was cancelled before runtime execution",
-            })
-        }
-        RequestStartResult::Finished | RequestStartResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            Err(RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was not runnable after scheduler admission".to_owned(),
-            ))
-            .into())
-        }
-    }
-}
-
-fn mark_active_request_finished_for_success(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-) -> Result<(), EngineError> {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished => Ok(()),
-        RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            Err(EngineError::RequestCancelled {
-                phase: "decode",
-                message: "request was cancelled before response delivery",
-            })
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            Err(RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was missing before response delivery".to_owned(),
-            ))
-            .into())
-        }
-    }
-}
-
-fn mark_active_request_finished_for_runtime_error(
-    state: &AppState,
-    active_request: &ActiveRequest,
-    scheduler_slot: &mut SchedulerPermit,
-    err: RuntimeError,
-) -> EngineError {
-    match active_request.mark_finished() {
-        RequestFinishResult::Finished => {
-            mark_scheduler_runtime_error(scheduler_slot, &err);
-            record_runtime_error_metrics(state, &err);
-            err.into()
-        }
-        RequestFinishResult::Cancelled => {
-            scheduler_slot.mark_cancelled();
-            record_failure_metrics(state);
-            EngineError::RequestCancelled {
-                phase: "decode",
-                message: "request was cancelled before error delivery",
-            }
-        }
-        RequestFinishResult::Missing => {
-            scheduler_slot.mark_failed();
-            record_failure_metrics(state);
-            RuntimeError::Backend(BackendError::Other(
-                "request lifecycle was missing before error delivery".to_owned(),
-            ))
-            .into()
-        }
-    }
-}
-
-fn chat_scheduler_classes(
-    state: &AppState,
-    request: &ChatCompletionRequest,
-) -> (SchedulerClass, GenerationPhase) {
-    let admission = state.model_scheduler.classify_chat(request);
-    let initial_phase = if request.stream || admission == SchedulerClass::Prefill {
-        GenerationPhase::Prefill
-    } else {
-        admission.as_phase()
-    };
-    (admission, initial_phase)
-}
-
-fn completion_scheduler_classes(
-    state: &AppState,
-    request: &CompletionRequest,
-) -> (SchedulerClass, GenerationPhase) {
-    let admission = state.model_scheduler.classify_completion(request);
-    let initial_phase = if request.stream || admission == SchedulerClass::Prefill {
-        GenerationPhase::Prefill
-    } else {
-        admission.as_phase()
-    };
-    (admission, initial_phase)
-}
-
-fn mark_scheduler_runtime_error(permit: &mut SchedulerPermit, err: &RuntimeError) {
-    if matches!(err, RuntimeError::Backend(BackendError::Cancelled)) {
-        permit.mark_cancelled();
-    } else {
-        permit.mark_failed();
-    }
-}
-
-fn register_active_request(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<ActiveRequest, EngineError> {
-    let id = request_id_from_headers(state, headers).inspect_err(|_| {
-        record_failure_metrics(state);
-    })?;
-    state.active_requests.register(id).map_err(|err| {
-        record_failure_metrics(state);
-        match err {
-            RequestRegistrationError::Conflict(id) => EngineError::RequestConflict(id),
-        }
-    })
-}
-
-fn request_id_from_headers(state: &AppState, headers: &HeaderMap) -> Result<String, EngineError> {
-    let Some(value) = headers
-        .get("x-request-id")
-        .or_else(|| headers.get("x-llm-request-id"))
-    else {
-        return Ok(state.active_requests.next_request_id());
-    };
-    let request_id = value
-        .to_str()
-        .map_err(|_| EngineError::InvalidRequestId("request id must be visible ASCII".to_owned()))?
-        .trim();
-    if request_id.is_empty() {
-        return Err(EngineError::InvalidRequestId(
-            "request id must not be empty".to_owned(),
-        ));
-    }
-    if request_id.len() > 128 {
-        return Err(EngineError::InvalidRequestId(
-            "request id must be at most 128 bytes".to_owned(),
-        ));
-    }
-    Ok(request_id.to_owned())
-}
-
-fn insert_request_id_header(response: &mut Response, request_id: &str) {
-    let value = HeaderValue::from_str(request_id)
-        .expect("registered request id came from a valid header value or generated ASCII");
-    response.headers_mut().insert("x-request-id", value);
 }
 
 fn parse_json_request<T>(

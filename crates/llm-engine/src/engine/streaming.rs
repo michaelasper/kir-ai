@@ -344,7 +344,7 @@ fn mark_active_request_finished_for_stream_error(
 ) -> Vec<Result<Event, Infallible>> {
     match active_request.mark_finished() {
         super::requests::RequestFinishResult::Finished => {
-            super::mark_scheduler_runtime_error(scheduler_slot, &err);
+            super::lifecycle::mark_scheduler_runtime_error(scheduler_slot, &err);
             record_runtime_error_metrics(state, &err);
             runtime_error_stream_events(err)
         }
