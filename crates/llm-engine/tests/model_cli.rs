@@ -72,6 +72,12 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     assert_eq!(value["hardware"]["os"], std::env::consts::OS);
     assert_eq!(value["hardware"]["arch"], std::env::consts::ARCH);
     assert_eq!(value["cache_policy"]["cache_layout"], "shared-prefix-v1");
+    assert!(
+        value["cache_policy"]["benchmark_metrics"]
+            .as_array()
+            .expect("benchmark cache metrics")
+            .contains(&Value::String("prefix_cache_hit_rate".to_owned()))
+    );
     let lanes = value["lanes"].as_array().expect("lanes array");
     assert_eq!(lanes.len(), 1, "lanes: {lanes:?}");
     assert_eq!(lanes[0]["name"], "primary");
@@ -83,7 +89,7 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     );
 
     let profiles = value["profiles"].as_array().expect("profiles array");
-    assert_eq!(profiles.len(), 2, "profiles: {profiles:?}");
+    assert_eq!(profiles.len(), 3, "profiles: {profiles:?}");
     let promotion = profiles
         .iter()
         .find(|profile| profile["name"] == "qwen-135k-promotion")
@@ -96,6 +102,12 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
         .expect("200K characterization profile");
     assert_eq!(frontier["target_tokens"], 200_000);
     assert_eq!(frontier["release_blocking"], false);
+    let max_context = profiles
+        .iter()
+        .find(|profile| profile["name"] == "qwen-256k-characterization")
+        .expect("256K characterization profile");
+    assert_eq!(max_context["target_tokens"], 256_000);
+    assert_eq!(max_context["release_blocking"], false);
 
     let case_names = promotion["cases"]
         .as_array()

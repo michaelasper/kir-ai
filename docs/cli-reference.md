@@ -96,7 +96,7 @@ llm-engine bench qwen-long-context \
 | `--endpoint <url>` | none | OpenAI-compatible base URL for the primary single-lane run. |
 | `--snapshot <path>` | none | Snapshot used for tokenizer planning and model identity in a single-lane run. |
 | `--lane <spec>` | none | Adds a named lane. Specs are comma-separated `key=value` pairs: `name`, `endpoint`, `snapshot`, and optional `model`/`model_id`. |
-| `--profile <135k\|200k\|all>` | `135k` | Selects the release-blocking 135K profile, frontier 200K profile, or both. |
+| `--profile <135k\|200k\|256k\|all>` | `135k` | Selects the release-blocking 135K profile, frontier 200K profile, max-context 256K profile, or all profiles. |
 | `--baseline <path>` | none | Previous trace JSON to compare against on matching hardware/model class. |
 | `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
 | `--admin-token <token>` | none | Optional bearer token used when capturing each lane's `/admin/metrics` snapshot. |
@@ -105,7 +105,10 @@ llm-engine bench qwen-long-context \
 The trace keeps top-level `model` and `profiles` for compatibility with older
 single-lane consumers. New consumers should read `lanes[*].profiles` and
 `comparison`, which includes per-case latency, TTFT, token throughput, pass/fail
-classification, and fastest-lane summaries. Lane comparison reports
+classification, and fastest-lane summaries. When `/admin/metrics` is available,
+each lane also includes `cache_metrics` with prefix-cache hit rate/residency,
+Metal BF16 weight-cache hit rate/residency, KV-cache residency, recurrent
+linear-attention-cache residency, and eviction churn signals. Lane comparison reports
 `artifact_identity_mismatch` unless repo, commit, profile, and quantization are
 identical across lanes; that mismatch fails the promotion gate and is emitted as
 `failure_classification: "lane_artifact_identity_mismatch"`. JSON and tool-call

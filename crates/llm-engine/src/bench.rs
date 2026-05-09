@@ -43,7 +43,7 @@ Options:
   --model <id>                        Model id to send in requests [default: local-qwen36]
   --snapshot <path>                   Qwen snapshot path with tokenizer.json and manifest
   --lane <spec>                       Named lane: name=<id>,endpoint=<url>,snapshot=<path>[,model=<id>]
-  --profile <135k|200k|all>           Benchmark profile [default: 135k]
+  --profile <135k|200k|256k|all>      Benchmark profile [default: 135k]
   --baseline <path>                   Previous trace JSON for same hardware/model comparison
   --output <path>                     Write the trace JSON to a file as well as stdout
   --max-tokens <n>                    Completion token limit per request [default: 128]
@@ -117,6 +117,7 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
                 .iter()
                 .map(|profile| profile_report(*profile))
                 .collect(),
+            cache_metrics: None,
             admin_metrics: None,
             admin_metrics_error: None,
         });
@@ -354,7 +355,10 @@ async fn capture_lane_admin_metrics(
     }
     match request.send().await {
         Ok(response) if response.status().is_success() => match response.json::<Value>().await {
-            Ok(metrics) => lane.admin_metrics = Some(metrics),
+            Ok(metrics) => {
+                lane.cache_metrics = cache_metrics_from_admin(&metrics);
+                lane.admin_metrics = Some(metrics);
+            }
             Err(err) => lane.admin_metrics_error = Some(format!("parse admin metrics: {err}")),
         },
         Ok(response) => {
@@ -364,6 +368,125 @@ async fn capture_lane_admin_metrics(
             lane.admin_metrics_error = Some(format!("admin metrics request failed: {err}"));
         }
     }
+}
+
+fn cache_metrics_from_admin(metrics: &Value) -> Option<BenchCacheMetricsReport> {
+    let prefix = metrics.get("native_qwen_prefix_cache")?;
+    let metal = metrics.get("native_qwen_metal")?;
+    let weight = metal.get("bf16_matrix_cache")?;
+    let kv = metal.get("kv_cache")?;
+    let linear = metal.get("linear_attention_cache")?;
+    Some(BenchCacheMetricsReport {
+        prefix_cache: PrefixCacheMetricsReport {
+            hits: metric_u64(prefix, "hits"),
+            misses: metric_u64(prefix, "misses"),
+            hit_rate: hit_rate(metric_u64(prefix, "hits"), metric_u64(prefix, "misses")),
+            stores: metric_u64(prefix, "stores"),
+            evictions: metric_u64(prefix, "evictions"),
+            rejected: metric_u64(prefix, "rejected"),
+            reused_tokens: metric_u64(prefix, "reused_tokens"),
+            resident_bytes: metric_u64(prefix, "resident_bytes"),
+            resident_entries: metric_u64(prefix, "resident_entries"),
+        },
+        weight_cache: WeightCacheMetricsReport {
+            hits: metric_u64(weight, "hits"),
+            misses: metric_u64(weight, "misses"),
+            hit_rate: hit_rate(metric_u64(weight, "hits"), metric_u64(weight, "misses")),
+            uploads: metric_u64(weight, "uploads"),
+            evictions: metric_u64(weight, "evictions"),
+            bytes_uploaded: metric_u64(weight, "bytes_uploaded"),
+            bytes_evicted: metric_u64(weight, "bytes_evicted"),
+            resident_bytes: metric_u64(weight, "resident_bytes"),
+            resident_buffers: metric_u64(weight, "resident_buffers"),
+            budget_bytes: metric_u64(weight, "budget_bytes"),
+        },
+        kv_cache: resident_cache_metrics(kv),
+        linear_attention_cache: resident_cache_metrics(linear),
+        readiness: cache_readiness(prefix, weight, kv, linear),
+    })
+}
+
+fn resident_cache_metrics(cache: &Value) -> ResidentCacheMetricsReport {
+    ResidentCacheMetricsReport {
+        allocations: metric_u64(cache, "allocations"),
+        syncs: metric_u64(cache, "syncs"),
+        evictions: metric_u64(cache, "evictions"),
+        bytes_uploaded: metric_u64(cache, "bytes_uploaded"),
+        bytes_evicted: metric_u64(cache, "bytes_evicted"),
+        resident_bytes: metric_u64(cache, "resident_bytes"),
+        resident_buffers: metric_u64(cache, "resident_buffers"),
+    }
+}
+
+fn cache_readiness(
+    prefix: &Value,
+    weight: &Value,
+    kv: &Value,
+    linear: &Value,
+) -> CacheReadinessReport {
+    let signals = [
+        (
+            "prefix_cache_hit_rate",
+            has_metric(prefix, "hits") && has_metric(prefix, "misses"),
+        ),
+        (
+            "prefix_cache_residency",
+            has_metric(prefix, "resident_bytes") && has_metric(prefix, "resident_entries"),
+        ),
+        (
+            "weight_cache_hit_rate",
+            has_metric(weight, "hits") && has_metric(weight, "misses"),
+        ),
+        (
+            "weight_cache_residency",
+            has_metric(weight, "resident_bytes") && has_metric(weight, "budget_bytes"),
+        ),
+        (
+            "kv_cache_residency",
+            has_metric(kv, "resident_bytes") && has_metric(kv, "resident_buffers"),
+        ),
+        (
+            "linear_attention_cache_residency",
+            has_metric(linear, "resident_bytes") && has_metric(linear, "resident_buffers"),
+        ),
+        (
+            "eviction_churn",
+            has_metric(prefix, "evictions")
+                && has_metric(weight, "evictions")
+                && has_metric(kv, "evictions")
+                && has_metric(linear, "evictions"),
+        ),
+    ];
+    let observed_signals = signals
+        .iter()
+        .filter_map(|(name, present)| present.then_some(*name))
+        .collect::<Vec<_>>();
+    let missing_signals = signals
+        .iter()
+        .filter_map(|(name, present)| (!present).then_some(*name))
+        .collect::<Vec<_>>();
+    CacheReadinessReport {
+        status: if missing_signals.is_empty() {
+            "observable"
+        } else {
+            "partial"
+        },
+        observed_signals,
+        missing_signals,
+    }
+}
+
+fn metric_u64(value: &Value, key: &str) -> u64 {
+    value.get(key).and_then(Value::as_u64).unwrap_or_default()
+}
+
+fn has_metric(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(Value::as_u64).is_some()
+}
+
+fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
+    let total = hits + misses;
+    (total > 0).then_some(hits as f64 / total as f64)
 }
 
 fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
@@ -480,6 +603,7 @@ fn find_lane_case<'a>(
 enum BenchProfileKind {
     Promotion135k,
     Characterization200k,
+    Characterization256k,
 }
 
 impl BenchProfileKind {
@@ -487,6 +611,7 @@ impl BenchProfileKind {
         match self {
             Self::Promotion135k => "qwen-135k-promotion",
             Self::Characterization200k => "qwen-200k-characterization",
+            Self::Characterization256k => "qwen-256k-characterization",
         }
     }
 
@@ -494,6 +619,7 @@ impl BenchProfileKind {
         match name {
             "qwen-135k-promotion" => Some(Self::Promotion135k),
             "qwen-200k-characterization" => Some(Self::Characterization200k),
+            "qwen-256k-characterization" => Some(Self::Characterization256k),
             _ => None,
         }
     }
@@ -502,6 +628,7 @@ impl BenchProfileKind {
         match self {
             Self::Promotion135k => 135_000,
             Self::Characterization200k => 200_000,
+            Self::Characterization256k => 256_000,
         }
     }
 
@@ -513,6 +640,7 @@ impl BenchProfileKind {
         match self {
             Self::Promotion135k => "135k",
             Self::Characterization200k => "200k",
+            Self::Characterization256k => "256k",
         }
     }
 }
@@ -523,9 +651,13 @@ fn selected_profiles(profile: &str) -> anyhow::Result<Vec<BenchProfileKind>> {
         "200k" | "200K" | "qwen-200k-characterization" => {
             Ok(vec![BenchProfileKind::Characterization200k])
         }
+        "256k" | "256K" | "qwen-256k-characterization" => {
+            Ok(vec![BenchProfileKind::Characterization256k])
+        }
         "all" => Ok(vec![
             BenchProfileKind::Promotion135k,
             BenchProfileKind::Characterization200k,
+            BenchProfileKind::Characterization256k,
         ]),
         other => anyhow::bail!("unknown qwen long-context profile `{other}`"),
     }
@@ -646,6 +778,8 @@ struct BenchLaneReport {
     model: ModelIdentityReport,
     profiles: Vec<BenchProfileReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    cache_metrics: Option<BenchCacheMetricsReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     admin_metrics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     admin_metrics_error: Option<String>,
@@ -677,6 +811,60 @@ struct BenchLaneCaseMetricReport {
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
     classification: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct BenchCacheMetricsReport {
+    prefix_cache: PrefixCacheMetricsReport,
+    weight_cache: WeightCacheMetricsReport,
+    kv_cache: ResidentCacheMetricsReport,
+    linear_attention_cache: ResidentCacheMetricsReport,
+    readiness: CacheReadinessReport,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct PrefixCacheMetricsReport {
+    hits: u64,
+    misses: u64,
+    hit_rate: Option<f64>,
+    stores: u64,
+    evictions: u64,
+    rejected: u64,
+    reused_tokens: u64,
+    resident_bytes: u64,
+    resident_entries: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct WeightCacheMetricsReport {
+    hits: u64,
+    misses: u64,
+    hit_rate: Option<f64>,
+    uploads: u64,
+    evictions: u64,
+    bytes_uploaded: u64,
+    bytes_evicted: u64,
+    resident_bytes: u64,
+    resident_buffers: u64,
+    budget_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct ResidentCacheMetricsReport {
+    allocations: u64,
+    syncs: u64,
+    evictions: u64,
+    bytes_uploaded: u64,
+    bytes_evicted: u64,
+    resident_bytes: u64,
+    resident_buffers: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct CacheReadinessReport {
+    status: &'static str,
+    observed_signals: Vec<&'static str>,
+    missing_signals: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -759,6 +947,7 @@ struct CachePolicyReport {
     cache_layout: &'static str,
     prompt_template: &'static str,
     namespace_fields: Vec<&'static str>,
+    benchmark_metrics: Vec<&'static str>,
     env: BTreeMap<String, String>,
 }
 
@@ -785,6 +974,15 @@ impl CachePolicyReport {
                 "sampling",
                 "cache_layout",
                 "cache_capacity",
+            ],
+            benchmark_metrics: vec![
+                "prefix_cache_hit_rate",
+                "prefix_cache_residency",
+                "weight_cache_hit_rate",
+                "weight_cache_residency",
+                "kv_cache_residency",
+                "linear_attention_cache_residency",
+                "eviction_churn",
             ],
             env,
         }
@@ -1813,6 +2011,86 @@ mod tests {
     }
 
     #[test]
+    fn all_profile_selection_includes_256k_characterization() {
+        let profiles = selected_profiles("all").expect("all profiles");
+
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|profile| profile.name())
+                .collect::<Vec<_>>(),
+            [
+                "qwen-135k-promotion",
+                "qwen-200k-characterization",
+                "qwen-256k-characterization"
+            ]
+        );
+        assert_eq!(
+            BenchProfileKind::Characterization256k.target_tokens(),
+            256_000
+        );
+        assert!(!BenchProfileKind::Characterization256k.release_blocking());
+    }
+
+    #[test]
+    fn cache_metrics_summary_extracts_admin_cache_counters() {
+        let admin = serde_json::json!({
+            "native_qwen_prefix_cache": {
+                "hits": 3,
+                "misses": 1,
+                "stores": 2,
+                "evictions": 1,
+                "rejected": 0,
+                "reused_tokens": 42,
+                "resident_bytes": 1024,
+                "resident_entries": 2
+            },
+            "native_qwen_metal": {
+                "bf16_matrix_cache": {
+                    "hits": 7,
+                    "misses": 3,
+                    "uploads": 3,
+                    "bytes_uploaded": 2048,
+                    "evictions": 1,
+                    "bytes_evicted": 512,
+                    "resident_bytes": 1536,
+                    "resident_buffers": 4,
+                    "budget_bytes": 4096
+                },
+                "kv_cache": {
+                    "allocations": 2,
+                    "syncs": 4,
+                    "evictions": 1,
+                    "bytes_uploaded": 4096,
+                    "bytes_evicted": 1024,
+                    "resident_bytes": 3072,
+                    "resident_buffers": 2
+                },
+                "linear_attention_cache": {
+                    "allocations": 1,
+                    "syncs": 3,
+                    "evictions": 0,
+                    "bytes_uploaded": 2048,
+                    "bytes_evicted": 0,
+                    "resident_bytes": 2048,
+                    "resident_buffers": 1
+                }
+            }
+        });
+
+        let summary = cache_metrics_from_admin(&admin).expect("cache summary");
+
+        assert_eq!(summary.prefix_cache.hit_rate, Some(0.75));
+        assert!(
+            (summary.weight_cache.hit_rate.expect("weight hit rate") - 0.7).abs() < f64::EPSILON
+        );
+        assert_eq!(summary.kv_cache.resident_bytes, 3072);
+        assert_eq!(summary.linear_attention_cache.syncs, 3);
+        assert_eq!(summary.readiness.status, "observable");
+        assert!(summary.readiness.missing_signals.is_empty());
+    }
+
+    #[test]
     fn json_object_recall_rejects_marker_only_contract() {
         let value = buffered_content_response(serde_json::json!({"marker": MARKER}).to_string());
 
@@ -1958,6 +2236,7 @@ mod tests {
                 manifest_digest: None,
             },
             profiles: vec![report],
+            cache_metrics: None,
             admin_metrics: None,
             admin_metrics_error: None,
         }

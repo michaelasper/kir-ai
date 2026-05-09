@@ -111,7 +111,10 @@ as `model_store_snapshots` and `model_store_bytes`, quarantined usage as
 `model_store_quarantined_snapshots` and `model_store_quarantined_bytes`, plus
 cumulative `artifact_verification_failures` from failed admin snapshot
 verification. Process resident memory is exposed as `process_rss_bytes` when
-supported by the host OS.
+supported by the host OS. Native Qwen cache telemetry is exposed under
+`native_qwen_prefix_cache` and `native_qwen_metal`, including prefix-cache hit
+and residency counters, BF16 weight-cache hit and residency counters, KV-cache
+residency, linear-attention-cache residency, and eviction counters.
 
 ## `POST /admin/models/{alias}/verify`
 
