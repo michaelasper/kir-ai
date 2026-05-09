@@ -1,4 +1,4 @@
-use super::command::finish_command_buffer;
+use super::command::finish_command_buffer_async;
 use super::{MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
@@ -18,7 +18,7 @@ pub struct TopKResult {
 const MAX_METAL_TOP_K: usize = 64;
 
 impl MetalDevice {
-    pub fn argmax_f32(&self, logits: &[f32]) -> Result<ArgmaxResult, MetalError> {
+    pub async fn argmax_f32(&self, logits: &[f32]) -> Result<ArgmaxResult, MetalError> {
         if logits.is_empty() {
             return Err(MetalError::InvalidShape(
                 "argmax input must not be empty".to_owned(),
@@ -86,7 +86,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "argmax_f32")?;
+        finish_command_buffer_async(command_buffer, "argmax_f32").await?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly chunk_count values. The command buffer has completed.
@@ -111,7 +111,7 @@ impl MetalDevice {
         Ok(best)
     }
 
-    pub fn top_k_f32(&self, logits: &[f32], k: usize) -> Result<Vec<TopKResult>, MetalError> {
+    pub async fn top_k_f32(&self, logits: &[f32], k: usize) -> Result<Vec<TopKResult>, MetalError> {
         if k == 0 {
             return Ok(Vec::new());
         }
@@ -198,7 +198,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "top_k_f32")?;
+        finish_command_buffer_async(command_buffer, "top_k_f32").await?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly candidate_count values. The command buffer has completed.

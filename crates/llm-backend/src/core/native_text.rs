@@ -108,7 +108,7 @@ pub fn native_layer_caches_for_spec(
     }
 }
 
-pub fn native_prefill_sequence_with_cache(
+pub async fn native_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_ids: &[usize],
@@ -121,9 +121,10 @@ pub fn native_prefill_sequence_with_cache(
         caches,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn native_prefill_sequence_with_cache_with_matvec(
+pub async fn native_prefill_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_ids: &[usize],
@@ -137,9 +138,10 @@ pub fn native_prefill_sequence_with_cache_with_matvec(
         caches.as_mut_refs(),
         matvec,
     )
+    .await
 }
 
-pub fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+pub async fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
     store: &SafeTensorShardStore,
     spec: NativeTextModelSpecRef<'_>,
     token_ids: &[usize],
@@ -149,16 +151,17 @@ pub fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
+            qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec).await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
             gemma_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
+                .await
         }
         (spec, _) => Err(cache_family_mismatch("prefill", spec, cache_family)),
     }
 }
 
-pub fn native_decode_token_with_cache(
+pub async fn native_decode_token_with_cache(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_id: usize,
@@ -171,9 +174,10 @@ pub fn native_decode_token_with_cache(
         caches,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn native_decode_token_with_cache_with_matvec(
+pub async fn native_decode_token_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_id: usize,
@@ -187,9 +191,10 @@ pub fn native_decode_token_with_cache_with_matvec(
         caches.as_mut_refs(),
         matvec,
     )
+    .await
 }
 
-pub fn native_decode_token_with_cache_for_spec_ref_with_matvec(
+pub async fn native_decode_token_with_cache_for_spec_ref_with_matvec(
     store: &SafeTensorShardStore,
     spec: NativeTextModelSpecRef<'_>,
     token_id: usize,
@@ -199,33 +204,33 @@ pub fn native_decode_token_with_cache_for_spec_ref_with_matvec(
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec)
+            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec).await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec)
+            gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec).await
         }
         (spec, _) => Err(cache_family_mismatch("decode", spec, cache_family)),
     }
 }
 
-pub fn native_final_norm_for_spec(
+pub async fn native_final_norm_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
 ) -> Result<Vec<f32>, TensorLoadError> {
-    native_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend)
+    native_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend).await
 }
 
-pub fn native_final_norm_for_spec_with_matvec(
+pub async fn native_final_norm_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    native_final_norm_for_spec_ref_with_matvec(store, spec.into(), hidden_states, matvec)
+    native_final_norm_for_spec_ref_with_matvec(store, spec.into(), hidden_states, matvec).await
 }
 
-pub fn native_final_norm_for_spec_ref_with_matvec(
+pub async fn native_final_norm_for_spec_ref_with_matvec(
     store: &SafeTensorShardStore,
     spec: NativeTextModelSpecRef<'_>,
     hidden_states: &[f32],
@@ -233,15 +238,15 @@ pub fn native_final_norm_for_spec_ref_with_matvec(
 ) -> Result<Vec<f32>, TensorLoadError> {
     match spec {
         NativeTextModelSpecRef::Qwen(spec) => {
-            qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, matvec)
+            qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, matvec).await
         }
         NativeTextModelSpecRef::Gemma(spec) => {
-            gemma_final_norm_for_spec(store, spec, hidden_states)
+            gemma_final_norm_for_spec(store, spec, hidden_states).await
         }
     }
 }
 
-pub fn native_lm_head_top_k_for_spec(
+pub async fn native_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -256,9 +261,10 @@ pub fn native_lm_head_top_k_for_spec(
         chunk_rows,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn native_lm_head_top_k_for_spec_with_matvec(
+pub async fn native_lm_head_top_k_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -274,9 +280,10 @@ pub fn native_lm_head_top_k_for_spec_with_matvec(
         chunk_rows,
         matvec,
     )
+    .await
 }
 
-pub fn native_lm_head_top_k_for_spec_ref_with_matvec(
+pub async fn native_lm_head_top_k_for_spec_ref_with_matvec(
     store: &SafeTensorShardStore,
     spec: NativeTextModelSpecRef<'_>,
     hidden_states: &[f32],
@@ -285,26 +292,18 @@ pub fn native_lm_head_top_k_for_spec_ref_with_matvec(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<TopKLogit>, TensorLoadError> {
     match spec {
-        NativeTextModelSpecRef::Qwen(spec) => qwen_lm_head_top_k_for_spec_with_matvec(
-            store,
-            spec,
-            hidden_states,
-            top_k,
-            chunk_rows,
-            matvec,
-        ),
-        NativeTextModelSpecRef::Gemma(spec) => gemma_lm_head_top_k_for_spec_with_matvec(
-            store,
-            spec,
-            hidden_states,
-            top_k,
-            chunk_rows,
-            matvec,
-        ),
+        NativeTextModelSpecRef::Qwen(spec) => {
+            qwen_lm_head_top_k_for_spec_with_matvec(store, spec, hidden_states, top_k, chunk_rows, matvec)
+                .await
+        }
+        NativeTextModelSpecRef::Gemma(spec) => {
+            gemma_lm_head_top_k_for_spec_with_matvec(store, spec, hidden_states, top_k, chunk_rows, matvec)
+                .await
+        }
     }
 }
 
-pub fn native_lm_head_logits_for_spec(
+pub async fn native_lm_head_logits_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -317,9 +316,10 @@ pub fn native_lm_head_logits_for_spec(
         chunk_rows,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn native_lm_head_logits_for_spec_with_matvec(
+pub async fn native_lm_head_logits_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -333,9 +333,10 @@ pub fn native_lm_head_logits_for_spec_with_matvec(
         chunk_rows,
         matvec,
     )
+    .await
 }
 
-pub fn native_lm_head_logits_for_spec_ref_with_matvec(
+pub async fn native_lm_head_logits_for_spec_ref_with_matvec(
     store: &SafeTensorShardStore,
     spec: NativeTextModelSpecRef<'_>,
     hidden_states: &[f32],
@@ -344,15 +345,11 @@ pub fn native_lm_head_logits_for_spec_ref_with_matvec(
 ) -> Result<Vec<f32>, TensorLoadError> {
     match spec {
         NativeTextModelSpecRef::Qwen(spec) => {
-            qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec)
+            qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec).await
         }
-        NativeTextModelSpecRef::Gemma(spec) => gemma_lm_head_logits_for_spec_with_matvec(
-            store,
-            spec,
-            hidden_states,
-            chunk_rows,
-            matvec,
-        ),
+        NativeTextModelSpecRef::Gemma(spec) => {
+            gemma_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec).await
+        }
     }
 }
 

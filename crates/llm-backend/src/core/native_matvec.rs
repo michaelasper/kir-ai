@@ -5,7 +5,7 @@ use super::math::{
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
-pub fn swiglu_mlp_f32_with_matvec(
+pub async fn swiglu_mlp_f32_with_matvec(
     input: &[f32],
     gate_weight: &[f32],
     up_weight: &[f32],
@@ -13,8 +13,12 @@ pub fn swiglu_mlp_f32_with_matvec(
     intermediate_size: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
-    let gate = matvec.matvec_row_major_f32(input, gate_weight, intermediate_size, input.len())?;
-    let up = matvec.matvec_row_major_f32(input, up_weight, intermediate_size, input.len())?;
+    let gate = matvec
+        .matvec_row_major_f32(input, gate_weight, intermediate_size, input.len())
+        .await?;
+    let up = matvec
+        .matvec_row_major_f32(input, up_weight, intermediate_size, input.len())
+        .await?;
     let activated = gate
         .iter()
         .zip(up)
@@ -27,11 +31,13 @@ pub fn swiglu_mlp_f32_with_matvec(
         )));
     }
     let rows = down_weight.len() / intermediate_size;
-    matvec.matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
+    matvec
+        .matvec_row_major_f32(&activated, down_weight, rows, intermediate_size)
+        .await
 }
 
 pub trait NativeMatvecBackend {
-    fn bf16_matvec_row_major_f32(
+    async fn bf16_matvec_row_major_f32(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -40,7 +46,7 @@ pub trait NativeMatvecBackend {
         store.bf16_matvec_row_major_f32(tensor, input)
     }
 
-    fn bf16_matvecs_row_major_f32(
+    async fn bf16_matvecs_row_major_f32(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -49,7 +55,7 @@ pub trait NativeMatvecBackend {
         store.bf16_matvecs_row_major_f32(tensor, inputs)
     }
 
-    fn bf16_matvec_rows_f32(
+    async fn bf16_matvec_rows_f32(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -59,7 +65,7 @@ pub trait NativeMatvecBackend {
         store.bf16_matvec_rows_f32(tensor, input, chunk_rows)
     }
 
-    fn bf16_matvec_range_row_major_f32(
+    async fn bf16_matvec_range_row_major_f32(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -79,10 +85,11 @@ pub trait NativeMatvecBackend {
             .ok_or_else(|| TensorLoadError::integrity("BF16 range matvec shape overflow"))?;
         let weights = store.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
         self.matvec_row_major_f32(input, &weights, rows, columns)
+            .await
             .map_err(|err| TensorLoadError::integrity(format!("BF16 range matvec failed: {err}")))
     }
 
-    fn bf16_matvec_top_k_rows_f32(
+    async fn bf16_matvec_top_k_rows_f32(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -93,7 +100,7 @@ pub trait NativeMatvecBackend {
         store.bf16_matvec_top_k_rows_f32(tensor, input, top_k, chunk_rows)
     }
 
-    fn matvec_row_major_f32(
+    async fn matvec_row_major_f32(
         &self,
         input: &[f32],
         weights: &[f32],
@@ -103,7 +110,7 @@ pub trait NativeMatvecBackend {
         matvec_row_major_f32(input, weights, rows, columns)
     }
 
-    fn rms_norm_one_centered_f32(
+    async fn rms_norm_one_centered_f32(
         &self,
         input: &[f32],
         weight: &[f32],
@@ -112,11 +119,11 @@ pub trait NativeMatvecBackend {
         rms_norm_one_centered_f32(input, weight, eps)
     }
 
-    fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
+    async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
         softmax_f32(scores)
     }
 
-    fn linear_attention_conv1d_silu_f32(
+    async fn linear_attention_conv1d_silu_f32(
         &self,
         window: &[f32],
         weights: &[f32],
@@ -126,7 +133,7 @@ pub trait NativeMatvecBackend {
         linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)
     }
 
-    fn weighted_sum_f32(
+    async fn weighted_sum_f32(
         &self,
         values: &[f32],
         weights: &[f32],
@@ -136,7 +143,7 @@ pub trait NativeMatvecBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn linear_attention_recurrent_update_f32(
+    async fn linear_attention_recurrent_update_f32(
         &self,
         state: &[f32],
         key: &[f32],
@@ -159,7 +166,7 @@ pub trait NativeMatvecBackend {
         )
     }
 
-    fn select_head_rows_f32(
+    async fn select_head_rows_f32(
         &self,
         values: &[f32],
         row_count: usize,
@@ -170,7 +177,7 @@ pub trait NativeMatvecBackend {
         select_head_rows_f32(values, row_count, row_len, head_start, head_len)
     }
 
-    fn select_kv_cache_head_rows_f32(
+    async fn select_kv_cache_head_rows_f32(
         &self,
         cache: &LayerKvCache,
         tensor: NativeKvCacheTensor,
@@ -183,10 +190,11 @@ pub trait NativeMatvecBackend {
             NativeKvCacheTensor::Value => cache.values(),
         };
         self.select_head_rows_f32(values, row_count, cache.vector_len(), head_start, head_len)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn linear_attention_recurrent_cache_update_f32(
+    async fn linear_attention_recurrent_cache_update_f32(
         &self,
         cache: &LinearAttentionCache,
         state_start: usize,
@@ -225,9 +233,10 @@ pub trait NativeMatvecBackend {
             key_head_dim,
             value_head_dim,
         )
+        .await
     }
 
-    fn softmax_top_k_f32(
+    async fn softmax_top_k_f32(
         &self,
         logits: &[f32],
         top_k: usize,

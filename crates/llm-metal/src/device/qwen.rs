@@ -1,10 +1,10 @@
-use super::command::finish_command_buffer;
+use super::command::finish_command_buffer_async;
 use super::{F32Buffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
 impl MetalDevice {
-    pub fn qwen_rms_norm_f32(
+    pub async fn qwen_rms_norm_f32(
         &self,
         input: &[f32],
         weight: &[f32],
@@ -74,7 +74,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "qwen_rms_norm")?;
+        finish_command_buffer_async(command_buffer, "qwen_rms_norm").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input slice.
@@ -85,7 +85,7 @@ impl MetalDevice {
         Ok(values)
     }
 
-    pub fn linear_attention_conv1d_silu_f32(
+    pub async fn linear_attention_conv1d_silu_f32(
         &self,
         window: &[f32],
         weights: &[f32],
@@ -172,7 +172,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "linear_attention_conv1d_silu_f32")?;
+        finish_command_buffer_async(command_buffer, "linear_attention_conv1d_silu_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per convolution channel.
@@ -184,7 +184,7 @@ impl MetalDevice {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn linear_attention_recurrent_update_f32(
+    pub async fn linear_attention_recurrent_update_f32(
         &self,
         state: &[f32],
         key: &[f32],
@@ -314,7 +314,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "linear_attention_recurrent_update_f32")?;
+        finish_command_buffer_async(command_buffer, "linear_attention_recurrent_update_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per recurrent-state element.
@@ -326,7 +326,7 @@ impl MetalDevice {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn linear_attention_recurrent_update_f32_buffered_state(
+    pub async fn linear_attention_recurrent_update_f32_buffered_state(
         &self,
         state: &F32Buffer,
         state_start: usize,
@@ -346,7 +346,7 @@ impl MetalDevice {
         let element_count = key_head_dim.checked_mul(value_head_dim).ok_or_else(|| {
             MetalError::InvalidShape(
                 "linear attention recurrent update shape overflows usize".to_owned(),
-            )
+)
         })?;
         let state_end = state_start.checked_add(element_count).ok_or_else(|| {
             MetalError::InvalidShape(
@@ -471,10 +471,10 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(
+        finish_command_buffer_async(
             command_buffer,
             "linear_attention_recurrent_update_state_f32",
-        )?;
+        ).await?;
         self.read_f32_buffer_range(state, state_start, element_count)
     }
 }

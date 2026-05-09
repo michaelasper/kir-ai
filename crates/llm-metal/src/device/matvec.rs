@@ -1,10 +1,10 @@
-use super::command::finish_command_buffer;
+use super::command::finish_command_buffer_async;
 use super::{Bf16MatrixBuffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
 impl MetalDevice {
-    pub fn matvec_f32(
+    pub async fn matvec_f32(
         &self,
         matrix: &[f32],
         rows: usize,
@@ -91,7 +91,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "matvec_f32")?;
+        finish_command_buffer_async(command_buffer, "matvec_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -102,7 +102,7 @@ impl MetalDevice {
         Ok(values)
     }
 
-    pub fn matvec_bf16_f32(
+    pub async fn matvec_bf16_f32(
         &self,
         matrix: &[u16],
         rows: usize,
@@ -110,7 +110,7 @@ impl MetalDevice {
         vector: &[f32],
     ) -> Result<Vec<f32>, MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.matvec_bf16_f32_buffered(&matrix_buffer, vector)
+        self.matvec_bf16_f32_buffered(&matrix_buffer, vector).await
     }
 
     pub fn new_bf16_matrix_buffer(
@@ -146,7 +146,7 @@ impl MetalDevice {
         })
     }
 
-    pub fn matvec_bf16_f32_buffered(
+    pub async fn matvec_bf16_f32_buffered(
         &self,
         matrix: &Bf16MatrixBuffer,
         vector: &[f32],
@@ -223,7 +223,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "matvec_bf16_f32")?;
+        finish_command_buffer_async(command_buffer, "matvec_bf16_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -234,7 +234,7 @@ impl MetalDevice {
         Ok(values)
     }
 
-    pub fn batched_matvec_bf16_f32(
+    pub async fn batched_matvec_bf16_f32(
         &self,
         matrix: &[u16],
         rows: usize,
@@ -243,10 +243,10 @@ impl MetalDevice {
         vector_count: usize,
     ) -> Result<Vec<f32>, MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count)
+        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count).await
     }
 
-    pub fn batched_matvec_bf16_f32_buffered(
+    pub async fn batched_matvec_bf16_f32_buffered(
         &self,
         matrix: &Bf16MatrixBuffer,
         vectors: &[f32],
@@ -345,7 +345,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "batched_matvec_bf16_f32")?;
+        finish_command_buffer_async(command_buffer, "batched_matvec_bf16_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing vector_count * rows f32 values in input-major order.

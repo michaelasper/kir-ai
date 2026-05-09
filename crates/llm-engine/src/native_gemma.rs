@@ -92,14 +92,14 @@ impl NativeTextCacheMirrorSource for GemmaLayerCache {
 }
 
 impl NativeGemmaBackend {
-    pub fn open(
+    pub async fn open(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
-        Self::open_with_options(model_id, snapshot_path, NativeGemmaLoadOptions::default())
+        Self::open_with_options(model_id, snapshot_path, NativeGemmaLoadOptions::default()).await
     }
 
-    pub fn open_with_options(
+    pub async fn open_with_options(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
         options: NativeGemmaLoadOptions,
@@ -123,7 +123,7 @@ impl NativeGemmaBackend {
             &cache_namespace,
         );
         if options.warm_metal_weight_cache {
-            let warmup = matvec.warm_bf16_matrix_cache(&store).map_err(|err| {
+            let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
                 anyhow::anyhow!("native Gemma Metal weight cache warm-up failed: {err}")
             })?;
             tracing::info!(
@@ -279,7 +279,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
-    fn prefill_chunk_with_cache(
+    async fn prefill_chunk_with_cache(
         &self,
         token_ids: &[usize],
         caches: &mut [GemmaLayerCache],
@@ -291,6 +291,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             NativeTextLayerCachesMut::Gemma(caches),
             &self.matvec,
         )
+        .await
         .map_err(|err| BackendError::Other(err.to_string()))
     }
 
@@ -316,15 +317,15 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         session.hidden()
     }
 
-    fn step(
+    async fn step(
         &self,
         session: &mut NativeGemmaDecodeSession,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        session.step(&self.store, &self.spec, &self.matvec, token_id)
+        session.step(&self.store, &self.spec, &self.matvec, token_id).await
     }
 
-    fn next_token_from_hidden(
+    async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
@@ -338,6 +339,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             family_display_name: "Gemma",
         }
         .select_next_token(hidden, sampling)
+        .await
     }
 }
 
@@ -352,7 +354,7 @@ impl NativeGemmaDecodeSession {
         &self.hidden
     }
 
-    fn step(
+    async fn step(
         &mut self,
         store: &SafeTensorShardStore,
         spec: &GemmaModelSpec,
@@ -366,6 +368,7 @@ impl NativeGemmaDecodeSession {
             NativeTextLayerCachesMut::Gemma(&mut self.caches),
             matvec,
         )
+        .await
         .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
     }

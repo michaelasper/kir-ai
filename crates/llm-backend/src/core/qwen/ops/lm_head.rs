@@ -12,7 +12,7 @@ pub(super) fn qwen_mlp_tensor(layer_idx: usize, suffix: &str) -> String {
     qwen_layer_tensor(layer_idx, &format!("mlp.{suffix}"))
 }
 
-pub fn qwen_final_norm(
+pub async fn qwen_final_norm(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     hidden_size: usize,
@@ -25,9 +25,10 @@ pub fn qwen_final_norm(
         rms_norm_eps,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_final_norm_with_matvec(
+pub async fn qwen_final_norm_with_matvec(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     hidden_size: usize,
@@ -43,18 +44,19 @@ pub fn qwen_final_norm_with_matvec(
     let norm_weight = store.bf16_tensor_f32_range(QWEN_FINAL_NORM_WEIGHT, 0, hidden_size)?;
     matvec
         .rms_norm_one_centered_f32(hidden_states, &norm_weight, rms_norm_eps)
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 
-pub fn qwen_final_norm_for_spec(
+pub async fn qwen_final_norm_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
 ) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend)
+    qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend).await
 }
 
-pub fn qwen_final_norm_for_spec_with_matvec(
+pub async fn qwen_final_norm_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -69,10 +71,11 @@ pub fn qwen_final_norm_for_spec_with_matvec(
     }
     let norm_weight = store.bf16_tensor_f32_range(&spec.final_norm_weight(), 0, hidden_size)?;
     qwen_rms_norm_for_spec_with_matvec(spec, hidden_states, &norm_weight, matvec)
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 
-pub fn qwen_lm_head_top_k(
+pub async fn qwen_lm_head_top_k(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     top_k: usize,
@@ -85,19 +88,22 @@ pub fn qwen_lm_head_top_k(
         chunk_rows,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_lm_head_top_k_with_matvec(
+pub async fn qwen_lm_head_top_k_with_matvec(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     top_k: usize,
     chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    matvec.bf16_matvec_top_k_rows_f32(store, QWEN_LM_HEAD_WEIGHT, hidden_states, top_k, chunk_rows)
+    matvec
+        .bf16_matvec_top_k_rows_f32(store, QWEN_LM_HEAD_WEIGHT, hidden_states, top_k, chunk_rows)
+        .await
 }
 
-pub fn qwen_lm_head_top_k_for_spec(
+pub async fn qwen_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -112,9 +118,10 @@ pub fn qwen_lm_head_top_k_for_spec(
         chunk_rows,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_lm_head_top_k_for_spec_with_matvec(
+pub async fn qwen_lm_head_top_k_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -122,33 +129,37 @@ pub fn qwen_lm_head_top_k_for_spec_with_matvec(
     chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    matvec.bf16_matvec_top_k_rows_f32(
-        store,
-        &spec.lm_head_weight(),
-        hidden_states,
-        top_k,
-        chunk_rows,
-    )
+    matvec
+        .bf16_matvec_top_k_rows_f32(
+            store,
+            &spec.lm_head_weight(),
+            hidden_states,
+            top_k,
+            chunk_rows,
+        )
+        .await
 }
 
-pub fn qwen_lm_head_logits(
+pub async fn qwen_lm_head_logits(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     chunk_rows: usize,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_lm_head_logits_with_matvec(store, hidden_states, chunk_rows, &CpuNativeMatvecBackend)
+    qwen_lm_head_logits_with_matvec(store, hidden_states, chunk_rows, &CpuNativeMatvecBackend).await
 }
 
-pub fn qwen_lm_head_logits_with_matvec(
+pub async fn qwen_lm_head_logits_with_matvec(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    matvec.bf16_matvec_rows_f32(store, QWEN_LM_HEAD_WEIGHT, hidden_states, chunk_rows)
+    matvec
+        .bf16_matvec_rows_f32(store, QWEN_LM_HEAD_WEIGHT, hidden_states, chunk_rows)
+        .await
 }
 
-pub fn qwen_lm_head_logits_for_spec(
+pub async fn qwen_lm_head_logits_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -161,14 +172,17 @@ pub fn qwen_lm_head_logits_for_spec(
         chunk_rows,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_lm_head_logits_for_spec_with_matvec(
+pub async fn qwen_lm_head_logits_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
     chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    matvec.bf16_matvec_rows_f32(store, &spec.lm_head_weight(), hidden_states, chunk_rows)
+    matvec
+        .bf16_matvec_rows_f32(store, &spec.lm_head_weight(), hidden_states, chunk_rows)
+        .await
 }

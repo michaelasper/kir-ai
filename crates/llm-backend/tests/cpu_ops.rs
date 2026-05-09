@@ -76,8 +76,8 @@ fn silu_matches_reference_values() {
     );
 }
 
-#[test]
-fn qwen_linear_attention_first_token_matches_simplified_reference() {
+#[tokio::test]
+async fn qwen_linear_attention_first_token_matches_simplified_reference() {
     let dims = QwenLinearAttentionDims {
         hidden_size: 1,
         num_key_heads: 1,
@@ -97,13 +97,14 @@ fn qwen_linear_attention_first_token_matches_simplified_reference() {
         &[1.0],
         &[2.0],
     )
+    .await
     .expect("linear attention output");
 
     assert_close(&output, &[1.4621172], 1e-6);
 }
 
-#[test]
-fn qwen_linear_attention_sequence_updates_recurrent_state() {
+#[tokio::test]
+async fn qwen_linear_attention_sequence_updates_recurrent_state() {
     let dims = QwenLinearAttentionDims {
         hidden_size: 2,
         num_key_heads: 1,
@@ -137,6 +138,7 @@ fn qwen_linear_attention_sequence_updates_recurrent_state() {
             out_proj_weight: &out_proj_weight,
         },
     )
+    .await
     .expect("linear attention sequence");
 
     let q0 = l2_scalar(silu_f32(1.0));
@@ -164,8 +166,8 @@ fn qwen_linear_attention_sequence_updates_recurrent_state() {
     assert_close(&output[1], &expected[1], 1e-6);
 }
 
-#[test]
-fn qwen_linear_attention_sequence_updates_linear_cache() {
+#[tokio::test]
+async fn qwen_linear_attention_sequence_updates_linear_cache() {
     let dims = QwenLinearAttentionDims {
         hidden_size: 2,
         num_key_heads: 1,
@@ -198,8 +200,10 @@ fn qwen_linear_attention_sequence_updates_linear_cache() {
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
 
     let output = qwen_linear_attention_sequence_with_cache_from_parts(&dims, &parts, &mut cache)
+        .await
         .expect("linear attention sequence with cache");
     let expected = qwen_linear_attention_sequence_from_parts(&dims, &parts)
+        .await
         .expect("linear attention sequence");
     let k0 = l2_scalar(silu_f32(1.0));
     let v0 = [silu_f32(2.0), silu_f32(4.0)];
@@ -223,8 +227,8 @@ fn qwen_linear_attention_sequence_updates_linear_cache() {
     assert_close(cache.recurrent_state(), &state1, 1e-6);
 }
 
-#[test]
-fn qwen_linear_attention_step_uses_existing_linear_cache() {
+#[tokio::test]
+async fn qwen_linear_attention_step_uses_existing_linear_cache() {
     let dims = QwenLinearAttentionDims {
         hidden_size: 2,
         num_key_heads: 1,
@@ -264,6 +268,7 @@ fn qwen_linear_attention_step_uses_existing_linear_cache() {
         &expected_parts,
         &mut expected_cache,
     )
+    .await
     .expect("full cached prefill");
     let prefill_qkv = qkv[..2].to_vec();
     let prefill_z = z[..2].to_vec();
@@ -282,6 +287,7 @@ fn qwen_linear_attention_step_uses_existing_linear_cache() {
     };
     let mut cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
     qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
+        .await
         .expect("initial cached prefill");
 
     let output = qwen_linear_attention_step_with_cache_from_parts(
@@ -299,6 +305,7 @@ fn qwen_linear_attention_step_uses_existing_linear_cache() {
         },
         &mut cache,
     )
+    .await
     .expect("linear attention decode step");
 
     assert_close(&output, &expected_output[2], 1e-6);
@@ -311,8 +318,8 @@ fn qwen_linear_attention_step_uses_existing_linear_cache() {
     );
 }
 
-#[test]
-fn qwen_full_attention_first_token_matches_single_key_reference() {
+#[tokio::test]
+async fn qwen_full_attention_first_token_matches_single_key_reference() {
     let dims = QwenFullAttentionDims {
         hidden_size: 1,
         num_attention_heads: 1,
@@ -321,13 +328,14 @@ fn qwen_full_attention_first_token_matches_single_key_reference() {
     };
 
     let output = qwen_full_attention_first_token_from_parts(&dims, &[0.0, 0.0], &[8.0], &[3.0])
+        .await
         .expect("full attention output");
 
     assert_close(&output, &[12.0], 1e-6);
 }
 
-#[test]
-fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
+#[tokio::test]
+async fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
         num_attention_heads: 1,
@@ -359,6 +367,7 @@ fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
             one_centered_rms_norm: true,
         },
     )
+    .await
     .expect("full attention sequence");
 
     let score0 = 2.0_f32.sqrt() * 1.0_f32.cos();
@@ -374,8 +383,8 @@ fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
     assert_close(&output[1], &[w0, 2.0 * w1], 1e-6);
 }
 
-#[test]
-fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
+#[tokio::test]
+async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
         num_attention_heads: 1,
@@ -410,6 +419,7 @@ fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
         config,
         &mut cache,
     )
+    .await
     .expect("full attention sequence with cache");
 
     let expected = qwen_full_attention_sequence_from_parts(
@@ -424,6 +434,7 @@ fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
         },
         config,
     )
+    .await
     .expect("full attention sequence");
     assert_eq!(cache.token_count(), 2);
     assert_close(cache.key(0).expect("key 0"), &[2.0_f32.sqrt(), 0.0], 1e-6);
@@ -432,8 +443,8 @@ fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
     assert_close(&output[1], &expected[1], 1e-6);
 }
 
-#[test]
-fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
+#[tokio::test]
+async fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
         num_attention_heads: 1,
@@ -472,6 +483,7 @@ fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
         config,
         &mut cache,
     )
+    .await
     .expect("small cache uses sliding attention");
 
     assert_eq!(cache.token_count(), 2);
@@ -480,8 +492,8 @@ fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
     assert_close(&output[2], &[2.0, 1.0], 1e-6);
 }
 
-#[test]
-fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
+#[tokio::test]
+async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
         num_attention_heads: 1,
@@ -515,6 +527,7 @@ fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
         config,
         &mut cache,
     )
+    .await
     .expect("prefill fills cache");
 
     let output = qwen_full_attention_step_with_cache_from_parts(
@@ -530,6 +543,7 @@ fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
         config,
         &mut cache,
     )
+    .await
     .expect("full cache evicts oldest token during decode");
 
     assert_eq!(cache.token_count(), 2);
@@ -538,8 +552,8 @@ fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
     assert_close(&output, &[2.0, 1.0], 1e-6);
 }
 
-#[test]
-fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
+#[tokio::test]
+async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
     let dims = QwenFullAttentionDims {
         hidden_size: 2,
         num_attention_heads: 1,
@@ -578,6 +592,7 @@ fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         config,
         &mut expected_cache,
     )
+    .await
     .expect("full cached prefill");
     let prefill_q_proj = q_proj[..2].to_vec();
     let prefill_k_proj = k_proj[..2].to_vec();
@@ -592,6 +607,7 @@ fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
     };
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
+        .await
         .expect("initial cached prefill");
 
     let output = qwen_full_attention_step_with_cache_from_parts(
@@ -607,6 +623,7 @@ fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         config,
         &mut cache,
     )
+    .await
     .expect("full attention decode step");
 
     assert_close(&output, &expected_output[2], 1e-6);

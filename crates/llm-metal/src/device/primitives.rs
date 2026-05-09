@@ -1,10 +1,10 @@
-use super::command::finish_command_buffer;
+use super::command::finish_command_buffer_async;
 use super::{F32Buffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
 impl MetalDevice {
-    pub fn add_f32(&self, left: &[f32], right: &[f32]) -> Result<Vec<f32>, MetalError> {
+    pub async fn add_f32(&self, left: &[f32], right: &[f32]) -> Result<Vec<f32>, MetalError> {
         if left.len() != right.len() {
             return Err(MetalError::InvalidShape(
                 "left and right inputs must have the same length".to_owned(),
@@ -52,7 +52,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "vector_add")?;
+        finish_command_buffer_async(command_buffer, "vector_add").await?;
 
         // SAFETY: output_buffer is a StorageModeShared Metal buffer allocated with
         // byte_len bytes above. The command buffer has completed, and the buffer
@@ -65,7 +65,7 @@ impl MetalDevice {
         Ok(values)
     }
 
-    pub fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MetalError> {
+    pub async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MetalError> {
         if scores.is_empty() {
             return Ok(Vec::new());
         }
@@ -114,7 +114,7 @@ impl MetalDevice {
             },
         );
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "softmax_f32")?;
+        finish_command_buffer_async(command_buffer, "softmax_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input scores.
@@ -125,7 +125,7 @@ impl MetalDevice {
         Ok(values)
     }
 
-    pub fn weighted_sum_f32(
+    pub async fn weighted_sum_f32(
         &self,
         values: &[f32],
         weights: &[f32],
@@ -205,7 +205,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "weighted_sum_f32")?;
+        finish_command_buffer_async(command_buffer, "weighted_sum_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per output column.
@@ -216,7 +216,7 @@ impl MetalDevice {
         Ok(output)
     }
 
-    pub fn select_head_rows_f32(
+    pub async fn select_head_rows_f32(
         &self,
         values: &[f32],
         row_count: usize,
@@ -225,10 +225,10 @@ impl MetalDevice {
         head_len: usize,
     ) -> Result<Vec<f32>, MetalError> {
         let values_buffer = self.new_f32_buffer(values)?;
-        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len)
+        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len).await
     }
 
-    pub fn select_head_rows_f32_buffered(
+    pub async fn select_head_rows_f32_buffered(
         &self,
         values: &F32Buffer,
         row_count: usize,
@@ -323,7 +323,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer(command_buffer, "select_head_rows_f32")?;
+        finish_command_buffer_async(command_buffer, "select_head_rows_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per selected row element.

@@ -14,6 +14,7 @@ use llm_backend::{
 use llm_tokenizer::HuggingFaceTokenizer;
 use tokio_util::sync::CancellationToken;
 
+#[async_trait]
 pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     type DecodeSession: Send + 'static;
     type LayerCache: NativeTextPrefixCacheValue + NativeTextCacheMirrorSource + Send + 'static;
@@ -57,7 +58,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> NativeTextPrefixCacheNamespace;
     fn layer_count(&self) -> usize;
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<Self::LayerCache>, BackendError>;
-    fn prefill_chunk_with_cache(
+    async fn prefill_chunk_with_cache(
         &self,
         token_ids: &[usize],
         caches: &mut [Self::LayerCache],
@@ -69,8 +70,8 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> Self::DecodeSession;
     fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {}
     fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32];
-    fn step(&self, session: &mut Self::DecodeSession, token_id: usize) -> Result<(), BackendError>;
-    fn next_token_from_hidden(
+    async fn step(&self, session: &mut Self::DecodeSession, token_id: usize) -> Result<(), BackendError>;
+    async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
@@ -184,7 +185,7 @@ where
         self
     }
 
-    pub(crate) fn generate_blocking(
+    pub async fn generate_async(
         &self,
         request: BackendRequest,
         cancellation: CancellationToken,
@@ -215,7 +216,7 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut decode =
-            self.start_decode_session(&context_tokens, requested, &request, &cancellation)?;
+            self.start_decode_session(&context_tokens, requested, &request, &cancellation).await?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -226,7 +227,7 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling)?;
+                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling).await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -248,7 +249,7 @@ where
                 ))
             })?);
             if step_idx + 1 < requested {
-                self.adapter.step(&mut decode, token_id)?;
+                self.adapter.step(&mut decode, token_id).await?;
             }
         }
 
@@ -261,7 +262,7 @@ where
         })
     }
 
-    pub(crate) fn generate_blocking_stream(
+    pub async fn generate_stream_async(
         &self,
         request: BackendRequest,
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
@@ -295,7 +296,7 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut decode =
-            match self.start_decode_session(&context_tokens, requested, &request, &cancellation) {
+            match self.start_decode_session(&context_tokens, requested, &request, &cancellation).await {
                 Ok(decode) => decode,
                 Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
                     return Err(BackendError::Cancelled);
@@ -312,7 +313,7 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling)?;
+                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling).await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -340,21 +341,18 @@ where
                 return Err(BackendError::Cancelled);
             }
             if let Some(delta) = delta {
-                send_backend_stream_chunk(
-                    &tx,
-                    BackendStreamChunk {
+                tx.send(Ok(BackendStreamChunk {
                         text: delta,
                         prompt_tokens: prompt_tokens.len() as u64,
                         completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                         finish_reason: None,
-                    },
-                )?;
+                    })).await.map_err(|err| BackendError::Other(err.to_string()))?;
             }
             if step_idx + 1 < requested {
                 if cancellation.is_cancelled() {
                     return Err(BackendError::Cancelled);
                 }
-                self.adapter.step(&mut decode, token_id)?;
+                self.adapter.step(&mut decode, token_id).await?;
             }
         }
 
@@ -367,15 +365,13 @@ where
             let final_decoded = self.adapter.decode_output(&self.tokenizer, &output_ids)?;
             text_deltas.finish(final_decoded)?
         };
-        send_backend_stream_chunk(
-            &tx,
-            BackendStreamChunk {
+        tx.send(Ok(BackendStreamChunk {
                 text: final_text.unwrap_or_default(),
                 prompt_tokens: prompt_tokens.len() as u64,
                 completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                 finish_reason: Some(finish_reason),
-            },
-        )
+            })).await.map_err(|err| BackendError::Other(err.to_string()))?;
+        Ok(())
     }
 
     fn validate_model(&self, request: &BackendRequest) -> Result<(), BackendError> {
@@ -392,7 +388,7 @@ where
         self.adapter.encode_prompt(&self.tokenizer, request)
     }
 
-    pub(crate) fn start_decode_session(
+    pub async fn start_decode_session(
         &self,
         context_tokens: &[usize],
         max_new_tokens: u32,
@@ -439,7 +435,7 @@ where
                 &context_tokens[cached_prefix_len..],
                 &mut caches,
                 cancellation,
-            ) {
+            ).await {
                 Ok(hidden) => Some(hidden),
                 Err(err) => {
                     cache_cleanup.cleanup(&caches);
@@ -472,7 +468,7 @@ where
         Ok(self.adapter.make_decode_session(hidden, caches))
     }
 
-    pub(crate) fn prefill_context_with_cache(
+    pub async fn prefill_context_with_cache(
         &self,
         context_tokens: &[usize],
         caches: &mut [A::LayerCache],
@@ -485,7 +481,7 @@ where
             caches,
             cancellation,
             |chunk, caches| self.adapter.prefill_chunk_with_cache(chunk, caches),
-        )
+        ).await
     }
 }
 
@@ -512,11 +508,7 @@ where
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        let driver = self.clone();
-        let label = driver.worker_label();
-        tokio::task::spawn_blocking(move || driver.generate_blocking(request, cancellation))
-            .await
-            .map_err(|err| BackendError::Other(format!("{label} worker failed: {err}")))?
+        self.generate_async(request, cancellation).await
     }
 
     fn generate_stream<'a>(
@@ -534,10 +526,9 @@ where
         let driver = self.clone();
         let label = driver.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let worker = tokio::task::spawn_blocking(move || {
-            let err_tx = tx.clone();
-            if let Err(err) = driver.generate_blocking_stream(request, tx, cancellation) {
-                let _ = err_tx.blocking_send(Err(err));
+        let worker = tokio::spawn(async move {
+            if let Err(err) = driver.generate_stream_async(request, tx.clone(), cancellation).await {
+                let _ = tx.send(Err(err)).await;
             }
         });
         native_text_worker_stream(label, rx, worker)

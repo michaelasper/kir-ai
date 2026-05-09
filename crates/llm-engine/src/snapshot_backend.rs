@@ -40,7 +40,7 @@ impl Default for SnapshotBackendOptions {
     }
 }
 
-pub fn open_snapshot_backend(
+pub async fn open_snapshot_backend(
     model_id: impl Into<String>,
     snapshot_path: impl AsRef<Path>,
     options: SnapshotBackendOptions,
@@ -74,7 +74,8 @@ pub fn open_snapshot_backend(
                 native_options = native_options.with_family(family);
             }
             Ok(Box::new(
-                NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)?
+                NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)
+                    .await?
                     .with_max_new_tokens(options.max_new_tokens)
                     .with_max_prefill_tokens(options.max_prefill_tokens),
             ))

@@ -10,6 +10,21 @@ pub(crate) fn finish_command_buffer(
     command_buffer_status_result(command_buffer.status(), kernel_name)
 }
 
+pub(crate) async fn finish_command_buffer_async(
+    command_buffer: &metal::CommandBuffer,
+    kernel_name: &str,
+) -> Result<(), MetalError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let block = metal::block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
+        let _ = tx.send(cb.status());
+    })
+    .copy();
+    command_buffer.add_completed_handler(&block);
+    command_buffer.commit();
+    let status = rx.await.unwrap_or(MTLCommandBufferStatus::Error);
+    command_buffer_status_result(status, kernel_name)
+}
+
 pub(crate) fn command_buffer_status_result(
     status: MTLCommandBufferStatus,
     kernel_name: &str,

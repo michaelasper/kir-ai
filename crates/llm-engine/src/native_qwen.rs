@@ -98,14 +98,14 @@ pub struct NativeQwenLoadOptions {
     pub warm_metal_weight_cache: bool,
 }
 impl NativeQwenBackend {
-    pub fn open(
+    pub async fn open(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
-        Self::open_with_options(model_id, snapshot_path, NativeQwenLoadOptions::default())
+        Self::open_with_options(model_id, snapshot_path, NativeQwenLoadOptions::default()).await
     }
 
-    pub fn open_with_options(
+    pub async fn open_with_options(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
         options: NativeQwenLoadOptions,
@@ -130,7 +130,7 @@ impl NativeQwenBackend {
             &cache_namespace,
         );
         if options.warm_metal_weight_cache {
-            let warmup = matvec.warm_bf16_matrix_cache(&store).map_err(|err| {
+            let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
                 anyhow::anyhow!("native Qwen Metal weight cache warm-up failed: {err}")
             })?;
             tracing::info!(
@@ -302,7 +302,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
-    fn prefill_chunk_with_cache(
+    async fn prefill_chunk_with_cache(
         &self,
         token_ids: &[usize],
         caches: &mut [QwenLayerCache],
@@ -314,6 +314,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             NativeTextLayerCachesMut::Qwen(caches),
             &self.matvec,
         )
+        .await
         .map_err(|err| BackendError::Other(err.to_string()))
     }
 
@@ -339,15 +340,15 @@ impl NativeTextAdapter for NativeQwenAdapter {
         session.hidden()
     }
 
-    fn step(
+    async fn step(
         &self,
         session: &mut NativeQwenDecodeSession,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        session.step(&self.store, &self.spec, &self.matvec, token_id)
+        session.step(&self.store, &self.spec, &self.matvec, token_id).await
     }
 
-    fn next_token_from_hidden(
+    async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
@@ -361,6 +362,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             family_display_name: "Qwen",
         }
         .select_next_token(hidden, sampling)
+        .await
     }
 }
 
@@ -375,7 +377,7 @@ impl NativeQwenDecodeSession {
         &self.hidden
     }
 
-    fn step(
+    async fn step(
         &mut self,
         store: &SafeTensorShardStore,
         spec: &QwenModelSpec,
@@ -389,6 +391,7 @@ impl NativeQwenDecodeSession {
             NativeTextLayerCachesMut::Qwen(&mut self.caches),
             matvec,
         )
+        .await
         .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
     }

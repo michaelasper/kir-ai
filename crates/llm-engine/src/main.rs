@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
                         max_new_tokens,
                         max_prefill_tokens,
                     },
-                )?;
+                ).await?;
                 if let Err(err) = ModelStore::mark_snapshot_used(&snapshot_path).await {
                     tracing::warn!(error = %err, snapshot = %snapshot_path.display(), "failed to record snapshot usage");
                 }

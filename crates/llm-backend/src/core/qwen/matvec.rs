@@ -4,7 +4,7 @@ use super::super::math::MathError;
 #[cfg(test)]
 use super::super::CpuNativeMatvecBackend;
 
-pub(super) fn rms_norm_f32_with_matvec(
+pub(super) async fn rms_norm_f32_with_matvec(
     input: &[f32],
     weight: &[f32],
     eps: f32,
@@ -16,19 +16,19 @@ pub(super) fn rms_norm_f32_with_matvec(
         ));
     }
     let qwen_weight = weight.iter().map(|value| value - 1.0).collect::<Vec<_>>();
-    matvec.rms_norm_one_centered_f32(input, &qwen_weight, eps)
+    matvec.rms_norm_one_centered_f32(input, &qwen_weight, eps).await
 }
 
-pub(super) fn l2_normalize_f32_with_matvec(
+pub(super) async fn l2_normalize_f32_with_matvec(
     input: &[f32],
     eps: f32,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
     let mut qwen_weight = Vec::new();
-    l2_normalize_f32_with_matvec_and_weight_scratch(input, eps, matvec, &mut qwen_weight)
+    l2_normalize_f32_with_matvec_and_weight_scratch(input, eps, matvec, &mut qwen_weight).await
 }
 
-pub(super) fn l2_normalize_f32_with_matvec_and_weight_scratch(
+pub(super) async fn l2_normalize_f32_with_matvec_and_weight_scratch(
     input: &[f32],
     eps: f32,
     matvec: &impl NativeMatvecBackend,
@@ -46,7 +46,7 @@ pub(super) fn l2_normalize_f32_with_matvec_and_weight_scratch(
     let weight_scale = (input.len() as f32).sqrt().recip();
     qwen_weight.clear();
     qwen_weight.resize(input.len(), weight_scale - 1.0);
-    matvec.rms_norm_one_centered_f32(input, qwen_weight, eps / input.len() as f32)
+    matvec.rms_norm_one_centered_f32(input, qwen_weight, eps / input.len() as f32).await
 }
 
 #[cfg(test)]
@@ -57,12 +57,12 @@ mod tests {
     fn l2_normalize_f32_with_matvec_reuses_weight_scratch() {
         let mut qwen_weight = Vec::with_capacity(8);
 
-        let normalized = l2_normalize_f32_with_matvec_and_weight_scratch(
+        let normalized = futures::executor::block_on(l2_normalize_f32_with_matvec_and_weight_scratch(
             &[3.0, 4.0],
             1e-6,
             &CpuNativeMatvecBackend,
             &mut qwen_weight,
-        )
+        ))
         .expect("l2 normalize succeeds");
 
         assert!((normalized[0] - 0.6).abs() < 1e-5);

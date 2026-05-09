@@ -66,14 +66,18 @@ pub(crate) fn native_text_cache_token_capacity(
         .min(max_position_embeddings))
 }
 
-pub(crate) fn native_text_prefill_context_with_cache<C>(
+pub(crate) async fn native_text_prefill_context_with_cache<C, F, Fut>(
     family_display_name: &str,
     prefill_chunk_tokens: usize,
     context_tokens: &[usize],
     caches: &mut [C],
     cancellation: &CancellationToken,
-    mut prefill_chunk: impl FnMut(&[usize], &mut [C]) -> Result<Vec<Vec<f32>>, BackendError>,
-) -> Result<Vec<f32>, BackendError> {
+    mut prefill_chunk: F,
+) -> Result<Vec<f32>, BackendError>
+where
+    F: FnMut(&[usize], &mut [C]) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<Vec<f32>>, BackendError>>,
+{
     if cancellation.is_cancelled() {
         return Err(BackendError::Cancelled);
     }
@@ -82,7 +86,7 @@ pub(crate) fn native_text_prefill_context_with_cache<C>(
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let hidden_states = prefill_chunk(chunk, caches)?;
+        let hidden_states = prefill_chunk(chunk, caches).await?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -128,13 +132,14 @@ pub(crate) struct NativeTextNextTokenContext<'a, M: NativeMatvecBackend> {
 }
 
 impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
-    pub(crate) fn select_next_token(
+    pub(crate) async fn select_next_token(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<usize, BackendError> {
         let final_norm =
             native_final_norm_for_spec_ref_with_matvec(self.store, self.spec, hidden, self.matvec)
+                .await
                 .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
             let logits = native_lm_head_logits_for_spec_ref_with_matvec(
@@ -144,6 +149,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
                 self.chunk_rows,
                 self.matvec,
             )
+            .await
             .map_err(|err| BackendError::Other(err.to_string()))?;
             let sampled_token_id = sample_token_id_with_draw(
                 &logits,
@@ -164,6 +170,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             self.chunk_rows,
             self.matvec,
         )
+        .await
         .map_err(|err| BackendError::Other(err.to_string()))?;
         let item = top_logits.into_iter().next().ok_or_else(|| {
             BackendError::Other(format!(

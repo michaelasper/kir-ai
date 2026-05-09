@@ -28,8 +28,9 @@ struct RecordingGemmaMatvecBackend {
     kv_cache_head_row_calls: Cell<usize>,
 }
 
+#[async_trait::async_trait]
 impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
-    fn matvec_row_major_f32(
+    async fn matvec_row_major_f32(
         &self,
         input: &[f32],
         weights: &[f32],
@@ -37,15 +38,15 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
         columns: usize,
     ) -> Result<Vec<f32>, MathError> {
         self.dense_f32_calls.set(self.dense_f32_calls.get() + 1);
-        CpuNativeMatvecBackend.matvec_row_major_f32(input, weights, rows, columns)
+        CpuNativeMatvecBackend.matvec_row_major_f32(input, weights, rows, columns).await
     }
 
-    fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
+    async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
         self.softmax_calls.set(self.softmax_calls.get() + 1);
-        CpuNativeMatvecBackend.softmax_f32(scores)
+        CpuNativeMatvecBackend.softmax_f32(scores).await
     }
 
-    fn weighted_sum_f32(
+    async fn weighted_sum_f32(
         &self,
         values: &[f32],
         weights: &[f32],
@@ -53,10 +54,10 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
     ) -> Result<Vec<f32>, MathError> {
         self.weighted_sum_calls
             .set(self.weighted_sum_calls.get() + 1);
-        CpuNativeMatvecBackend.weighted_sum_f32(values, weights, vector_len)
+        CpuNativeMatvecBackend.weighted_sum_f32(values, weights, vector_len).await
     }
 
-    fn select_kv_cache_head_rows_f32(
+    async fn select_kv_cache_head_rows_f32(
         &self,
         cache: &LayerKvCache,
         tensor: NativeKvCacheTensor,
@@ -68,11 +69,12 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
             .set(self.kv_cache_head_row_calls.get() + 1);
         CpuNativeMatvecBackend
             .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len)
+            .await
     }
 }
 
-#[test]
-fn gemma_layer_caches_cap_sliding_layers_to_sliding_window() {
+#[tokio::test]
+async fn gemma_layer_caches_cap_sliding_layers_to_sliding_window() {
     let spec = GemmaModelSpec::from_config_json(&tiny_gemma4_config(1, 8, &["sliding_attention"]))
         .expect("tiny Gemma config parses");
 
@@ -88,8 +90,8 @@ fn gemma_layer_caches_cap_sliding_layers_to_sliding_window() {
     }
 }
 
-#[test]
-fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
+#[tokio::test]
+async fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     let root = temp_snapshot_dir("gemma-prefill-decode");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -102,7 +104,7 @@ fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
     assert_close(&prefill[0], &[2.0_f32.sqrt(), 0.0], 1e-5);
     assert_close(&prefill[1], &[0.0, 2.0_f32.sqrt()], 1e-5);
     match &caches[0] {
@@ -110,7 +112,7 @@ fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     }
 
     let decoded =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut caches).expect("decode token");
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut caches).await.expect("decode token");
     assert_close(&decoded, &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-5);
     match &caches[0] {
         GemmaLayerCache::Attention(cache) => {
@@ -122,8 +124,8 @@ fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn gemma_prefill_supports_per_layer_inputs() {
+#[tokio::test]
+async fn gemma_prefill_supports_per_layer_inputs() {
     let root = temp_snapshot_dir("gemma-ple-prefill");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -136,7 +138,7 @@ fn gemma_prefill_supports_per_layer_inputs() {
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
 
     assert!(spec.uses_per_layer_input());
     assert_close(&prefill[0], &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-4);
@@ -144,8 +146,8 @@ fn gemma_prefill_supports_per_layer_inputs() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn gemma_prefill_reuses_shared_kv_cache_layers() {
+#[tokio::test]
+async fn gemma_prefill_reuses_shared_kv_cache_layers() {
     let root = temp_snapshot_dir("gemma-shared-kv");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -164,7 +166,7 @@ fn gemma_prefill_reuses_shared_kv_cache_layers() {
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
 
     assert_eq!(caches.len(), 1);
     assert!(spec.is_kv_shared_layer(1));
@@ -173,8 +175,8 @@ fn gemma_prefill_reuses_shared_kv_cache_layers() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_layers() {
+#[tokio::test]
+async fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_layers() {
     let root = temp_snapshot_dir("gemma-attn-matvec-hooks");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -195,6 +197,7 @@ fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_layers
 
     let prefill =
         gemma_prefill_sequence_with_cache_with_matvec(&store, &spec, &[0, 1], &mut caches, &matvec)
+            .await
             .expect("prefill with recording matvec");
 
     assert_eq!(prefill.len(), 2);
@@ -205,8 +208,8 @@ fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_layers
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn gemma_final_norm_and_tied_lm_head_select_top_token() {
+#[tokio::test]
+async fn gemma_final_norm_and_tied_lm_head_select_top_token() {
     let root = temp_snapshot_dir("gemma-lm-head");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -218,17 +221,17 @@ fn gemma_final_norm_and_tied_lm_head_select_top_token() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
     let final_norm =
-        gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0]).expect("norm");
+        gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0]).await.expect("norm");
     assert_close(&final_norm, &[2.0_f32.sqrt(), 0.0], 1e-5);
-    let top = gemma_lm_head_top_k_for_spec(&store, &spec, &final_norm, 2, 64).expect("top logits");
+    let top = gemma_lm_head_top_k_for_spec(&store, &spec, &final_norm, 2, 64).await.expect("top logits");
 
     assert_eq!(top[0].index, 2);
     assert!((top[0].logit - 2.0 * 2.0_f32.sqrt()).abs() < 1e-5);
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
+#[tokio::test]
+async fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
     let root = temp_snapshot_dir("native-text-dispatch-gemma");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -243,18 +246,21 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
     let mut direct_caches = gemma_layer_caches_for_spec(&spec, 8).expect("direct caches");
     let direct_prefill =
         gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut direct_caches)
+            .await
             .expect("direct prefill");
     let direct_decode =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches).expect("direct decode");
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches).await.expect("direct decode");
 
     let mut native_caches =
         native_text_layer_caches_for_spec(&native_spec, 8).expect("native text caches");
     assert!(matches!(native_caches, NativeTextLayerCaches::Gemma(_)));
     let native_prefill =
         native_text_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
+            .await
             .expect("native text prefill");
     let native_decode =
         native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches)
+            .await
             .expect("native text decode");
     let mut ref_caches = gemma_layer_caches_for_spec(&spec, 8).expect("spec-ref caches");
     let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
@@ -264,6 +270,7 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
         NativeTextLayerCachesMut::Gemma(&mut ref_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect("native text spec-ref prefill");
     let ref_decode = native_decode_token_with_cache_for_spec_ref_with_matvec(
         &store,
@@ -272,10 +279,12 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
         NativeTextLayerCachesMut::Gemma(&mut ref_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect("native text spec-ref decode");
     let native_norm =
-        native_text_final_norm_for_spec(&store, &native_spec, &native_decode).expect("native norm");
+        native_text_final_norm_for_spec(&store, &native_spec, &native_decode).await.expect("native norm");
     let native_top = native_text_lm_head_top_k_for_spec(&store, &native_spec, &native_norm, 2, 64)
+        .await
         .expect("native top logits");
 
     assert_eq!(native_prefill.len(), direct_prefill.len());
@@ -290,8 +299,8 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn native_text_spec_ref_rejects_mismatched_cache_families() {
+#[tokio::test]
+async fn native_text_spec_ref_rejects_mismatched_cache_families() {
     let root = temp_snapshot_dir("native-text-cache-family-mismatch");
     std::fs::remove_dir_all(&root).ok();
     std::fs::create_dir_all(&root).expect("snapshot dir");
@@ -312,6 +321,7 @@ fn native_text_spec_ref_rejects_mismatched_cache_families() {
         NativeTextLayerCachesMut::Gemma(&mut gemma_prefill_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect_err("Qwen prefill rejects Gemma caches");
     assert_cache_family_mismatch(err, "prefill", "gemma", "qwen");
 
@@ -324,6 +334,7 @@ fn native_text_spec_ref_rejects_mismatched_cache_families() {
         NativeTextLayerCachesMut::Gemma(&mut gemma_decode_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect_err("Qwen decode rejects Gemma caches");
     assert_cache_family_mismatch(err, "decode", "gemma", "qwen");
 
@@ -336,6 +347,7 @@ fn native_text_spec_ref_rejects_mismatched_cache_families() {
         NativeTextLayerCachesMut::Qwen(&mut qwen_prefill_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect_err("Gemma prefill rejects Qwen caches");
     assert_cache_family_mismatch(err, "prefill", "qwen", "gemma");
 
@@ -348,6 +360,7 @@ fn native_text_spec_ref_rejects_mismatched_cache_families() {
         NativeTextLayerCachesMut::Qwen(&mut qwen_decode_caches),
         &CpuNativeMatvecBackend,
     )
+    .await
     .expect_err("Gemma decode rejects Qwen caches");
     assert_cache_family_mismatch(err, "decode", "qwen", "gemma");
 

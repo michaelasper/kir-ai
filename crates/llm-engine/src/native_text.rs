@@ -127,14 +127,14 @@ enum NativeTextBackendInner {
 }
 
 impl NativeTextBackend {
-    pub fn open(
+    pub async fn open(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
-        Self::open_with_options(model_id, snapshot_path, NativeTextLoadOptions::default())
+        Self::open_with_options(model_id, snapshot_path, NativeTextLoadOptions::default()).await
     }
 
-    pub fn open_with_options(
+    pub async fn open_with_options(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
         options: NativeTextLoadOptions,
@@ -147,7 +147,8 @@ impl NativeTextBackend {
         match family {
             ModelFamily::Gemma => {
                 let driver =
-                    NativeGemmaBackend::open_with_options(model_id, snapshot_path, options.gemma)?
+                    NativeGemmaBackend::open_with_options(model_id, snapshot_path, options.gemma)
+                        .await?
                         .into_driver();
                 Ok(Self {
                     inner: NativeTextBackendInner::Gemma(driver),
@@ -165,7 +166,8 @@ impl NativeTextBackend {
             }
             ModelFamily::Qwen => {
                 let driver =
-                    NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)?
+                    NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)
+                        .await?
                         .into_driver();
                 Ok(Self {
                     inner: NativeTextBackendInner::Qwen(driver),

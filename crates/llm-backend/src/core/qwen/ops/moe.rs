@@ -1,14 +1,14 @@
 use super::*;
 
-pub fn qwen_layer0_moe_router(
+pub async fn qwen_layer0_moe_router(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     top_k: usize,
 ) -> Result<QwenMoeRouterProbe, TensorLoadError> {
-    qwen_layer_moe_router(store, 0, hidden_states, top_k)
+    qwen_layer_moe_router(store, 0, hidden_states, top_k).await
 }
 
-pub fn qwen_layer_moe_router(
+pub async fn qwen_layer_moe_router(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -21,36 +21,36 @@ pub fn qwen_layer_moe_router(
         top_k,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_layer_moe_router_with_matvec(
+pub async fn qwen_layer_moe_router_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
     top_k: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<QwenMoeRouterProbe, TensorLoadError> {
-    let logits = matvec.bf16_matvec_row_major_f32(
-        store,
-        &qwen_mlp_tensor(layer_idx, "gate.weight"),
-        hidden_states,
-    )?;
+    let logits = matvec
+        .bf16_matvec_row_major_f32(store, &qwen_mlp_tensor(layer_idx, "gate.weight"), hidden_states)
+        .await?;
     let selected = matvec
         .softmax_top_k_f32(&logits, top_k)
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
     Ok(QwenMoeRouterProbe { logits, selected })
 }
 
-pub fn qwen_layer0_moe_forward(
+pub async fn qwen_layer0_moe_forward(
     store: &SafeTensorShardStore,
     dims: &QwenMoeDims,
     hidden_states: &[f32],
     router: &QwenMoeRouterProbe,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_layer_moe_forward(store, 0, dims, hidden_states, router)
+    qwen_layer_moe_forward(store, 0, dims, hidden_states, router).await
 }
 
-fn qwen_layer_dense_mlp_with_matvec(
+async fn qwen_layer_dense_mlp_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -71,6 +71,7 @@ fn qwen_layer_dense_mlp_with_matvec(
             &spec.mlp_tensor(layer_idx, "gate_proj.weight"),
             hidden_states,
         )
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen dense MLP gate failed: {err}")))?;
     let up = matvec
         .bf16_matvec_row_major_f32(
@@ -78,6 +79,7 @@ fn qwen_layer_dense_mlp_with_matvec(
             &spec.mlp_tensor(layer_idx, "up_proj.weight"),
             hidden_states,
         )
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen dense MLP up failed: {err}")))?;
     if gate.len() != intermediate_size || up.len() != intermediate_size {
         return Err(TensorLoadError::integrity(format!(
@@ -97,6 +99,7 @@ fn qwen_layer_dense_mlp_with_matvec(
             &spec.mlp_tensor(layer_idx, "down_proj.weight"),
             &activated,
         )
+        .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen dense MLP down failed: {err}")))?;
     if down.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
@@ -107,7 +110,7 @@ fn qwen_layer_dense_mlp_with_matvec(
     Ok(down)
 }
 
-pub(super) fn qwen_layer_feed_forward_with_matvec(
+pub(super) async fn qwen_layer_feed_forward_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -115,7 +118,7 @@ pub(super) fn qwen_layer_feed_forward_with_matvec(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     if spec.is_qwen3_dense() {
-        return qwen_layer_dense_mlp_with_matvec(store, spec, layer_idx, hidden_states, matvec);
+        return qwen_layer_dense_mlp_with_matvec(store, spec, layer_idx, hidden_states, matvec).await;
     }
     let router = qwen_layer_moe_router_with_matvec(
         store,
@@ -123,7 +126,8 @@ pub(super) fn qwen_layer_feed_forward_with_matvec(
         hidden_states,
         spec.num_experts_per_tok as usize,
         matvec,
-    )?;
+    )
+    .await?;
     qwen_layer_moe_forward_with_matvec(
         store,
         layer_idx,
@@ -132,9 +136,10 @@ pub(super) fn qwen_layer_feed_forward_with_matvec(
         &router,
         matvec,
     )
+    .await
 }
 
-pub fn qwen_layer_moe_forward(
+pub async fn qwen_layer_moe_forward(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     dims: &QwenMoeDims,
@@ -149,9 +154,10 @@ pub fn qwen_layer_moe_forward(
         router,
         &CpuNativeMatvecBackend,
     )
+    .await
 }
 
-pub fn qwen_layer_moe_forward_with_matvec(
+pub async fn qwen_layer_moe_forward_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     dims: &QwenMoeDims,
@@ -208,6 +214,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
                 dims.hidden_size,
                 hidden_states,
             )
+            .await
             .map_err(|err| {
                 TensorLoadError::integrity(format!("Qwen selected expert gate failed: {err}"))
             })?;
@@ -222,6 +229,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
                 dims.hidden_size,
                 hidden_states,
             )
+            .await
             .map_err(|err| {
                 TensorLoadError::integrity(format!("Qwen selected expert up failed: {err}"))
             })?;
@@ -243,6 +251,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
                 dims.moe_intermediate_size,
                 &activated,
             )
+            .await
             .map_err(|err| {
                 TensorLoadError::integrity(format!("Qwen selected expert down failed: {err}"))
             })?;
@@ -251,6 +260,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
     }
     let selected_output = matvec
         .weighted_sum_f32(&selected_outputs, &selected_weights, dims.hidden_size)
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen selected expert accumulation failed: {err}"))
         })?;
@@ -261,6 +271,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
             &qwen_mlp_tensor(layer_idx, "shared_expert.gate_proj.weight"),
             hidden_states,
         )
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
         })?;
@@ -270,6 +281,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
             &qwen_mlp_tensor(layer_idx, "shared_expert.up_proj.weight"),
             hidden_states,
         )
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert up failed: {err}"))
         })?;
@@ -284,6 +296,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
             &qwen_mlp_tensor(layer_idx, "shared_expert.down_proj.weight"),
             &shared_activated,
         )
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert down failed: {err}"))
         })?;
@@ -293,6 +306,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
             &qwen_mlp_tensor(layer_idx, "shared_expert_gate.weight"),
             hidden_states,
         )
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
         })?
@@ -309,6 +323,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
     combined_values.extend_from_slice(&shared_output);
     matvec
         .weighted_sum_f32(&combined_values, &[1.0, shared_gate], dims.hidden_size)
+        .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen shared expert accumulation failed: {err}"))
         })
