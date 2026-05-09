@@ -3,9 +3,9 @@ use crate::{
         NativeTextMatvecBackend, NativeTextMetalState, native_text_metal_weight_cache_bytes,
     },
     native_text::{
-        NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextPrefixCache,
-        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        sample_token_id_with_draw as native_text_sample_token_id_with_draw,
+        NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver,
+        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
+        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
     },
 };
 use async_trait::async_trait;
@@ -13,9 +13,8 @@ use futures::stream::BoxStream;
 use llm_backend::{
     BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
     BackendStreamChunk, ModelBackend, NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore,
-    SamplingConfig, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
-    qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
-    qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
+    SamplingConfig, qwen_decode_token_with_cache_with_matvec, qwen_layer_caches_for_spec,
+    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
@@ -23,11 +22,7 @@ use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -389,43 +384,15 @@ impl NativeTextAdapter for NativeQwenAdapter {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<usize, BackendError> {
-        let final_norm =
-            qwen_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-        if !sampling.is_greedy() {
-            let logits = qwen_lm_head_logits_for_spec_with_matvec(
-                &self.store,
-                &self.spec,
-                &final_norm,
-                self.chunk_rows,
-                &self.matvec,
-            )
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-            let sampled_token_id =
-                sample_token_id_with_draw(&logits, sampling, native_sampling_draw())?;
-            u32::try_from(sampled_token_id).map_err(|err| {
-                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
-            })?;
-            return Ok(sampled_token_id);
+        NativeTextNextTokenContext {
+            store: &self.store,
+            spec: (&self.spec).into(),
+            top_k: self.top_k,
+            chunk_rows: self.chunk_rows,
+            matvec: &self.matvec,
+            family_display_name: "Qwen",
         }
-
-        let top_logits = qwen_lm_head_top_k_for_spec_with_matvec(
-            &self.store,
-            &self.spec,
-            &final_norm,
-            self.top_k,
-            self.chunk_rows,
-            &self.matvec,
-        )
-        .map_err(|err| BackendError::Other(err.to_string()))?;
-
-        let item = top_logits
-            .into_iter()
-            .next()
-            .ok_or_else(|| BackendError::Other("Qwen lm head returned no logits".to_owned()))?;
-        u32::try_from(item.index)
-            .map_err(|err| BackendError::Other(format!("Qwen token id does not fit u32: {err}")))?;
-        Ok(item.index)
+        .select_next_token(hidden, sampling)
     }
 }
 
@@ -545,30 +512,6 @@ fn native_qwen_cache_token_capacity(
 #[derive(Debug, Clone)]
 struct NativeQwenCandidate {
     token_id: usize,
-}
-
-fn sample_token_id_with_draw(
-    logits: &[f32],
-    sampling: SamplingConfig,
-    draw: f32,
-) -> Result<usize, BackendError> {
-    native_text_sample_token_id_with_draw(logits, sampling, draw, "Qwen")
-}
-
-static NATIVE_SAMPLING_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn native_sampling_draw() -> f32 {
-    let time_seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos() as u64)
-        .unwrap_or(0);
-    let counter = NATIVE_SAMPLING_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut value = time_seed ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    value ^= value >> 12;
-    value ^= value << 25;
-    value ^= value >> 27;
-    let bits = value.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
-    (bits as f32) / ((1_u32 << 24) as f32)
 }
 
 #[async_trait]

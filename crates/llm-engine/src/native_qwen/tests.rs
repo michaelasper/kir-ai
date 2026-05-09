@@ -4,7 +4,7 @@ use crate::native_matvec::{
     DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES as DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES,
     MetalBackendMetrics, NativeTextMetalWarmup as NativeQwenMetalWarmup,
 };
-use crate::native_text::NativeStreamTextDeltas;
+use crate::native_text::{NativeStreamTextDeltas, sample_token_id_with_draw};
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
@@ -973,33 +973,7 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
     let backend = native_qwen_test_backend(
         &snapshot,
         "local-qwen36",
-        QwenModelSpec {
-            family: llm_models::ModelFamily::Qwen,
-            architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
-            model_type: "qwen3_5_moe".to_owned(),
-            text_model_type: "qwen3_5_moe_text".to_owned(),
-            hidden_size: 1,
-            rms_norm_eps: 0.0,
-            tie_word_embeddings: false,
-            rope_theta: 1_000_000.0,
-            partial_rotary_factor: 1.0,
-            num_hidden_layers: 0,
-            num_attention_heads: 1,
-            num_key_value_heads: 1,
-            head_dim: 1,
-            linear_num_key_heads: 1,
-            linear_num_value_heads: 1,
-            linear_key_head_dim: 1,
-            linear_value_head_dim: 1,
-            linear_conv_kernel_dim: 1,
-            num_experts: 1,
-            num_experts_per_tok: 1,
-            moe_intermediate_size: 1,
-            shared_expert_intermediate_size: 1,
-            max_position_embeddings: 1,
-            vocab_size: 221,
-            layer_kinds: Vec::new(),
-        },
+        zero_layer_qwen_spec(1, 221),
         1,
         1,
         2,
@@ -1017,6 +991,58 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
         .decode(&[candidate.token_id as u32], false)
         .expect("candidate decodes");
     assert!(decoded.trim().is_empty());
+    std::fs::remove_dir_all(snapshot).ok();
+}
+
+#[test]
+fn native_qwen_greedy_clamps_top_k_to_vocab_size() {
+    let snapshot = temp_snapshot_dir("greedy-top-k-clamp");
+    std::fs::remove_dir_all(&snapshot).ok();
+    std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+    copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+
+    let norm_shape = [1_usize];
+    let norm = [1.0_f32];
+    let lm_head_shape = [2_usize, 1_usize];
+    let lm_head = [1.0_f32, 2.0];
+    let safetensors = tiny_multi_safetensors_bf16(&[
+        (
+            "model.language_model.norm.weight",
+            &norm_shape,
+            norm.as_slice(),
+        ),
+        ("lm_head.weight", &lm_head_shape, lm_head.as_slice()),
+    ]);
+    std::fs::write(snapshot.join("model.safetensors"), &safetensors)
+        .expect("write greedy top-k clamp fixture shard");
+    std::fs::write(
+        snapshot.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": safetensors.len() },
+            "weight_map": {
+                "model.language_model.norm.weight": "model.safetensors",
+                "lm_head.weight": "model.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write greedy top-k clamp fixture index");
+
+    let backend = native_qwen_test_backend(
+        &snapshot,
+        "local-qwen36",
+        zero_layer_qwen_spec(1, 2),
+        1,
+        1,
+        99,
+        64,
+    );
+
+    let candidate = backend
+        .next_token_from_hidden(&[1.0], SamplingConfig::Greedy)
+        .expect("greedy candidate with clamped top_k");
+
+    assert_eq!(candidate.token_id, 1);
     std::fs::remove_dir_all(snapshot).ok();
 }
 
@@ -1077,6 +1103,7 @@ fn native_top_p_sampling_selects_full_vocab_token_from_draw() {
             top_p: 0.9,
         },
         0.8,
+        "Qwen",
     )
     .expect("sampling succeeds");
 
@@ -1364,6 +1391,36 @@ fn write_tiny_linear_decoder_snapshot(root: &Path) {
 
 fn snapshot_path(root: &Path, name: &str) -> PathBuf {
     root.join(name)
+}
+
+fn zero_layer_qwen_spec(hidden_size: u32, vocab_size: u32) -> QwenModelSpec {
+    QwenModelSpec {
+        family: llm_models::ModelFamily::Qwen,
+        architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+        model_type: "qwen3_5_moe".to_owned(),
+        text_model_type: "qwen3_5_moe_text".to_owned(),
+        hidden_size,
+        rms_norm_eps: 0.0,
+        tie_word_embeddings: false,
+        rope_theta: 1_000_000.0,
+        partial_rotary_factor: 1.0,
+        num_hidden_layers: 0,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: hidden_size,
+        linear_num_key_heads: 1,
+        linear_num_value_heads: 1,
+        linear_key_head_dim: 1,
+        linear_value_head_dim: hidden_size,
+        linear_conv_kernel_dim: 1,
+        num_experts: 1,
+        num_experts_per_tok: 1,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 1,
+        max_position_embeddings: 1,
+        vocab_size,
+        layer_kinds: Vec::new(),
+    }
 }
 
 fn tiny_engine_qwen_spec(kind: llm_models::AttentionKind) -> QwenModelSpec {

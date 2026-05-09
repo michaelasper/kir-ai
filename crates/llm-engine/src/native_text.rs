@@ -7,11 +7,17 @@ use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, SamplingConfig,
+    ModelBackend, NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore,
+    SamplingConfig, native_final_norm_for_spec_ref_with_matvec,
+    native_lm_head_logits_for_spec_ref_with_matvec, native_lm_head_top_k_for_spec_ref_with_matvec,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use llm_tokenizer::HuggingFaceTokenizer;
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio_util::sync::CancellationToken;
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS;
@@ -775,6 +781,92 @@ pub(crate) fn sample_token_id_with_draw(
                 .map_err(|err| BackendError::Other(err.to_string()))
         }
     }
+}
+
+pub(crate) struct NativeTextNextTokenContext<'a, M: NativeMatvecBackend> {
+    pub(crate) store: &'a SafeTensorShardStore,
+    pub(crate) spec: NativeTextModelSpecRef<'a>,
+    pub(crate) top_k: usize,
+    pub(crate) chunk_rows: usize,
+    pub(crate) matvec: &'a M,
+    pub(crate) family_display_name: &'static str,
+}
+
+impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
+    pub(crate) fn select_next_token(
+        &self,
+        hidden: &[f32],
+        sampling: SamplingConfig,
+    ) -> Result<usize, BackendError> {
+        let final_norm =
+            native_final_norm_for_spec_ref_with_matvec(self.store, self.spec, hidden, self.matvec)
+                .map_err(|err| BackendError::Other(err.to_string()))?;
+        if !sampling.is_greedy() {
+            let logits = native_lm_head_logits_for_spec_ref_with_matvec(
+                self.store,
+                self.spec,
+                &final_norm,
+                self.chunk_rows,
+                self.matvec,
+            )
+            .map_err(|err| BackendError::Other(err.to_string()))?;
+            let sampled_token_id = sample_token_id_with_draw(
+                &logits,
+                sampling,
+                native_text_sampling_draw(),
+                self.family_display_name,
+            )?;
+            ensure_token_id_fits_u32(sampled_token_id, self.family_display_name)?;
+            return Ok(sampled_token_id);
+        }
+
+        let top_k = self.top_k.min(self.spec.vocab_size() as usize).max(1);
+        let top_logits = native_lm_head_top_k_for_spec_ref_with_matvec(
+            self.store,
+            self.spec,
+            &final_norm,
+            top_k,
+            self.chunk_rows,
+            self.matvec,
+        )
+        .map_err(|err| BackendError::Other(err.to_string()))?;
+        let item = top_logits.into_iter().next().ok_or_else(|| {
+            BackendError::Other(format!(
+                "{} lm head returned no logits",
+                self.family_display_name
+            ))
+        })?;
+        ensure_token_id_fits_u32(item.index, self.family_display_name)?;
+        Ok(item.index)
+    }
+}
+
+fn ensure_token_id_fits_u32(
+    token_id: usize,
+    family_display_name: &str,
+) -> Result<(), BackendError> {
+    u32::try_from(token_id).map_err(|err| {
+        BackendError::Other(format!(
+            "{family_display_name} token id does not fit u32: {err}"
+        ))
+    })?;
+    Ok(())
+}
+
+static NATIVE_TEXT_SAMPLING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn native_text_sampling_draw() -> f32 {
+    let time_seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = NATIVE_TEXT_SAMPLING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut value = time_seed ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    value ^= value >> 12;
+    value ^= value << 25;
+    value ^= value >> 27;
+    let bits = value.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+    (bits as f32) / ((1_u32 << 24) as f32)
 }
 
 pub(crate) fn native_text_worker_stream(
