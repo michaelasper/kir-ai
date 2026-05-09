@@ -300,17 +300,8 @@ impl NativeTextAdapter for NativeQwenAdapter {
         Ok(NativeTextCandidateDecision::Emit(token_id))
     }
 
-    fn cache_token_capacity(
-        &self,
-        context_tokens: usize,
-        max_new_tokens: u32,
-    ) -> Result<usize, BackendError> {
-        native_qwen_cache_token_capacity(
-            context_tokens,
-            max_new_tokens,
-            self.max_prefill_tokens,
-            self.spec.max_position_embeddings,
-        )
+    fn max_position_embeddings(&self) -> u32 {
+        self.spec.max_position_embeddings
     }
 
     fn max_prefill_tokens(&self) -> usize {
@@ -442,44 +433,6 @@ fn resolve_native_max_tokens(
     configured_max: u32,
 ) -> Result<u32, BackendError> {
     crate::native_text::resolve_native_text_max_tokens(requested, configured_max, "Qwen")
-}
-
-fn native_qwen_cache_token_capacity(
-    context_tokens: usize,
-    max_new_tokens: u32,
-    min_cache_tokens: usize,
-    max_position_embeddings: u32,
-) -> Result<usize, BackendError> {
-    let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
-        BackendError::Other(format!(
-            "native Qwen max_position_embeddings does not fit usize: {err}"
-        ))
-    })?;
-    if max_position_embeddings == 0 {
-        return Err(BackendError::UnsupportedRequest(
-            "native Qwen model declares zero max_position_embeddings".to_owned(),
-        ));
-    }
-    let max_new_tokens = usize::try_from(max_new_tokens).map_err(|err| {
-        BackendError::Other(format!(
-            "native Qwen max_new_tokens does not fit usize: {err}"
-        ))
-    })?;
-    let requested_context = context_tokens.checked_add(max_new_tokens).ok_or_else(|| {
-        BackendError::UnsupportedRequest(
-            "native Qwen context length plus generation budget overflows usize".to_owned(),
-        )
-    })?;
-    if requested_context > max_position_embeddings {
-        return Err(BackendError::UnsupportedRequest(format!(
-            "native Qwen request needs {context_tokens} prompt tokens plus {max_new_tokens} generation tokens, exceeding model context limit {max_position_embeddings}"
-        )));
-    }
-    let required = requested_context.max(min_cache_tokens.max(1));
-    Ok(required
-        .checked_next_power_of_two()
-        .unwrap_or(max_position_embeddings)
-        .min(max_position_embeddings))
 }
 
 #[cfg(test)]

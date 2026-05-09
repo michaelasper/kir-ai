@@ -5,7 +5,8 @@ use crate::native_matvec::{
     MetalBackendMetrics, NativeTextMetalWarmup as NativeQwenMetalWarmup,
 };
 use crate::native_text::{
-    NativeStreamTextDeltas, native_text_prefill_context_with_cache, sample_token_id_with_draw,
+    NativeStreamTextDeltas, native_text_cache_token_capacity,
+    native_text_prefill_context_with_cache, sample_token_id_with_draw,
 };
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
@@ -473,7 +474,7 @@ fn native_max_tokens_rejects_requests_above_configured_limit() {
 
 #[test]
 fn native_qwen_cache_capacity_preserves_prompt_and_generation_budget() {
-    let capacity = native_qwen_cache_token_capacity(40, 8, 32, 64)
+    let capacity = native_text_cache_token_capacity(40, 8, 32, 64, "Qwen")
         .expect("prompt plus generation budget fits context");
     let spec = QwenModelSpec {
         family: llm_models::ModelFamily::Qwen,
@@ -512,7 +513,7 @@ fn native_qwen_cache_capacity_preserves_prompt_and_generation_budget() {
 
 #[test]
 fn native_qwen_cache_capacity_rejects_context_beyond_position_limit() {
-    let err = native_qwen_cache_token_capacity(60, 8, 32, 64)
+    let err = native_text_cache_token_capacity(60, 8, 32, 64, "Qwen")
         .expect_err("context beyond model position limit fails closed");
 
     assert!(matches!(err, BackendError::UnsupportedRequest(_)));
@@ -598,11 +599,12 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
 
     let mut expected_caches = qwen_layer_caches_for_spec(
         &backend.driver.adapter.spec,
-        native_qwen_cache_token_capacity(
+        native_text_cache_token_capacity(
             3,
             8,
             backend.driver.adapter.max_prefill_tokens,
             backend.driver.adapter.spec.max_position_embeddings,
+            "Qwen",
         )
         .expect("expected cache capacity"),
     )

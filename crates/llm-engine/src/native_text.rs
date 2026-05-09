@@ -278,11 +278,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         emitted_tokens: &[u32],
         token_id: usize,
     ) -> Result<NativeTextCandidateDecision, BackendError>;
-    fn cache_token_capacity(
-        &self,
-        context_tokens: usize,
-        max_new_tokens: u32,
-    ) -> Result<usize, BackendError>;
+    fn max_position_embeddings(&self) -> u32;
     fn max_prefill_tokens(&self) -> usize;
     fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache>;
     fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics;
@@ -578,9 +574,13 @@ where
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let cache_tokens = self
-            .adapter
-            .cache_token_capacity(context_tokens.len(), max_new_tokens)?;
+        let cache_tokens = native_text_cache_token_capacity(
+            context_tokens.len(),
+            max_new_tokens,
+            self.adapter.max_prefill_tokens(),
+            self.adapter.max_position_embeddings(),
+            self.adapter.family_display_name(),
+        )?;
         let namespace = self.adapter.prefix_cache_namespace(request, cache_tokens);
         let layer_count = self.adapter.layer_count();
         let mut cached_prefix_len = 0_usize;
@@ -774,6 +774,45 @@ pub(crate) fn resolve_native_text_max_tokens(
         ))),
         Some(value) => Ok(value),
     }
+}
+
+pub(crate) fn native_text_cache_token_capacity(
+    context_tokens: usize,
+    max_new_tokens: u32,
+    min_cache_tokens: usize,
+    max_position_embeddings: u32,
+    family_display_name: &str,
+) -> Result<usize, BackendError> {
+    let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
+        BackendError::Other(format!(
+            "native {family_display_name} max_position_embeddings does not fit usize: {err}"
+        ))
+    })?;
+    if max_position_embeddings == 0 {
+        return Err(BackendError::UnsupportedRequest(format!(
+            "native {family_display_name} model declares zero max_position_embeddings"
+        )));
+    }
+    let max_new_tokens = usize::try_from(max_new_tokens).map_err(|err| {
+        BackendError::Other(format!(
+            "native {family_display_name} max_new_tokens does not fit usize: {err}"
+        ))
+    })?;
+    let requested_context = context_tokens.checked_add(max_new_tokens).ok_or_else(|| {
+        BackendError::UnsupportedRequest(format!(
+            "native {family_display_name} context length plus generation budget overflows usize"
+        ))
+    })?;
+    if requested_context > max_position_embeddings {
+        return Err(BackendError::UnsupportedRequest(format!(
+            "native {family_display_name} request needs {context_tokens} prompt tokens plus {max_new_tokens} generation tokens, exceeding model context limit {max_position_embeddings}"
+        )));
+    }
+    let required = requested_context.max(min_cache_tokens.max(1));
+    Ok(required
+        .checked_next_power_of_two()
+        .unwrap_or(max_position_embeddings)
+        .min(max_position_embeddings))
 }
 
 pub(crate) fn native_text_prefill_context_with_cache<C>(
@@ -1339,6 +1378,27 @@ mod tests {
 
         assert!(matches!(err, BackendError::Cancelled));
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn cache_token_capacity_rounds_budget_within_position_limit() {
+        let capacity = native_text_cache_token_capacity(40, 8, 32, 64, "Test")
+            .expect("context and generation budget fits");
+
+        assert_eq!(capacity, 64);
+    }
+
+    #[test]
+    fn cache_token_capacity_rejects_invalid_position_limits() {
+        let err = native_text_cache_token_capacity(0, 1, 1, 0, "Test")
+            .expect_err("zero position limit fails closed");
+
+        assert!(matches!(err, BackendError::UnsupportedRequest(_)));
+        assert!(
+            err.to_string()
+                .contains("native Test model declares zero max_position_embeddings"),
+            "error should identify the invalid model position limit: {err}"
+        );
     }
 
     #[test]
