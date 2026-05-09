@@ -10,7 +10,10 @@ use llm_api::{
     ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, ToolDefinition,
     Usage, ValidateRequest,
 };
-use llm_backend::{BackendCacheContext, BackendModelMetadata};
+use llm_backend::{
+    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
+    BackendModelMetadata,
+};
 use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
@@ -105,6 +108,7 @@ where
             BackendRequest {
                 model: request.model,
                 prompt: request.prompt,
+                chat_context: None,
                 max_tokens: request.max_tokens,
                 sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
                 required_tool_choice: None,
@@ -187,6 +191,7 @@ where
         let adapter = self.chat_adapter()?;
         let cache_context = adapter.cache_context(&request.tools)?;
         let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
+        let chat_context = adapter.backend_chat_context(&request.messages, &request.tools);
         let completion = RuntimeCompletionSeed {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
@@ -196,6 +201,7 @@ where
             BackendRequest {
                 model: request.model.clone(),
                 prompt,
+                chat_context,
                 max_tokens: request.effective_max_tokens(),
                 sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
                 required_tool_choice: required_backend_tool_choice(&request),
@@ -245,6 +251,7 @@ where
         let adapter = self.chat_adapter()?;
         let cache_context = adapter.cache_context(&request.tools)?;
         let prompt = adapter.render_prompt(&request.messages, &request.tools)?;
+        let chat_context = adapter.backend_chat_context(&request.messages, &request.tools);
         let required_tool_choice = required_backend_tool_choice(&request);
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
@@ -253,6 +260,7 @@ where
                 BackendRequest {
                     model: request.model.clone(),
                     prompt,
+                    chat_context,
                     max_tokens: request.effective_max_tokens(),
                     sampling: SamplingConfig::from_openai_controls(
                         request.temperature,
@@ -330,6 +338,7 @@ where
                 BackendRequest {
                     model: request.model.clone(),
                     prompt: request.prompt,
+                    chat_context: None,
                     max_tokens: request.max_tokens,
                     sampling: SamplingConfig::from_openai_controls(
                         request.temperature,
@@ -1224,6 +1233,11 @@ struct SelectedChatAdapter {
 
 trait ChatAdapter {
     fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError>;
+    fn backend_chat_context(
+        self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Option<BackendChatContext>;
     fn render_prompt(
         self,
         messages: &[ChatMessage],
@@ -1245,6 +1259,21 @@ impl ChatAdapter for SelectedChatAdapter {
         ))
     }
 
+    fn backend_chat_context(
+        self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Option<BackendChatContext> {
+        if !tools.is_empty() {
+            return None;
+        }
+        let messages = messages
+            .iter()
+            .map(backend_chat_message)
+            .collect::<Option<Vec<_>>>()?;
+        Some(BackendChatContext { messages })
+    }
+
     fn render_prompt(
         self,
         messages: &[ChatMessage],
@@ -1256,6 +1285,22 @@ impl ChatAdapter for SelectedChatAdapter {
     fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
         Ok(parse_assistant_for_family(self.family, text)?)
     }
+}
+
+fn backend_chat_message(message: &ChatMessage) -> Option<BackendChatMessage> {
+    if !message.tool_calls.is_empty() {
+        return None;
+    }
+    let role = match message.role {
+        ChatRole::System => BackendChatRole::System,
+        ChatRole::User => BackendChatRole::User,
+        ChatRole::Assistant => BackendChatRole::Assistant,
+        ChatRole::Tool => return None,
+    };
+    Some(BackendChatMessage {
+        role,
+        content: message.content.clone().unwrap_or_default(),
+    })
 }
 
 fn chat_adapter_for_metadata(

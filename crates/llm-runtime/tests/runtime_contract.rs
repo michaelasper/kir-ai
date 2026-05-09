@@ -4,8 +4,8 @@ use llm_api::{
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    DeterministicBackend, ModelBackend, SamplingConfig,
+    BackendChatRole, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, DeterministicBackend, ModelBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
@@ -496,6 +496,83 @@ async fn chat_accepts_mlx_backend_when_family_is_gemma() {
     assert_eq!(
         response.choices[0].message.content.as_deref(),
         Some("hello from gemma")
+    );
+}
+
+#[tokio::test]
+async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "gemma",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![
+                ChatMessage::system("You are Kir."),
+                ChatMessage::user("say hi"),
+                ChatMessage::assistant("previous answer"),
+            ],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Gemma chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    let chat_context = observed
+        .chat_context
+        .expect("structured chat context is carried");
+    assert_eq!(chat_context.messages.len(), 3);
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
+    assert_eq!(chat_context.messages[0].content, "You are Kir.");
+    assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
+    assert_eq!(chat_context.messages[1].content, "say hi");
+    assert_eq!(chat_context.messages[2].role, BackendChatRole::Assistant);
+    assert_eq!(chat_context.messages[2].content, "previous answer");
+    assert!(
+        observed.prompt.contains("<|turn>user\nsay hi"),
+        "rendered prompt remains available for native/prompt backends"
+    );
+}
+
+#[tokio::test]
+async fn runtime_omits_structured_chat_context_when_tools_require_prompt_rendering() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "gemma",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Gemma chat with tools succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    assert!(observed.chat_context.is_none());
+    assert!(
+        observed
+            .cache_context
+            .tool_schema
+            .as_deref()
+            .is_some_and(|schema| schema.contains("lookup"))
     );
 }
 
@@ -1372,6 +1449,11 @@ struct FamilyMetadataBackend {
     family: Option<String>,
 }
 
+struct RecordingChatContextBackend {
+    observed: Arc<Mutex<Option<BackendRequest>>>,
+    family: &'static str,
+}
+
 struct MlxQwenMetadataBackend;
 struct MlxGemmaMetadataBackend;
 
@@ -1526,6 +1608,35 @@ impl ModelBackend for MlxGemmaMetadataBackend {
         Ok(BackendOutput {
             text: "hello from gemma<turn|>".to_owned(),
             prompt_tokens: 1,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for RecordingChatContextBackend {
+    fn model_id(&self) -> &str {
+        "local-gemma4"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id(), "recording").with_family(self.family)
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        *self.observed.lock().expect("observed request lock") = Some(request);
+        Ok(BackendOutput {
+            text: "hello from gemma".to_owned(),
+            prompt_tokens: 4,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })

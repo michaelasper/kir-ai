@@ -12,12 +12,43 @@ use tokio_util::sync::CancellationToken;
 pub struct BackendRequest {
     pub model: String,
     pub prompt: String,
+    pub chat_context: Option<BackendChatContext>,
     pub max_tokens: Option<u32>,
     pub sampling: SamplingConfig,
     pub required_tool_choice: Option<BackendToolChoice>,
     pub json_object_mode: bool,
     pub conversation_mode: bool,
     pub cache_context: BackendCacheContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendChatContext {
+    pub messages: Vec<BackendChatMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendChatMessage {
+    pub role: BackendChatRole,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendChatRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl BackendChatRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -303,6 +334,7 @@ mod tests {
         BackendRequest {
             model: "local-qwen36".to_owned(),
             prompt: prompt.to_owned(),
+            chat_context: None,
             max_tokens: Some(1),
             sampling: SamplingConfig::Greedy,
             required_tool_choice: None,

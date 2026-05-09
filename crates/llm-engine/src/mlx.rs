@@ -111,20 +111,19 @@ impl MlxBackend {
                         stream: true,
                     })
             }
-            MlxUpstreamProtocol::ChatCompletions => self
-                .client
-                .post(self.upstream_url.clone())
-                .json(&MlxChatCompletionRequest {
-                    model: &self.upstream_model,
-                    messages: [MlxChatMessage {
-                        role: "user",
-                        content: &request.prompt,
-                    }],
-                    max_tokens: request.max_tokens,
-                    temperature,
-                    top_p,
-                    stream: true,
-                }),
+            MlxUpstreamProtocol::ChatCompletions => {
+                let messages = mlx_chat_messages(request);
+                self.client
+                    .post(self.upstream_url.clone())
+                    .json(&MlxChatCompletionRequest {
+                        model: &self.upstream_model,
+                        messages,
+                        max_tokens: request.max_tokens,
+                        temperature,
+                        top_p,
+                        stream: true,
+                    })
+            }
         };
         request
             .send()
@@ -282,7 +281,7 @@ struct MlxCompletionRequest<'a> {
 #[derive(Debug, Serialize)]
 struct MlxChatCompletionRequest<'a> {
     model: &'a str,
-    messages: [MlxChatMessage<'a>; 1],
+    messages: Vec<MlxChatMessage<'a>>,
     max_tokens: Option<u32>,
     temperature: f32,
     top_p: f32,
@@ -291,8 +290,26 @@ struct MlxChatCompletionRequest<'a> {
 
 #[derive(Debug, Serialize)]
 struct MlxChatMessage<'a> {
-    role: &'static str,
+    role: &'a str,
     content: &'a str,
+}
+
+fn mlx_chat_messages(request: &BackendRequest) -> Vec<MlxChatMessage<'_>> {
+    if let (None, Some(chat_context)) = (&request.cache_context.tool_schema, &request.chat_context)
+    {
+        return chat_context
+            .messages
+            .iter()
+            .map(|message| MlxChatMessage {
+                role: message.role.as_str(),
+                content: &message.content,
+            })
+            .collect();
+    }
+    vec![MlxChatMessage {
+        role: "user",
+        content: &request.prompt,
+    }]
 }
 
 #[derive(Debug, Deserialize)]
@@ -675,7 +692,10 @@ fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm_backend::{BackendCacheContext, BackendRequest, ModelBackend, SamplingConfig};
+    use llm_backend::{
+        BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
+        BackendRequest, ModelBackend, SamplingConfig,
+    };
     use serde_json::Value;
     use std::{
         io::{Read, Write},
@@ -704,6 +724,7 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "hello mlx".to_owned(),
+                chat_context: None,
                 max_tokens: Some(12),
                 sampling: SamplingConfig::TopP {
                     temperature: 0.7,
@@ -738,7 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mlx_backend_posts_gemma_prompt_to_chat_completion_endpoint() {
+    async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint() {
         let server = FakeMlxServer::start(
             "data: {\"choices\":[{\"delta\":{\"content\":\"gemma says hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":6,\"output_tokens\":4}}\n\ndata: [DONE]\n\n",
         );
@@ -756,6 +777,18 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n".to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![
+                        BackendChatMessage {
+                            role: BackendChatRole::System,
+                            content: "You are Kir.".to_owned(),
+                        },
+                        BackendChatMessage {
+                            role: BackendChatRole::User,
+                            content: "hello gemma".to_owned(),
+                        },
+                    ],
+                }),
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,
@@ -774,12 +807,65 @@ mod tests {
             request["model"].as_str(),
             Some(backend.upstream_model.as_str())
         );
+        assert_eq!(request["messages"][0]["role"], "system");
+        assert_eq!(request["messages"][0]["content"], "You are Kir.");
+        assert_eq!(request["messages"][1]["role"], "user");
+        assert_eq!(request["messages"][1]["content"], "hello gemma");
+        assert_eq!(request["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn mlx_backend_falls_back_to_rendered_prompt_for_gemma_tool_chat() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"tool fallback\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Gemma),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n".to_owned(),
+                chat_context: Some(BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: "use lookup".to_owned(),
+                    }],
+                }),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: true,
+                cache_context: BackendCacheContext::chat_template(
+                    "gemma/gemma4/v1",
+                    Some(r#"[{"type":"function"}]"#.to_owned()),
+                ),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "tool fallback");
+        let request = server.received_body();
         assert_eq!(request["messages"][0]["role"], "user");
         assert_eq!(
             request["messages"][0]["content"],
-            "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n"
+            "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n"
         );
-        assert_eq!(request["stream"], true);
+        assert_eq!(
+            request["messages"]
+                .as_array()
+                .expect("messages array")
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -801,6 +887,7 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "hello mlx".to_owned(),
+                chat_context: None,
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,
@@ -834,6 +921,7 @@ mod tests {
             .generate_stream(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "hello mlx".to_owned(),
+                chat_context: None,
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,
@@ -877,6 +965,7 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "hello gemma".to_owned(),
+                chat_context: None,
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,
@@ -934,6 +1023,7 @@ mod tests {
         let mut stream = backend.generate_stream(BackendRequest {
             model: "local-mlx".to_owned(),
             prompt: "hello mlx".to_owned(),
+            chat_context: None,
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
             required_tool_choice: None,
@@ -980,6 +1070,7 @@ mod tests {
             .generate(BackendRequest {
                 model: "other-model".to_owned(),
                 prompt: "hello".to_owned(),
+                chat_context: None,
                 max_tokens: Some(1),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,
@@ -1106,6 +1197,7 @@ mod tests {
             .generate(BackendRequest {
                 model: "local-mlx".to_owned(),
                 prompt: "hello".to_owned(),
+                chat_context: None,
                 max_tokens: Some(1),
                 sampling: SamplingConfig::Greedy,
                 required_tool_choice: None,

@@ -3255,6 +3255,7 @@ mod tests {
                 BackendRequest {
                     model: "local-qwen36".to_owned(),
                     prompt: "say hi".to_owned(),
+                    chat_context: None,
                     max_tokens: Some(1),
                     sampling: SamplingConfig::Greedy,
                     required_tool_choice: None,
@@ -3293,6 +3294,7 @@ mod tests {
                 BackendRequest {
                     model: "local-qwen36".to_owned(),
                     prompt: "say hi".to_owned(),
+                    chat_context: None,
                     max_tokens: Some(1),
                     sampling: SamplingConfig::Greedy,
                     required_tool_choice: None,
@@ -3845,6 +3847,7 @@ mod tests {
         BackendRequest {
             model: model.to_owned(),
             prompt: "test".to_owned(),
+            chat_context: None,
             max_tokens: Some(1),
             sampling: SamplingConfig::Greedy,
             required_tool_choice: None,
