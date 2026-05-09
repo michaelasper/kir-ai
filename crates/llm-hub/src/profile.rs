@@ -27,6 +27,13 @@ struct BuiltinProfile {
 
 const BUILTIN_PROFILES: &[BuiltinProfile] = &[
     BuiltinProfile {
+        name: "gemma4-e2b-it-mlx-4bit",
+        family: "gemma",
+        loader: "mlx",
+        quantization: "4bit",
+        artifacts: ProfileArtifactSet::GemmaText,
+    },
+    BuiltinProfile {
         name: "gemma4-text-safetensors-bf16",
         family: "gemma",
         loader: "mlx",
@@ -121,6 +128,10 @@ impl ModelProfile {
             .expect("built-in Gemma 4 text safetensors BF16 profile")
     }
 
+    pub fn gemma4_e2b_it_mlx_4bit() -> Self {
+        Self::builtin("gemma4-e2b-it-mlx-4bit").expect("built-in Gemma 4 E2B IT MLX 4-bit profile")
+    }
+
     fn from_builtin(profile: BuiltinProfile) -> Self {
         let (allow_patterns, ignore_patterns) = match profile.artifacts {
             ProfileArtifactSet::QwenText => (
@@ -173,6 +184,7 @@ fn qwen_ignore_patterns() -> Vec<String> {
 fn gemma_text_static_and_safetensors_patterns() -> Vec<String> {
     vec![
         "*.json".to_owned(),
+        "*.jinja".to_owned(),
         "*.model".to_owned(),
         "*.txt".to_owned(),
         "tokenizer*".to_owned(),

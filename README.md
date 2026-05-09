@@ -17,8 +17,9 @@ The project is intentionally explicit about its current state:
   throughput path. It uses chunked prefill, context-limit validation,
   conservative generation defaults, prefix-cache reuse, and native Metal BF16
   matvecs with CPU fallbacks.
-- The MLX sidecar path proxies to a loopback `mlx_lm.server` endpoint and is a
-  bootstrap comparison path, not the final no-Python production runtime.
+- The MLX sidecar path proxies to a loopback `mlx_lm.server` or
+  `mlx_vlm.server` endpoint and is a bootstrap comparison path, not the final
+  no-Python production runtime.
 - Long-context benchmarks can run named backend lanes, so native Metal and MLX
   serving paths can be compared side by side before promotion decisions.
 
@@ -113,10 +114,12 @@ same MLX path by selecting the loader and family explicitly. This is the
 practical path for small adaptive chat checks such as
 `mlx-community/Qwen3.5-4B-MLX-4bit`,
 `mlx-community/Qwen3.5-4B-MLX-8bit`, and the Apple-silicon OptiQ snapshot
-`mlx-community/Qwen3.5-4B-OptiQ-4bit`. Raw MLX snapshots must provide
-`--family`; Qwen is the only serveable runtime chat family today, while DeepSeek
-and Gemma are recognized but fail closed until their adapters or sidecar chat
-path land:
+`mlx-community/Qwen3.5-4B-OptiQ-4bit`, plus Gemma 4 MLX text snapshots such as
+`mlx-community/gemma-4-e2b-it-4bit`. Raw MLX snapshots must provide `--family`;
+Qwen and Gemma are serveable runtime chat families through the MLX sidecar. Qwen
+uses `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server` because that sidecar exposes
+OpenAI chat-completions for the any-to-any checkpoint family. DeepSeek is
+recognized but fails closed until its adapter or sidecar chat path lands:
 
 ```sh
 SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>"

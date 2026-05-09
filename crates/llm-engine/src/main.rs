@@ -196,7 +196,7 @@ Options:
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma>            Model family for raw snapshots without a Kir manifest
-                                             Qwen is serveable today; DeepSeek and Gemma are recognized but deferred
+                                             Qwen and Gemma are serveable through MLX; DeepSeek is recognized but deferred
   --deterministic-test-backend               Use deterministic protocol backend
   --max-new-tokens <n>                       Native Qwen maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native Qwen maximum prefill tokens
@@ -204,7 +204,7 @@ Options:
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
-  --mlx-endpoint <url>                       Loopback mlx_lm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
+  --mlx-endpoint <url>                       Loopback mlx_lm.server or mlx_vlm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup

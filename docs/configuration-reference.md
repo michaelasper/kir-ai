@@ -51,11 +51,11 @@ Mise tasks:
 | `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--deterministic-test-backend`. |
 | `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
-| `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Raw MLX snapshots must set this explicitly. Qwen is serveable today; DeepSeek and Gemma are recognized metadata values but rejected for serving until Kir has runtime chat adapters or a chat-sidecar path. Conflicting manifest metadata is rejected. |
+| `--family` | `qwen`, `deep_seek`, or `gemma` | manifest metadata | Supplies model-family metadata for raw snapshots. Raw MLX snapshots must set this explicitly. Qwen and Gemma are serveable through MLX; DeepSeek is recognized but rejected for serving until Kir has a runtime chat adapter or chat-sidecar path. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
-| `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` `/v1` endpoint for MLX snapshot manifests. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
+| `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Qwen uses `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 
@@ -85,6 +85,7 @@ Built-in profiles:
 
 | Profile | Family | Loader | Quantisation |
 | --- | --- | --- | --- |
+| `gemma4-e2b-it-mlx-4bit` | `gemma` | `mlx` | `4bit` |
 | `gemma4-text-safetensors-bf16` | `gemma` | `mlx` | `bf16` |
 | `qwen35-4b-mlx-4bit` | `qwen` | `mlx` | `4bit` |
 | `qwen35-4b-mlx-8bit` | `qwen` | `mlx` | `8bit` |
@@ -114,7 +115,7 @@ All built-ins ignore:
 Text acquisition profiles also ignore image processor, video preprocessor,
 processor config, and vision-tower artifacts that are present in some
 multimodal Hugging Face repos but are not part of Kir's text runtime contract.
-The Gemma text-only profile additionally ignores projector artifacts.
+Gemma text-chat profiles additionally ignore projector artifacts.
 
 Pattern matching is simple exact matching, suffix matching for patterns that
 start with `*`, and prefix matching for patterns that end with `*`. It is not a

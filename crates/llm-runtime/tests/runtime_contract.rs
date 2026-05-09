@@ -444,9 +444,9 @@ async fn chat_rejects_missing_model_family_before_generation() {
 }
 
 #[tokio::test]
-async fn chat_rejects_unsupported_model_family_before_generation() {
+async fn chat_rejects_deepseek_before_generation() {
     let runtime = Runtime::new(FamilyMetadataBackend {
-        family: Some("gemma".to_owned()),
+        family: Some("deep_seek".to_owned()),
     });
     let err = runtime
         .chat(ChatCompletionRequest {
@@ -458,7 +458,7 @@ async fn chat_rejects_unsupported_model_family_before_generation() {
         .await
         .expect_err("unsupported family should fail before generation");
 
-    assert!(err.to_string().contains("Gemma"));
+    assert!(err.to_string().contains("DeepSeek"));
 }
 
 #[tokio::test]
@@ -477,6 +477,25 @@ async fn chat_accepts_mlx_backend_when_family_is_qwen() {
     assert_eq!(
         response.choices[0].message.content.as_deref(),
         Some("hello from mlx")
+    );
+}
+
+#[tokio::test]
+async fn chat_accepts_mlx_backend_when_family_is_gemma() {
+    let runtime = Runtime::new(MlxGemmaMetadataBackend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Gemma MLX metadata selects Gemma adapter");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some("hello from gemma")
     );
 }
 
@@ -1354,6 +1373,7 @@ struct FamilyMetadataBackend {
 }
 
 struct MlxQwenMetadataBackend;
+struct MlxGemmaMetadataBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
@@ -1469,6 +1489,42 @@ impl ModelBackend for MlxQwenMetadataBackend {
         );
         Ok(BackendOutput {
             text: "hello from mlx".to_owned(),
+            prompt_tokens: 1,
+            completion_tokens: 3,
+            finish_reason: FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for MlxGemmaMetadataBackend {
+    fn model_id(&self) -> &str {
+        "local-gemma4"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
+        metadata.family = Some("gemma".to_owned());
+        metadata.loader = Some("mlx".to_owned());
+        metadata
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        assert!(
+            request.prompt.contains("<|turn>user\nsay hi<turn|>"),
+            "Gemma adapter should render Gemma 4 prompt: {}",
+            request.prompt
+        );
+        Ok(BackendOutput {
+            text: "hello from gemma<turn|>".to_owned(),
             prompt_tokens: 1,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,

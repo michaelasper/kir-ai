@@ -141,6 +141,7 @@ fn qwen3_dense_bf16_profile_selects_small_native_snapshots() {
 fn gemma_text_profile_skips_multimodal_artifacts() {
     let files = vec![
         HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("chat_template.jinja", 300, Some("\"template\"")),
         HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
         HubFile::new("model-00001-of-00002.safetensors", 1_000, Some("\"w1\"")),
         HubFile::new("vision_tower.safetensors", 2_000, Some("\"vision\"")),
@@ -163,8 +164,8 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
     assert_eq!(plan.profile.family, "gemma");
     assert_eq!(plan.profile.loader, "mlx");
     assert_eq!(plan.profile.quantization, "bf16");
-    assert_eq!(plan.files_to_download.len(), 3);
-    assert_eq!(plan.total_bytes_to_download, 1_300);
+    assert_eq!(plan.files_to_download.len(), 4);
+    assert_eq!(plan.total_bytes_to_download, 1_600);
     assert_eq!(
         plan.skipped_files,
         vec![
@@ -178,7 +179,7 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
 }
 
 #[test]
-fn gemma_text_profile_uses_deferred_mlx_loader_metadata() {
+fn gemma_text_profile_uses_mlx_loader_metadata() {
     let profile = ModelProfile::gemma4_text_safetensors_bf16();
 
     assert_eq!(profile.family, "gemma");
@@ -187,8 +188,25 @@ fn gemma_text_profile_uses_deferred_mlx_loader_metadata() {
 }
 
 #[test]
+fn gemma4_e2b_mlx_4bit_profile_records_practical_chat_identity() {
+    let profile = ModelProfile::gemma4_e2b_it_mlx_4bit();
+
+    assert_eq!(profile.name, "gemma4-e2b-it-mlx-4bit");
+    assert_eq!(profile.family, "gemma");
+    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.quantization, "4bit");
+    assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
+    assert!(
+        profile
+            .ignore_patterns
+            .contains(&"processor_config.json".to_owned())
+    );
+}
+
+#[test]
 fn builtin_profile_lookup_includes_all_supported_profiles() {
     for name in [
+        "gemma4-e2b-it-mlx-4bit",
         "gemma4-text-safetensors-bf16",
         "qwen35-4b-mlx-4bit",
         "qwen35-4b-mlx-8bit",

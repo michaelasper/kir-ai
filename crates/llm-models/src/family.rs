@@ -243,7 +243,7 @@ impl ModelFamilyAdapter for GemmaFamilyAdapter {
     }
 
     fn production_backends(&self) -> &'static [BackendKind] {
-        &[]
+        &[BackendKind::Mlx]
     }
 
     fn cache_template_id(&self) -> &'static str {
@@ -263,11 +263,11 @@ impl ModelFamilyAdapter for GemmaFamilyAdapter {
             raw_completion: true,
             reasoning_channels: true,
             multimodal_artifacts: false,
-            backend_execution: false,
+            backend_execution: true,
         }
     }
 
     fn promotion_stage(&self) -> PromotionStage {
-        PromotionStage::DeferredUntilQwenParity
+        PromotionStage::Production
     }
 }

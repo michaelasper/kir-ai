@@ -71,17 +71,19 @@ decoded text.
 ## Run MLX Sidecar Mode
 
 Use MLX sidecar mode when the snapshot manifest has `loader: mlx`, for example
-the `qwen36-mlx-4bit` profile. Kir remains the public OpenAI-compatible server
-and proxies generation to a loopback `mlx_lm.server` `/v1/completions` endpoint.
+the `qwen36-mlx-4bit` or `gemma4-e2b-it-mlx-4bit` profiles. Kir remains the
+public OpenAI-compatible server and proxies generation to a loopback MLX
+sidecar. Qwen snapshots use `mlx_lm.server` `/v1/completions`; Gemma 4
+snapshots use `mlx_vlm.server` `/v1/chat/completions`.
 
-Start MLX separately:
+Start the Qwen MLX sidecar separately:
 
 ```sh
 SNAPSHOT=.llm-models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<resolved-commit>
 mlx_lm.server --model "$SNAPSHOT"
 ```
 
-Then start Kir against the same snapshot:
+Then start Kir against the same Qwen snapshot:
 
 ```sh
 cargo run -p llm-engine -- serve \
@@ -93,9 +95,9 @@ cargo run -p llm-engine -- serve \
 
 If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
 select the MLX loader and model family explicitly. Raw MLX snapshots without
-`--family` fail at startup. Qwen is the only serveable runtime chat family today;
-DeepSeek and Gemma are recognized but fail closed until Kir has adapters or a
-chat-sidecar path for those families:
+`--family` fail at startup. Qwen and Gemma are serveable runtime chat families
+through family-specific MLX sidecars; DeepSeek is recognized but fails closed
+until Kir has an adapter or chat-sidecar path for that family:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>
@@ -106,6 +108,21 @@ cargo run -p llm-engine -- serve \
   --loader mlx \
   --family qwen \
   --model-id local-qwen35-4b \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+For Gemma 4 E2B, use the VLM sidecar because the current MLX Gemma 4 package
+exposes OpenAI chat completions rather than text completions:
+
+```sh
+SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/<resolved-commit>
+mlx_vlm.server --model "$SNAPSHOT"
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family gemma \
+  --model-id local-gemma4-e2b \
   --mlx-endpoint http://127.0.0.1:8080/v1
 ```
 

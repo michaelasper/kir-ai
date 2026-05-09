@@ -128,18 +128,15 @@ fn deepseek_family_is_deferred_until_qwen_parity() {
 }
 
 #[test]
-fn gemma_family_is_deferred_as_text_only_until_qwen_parity() {
+fn gemma_family_supports_mlx_text_chat_before_native_parity() {
     let adapter = GemmaFamilyAdapter;
     let capabilities = adapter.capabilities();
 
     assert_eq!(adapter.family(), ModelFamily::Gemma);
-    assert!(adapter.production_backends().is_empty());
+    assert_eq!(adapter.production_backends(), &[BackendKind::Mlx]);
     assert_eq!(adapter.cache_template_id(), "gemma/text-it/v1");
     assert_eq!(adapter.tensor_namespace(), "gemma4_text");
-    assert_eq!(
-        adapter.promotion_stage(),
-        PromotionStage::DeferredUntilQwenParity
-    );
+    assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
     assert!(capabilities.text);
     assert!(capabilities.reasoning);
     assert!(capabilities.tool_calls);
@@ -147,5 +144,5 @@ fn gemma_family_is_deferred_as_text_only_until_qwen_parity() {
     assert!(capabilities.raw_completion);
     assert!(capabilities.reasoning_channels);
     assert!(!capabilities.multimodal_artifacts);
-    assert!(!capabilities.backend_execution);
+    assert!(capabilities.backend_execution);
 }

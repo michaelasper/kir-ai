@@ -369,12 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backend_factory_rejects_deferred_family_for_serving() {
-        let snapshot = temp_snapshot_dir("mlx-deferred-family");
+    fn snapshot_backend_factory_opens_gemma_mlx_snapshot() {
+        let snapshot = temp_snapshot_dir("mlx-gemma-family");
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let err = match open_snapshot_backend(
+        let backend = open_snapshot_backend(
             "local-gemma",
             &snapshot,
             SnapshotBackendOptions {
@@ -386,15 +386,11 @@ mod tests {
                 },
                 ..SnapshotBackendOptions::default()
             },
-        ) {
-            Ok(_) => panic!("Gemma serving should fail closed until adapter support lands"),
-            Err(err) => err,
-        };
+        )
+        .expect("Gemma MLX snapshot opens");
 
-        assert!(
-            err.to_string()
-                .contains("model family `gemma` is recognized but not serveable yet")
-        );
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
+        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -419,7 +415,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("model family `gemma` is recognized but not serveable yet")
+                .contains("snapshot loader `native-metal` is not supported for family `gemma`")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -442,7 +438,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("model family `gemma` is recognized but not serveable yet")
+                .contains("snapshot loader `native-metal` is not supported for family `gemma`")
         );
         std::fs::remove_dir_all(snapshot).ok();
     }

@@ -59,6 +59,14 @@ cargo run -p llm-engine -- model plan mlx-community/Qwen3.5-4B-OptiQ-4bit \
   --profile qwen35-4b-mlx-optiq-4bit
 ```
 
+Plan a practical Gemma 4 MLX text-chat profile:
+
+```sh
+cargo run -p llm-engine -- model plan mlx-community/gemma-4-e2b-it-4bit \
+  --revision main \
+  --profile gemma4-e2b-it-mlx-4bit
+```
+
 Plan the larger Qwen3.6 MoE native BF16 profile when you need that family:
 
 ```sh

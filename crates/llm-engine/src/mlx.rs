@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-const MLX_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
+const MLX_QWEN_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
+const MLX_GEMMA_CONTROL_STOP_TOKENS: &[&str] =
+    &["<turn|>", "<|tool_response>", "<eos>", "<|endoftext|>"];
 
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
@@ -24,8 +26,25 @@ pub struct MlxBackend {
     model_id: String,
     metadata: BackendModelMetadata,
     upstream_model: String,
-    completions_url: Url,
+    upstream_url: Url,
+    upstream_protocol: MlxUpstreamProtocol,
+    control_stop_tokens: &'static [&'static str],
     client: reqwest::Client,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MlxUpstreamProtocol {
+    Completions,
+    ChatCompletions,
+}
+
+impl MlxUpstreamProtocol {
+    fn endpoint_suffix(self) -> &'static str {
+        match self {
+            Self::Completions => "completions",
+            Self::ChatCompletions => "chat/completions",
+        }
+    }
 }
 
 impl MlxBackend {
@@ -50,12 +69,17 @@ impl MlxBackend {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let completions_url = mlx_endpoint_url(&options.endpoint, "completions");
+        let metadata = mlx_metadata(&model_id, snapshot_path, options.family)?;
+        let upstream_protocol = mlx_upstream_protocol_for_metadata(&metadata);
+        let upstream_url = mlx_endpoint_url(&options.endpoint, upstream_protocol.endpoint_suffix());
+        let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
         Ok(Self {
             model_id: model_id.clone(),
-            metadata: mlx_metadata(&model_id, snapshot_path, options.family)?,
+            metadata,
             upstream_model,
-            completions_url,
+            upstream_url,
+            upstream_protocol,
+            control_stop_tokens,
             client: reqwest::Client::new(),
         })
     }
@@ -74,17 +98,35 @@ impl MlxBackend {
             SamplingConfig::Greedy => (0.0, 1.0),
             SamplingConfig::TopP { temperature, top_p } => (temperature, top_p),
         };
-        let payload = MlxCompletionRequest {
-            model: &self.upstream_model,
-            prompt: &request.prompt,
-            max_tokens: request.max_tokens,
-            temperature,
-            top_p,
-            stream: true,
+        let request = match self.upstream_protocol {
+            MlxUpstreamProtocol::Completions => {
+                self.client
+                    .post(self.upstream_url.clone())
+                    .json(&MlxCompletionRequest {
+                        model: &self.upstream_model,
+                        prompt: &request.prompt,
+                        max_tokens: request.max_tokens,
+                        temperature,
+                        top_p,
+                        stream: true,
+                    })
+            }
+            MlxUpstreamProtocol::ChatCompletions => self
+                .client
+                .post(self.upstream_url.clone())
+                .json(&MlxChatCompletionRequest {
+                    model: &self.upstream_model,
+                    messages: [MlxChatMessage {
+                        role: "user",
+                        content: &request.prompt,
+                    }],
+                    max_tokens: request.max_tokens,
+                    temperature,
+                    top_p,
+                    stream: true,
+                }),
         };
-        self.client
-            .post(self.completions_url.clone())
-            .json(&payload)
+        request
             .send()
             .await
             .map_err(|err| BackendError::Other(format!("MLX request failed: {err}")))
@@ -140,7 +182,7 @@ impl MlxBackend {
             let status = response.status();
             if status.is_success() {
                 let mut bytes = response.bytes_stream();
-                let mut parser = MlxSseParser::new(&request.prompt);
+                let mut parser = MlxSseParser::new(&request.prompt, self.control_stop_tokens);
                 loop {
                     let item = tokio::select! {
                         item = bytes.next() => Ok(item),
@@ -237,6 +279,22 @@ struct MlxCompletionRequest<'a> {
     stream: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct MlxChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: [MlxChatMessage<'a>; 1],
+    max_tokens: Option<u32>,
+    temperature: f32,
+    top_p: f32,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct MlxChatMessage<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
 #[derive(Debug, Deserialize)]
 struct MlxCompletionResponse {
     choices: Vec<MlxCompletionChoice>,
@@ -247,6 +305,7 @@ struct MlxCompletionResponse {
 struct MlxCompletionChoice {
     text: Option<String>,
     message: Option<MlxMessage>,
+    delta: Option<MlxMessage>,
     finish_reason: Option<String>,
 }
 
@@ -257,7 +316,9 @@ struct MlxMessage {
 
 #[derive(Debug, Deserialize)]
 struct MlxUsage {
+    #[serde(alias = "input_tokens")]
     prompt_tokens: Option<u64>,
+    #[serde(alias = "output_tokens")]
     completion_tokens: Option<u64>,
 }
 
@@ -282,7 +343,7 @@ struct MlxSseParser {
 }
 
 impl MlxSseParser {
-    fn new(prompt: &str) -> Self {
+    fn new(prompt: &str, stop_tokens: &'static [&'static str]) -> Self {
         Self {
             prompt_tokens: count_whitespace_tokens(prompt),
             estimated_completion_tokens: 0,
@@ -290,7 +351,7 @@ impl MlxSseParser {
             uses_upstream_usage: false,
             saw_done: false,
             line_buffer: String::new(),
-            stop_filter: MlxControlStopFilter::new(MLX_CONTROL_STOP_TOKENS),
+            stop_filter: MlxControlStopFilter::new(stop_tokens),
         }
     }
 
@@ -364,6 +425,7 @@ impl MlxSseParser {
         let choice = completion.first_choice()?;
         let text = choice
             .text
+            .or_else(|| choice.delta.and_then(|message| message.content))
             .or_else(|| choice.message.and_then(|message| message.content))
             .unwrap_or_default();
         let text = self.stop_filter.push_str(&text);
@@ -523,6 +585,30 @@ fn is_loopback_endpoint(endpoint: &Url) -> bool {
     }
 }
 
+fn mlx_control_stop_tokens_for_metadata(
+    metadata: &BackendModelMetadata,
+) -> &'static [&'static str] {
+    match metadata
+        .family
+        .as_deref()
+        .and_then(|family| ModelFamily::parse_slug(family).ok())
+    {
+        Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
+        _ => MLX_QWEN_CONTROL_STOP_TOKENS,
+    }
+}
+
+fn mlx_upstream_protocol_for_metadata(metadata: &BackendModelMetadata) -> MlxUpstreamProtocol {
+    match metadata
+        .family
+        .as_deref()
+        .and_then(|family| ModelFamily::parse_slug(family).ok())
+    {
+        Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
+        _ => MlxUpstreamProtocol::Completions,
+    }
+}
+
 fn mlx_metadata(
     model_id: &str,
     snapshot_path: &Path,
@@ -652,6 +738,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mlx_backend_posts_gemma_prompt_to_chat_completion_endpoint() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"gemma says hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":6,\"output_tokens\":4}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Gemma),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n".to_owned(),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "gemma says hi");
+        assert_eq!(output.prompt_tokens, 6);
+        assert_eq!(output.completion_tokens, 4);
+        let request = server.received_body();
+        assert_eq!(
+            request["model"].as_str(),
+            Some(backend.upstream_model.as_str())
+        );
+        assert_eq!(request["messages"][0]["role"], "user");
+        assert_eq!(
+            request["messages"][0]["content"],
+            "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n"
+        );
+        assert_eq!(request["stream"], true);
+    }
+
+    #[tokio::test]
     async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
         let server = FakeMlxServer::start(
             "data: {\"choices\":[{\"text\":\"otter:19<|im_end|>\\n\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":6}}\n\ndata: [DONE]\n\n",
@@ -727,9 +858,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mlx_backend_strips_gemma_control_stop_tokens_from_completion_text() {
+        let server = FakeMlxServer::start(
+            "data: {\"choices\":[{\"text\":\"hello from gemma<turn|>\\n\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+        );
+        let backend = MlxBackend::open_with_options(
+            "local-mlx",
+            server.snapshot_path(),
+            MlxBackendOptions {
+                endpoint: server.endpoint(),
+                family: Some(ModelFamily::Gemma),
+            },
+        )
+        .expect("backend opens");
+
+        let output = backend
+            .generate(BackendRequest {
+                model: "local-mlx".to_owned(),
+                prompt: "hello gemma".to_owned(),
+                max_tokens: Some(12),
+                sampling: SamplingConfig::Greedy,
+                required_tool_choice: None,
+                json_object_mode: false,
+                conversation_mode: false,
+                cache_context: BackendCacheContext::raw_prompt(),
+            })
+            .await
+            .expect("mlx generation succeeds");
+
+        assert_eq!(output.text, "hello from gemma");
+        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    }
+
     #[test]
     fn mlx_sse_parser_flushes_non_stop_prefix_at_done() {
-        let mut parser = MlxSseParser::new("hello mlx");
+        let mut parser = MlxSseParser::new("hello mlx", MLX_QWEN_CONTROL_STOP_TOKENS);
         let chunks = parser
             .push_str(
                 "data:{\"choices\":[{\"text\":\"keep <|im\",\"finish_reason\":null}]}\n\ndata:[DONE]\n\n",
@@ -867,10 +1031,10 @@ mod tests {
     }
 
     #[test]
-    fn mlx_backend_rejects_deferred_requested_family() {
+    fn mlx_backend_accepts_gemma_requested_family() {
         let snapshot = tempfile::tempdir().expect("snapshot tempdir");
 
-        let err = MlxBackend::open_with_options(
+        let backend = MlxBackend::open_with_options(
             "local-mlx",
             snapshot.path(),
             MlxBackendOptions {
@@ -878,12 +1042,10 @@ mod tests {
                 family: Some(ModelFamily::Gemma),
             },
         )
-        .expect_err("deferred family is not serveable");
+        .expect("Gemma MLX backend opens");
 
-        assert!(
-            err.to_string()
-                .contains("model family `gemma` is recognized but not serveable yet")
-        );
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
+        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
     }
 
     #[test]

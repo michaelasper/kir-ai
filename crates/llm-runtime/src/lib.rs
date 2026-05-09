@@ -15,9 +15,9 @@ use llm_backend::{
     BackendError, BackendRequest, BackendStreamChunk, BackendToolChoice, ModelBackend,
     SamplingConfig,
 };
-use llm_models::{ModelFamily, ModelFamilyAdapter, QwenFamilyAdapter};
-use llm_tokenizer::{QwenPromptOptions, TemplateError, render_qwen_chatml};
-use llm_tool_parser::{ParsedAssistant, ParserError, QwenParser};
+use llm_models::ModelFamily;
+use llm_tokenizer::{TemplateError, render_family_chat_template};
+use llm_tool_parser::{ParsedAssistant, ParserError, parse_assistant_for_family};
 use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
@@ -1218,11 +1218,8 @@ fn required_backend_tool_choice(request: &ChatCompletionRequest) -> Option<Backe
 }
 
 #[derive(Debug, Clone, Copy)]
-struct QwenChatAdapter;
-
-#[derive(Debug, Clone, Copy)]
-enum SelectedChatAdapter {
-    Qwen(QwenChatAdapter),
+struct SelectedChatAdapter {
+    family: ModelFamily,
 }
 
 trait ChatAdapter {
@@ -1237,37 +1234,13 @@ trait ChatAdapter {
 
 impl ChatAdapter for SelectedChatAdapter {
     fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
-        match self {
-            Self::Qwen(adapter) => adapter.cache_context(tools),
-        }
-    }
-
-    fn render_prompt(
-        self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
-    ) -> Result<String, RuntimeError> {
-        match self {
-            Self::Qwen(adapter) => adapter.render_prompt(messages, tools),
-        }
-    }
-
-    fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
-        match self {
-            Self::Qwen(adapter) => adapter.parse_complete(text),
-        }
-    }
-}
-
-impl ChatAdapter for QwenChatAdapter {
-    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
         let tool_schema = if tools.is_empty() {
             None
         } else {
             Some(serde_json::to_string(tools)?)
         };
         Ok(BackendCacheContext::chat_template(
-            QwenFamilyAdapter.cache_template_id(),
+            self.family.adapter().cache_template_id(),
             tool_schema,
         ))
     }
@@ -1277,18 +1250,11 @@ impl ChatAdapter for QwenChatAdapter {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<String, RuntimeError> {
-        Ok(render_qwen_chatml(
-            messages,
-            tools,
-            &QwenPromptOptions {
-                enable_thinking: false,
-                add_generation_prompt: true,
-            },
-        )?)
+        Ok(render_family_chat_template(self.family, messages, tools)?)
     }
 
     fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
-        Ok(QwenParser.parse_complete(text)?)
+        Ok(parse_assistant_for_family(self.family, text)?)
     }
 }
 
@@ -1303,7 +1269,7 @@ fn chat_adapter_for_metadata(
         .into());
     };
     match parse_metadata_family(family)? {
-        ModelFamily::Qwen => Ok(SelectedChatAdapter::Qwen(QwenChatAdapter)),
+        family @ (ModelFamily::Qwen | ModelFamily::Gemma) => Ok(SelectedChatAdapter { family }),
         family => Err(unsupported_chat_family(family)),
     }
 }
