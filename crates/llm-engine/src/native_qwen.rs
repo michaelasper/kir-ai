@@ -1,7 +1,13 @@
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::{
+    native_text::{
+        NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextPrefixCache,
+        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        sample_token_id_with_draw as native_text_sample_token_id_with_draw,
+    },
+    sync_ext::RecoverPoisonedMutex,
+};
 use async_trait::async_trait;
-use futures::{StreamExt, stream::BoxStream};
-use llm_api::FinishReason;
+use futures::stream::BoxStream;
 use llm_backend::{
     BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
     BackendStreamChunk, CpuQwenMatvecBackend, LayerKvCache, LinearAttentionCache, MathError,
@@ -13,7 +19,6 @@ use llm_backend::{
 };
 use llm_hub::SnapshotManifest;
 use llm_models::{ModelFamily, NativeTextModelSpec};
-use llm_sampler::TopPSampler;
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::{Value, json};
 use std::{
@@ -31,13 +36,16 @@ pub const DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS: u32 = 256;
 
 #[derive(Clone)]
 pub struct NativeQwenBackend {
+    driver: NativeTextDriver<NativeQwenAdapter>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeQwenAdapter {
     model_id: String,
     metadata: BackendModelMetadata,
-    tokenizer: HuggingFaceTokenizer,
     spec: NativeTextModelSpec,
     store: SafeTensorShardStore,
     matvec: NativeQwenMatvecBackend,
-    max_new_tokens: u32,
     max_prefill_tokens: usize,
     top_k: usize,
     chunk_rows: usize,
@@ -54,247 +62,9 @@ const DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024
 const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
 
-#[derive(Debug)]
-struct NativeQwenPrefixCache {
-    max_bytes: u64,
-    inner: Mutex<NativeQwenPrefixCacheInner>,
-}
-
-#[derive(Debug, Default)]
-struct NativeQwenPrefixCacheInner {
-    entries: HashMap<NativeQwenPrefixCacheKey, NativeQwenPrefixCacheEntry>,
-    used_bytes: u64,
-    next_access: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct NativeQwenPrefixCacheNamespace {
-    model_id: String,
-    backend: String,
-    family: Option<String>,
-    loader: Option<String>,
-    quantization: Option<String>,
-    repo_id: Option<String>,
-    resolved_commit: Option<String>,
-    profile: Option<String>,
-    manifest_digest: Option<String>,
-    prompt_template: String,
-    tool_schema: Option<String>,
-    request_mode: String,
-    sampling: String,
-    cache_layout_version: u32,
-    cache_tokens: usize,
-    max_prefill_tokens: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct NativeQwenPrefixCacheKey {
-    namespace: NativeQwenPrefixCacheNamespace,
-    tokens: Vec<usize>,
-}
-
-#[derive(Debug, Clone)]
-struct NativeQwenPrefixCacheEntry {
-    hidden: Vec<f32>,
-    caches: Vec<QwenLayerCache>,
-    byte_len: u64,
-    last_used: u64,
-}
-
-#[derive(Debug)]
-struct NativeQwenPrefixCacheHit {
-    token_count: usize,
-    hidden: Vec<f32>,
-    caches: Vec<QwenLayerCache>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct NativeQwenPrefixCacheCounters {
-    hits: u64,
-    misses: u64,
-    stores: u64,
-    evictions: u64,
-    rejected: u64,
-    reused_tokens: u64,
-    bytes_stored: u64,
-    bytes_evicted: u64,
-    resident_bytes: u64,
-    resident_entries: u64,
-}
-
-#[derive(Debug, Default)]
-struct NativeQwenPrefixCacheMetrics {
-    counters: Mutex<NativeQwenPrefixCacheCounters>,
-}
-
-impl NativeQwenPrefixCache {
-    fn new(max_bytes: u64) -> Self {
-        Self {
-            max_bytes,
-            inner: Mutex::new(NativeQwenPrefixCacheInner::default()),
-        }
-    }
-
-    fn lookup(
-        &self,
-        namespace: &NativeQwenPrefixCacheNamespace,
-        tokens: &[usize],
-    ) -> Option<NativeQwenPrefixCacheHit> {
-        let mut inner = self.inner.lock_or_recover("native Qwen prefix cache");
-        let mut best_key = None;
-        let mut best_len = 0;
-        for key in inner.entries.keys() {
-            if key.namespace == *namespace
-                && key.tokens.len() > best_len
-                && tokens.starts_with(&key.tokens)
-            {
-                best_len = key.tokens.len();
-                best_key = Some(key.clone());
-            }
-        }
-        let Some(best_key) = best_key else {
-            native_qwen_prefix_cache_metrics().record_miss();
-            return None;
-        };
-        let access = inner.next_access();
-        let entry = inner
-            .entries
-            .get_mut(&best_key)
-            .expect("best prefix key came from cache entries");
-        entry.last_used = access;
-        native_qwen_prefix_cache_metrics().record_hit(best_len as u64);
-        Some(NativeQwenPrefixCacheHit {
-            token_count: best_len,
-            hidden: entry.hidden.clone(),
-            caches: entry.caches.clone(),
-        })
-    }
-
-    fn store(
-        &self,
-        namespace: NativeQwenPrefixCacheNamespace,
-        tokens: &[usize],
-        hidden: &[f32],
-        caches: &[QwenLayerCache],
-    ) {
-        if tokens.is_empty() {
-            return;
-        }
-        let byte_len = native_qwen_prefix_entry_bytes(hidden, caches);
-        if byte_len > self.max_bytes {
-            native_qwen_prefix_cache_metrics().record_rejected();
-            return;
-        }
-        let key = NativeQwenPrefixCacheKey {
-            namespace,
-            tokens: tokens.to_vec(),
-        };
-        let mut inner = self.inner.lock_or_recover("native Qwen prefix cache");
-        if let Some(existing) = inner.entries.remove(&key) {
-            inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
-        }
-        while inner.used_bytes.saturating_add(byte_len) > self.max_bytes {
-            let Some(lru_key) = inner
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            let Some(evicted) = inner.entries.remove(&lru_key) else {
-                break;
-            };
-            inner.used_bytes = inner.used_bytes.saturating_sub(evicted.byte_len);
-            native_qwen_prefix_cache_metrics().record_eviction(evicted.byte_len);
-        }
-        let access = inner.next_access();
-        inner.entries.insert(
-            key,
-            NativeQwenPrefixCacheEntry {
-                hidden: hidden.to_vec(),
-                caches: caches.to_vec(),
-                byte_len,
-                last_used: access,
-            },
-        );
-        inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
-        native_qwen_prefix_cache_metrics().record_store(byte_len);
-        native_qwen_prefix_cache_metrics()
-            .record_residency(inner.used_bytes, inner.entries.len() as u64);
-    }
-}
-
-impl NativeQwenPrefixCacheInner {
-    fn next_access(&mut self) -> u64 {
-        let access = self.next_access;
-        self.next_access = self.next_access.saturating_add(1);
-        access
-    }
-}
-
-impl NativeQwenPrefixCacheMetrics {
-    fn record_hit(&self, tokens: u64) {
-        self.update(|counters| {
-            counters.hits += 1;
-            counters.reused_tokens += tokens;
-        });
-    }
-
-    fn record_miss(&self) {
-        self.update(|counters| counters.misses += 1);
-    }
-
-    fn record_store(&self, byte_len: u64) {
-        self.update(|counters| {
-            counters.stores += 1;
-            counters.bytes_stored += byte_len;
-        });
-    }
-
-    fn record_eviction(&self, byte_len: u64) {
-        self.update(|counters| {
-            counters.evictions += 1;
-            counters.bytes_evicted += byte_len;
-        });
-    }
-
-    fn record_rejected(&self) {
-        self.update(|counters| counters.rejected += 1);
-    }
-
-    fn record_residency(&self, bytes: u64, entries: u64) {
-        self.update(|counters| {
-            counters.resident_bytes = bytes;
-            counters.resident_entries = entries;
-        });
-    }
-
-    fn snapshot(&self) -> Value {
-        let counters = *self
-            .counters
-            .lock_or_recover("native Qwen prefix cache metrics");
-        json!({
-            "hits": counters.hits,
-            "misses": counters.misses,
-            "stores": counters.stores,
-            "evictions": counters.evictions,
-            "rejected": counters.rejected,
-            "reused_tokens": counters.reused_tokens,
-            "bytes_stored": counters.bytes_stored,
-            "bytes_evicted": counters.bytes_evicted,
-            "resident_bytes": counters.resident_bytes,
-            "resident_entries": counters.resident_entries,
-        })
-    }
-
-    fn update(&self, update: impl FnOnce(&mut NativeQwenPrefixCacheCounters)) {
-        let mut counters = self
-            .counters
-            .lock_or_recover("native Qwen prefix cache metrics");
-        update(&mut counters);
-    }
-}
+type NativeQwenPrefixCache = NativeTextPrefixCache<QwenLayerCache>;
+type NativeQwenPrefixCacheNamespace = NativeTextPrefixCacheNamespace;
+type NativeQwenPrefixCacheMetrics = NativeTextPrefixCacheMetrics;
 
 fn native_qwen_prefix_cache_metrics() -> &'static NativeQwenPrefixCacheMetrics {
     static METRICS: OnceLock<NativeQwenPrefixCacheMetrics> = OnceLock::new();
@@ -317,28 +87,34 @@ fn native_qwen_prefix_entry_bytes(hidden: &[f32], caches: &[QwenLayerCache]) -> 
     })
 }
 
+impl NativeTextPrefixCacheValue for QwenLayerCache {
+    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+        native_qwen_prefix_entry_bytes(hidden, caches)
+    }
+}
+
 fn native_qwen_prefix_namespace(
-    backend: &NativeQwenBackend,
+    adapter: &NativeQwenAdapter,
     request: &BackendRequest,
     cache_tokens: usize,
 ) -> NativeQwenPrefixCacheNamespace {
     NativeQwenPrefixCacheNamespace {
-        model_id: backend.model_id.clone(),
-        backend: backend.metadata.backend.clone(),
-        family: backend.metadata.family.clone(),
-        loader: backend.metadata.loader.clone(),
-        quantization: backend.metadata.quantization.clone(),
-        repo_id: backend.metadata.repo_id.clone(),
-        resolved_commit: backend.metadata.resolved_commit.clone(),
-        profile: backend.metadata.profile.clone(),
-        manifest_digest: backend.metadata.manifest_digest.clone(),
+        model_id: adapter.model_id.clone(),
+        backend: adapter.metadata.backend.clone(),
+        family: adapter.metadata.family.clone(),
+        loader: adapter.metadata.loader.clone(),
+        quantization: adapter.metadata.quantization.clone(),
+        repo_id: adapter.metadata.repo_id.clone(),
+        resolved_commit: adapter.metadata.resolved_commit.clone(),
+        profile: adapter.metadata.profile.clone(),
+        manifest_digest: adapter.metadata.manifest_digest.clone(),
         prompt_template: backend_request_cache_prompt_template(request),
         tool_schema: request.cache_context.tool_schema.clone(),
         request_mode: native_qwen_prefix_request_mode(request),
         sampling: native_qwen_prefix_sampling_key(request.sampling),
         cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
         cache_tokens,
-        max_prefill_tokens: backend.max_prefill_tokens,
+        max_prefill_tokens: adapter.max_prefill_tokens,
     }
 }
 
@@ -2070,226 +1846,57 @@ impl NativeQwenBackend {
                 "native Qwen Metal BF16 weight cache warm-up complete"
             );
         }
-        Ok(Self {
-            model_id,
-            metadata,
-            tokenizer: HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?,
+        let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
+        let adapter = NativeQwenAdapter {
+            model_id: model_id.clone(),
+            metadata: metadata.clone(),
             spec: NativeTextModelSpec::from_config_json(ModelFamily::Qwen, &config_json)?,
             store,
             matvec,
-            max_new_tokens: DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
             max_prefill_tokens: 32,
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeQwenPrefixCache::new(
                 DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
             )),
+        };
+        Ok(Self {
+            driver: NativeTextDriver::new(
+                model_id,
+                metadata,
+                tokenizer,
+                adapter,
+                DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS,
+            ),
         })
     }
 
     pub fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
-        self.max_new_tokens = max_new_tokens.max(1);
+        self.driver = self.driver.with_max_new_tokens(max_new_tokens);
         self
     }
 
     pub fn with_max_prefill_tokens(mut self, max_prefill_tokens: usize) -> Self {
-        self.max_prefill_tokens = max_prefill_tokens.max(1);
+        self.driver = self.driver.with_max_prefill_tokens(max_prefill_tokens);
         self
     }
 
-    fn generate_blocking(
-        &self,
-        request: BackendRequest,
-        cancellation: CancellationToken,
-    ) -> Result<BackendOutput, BackendError> {
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id.clone(),
-            });
-        }
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        let prompt_tokens = self
-            .tokenizer
-            .encode(&request.prompt, false)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        let context_tokens = prompt_tokens
-            .iter()
-            .map(|token| *token as usize)
-            .collect::<Vec<_>>();
-        if context_tokens.is_empty() {
-            return Err(BackendError::Other(
-                "Qwen prompt encoded to zero tokens".to_owned(),
-            ));
-        }
-        let mut output_ids = Vec::new();
-        let mut finish_reason = FinishReason::Length;
-        let eos_id = self
-            .tokenizer
-            .token_to_id("<|im_end|>")
-            .map(|id| id as usize);
-        let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode =
-            self.start_decode_session(&context_tokens, requested, &request, &cancellation)?;
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-
-        for step_idx in 0..requested {
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            if Some(candidate.token_id) == eos_id {
-                finish_reason = FinishReason::Stop;
-                break;
-            }
-            output_ids.push(u32::try_from(candidate.token_id).map_err(|err| {
-                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
-            })?);
-            if step_idx + 1 < requested {
-                decode.step(&self.store, &self.spec, &self.matvec, candidate.token_id)?;
-            }
-        }
-
-        let text = self
-            .tokenizer
-            .decode(&output_ids, false)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        Ok(BackendOutput {
-            text,
-            prompt_tokens: prompt_tokens.len() as u64,
-            completion_tokens: output_ids.len() as u64,
-            finish_reason,
-        })
+    pub(crate) fn into_driver(self) -> NativeTextDriver<NativeQwenAdapter> {
+        self.driver
     }
 
+    #[cfg(test)]
     fn generate_blocking_stream(
         &self,
         request: BackendRequest,
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id.clone(),
-            });
-        }
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        let prompt_tokens = self
-            .tokenizer
-            .encode(&request.prompt, false)
-            .map_err(|err| BackendError::Other(err.to_string()))?;
-        let context_tokens = prompt_tokens
-            .iter()
-            .map(|token| *token as usize)
-            .collect::<Vec<_>>();
-        if context_tokens.is_empty() {
-            return Err(BackendError::Other(
-                "Qwen prompt encoded to zero tokens".to_owned(),
-            ));
-        }
-        let mut output_ids = Vec::new();
-        let mut text_deltas = NativeStreamTextDeltas::default();
-        let mut unreported_completion_tokens = 0_u64;
-        let mut finish_reason = FinishReason::Length;
-        let eos_id = self
-            .tokenizer
-            .token_to_id("<|im_end|>")
-            .map(|id| id as usize);
-        let requested = resolve_native_max_tokens(request.max_tokens, self.max_new_tokens)?;
-        let mut decode =
-            match self.start_decode_session(&context_tokens, requested, &request, &cancellation) {
-                Ok(decode) => decode,
-                Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
-                    return Err(BackendError::Cancelled);
-                }
-                Err(err) => return Err(err),
-            };
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-
-        for step_idx in 0..requested {
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            let candidate = self.next_token_from_hidden(decode.hidden(), request.sampling)?;
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            if Some(candidate.token_id) == eos_id {
-                finish_reason = FinishReason::Stop;
-                break;
-            }
-            output_ids.push(u32::try_from(candidate.token_id).map_err(|err| {
-                BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
-            })?);
-            unreported_completion_tokens += 1;
-            let next_decoded = self
-                .tokenizer
-                .decode(&output_ids, false)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-            let delta = text_deltas.observe(next_decoded)?;
-            if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
-            }
-            if let Some(delta) = delta {
-                send_backend_stream_chunk(
-                    &tx,
-                    BackendStreamChunk {
-                        text: delta,
-                        prompt_tokens: prompt_tokens.len() as u64,
-                        completion_tokens: std::mem::take(&mut unreported_completion_tokens),
-                        finish_reason: None,
-                    },
-                )?;
-            }
-            if step_idx + 1 < requested {
-                if cancellation.is_cancelled() {
-                    return Err(BackendError::Cancelled);
-                }
-                decode.step(&self.store, &self.spec, &self.matvec, candidate.token_id)?;
-            }
-        }
-
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        let final_text = if output_ids.is_empty() {
-            None
-        } else {
-            let final_decoded = self
-                .tokenizer
-                .decode(&output_ids, false)
-                .map_err(|err| BackendError::Other(err.to_string()))?;
-            text_deltas.finish(final_decoded)?
-        };
-        send_backend_stream_chunk(
-            &tx,
-            BackendStreamChunk {
-                text: final_text.unwrap_or_default(),
-                prompt_tokens: prompt_tokens.len() as u64,
-                completion_tokens: std::mem::take(&mut unreported_completion_tokens),
-                finish_reason: Some(finish_reason),
-            },
-        )
+        self.driver
+            .generate_blocking_stream(request, tx, cancellation)
     }
 
+    #[cfg(test)]
     fn start_decode_session(
         &self,
         context_tokens: &[usize],
@@ -2297,69 +1904,160 @@ impl NativeQwenBackend {
         request: &BackendRequest,
         cancellation: &CancellationToken,
     ) -> Result<NativeQwenDecodeSession, BackendError> {
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+        self.driver
+            .start_decode_session(context_tokens, max_new_tokens, request, cancellation)
+    }
+
+    #[cfg(test)]
+    fn next_token_from_hidden(
+        &self,
+        hidden: &[f32],
+        sampling: SamplingConfig,
+    ) -> Result<NativeQwenCandidate, BackendError> {
+        Ok(NativeQwenCandidate {
+            token_id: self
+                .driver
+                .adapter
+                .next_token_from_hidden(hidden, sampling)?,
+        })
+    }
+}
+
+impl NativeTextAdapter for NativeQwenAdapter {
+    type DecodeSession = NativeQwenDecodeSession;
+    type LayerCache = QwenLayerCache;
+
+    fn family_display_name(&self) -> &'static str {
+        "Qwen"
+    }
+
+    fn worker_label(&self) -> &'static str {
+        "native Qwen"
+    }
+
+    fn set_max_prefill_tokens(&mut self, max_prefill_tokens: usize) {
+        self.max_prefill_tokens = max_prefill_tokens.max(1);
+    }
+
+    fn encode_prompt(
+        &self,
+        tokenizer: &HuggingFaceTokenizer,
+        request: &BackendRequest,
+    ) -> Result<Vec<u32>, BackendError> {
+        tokenizer
+            .encode(&request.prompt, false)
+            .map_err(|err| BackendError::Other(err.to_string()))
+    }
+
+    fn decode_output(
+        &self,
+        tokenizer: &HuggingFaceTokenizer,
+        output_ids: &[u32],
+    ) -> Result<String, BackendError> {
+        tokenizer
+            .decode(output_ids, false)
+            .map_err(|err| BackendError::Other(err.to_string()))
+    }
+
+    fn observe_candidate(
+        &self,
+        tokenizer: &HuggingFaceTokenizer,
+        _emitted_tokens: &[u32],
+        token_id: usize,
+    ) -> Result<NativeTextCandidateDecision, BackendError> {
+        if tokenizer
+            .token_to_id("<|im_end|>")
+            .is_some_and(|stop_id| token_id == stop_id as usize)
+        {
+            return Ok(NativeTextCandidateDecision::Stop);
         }
-        let cache_tokens = native_qwen_cache_token_capacity(
-            context_tokens.len(),
+        Ok(NativeTextCandidateDecision::Emit(token_id))
+    }
+
+    fn cache_token_capacity(
+        &self,
+        context_tokens: usize,
+        max_new_tokens: u32,
+    ) -> Result<usize, BackendError> {
+        native_qwen_cache_token_capacity(
+            context_tokens,
             max_new_tokens,
             self.max_prefill_tokens,
             self.spec.max_position_embeddings(),
-        )?;
-        let namespace = native_qwen_prefix_namespace(self, request, cache_tokens);
-        let layer_count = self.spec.num_hidden_layers() as usize;
-        let mut cached_prefix_len = 0_usize;
-        let (mut hidden, mut caches) =
-            if let Some(hit) = self.prefix_cache.lookup(&namespace, context_tokens) {
-                if hit.caches.len() != layer_count {
-                    return Err(BackendError::Other(format!(
-                        "native Qwen prefix cache entry had {} layers, expected {layer_count}",
-                        hit.caches.len()
-                    )));
-                }
-                cached_prefix_len = hit.token_count;
-                (Some(hit.hidden), hit.caches)
-            } else {
-                (
-                    None,
-                    native_layer_caches_for_spec(&self.spec, cache_tokens)
-                        .map_err(|err| BackendError::Other(err.to_string()))?,
-                )
-            };
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        if cached_prefix_len < context_tokens.len() {
-            hidden = Some(native_qwen_prefill_context_with_cache(
-                &self.store,
-                &self.spec,
-                &context_tokens[cached_prefix_len..],
-                &mut caches,
-                &self.matvec,
-                self.max_prefill_tokens,
-                cancellation,
-            )?);
-        }
-        let hidden = hidden.ok_or_else(|| {
-            BackendError::Other("Qwen prefill returned no hidden states".to_owned())
-        })?;
-        if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        self.prefix_cache
-            .store(namespace, context_tokens, &hidden, &caches);
-        Ok(NativeQwenDecodeSession {
+        )
+    }
+
+    fn prefix_cache(&self) -> &NativeTextPrefixCache<QwenLayerCache> {
+        &self.prefix_cache
+    }
+
+    fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics {
+        native_qwen_prefix_cache_metrics()
+    }
+
+    fn prefix_cache_namespace(
+        &self,
+        request: &BackendRequest,
+        cache_tokens: usize,
+    ) -> NativeTextPrefixCacheNamespace {
+        native_qwen_prefix_namespace(self, request, cache_tokens)
+    }
+
+    fn layer_count(&self) -> usize {
+        self.spec.num_hidden_layers() as usize
+    }
+
+    fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<QwenLayerCache>, BackendError> {
+        native_layer_caches_for_spec(&self.spec, cache_tokens)
+            .map_err(|err| BackendError::Other(err.to_string()))
+    }
+
+    fn prefill_context_with_cache(
+        &self,
+        context_tokens: &[usize],
+        caches: &mut [QwenLayerCache],
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<f32>, BackendError> {
+        native_qwen_prefill_context_with_cache(
+            &self.store,
+            &self.spec,
+            context_tokens,
+            caches,
+            &self.matvec,
+            self.max_prefill_tokens,
+            cancellation,
+        )
+    }
+
+    fn make_decode_session(
+        &self,
+        hidden: Vec<f32>,
+        caches: Vec<QwenLayerCache>,
+    ) -> NativeQwenDecodeSession {
+        NativeQwenDecodeSession {
             hidden,
             caches,
             metal_state: self.matvec.metal_state(),
-        })
+        }
+    }
+
+    fn hidden<'a>(&self, session: &'a NativeQwenDecodeSession) -> &'a [f32] {
+        session.hidden()
+    }
+
+    fn step(
+        &self,
+        session: &mut NativeQwenDecodeSession,
+        token_id: usize,
+    ) -> Result<(), BackendError> {
+        session.step(&self.store, &self.spec, &self.matvec, token_id)
     }
 
     fn next_token_from_hidden(
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
-    ) -> Result<NativeQwenCandidate, BackendError> {
+    ) -> Result<usize, BackendError> {
         let final_norm =
             native_final_norm_for_spec_with_matvec(&self.store, &self.spec, hidden, &self.matvec)
                 .map_err(|err| BackendError::Other(err.to_string()))?;
@@ -2377,9 +2075,7 @@ impl NativeQwenBackend {
             u32::try_from(sampled_token_id).map_err(|err| {
                 BackendError::Other(format!("Qwen token id does not fit u32: {err}"))
             })?;
-            return Ok(NativeQwenCandidate {
-                token_id: sampled_token_id,
-            });
+            return Ok(sampled_token_id);
         }
 
         let top_logits = native_lm_head_top_k_for_spec_with_matvec(
@@ -2398,9 +2094,7 @@ impl NativeQwenBackend {
             .ok_or_else(|| BackendError::Other("Qwen lm head returned no logits".to_owned()))?;
         u32::try_from(item.index)
             .map_err(|err| BackendError::Other(format!("Qwen token id does not fit u32: {err}")))?;
-        Ok(NativeQwenCandidate {
-            token_id: item.index,
-        })
+        Ok(item.index)
     }
 }
 
@@ -2432,57 +2126,10 @@ fn native_qwen_prefill_context_with_cache(
     hidden.ok_or_else(|| BackendError::Other("Qwen prefill returned no hidden states".to_owned()))
 }
 
-struct NativeQwenDecodeSession {
+pub(crate) struct NativeQwenDecodeSession {
     hidden: Vec<f32>,
     caches: Vec<QwenLayerCache>,
     metal_state: Option<Arc<NativeQwenMetalState>>,
-}
-
-#[derive(Default)]
-struct NativeStreamTextDeltas {
-    emitted: String,
-    pending: Option<String>,
-}
-
-impl NativeStreamTextDeltas {
-    fn observe(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
-        if !decoded.starts_with(&self.emitted) {
-            return Err(non_prefix_stream_error());
-        }
-        let Some(pending) = self.pending.take() else {
-            self.pending = Some(decoded);
-            return Ok(None);
-        };
-        let delta = if pending.starts_with(&self.emitted) && decoded.starts_with(&pending) {
-            let delta = pending[self.emitted.len()..].to_owned();
-            self.emitted = pending;
-            non_empty(delta)
-        } else {
-            None
-        };
-        self.pending = Some(decoded);
-        Ok(delta)
-    }
-
-    fn finish(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
-        self.pending = None;
-        if !decoded.starts_with(&self.emitted) {
-            return Err(non_prefix_stream_error());
-        }
-        let delta = decoded[self.emitted.len()..].to_owned();
-        self.emitted = decoded;
-        Ok(non_empty(delta))
-    }
-}
-
-fn non_empty(value: String) -> Option<String> {
-    (!value.is_empty()).then_some(value)
-}
-
-fn non_prefix_stream_error() -> BackendError {
-    BackendError::Other(
-        "native tokenizer streaming decode became non-prefix after emitted delta".to_owned(),
-    )
 }
 
 impl NativeQwenDecodeSession {
@@ -2517,21 +2164,12 @@ impl Drop for NativeQwenDecodeSession {
     }
 }
 
+#[cfg(test)]
 fn resolve_native_max_tokens(
     requested: Option<u32>,
     configured_max: u32,
 ) -> Result<u32, BackendError> {
-    let configured_max = configured_max.max(1);
-    match requested {
-        None => Ok(configured_max),
-        Some(0) => Err(BackendError::UnsupportedRequest(
-            "max_tokens must be greater than 0".to_owned(),
-        )),
-        Some(value) if value > configured_max => Err(BackendError::UnsupportedRequest(format!(
-            "requested max_tokens {value} exceeds configured native Qwen limit {configured_max}"
-        ))),
-        Some(value) => Ok(value),
-    }
+    crate::native_text::resolve_native_text_max_tokens(requested, configured_max, "Qwen")
 }
 
 fn native_qwen_cache_token_capacity(
@@ -2654,6 +2292,7 @@ fn native_qwen_unknown_weight_warm_order() -> NativeQwenWeightWarmOrder {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct NativeQwenCandidate {
     token_id: usize,
@@ -2664,19 +2303,7 @@ fn sample_token_id_with_draw(
     sampling: SamplingConfig,
     draw: f32,
 ) -> Result<usize, BackendError> {
-    if logits.is_empty() {
-        return Err(BackendError::Other(
-            "Qwen lm head returned no logits".to_owned(),
-        ));
-    }
-    match sampling {
-        SamplingConfig::Greedy => llm_sampler::GreedySampler
-            .sample(logits)
-            .map_err(|err| BackendError::Other(err.to_string())),
-        SamplingConfig::TopP { temperature, top_p } => TopPSampler { temperature, top_p }
-            .sample(logits, draw)
-            .map_err(|err| BackendError::Other(err.to_string())),
-    }
+    native_text_sample_token_id_with_draw(logits, sampling, draw, "Qwen")
 }
 
 static NATIVE_SAMPLING_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2698,11 +2325,11 @@ fn native_sampling_draw() -> f32 {
 #[async_trait]
 impl ModelBackend for NativeQwenBackend {
     fn model_id(&self) -> &str {
-        &self.model_id
+        self.driver.model_id()
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        self.metadata.clone()
+        self.driver.model_metadata()
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -2715,10 +2342,9 @@ impl ModelBackend for NativeQwenBackend {
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        let backend = self.clone();
-        tokio::task::spawn_blocking(move || backend.generate_blocking(request, cancellation))
+        self.driver
+            .generate_with_cancel(request, cancellation)
             .await
-            .map_err(|err| BackendError::Other(format!("native Qwen worker failed: {err}")))?
     }
 
     fn generate_stream<'a>(
@@ -2733,74 +2359,17 @@ impl ModelBackend for NativeQwenBackend {
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
-        let backend = self.clone();
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let worker = tokio::task::spawn_blocking(move || {
-            let err_tx = tx.clone();
-            if let Err(err) = backend.generate_blocking_stream(request, tx, cancellation) {
-                let _ = err_tx.blocking_send(Err(err));
-            }
-        });
-        native_qwen_worker_stream(rx, worker)
+        self.driver
+            .generate_stream_with_cancel(request, cancellation)
     }
 }
 
+#[cfg(test)]
 fn native_qwen_worker_stream(
     rx: tokio::sync::mpsc::Receiver<Result<BackendStreamChunk, BackendError>>,
     worker: tokio::task::JoinHandle<()>,
 ) -> BoxStream<'static, Result<BackendStreamChunk, BackendError>> {
-    async_stream::stream! {
-        let mut rx = rx;
-        let mut worker = Some(worker);
-        loop {
-            let Some(handle) = worker.as_mut() else {
-                match rx.recv().await {
-                    Some(item) => {
-                        yield item;
-                        continue;
-                    }
-                    None => break,
-                }
-            };
-            tokio::select! {
-                item = rx.recv() => {
-                    match item {
-                        Some(item) => yield item,
-                        None => {
-                            let result = worker
-                                .take()
-                                .expect("worker handle exists while stream watches it")
-                                .await;
-                            if let Err(err) = result {
-                                yield Err(BackendError::Other(format!(
-                                    "native Qwen streaming worker failed: {err}"
-                                )));
-                            }
-                            break;
-                        }
-                    }
-                }
-                result = handle => {
-                    worker = None;
-                    if let Err(err) = result {
-                        yield Err(BackendError::Other(format!(
-                            "native Qwen streaming worker failed: {err}"
-                        )));
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    .boxed()
-}
-
-fn send_backend_stream_chunk(
-    tx: &tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
-    chunk: BackendStreamChunk,
-) -> Result<(), BackendError> {
-    tx.blocking_send(Ok(chunk))
-        .map_err(|_| BackendError::Other("stream receiver dropped".to_owned()))
+    crate::native_text::native_text_worker_stream("native Qwen", rx, worker)
 }
 fn native_qwen_metadata(
     model_id: &str,
@@ -2850,6 +2419,8 @@ pub(crate) fn native_qwen_prefix_cache_metrics_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_text::NativeStreamTextDeltas;
+    use futures::StreamExt;
     use llm_backend::qwen_layer_caches_for_spec;
     use llm_models::QwenModelSpec;
     use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -2930,6 +2501,7 @@ mod tests {
     #[test]
     fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
         let cache = NativeQwenPrefixCache::new(10_000);
+        let metrics = NativeQwenPrefixCacheMetrics::default();
         let namespace = native_qwen_test_prefix_namespace("base");
         let mut layer_cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
         layer_cache
@@ -2938,10 +2510,10 @@ mod tests {
         let original_cache_id = layer_cache.id();
         let caches = vec![QwenLayerCache::Full(layer_cache)];
 
-        cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches);
+        cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches, &metrics);
 
         let hit = cache
-            .lookup(&namespace, &[1, 2, 3])
+            .lookup(&namespace, &[1, 2, 3], &metrics)
             .expect("compatible longer prompt reuses stored prefix");
         assert_eq!(hit.token_count, 2);
         assert_eq!(hit.hidden, vec![0.25, 0.75]);
@@ -2958,7 +2530,9 @@ mod tests {
             ..namespace.clone()
         };
         assert!(
-            cache.lookup(&incompatible_namespace, &[1, 2]).is_none(),
+            cache
+                .lookup(&incompatible_namespace, &[1, 2], &metrics)
+                .is_none(),
             "tool schema changes must not reuse prefix state"
         );
     }
@@ -2966,18 +2540,19 @@ mod tests {
     #[test]
     fn native_qwen_prefix_cache_evicts_lru_entries_to_fit_budget() {
         let cache = NativeQwenPrefixCache::new(40);
+        let metrics = NativeQwenPrefixCacheMetrics::default();
         let namespace = native_qwen_test_prefix_namespace("eviction");
         let hidden = vec![1.0; 8];
 
-        cache.store(namespace.clone(), &[1], &hidden, &[]);
-        cache.store(namespace.clone(), &[2], &hidden, &[]);
+        cache.store(namespace.clone(), &[1], &hidden, &[], &metrics);
+        cache.store(namespace.clone(), &[2], &hidden, &[], &metrics);
 
         assert!(
-            cache.lookup(&namespace, &[1]).is_none(),
+            cache.lookup(&namespace, &[1], &metrics).is_none(),
             "oldest entry should be evicted"
         );
         assert!(
-            cache.lookup(&namespace, &[2]).is_some(),
+            cache.lookup(&namespace, &[2], &metrics).is_some(),
             "newest entry should remain resident"
         );
         let inner = cache.inner.lock_or_recover("native Qwen prefix cache");
@@ -3363,24 +2938,17 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
         write_tiny_linear_decoder_snapshot(&snapshot);
-        let backend = NativeQwenBackend {
-            model_id: "local-qwen36".to_owned(),
-            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
-            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
-                .expect("tokenizer loads"),
-            spec: NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
+        let backend = native_qwen_test_backend(
+            &snapshot,
+            "local-qwen36",
+            NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
                 llm_models::AttentionKind::LinearAttention,
             )),
-            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
-            matvec: NativeQwenMatvecBackend::Cpu,
-            max_new_tokens: 8,
-            max_prefill_tokens: 16,
-            top_k: 2,
-            chunk_rows: 64,
-            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
-                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
-            )),
-        };
+            8,
+            16,
+            2,
+            64,
+        );
 
         let decode = backend
             .start_decode_session(
@@ -3405,24 +2973,17 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
         write_tiny_linear_decoder_snapshot(&snapshot);
-        let backend = NativeQwenBackend {
-            model_id: "local-qwen36".to_owned(),
-            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
-            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
-                .expect("tokenizer loads"),
-            spec: NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
+        let backend = native_qwen_test_backend(
+            &snapshot,
+            "local-qwen36",
+            NativeTextModelSpec::Qwen(tiny_engine_qwen_spec(
                 llm_models::AttentionKind::LinearAttention,
             )),
-            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
-            matvec: NativeQwenMatvecBackend::Cpu,
-            max_new_tokens: 8,
-            max_prefill_tokens: 1,
-            top_k: 2,
-            chunk_rows: 64,
-            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
-                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
-            )),
-        };
+            8,
+            1,
+            2,
+            64,
+        );
         let request = native_qwen_test_request("local-qwen36");
         let before_hits = native_prefix_metric_counter("hits");
 
@@ -3444,19 +3005,19 @@ mod tests {
         }
 
         let mut expected_caches = native_layer_caches_for_spec(
-            &backend.spec,
+            &backend.driver.adapter.spec,
             native_qwen_cache_token_capacity(
                 3,
                 8,
-                backend.max_prefill_tokens,
-                backend.spec.max_position_embeddings(),
+                backend.driver.adapter.max_prefill_tokens,
+                backend.driver.adapter.spec.max_position_embeddings(),
             )
             .expect("expected cache capacity"),
         )
         .expect("expected caches allocate");
         let expected_hidden = native_qwen_prefill_context_with_cache(
-            &backend.store,
-            &backend.spec,
+            &backend.driver.adapter.store,
+            &backend.driver.adapter.spec,
             &[0, 1, 0],
             &mut expected_caches,
             &NativeQwenMatvecBackend::Cpu,
@@ -3557,7 +3118,10 @@ mod tests {
             NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
         let metadata = backend.model_metadata();
 
-        assert_eq!(backend.max_new_tokens, DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS);
+        assert_eq!(
+            backend.driver.max_new_tokens,
+            DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS
+        );
         assert_eq!(metadata.id, "local-qwen36");
         assert_eq!(metadata.backend, "native-qwen");
         assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
@@ -3576,7 +3140,7 @@ mod tests {
 
         let mut backend =
             NativeQwenBackend::open("local-qwen3", &snapshot).expect("backend opens snapshot");
-        backend.top_k = 2;
+        backend.driver.adapter.top_k = 2;
         let decode = backend
             .start_decode_session(
                 &[0, 1],
@@ -3589,7 +3153,7 @@ mod tests {
             .next_token_from_hidden(decode.hidden(), SamplingConfig::Greedy)
             .expect("dense tied lm head can select a token");
 
-        assert!(backend.spec.is_qwen3_dense());
+        assert!(backend.driver.adapter.spec.is_qwen3_dense());
         assert!(candidate.token_id < 2);
         match &decode.caches[0] {
             QwenLayerCache::Full(cache) => assert_eq!(cache.token_count(), 2),
@@ -3608,7 +3172,7 @@ mod tests {
 
         let mut backend =
             NativeQwenBackend::open("local-qwen3", &snapshot).expect("backend opens snapshot");
-        backend.max_prefill_tokens = 1;
+        backend.driver.adapter.max_prefill_tokens = 1;
         let context = [0, 1].repeat(6);
         let decode = backend
             .start_decode_session(
@@ -3666,7 +3230,7 @@ mod tests {
         )
         .expect("backend opens and materializes shards");
 
-        assert_eq!(backend.store.materialized_shard_count(), 1);
+        assert_eq!(backend.driver.adapter.store.materialized_shard_count(), 1);
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -3829,12 +3393,10 @@ mod tests {
         )
         .expect("write greedy fixture index");
 
-        let backend = NativeQwenBackend {
-            model_id: "local-qwen36".to_owned(),
-            metadata: BackendModelMetadata::new("local-qwen36", "native-qwen"),
-            tokenizer: HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
-                .expect("tokenizer loads"),
-            spec: NativeTextModelSpec::Qwen(QwenModelSpec {
+        let backend = native_qwen_test_backend(
+            &snapshot,
+            "local-qwen36",
+            NativeTextModelSpec::Qwen(QwenModelSpec {
                 family: llm_models::ModelFamily::Qwen,
                 architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
                 model_type: "qwen3_5_moe".to_owned(),
@@ -3861,16 +3423,11 @@ mod tests {
                 vocab_size: 221,
                 layer_kinds: Vec::new(),
             }),
-            store: SafeTensorShardStore::open(&snapshot).expect("store opens"),
-            matvec: NativeQwenMatvecBackend::Cpu,
-            max_new_tokens: 1,
-            max_prefill_tokens: 1,
-            top_k: 2,
-            chunk_rows: 64,
-            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
-                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
-            )),
-        };
+            1,
+            1,
+            2,
+            64,
+        );
 
         let candidate = backend
             .next_token_from_hidden(&[1.0], SamplingConfig::Greedy)
@@ -3878,6 +3435,7 @@ mod tests {
 
         assert_eq!(candidate.token_id, 220);
         let decoded = backend
+            .driver
             .tokenizer
             .decode(&[candidate.token_id as u32], false)
             .expect("candidate decodes");
@@ -4244,6 +3802,42 @@ mod tests {
             max_position_embeddings: 32,
             vocab_size: 2,
             layer_kinds: vec![kind],
+        }
+    }
+
+    fn native_qwen_test_backend(
+        snapshot: &Path,
+        model_id: &str,
+        spec: NativeTextModelSpec,
+        max_new_tokens: u32,
+        max_prefill_tokens: usize,
+        top_k: usize,
+        chunk_rows: usize,
+    ) -> NativeQwenBackend {
+        let metadata = BackendModelMetadata::new(model_id.to_owned(), "native-qwen");
+        let tokenizer = HuggingFaceTokenizer::from_file(snapshot.join("tokenizer.json"))
+            .expect("tokenizer loads");
+        let adapter = NativeQwenAdapter {
+            model_id: model_id.to_owned(),
+            metadata: metadata.clone(),
+            spec,
+            store: SafeTensorShardStore::open(snapshot).expect("store opens"),
+            matvec: NativeQwenMatvecBackend::Cpu,
+            max_prefill_tokens,
+            top_k,
+            chunk_rows,
+            prefix_cache: Arc::new(NativeQwenPrefixCache::new(
+                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+            )),
+        };
+        NativeQwenBackend {
+            driver: NativeTextDriver::new(
+                model_id.to_owned(),
+                metadata,
+                tokenizer,
+                adapter,
+                max_new_tokens,
+            ),
         }
     }
 
