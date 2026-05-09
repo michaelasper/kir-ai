@@ -19,7 +19,7 @@ pub fn qwen_layer_moe_router(
         layer_idx,
         hidden_states,
         top_k,
-        &CpuQwenMatvecBackend,
+        &CpuNativeMatvecBackend,
     )
 }
 
@@ -28,7 +28,7 @@ pub fn qwen_layer_moe_router_with_matvec(
     layer_idx: usize,
     hidden_states: &[f32],
     top_k: usize,
-    matvec: &impl QwenMatvecBackend,
+    matvec: &impl NativeMatvecBackend,
 ) -> Result<QwenMoeRouterProbe, TensorLoadError> {
     let logits = matvec.bf16_matvec_row_major_f32(
         store,
@@ -55,7 +55,7 @@ fn qwen_layer_dense_mlp_with_matvec(
     spec: &QwenModelSpec,
     layer_idx: usize,
     hidden_states: &[f32],
-    matvec: &impl QwenMatvecBackend,
+    matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
     let intermediate_size = spec.moe_intermediate_size as usize;
@@ -112,7 +112,7 @@ pub(super) fn qwen_layer_feed_forward_with_matvec(
     spec: &QwenModelSpec,
     layer_idx: usize,
     hidden_states: &[f32],
-    matvec: &impl QwenMatvecBackend,
+    matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     if spec.is_qwen3_dense() {
         return qwen_layer_dense_mlp_with_matvec(store, spec, layer_idx, hidden_states, matvec);
@@ -147,7 +147,7 @@ pub fn qwen_layer_moe_forward(
         dims,
         hidden_states,
         router,
-        &CpuQwenMatvecBackend,
+        &CpuNativeMatvecBackend,
     )
 }
 
@@ -157,7 +157,7 @@ pub fn qwen_layer_moe_forward_with_matvec(
     dims: &QwenMoeDims,
     hidden_states: &[f32],
     router: &QwenMoeRouterProbe,
-    matvec: &impl QwenMatvecBackend,
+    matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     if hidden_states.len() != dims.hidden_size {
         return Err(TensorLoadError::integrity(format!(

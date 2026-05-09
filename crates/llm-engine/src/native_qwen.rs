@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendCacheContext, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, ModelBackend, QwenLayerCache, QwenMatvecBackend, SafeTensorShardStore,
+    BackendStreamChunk, ModelBackend, NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore,
     SamplingConfig, qwen_decode_token_with_cache_with_matvec, qwen_final_norm_for_spec_with_matvec,
     qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec_with_matvec,
     qwen_lm_head_top_k_for_spec_with_matvec, qwen_prefill_sequence_with_cache_with_matvec,
@@ -44,14 +44,13 @@ pub(crate) struct NativeQwenAdapter {
     metadata: BackendModelMetadata,
     spec: QwenModelSpec,
     store: SafeTensorShardStore,
-    matvec: NativeQwenMatvecBackend,
+    matvec: NativeTextMatvecBackend,
     max_prefill_tokens: usize,
     top_k: usize,
     chunk_rows: usize,
     prefix_cache: Arc<NativeQwenPrefixCache>,
 }
 
-pub(crate) type NativeQwenMatvecBackend = NativeTextMatvecBackend;
 pub(crate) type NativeQwenMetalState = NativeTextMetalState;
 
 const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
@@ -161,7 +160,7 @@ impl NativeQwenBackend {
                 "materialized native Qwen safetensors shards"
             );
         }
-        let matvec = NativeQwenMatvecBackend::system_default(
+        let matvec = NativeTextMatvecBackend::system_default(
             native_qwen_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
             &cache_namespace,
         );
@@ -435,7 +434,7 @@ fn native_qwen_prefill_context_with_cache(
     spec: &QwenModelSpec,
     context_tokens: &[usize],
     caches: &mut [QwenLayerCache],
-    matvec: &impl QwenMatvecBackend,
+    matvec: &impl NativeMatvecBackend,
     prefill_chunk_tokens: usize,
     cancellation: &CancellationToken,
 ) -> Result<Vec<f32>, BackendError> {
@@ -473,7 +472,7 @@ impl NativeQwenDecodeSession {
         &mut self,
         store: &SafeTensorShardStore,
         spec: &QwenModelSpec,
-        matvec: &impl QwenMatvecBackend,
+        matvec: &impl NativeMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
         self.hidden = qwen_decode_token_with_cache_with_matvec(

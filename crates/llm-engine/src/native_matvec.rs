@@ -1,7 +1,7 @@
 use crate::sync_ext::RecoverPoisonedMutex;
 use llm_backend::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError, NativeMatvecBackend,
-    QwenKvCacheTensor, QwenLayerCache, SafeTensorShardStore, TensorLoadError, TopKLogit,
+    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError, NativeKvCacheTensor,
+    NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore, TensorLoadError, TopKLogit,
     TopKWeight,
 };
 use serde_json::{Value, json};
@@ -346,7 +346,7 @@ impl NativeTextMetalState {
     fn select_kv_cache_head_rows(
         &self,
         cache: &LayerKvCache,
-        tensor: QwenKvCacheTensor,
+        tensor: NativeKvCacheTensor,
         row_count: usize,
         head_start: usize,
         head_len: usize,
@@ -360,8 +360,8 @@ impl NativeTextMetalState {
             ))
         })?;
         let values = match tensor {
-            QwenKvCacheTensor::Key => &mirror.keys,
-            QwenKvCacheTensor::Value => &mirror.values,
+            NativeKvCacheTensor::Key => &mirror.keys,
+            NativeKvCacheTensor::Value => &mirror.values,
         };
         self.device.select_head_rows_f32_buffered(
             values,
@@ -1329,19 +1329,19 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         }
     }
 
-    fn qwen_rms_norm_f32(
+    fn rms_norm_one_centered_f32(
         &self,
         input: &[f32],
         weight: &[f32],
         eps: f32,
     ) -> Result<Vec<f32>, MathError> {
         match self {
-            Self::Cpu => Self::cpu().qwen_rms_norm_f32(input, weight, eps),
+            Self::Cpu => Self::cpu().rms_norm_one_centered_f32(input, weight, eps),
             Self::Metal(metal) => Self::run_metal_math(
                 "qwen_rms_norm",
                 format!("len={},weight_len={}", input.len(), weight.len()),
                 || metal.device.qwen_rms_norm_f32(input, weight, eps),
-                || Self::cpu().qwen_rms_norm_f32(input, weight, eps),
+                || Self::cpu().rms_norm_one_centered_f32(input, weight, eps),
             ),
         }
     }
@@ -1560,7 +1560,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
     fn select_kv_cache_head_rows_f32(
         &self,
         cache: &LayerKvCache,
-        tensor: QwenKvCacheTensor,
+        tensor: NativeKvCacheTensor,
         row_count: usize,
         head_start: usize,
         head_len: usize,

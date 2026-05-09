@@ -10,7 +10,7 @@ use llm_backend::{
     qwen_linear_attention_step_with_cache_from_parts,
 };
 use llm_backend::{
-    matvec_row_major_f32, qwen_rms_norm_f32, rms_norm_f32, silu_f32, softmax_top_k_f32,
+    matvec_row_major_f32, rms_norm_f32, rms_norm_one_centered_f32, silu_f32, softmax_top_k_f32,
     swiglu_mlp_f32,
 };
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
@@ -30,8 +30,9 @@ fn rms_norm_rejects_mismatched_weight_shape() {
 }
 
 #[test]
-fn qwen_rms_norm_uses_one_centered_weights() {
-    let output = qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0).expect("qwen rms norm");
+fn rms_norm_one_centered_uses_one_centered_weights() {
+    let output =
+        rms_norm_one_centered_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0).expect("one-centered rms norm");
 
     assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
 }

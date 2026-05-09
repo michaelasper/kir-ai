@@ -8,7 +8,8 @@ use crate::native_text::NativeStreamTextDeltas;
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
-    CpuQwenMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend, qwen_layer_caches_for_spec,
+    CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
+    qwen_layer_caches_for_spec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -387,7 +388,7 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
     .expect("write index");
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
 
-    let warmup = NativeQwenMatvecBackend::Cpu
+    let warmup = NativeTextMatvecBackend::Cpu
         .warm_bf16_matrix_cache(&store)
         .expect("cpu warmup reports stats");
 
@@ -404,23 +405,23 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
 
 #[test]
 fn native_qwen_system_default_reuses_shared_metal_state_for_same_model_budget() {
-    let first = NativeQwenMatvecBackend::system_default(1_234_567, "test-shared-model");
-    let second = NativeQwenMatvecBackend::system_default(1_234_567, "test-shared-model");
-    let other_model = NativeQwenMatvecBackend::system_default(1_234_567, "test-other-model");
+    let first = NativeTextMatvecBackend::system_default(1_234_567, "test-shared-model");
+    let second = NativeTextMatvecBackend::system_default(1_234_567, "test-shared-model");
+    let other_model = NativeTextMatvecBackend::system_default(1_234_567, "test-other-model");
 
     match (&first, &second, &other_model) {
         (
-            NativeQwenMatvecBackend::Metal(first),
-            NativeQwenMatvecBackend::Metal(second),
-            NativeQwenMatvecBackend::Metal(other_model),
+            NativeTextMatvecBackend::Metal(first),
+            NativeTextMatvecBackend::Metal(second),
+            NativeTextMatvecBackend::Metal(other_model),
         ) => {
             assert!(Arc::ptr_eq(first, second));
             assert!(!Arc::ptr_eq(first, other_model));
         }
         (
-            NativeQwenMatvecBackend::Cpu,
-            NativeQwenMatvecBackend::Cpu,
-            NativeQwenMatvecBackend::Cpu,
+            NativeTextMatvecBackend::Cpu,
+            NativeTextMatvecBackend::Cpu,
+            NativeTextMatvecBackend::Cpu,
         ) => {
             eprintln!("no Metal device available; skipping shared state test");
         }
@@ -609,7 +610,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
         &backend.driver.adapter.spec,
         &[0, 1, 0],
         &mut expected_caches,
-        &NativeQwenMatvecBackend::Cpu,
+        &NativeTextMatvecBackend::Cpu,
         1,
         &CancellationToken::new(),
     )
@@ -641,7 +642,7 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
         &spec,
         &[0, 1, 0],
         &mut caches,
-        &NativeQwenMatvecBackend::Cpu,
+        &NativeTextMatvecBackend::Cpu,
         1,
         &CancellationToken::new(),
     )
@@ -1412,7 +1413,7 @@ fn native_qwen_test_backend(
         metadata: metadata.clone(),
         spec,
         store: SafeTensorShardStore::open(snapshot).expect("store opens"),
-        matvec: NativeQwenMatvecBackend::Cpu,
+        matvec: NativeTextMatvecBackend::Cpu,
         max_prefill_tokens,
         top_k,
         chunk_rows,
@@ -1497,7 +1498,7 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         if self.conv_calls.get() == 1 {
             self.cancellation.cancel();
         }
-        CpuQwenMatvecBackend.linear_attention_conv1d_silu_f32(
+        CpuNativeMatvecBackend.linear_attention_conv1d_silu_f32(
             window,
             weights,
             conv_dim,

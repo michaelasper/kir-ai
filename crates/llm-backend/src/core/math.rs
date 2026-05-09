@@ -10,7 +10,11 @@ pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>,
     rms_norm_with_weight_offset_f32(input, weight, eps, 0.0)
 }
 
-pub fn qwen_rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+pub fn rms_norm_one_centered_f32(
+    input: &[f32],
+    weight: &[f32],
+    eps: f32,
+) -> Result<Vec<f32>, MathError> {
     rms_norm_with_weight_offset_f32(input, weight, eps, 1.0)
 }
 
