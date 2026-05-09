@@ -9,7 +9,7 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     ModelBackend, SamplingConfig,
 };
-use llm_models::ModelFamily;
+use llm_models::{ModelFamily, NativeTextModelSpec};
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -115,8 +115,12 @@ impl NativeTextBackend {
         options: NativeTextLoadOptions,
     ) -> anyhow::Result<Self> {
         let snapshot_path = snapshot_path.as_ref();
-        match options.family {
-            Some(ModelFamily::Gemma) => {
+        let family = match options.family {
+            Some(family) => family,
+            None => infer_native_text_family(snapshot_path)?,
+        };
+        match family {
+            ModelFamily::Gemma => {
                 let driver =
                     NativeGemmaBackend::open_with_options(model_id, snapshot_path, options.gemma)?
                         .into_driver();
@@ -124,17 +128,17 @@ impl NativeTextBackend {
                     inner: NativeTextBackendInner::Gemma(driver),
                 })
             }
-            Some(ModelFamily::DeepSeek) => {
+            ModelFamily::DeepSeek => {
                 anyhow::bail!(
                     "native text execution for family `deep_seek` is deferred until native DeepSeek tensor support exists"
                 );
             }
-            Some(ModelFamily::Llama) => {
+            ModelFamily::Llama => {
                 anyhow::bail!(
                     "native text execution for family `llama` is deferred until native Llama tensor support exists"
                 );
             }
-            Some(ModelFamily::Qwen) | None => {
+            ModelFamily::Qwen => {
                 let driver =
                     NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)?
                         .into_driver();
@@ -168,6 +172,17 @@ impl NativeTextBackend {
         };
         self
     }
+}
+
+pub(crate) fn infer_native_text_family(snapshot_path: &Path) -> anyhow::Result<ModelFamily> {
+    let config_path = snapshot_path.join("config.json");
+    let config_json = std::fs::read_to_string(&config_path).map_err(|err| {
+        anyhow::anyhow!(
+            "native text snapshot without explicit family metadata requires readable config.json for family detection at `{}`: {err}",
+            config_path.display()
+        )
+    })?;
+    Ok(NativeTextModelSpec::infer_from_config_json(&config_json)?.family())
 }
 
 #[async_trait]

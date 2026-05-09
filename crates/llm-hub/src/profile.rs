@@ -37,7 +37,7 @@ const BUILTIN_PROFILES: &[BuiltinProfile] = &[
     BuiltinProfile {
         name: "gemma4-text-safetensors-bf16",
         family: "gemma",
-        loader: "mlx",
+        loader: "native-metal",
         quantization: "bf16",
         artifacts: ProfileArtifactSet::Gemma,
     },

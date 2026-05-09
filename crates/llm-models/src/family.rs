@@ -248,7 +248,7 @@ impl ModelFamilyAdapter for GemmaFamilyAdapter {
     }
 
     fn production_backends(&self) -> &'static [BackendKind] {
-        &[BackendKind::Mlx]
+        &[BackendKind::NativeMetal, BackendKind::Mlx]
     }
 
     fn cache_template_id(&self) -> &'static str {

@@ -1,6 +1,6 @@
 use crate::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeTextBackend,
-    NativeTextLoadOptions,
+    NativeTextLoadOptions, native_text::infer_native_text_family,
 };
 use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
@@ -51,14 +51,17 @@ pub fn open_snapshot_backend(
     let requested_family = options.family.or(options.mlx.family);
     let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
     let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
+    let detected_family =
+        detect_snapshot_family(snapshot_path, loader, manifest_family, requested_family)?;
+    let effective_family = requested_family.or(manifest_family).or(detected_family);
     validate_snapshot_family(manifest_family, requested_family)?;
     validate_snapshot_loader_has_family(loader, manifest_family, requested_family)?;
-    validate_snapshot_serving_family(manifest_family.or(requested_family))?;
-    validate_snapshot_loader_family(loader, manifest_family, requested_family)?;
+    validate_snapshot_serving_family(effective_family)?;
+    validate_snapshot_loader_family(loader, effective_family)?;
     match loader {
         SnapshotBackendLoader::Mlx => {
             let mut mlx_options = options.mlx;
-            mlx_options.family = requested_family.or(manifest_family);
+            mlx_options.family = effective_family;
             Ok(Box::new(MlxBackend::open_with_options(
                 model_id,
                 snapshot_path,
@@ -67,7 +70,7 @@ pub fn open_snapshot_backend(
         }
         SnapshotBackendLoader::NativeMetal => {
             let mut native_options = options.native_text;
-            if let Some(family) = requested_family.or(manifest_family) {
+            if let Some(family) = effective_family {
                 native_options = native_options.with_family(family);
             }
             Ok(Box::new(
@@ -77,6 +80,21 @@ pub fn open_snapshot_backend(
             ))
         }
     }
+}
+
+fn detect_snapshot_family(
+    snapshot_path: &Path,
+    loader: SnapshotBackendLoader,
+    manifest_family: Option<ModelFamily>,
+    requested_family: Option<ModelFamily>,
+) -> anyhow::Result<Option<ModelFamily>> {
+    if loader == SnapshotBackendLoader::NativeMetal
+        && manifest_family.is_none()
+        && requested_family.is_none()
+    {
+        return infer_native_text_family(snapshot_path).map(Some);
+    }
+    Ok(None)
 }
 
 fn select_snapshot_backend_loader(
@@ -131,14 +149,8 @@ fn validate_snapshot_loader_has_family(
 
 fn validate_snapshot_loader_family(
     loader: SnapshotBackendLoader,
-    manifest_family: Option<ModelFamily>,
-    requested_family: Option<ModelFamily>,
+    effective_family: Option<ModelFamily>,
 ) -> anyhow::Result<()> {
-    let effective_family = requested_family.or(manifest_family);
-    if loader == SnapshotBackendLoader::NativeMetal && effective_family == Some(ModelFamily::Gemma)
-    {
-        return Ok(());
-    }
     if let Some(family) = effective_family
         && !family.adapter().production_backends().contains(&loader)
     {
@@ -569,6 +581,28 @@ mod tests {
         let backend =
             open_snapshot_backend("local-gemma", &snapshot, SnapshotBackendOptions::default())
                 .expect("native Gemma backend opens");
+
+        assert_eq!(backend.model_metadata().backend, "native-gemma");
+        assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
+        assert_eq!(
+            backend.model_metadata().loader.as_deref(),
+            Some("native-metal")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_infers_gemma_for_raw_native_text_snapshot() {
+        let snapshot = temp_snapshot_dir("native-gemma-raw-open");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_gemma4_native_config(&snapshot);
+        write_gemma4_native_index(&snapshot, true);
+        copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+
+        let backend =
+            open_snapshot_backend("local-gemma", &snapshot, SnapshotBackendOptions::default())
+                .expect("raw native Gemma backend opens by config detection");
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));

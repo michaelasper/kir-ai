@@ -115,7 +115,7 @@ snapshots/<resolved-commit>.metadata-only
 ```
 
 Metadata-only snapshots are useful for inspecting configuration, but they cannot
-serve native Qwen requests because shard files are missing.
+serve native text requests because shard files are missing.
 
 ## Pull A Full Native Snapshot
 

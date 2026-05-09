@@ -162,7 +162,7 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
     .expect("plan builds");
 
     assert_eq!(plan.profile.family, "gemma");
-    assert_eq!(plan.profile.loader, "mlx");
+    assert_eq!(plan.profile.loader, "native-metal");
     assert_eq!(plan.profile.quantization, "bf16");
     assert_eq!(plan.files_to_download.len(), 4);
     assert_eq!(plan.total_bytes_to_download, 1_600);
@@ -179,11 +179,11 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
 }
 
 #[test]
-fn gemma_text_profile_uses_mlx_loader_metadata() {
+fn gemma_text_profile_uses_native_loader_metadata() {
     let profile = ModelProfile::gemma4_text_safetensors_bf16();
 
     assert_eq!(profile.family, "gemma");
-    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.loader, "native-metal");
     assert_eq!(profile.quantization, "bf16");
 }
 

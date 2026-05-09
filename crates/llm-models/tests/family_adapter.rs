@@ -69,9 +69,7 @@ fn qwen_family_declares_mlx_as_required_production_backend() {
 
 #[test]
 fn native_text_model_spec_routes_qwen_config_through_family_contract() {
-    let spec = NativeTextModelSpec::from_config_json(
-        ModelFamily::Qwen,
-        r#"{
+    let config = r#"{
           "architectures": ["Qwen3ForCausalLM"],
           "model_type": "qwen3",
           "hidden_size": 1024,
@@ -85,11 +83,14 @@ fn native_text_model_spec_routes_qwen_config_through_family_contract() {
           "rope_theta": 1000000,
           "tie_word_embeddings": true,
           "vocab_size": 151936
-        }"#,
-    )
-    .expect("native Qwen text spec parses");
+        }"#;
+    let spec = NativeTextModelSpec::from_config_json(ModelFamily::Qwen, config)
+        .expect("native Qwen text spec parses");
+    let inferred = NativeTextModelSpec::infer_from_config_json(config)
+        .expect("native Qwen text spec infers from config");
 
     assert_eq!(spec.family(), ModelFamily::Qwen);
+    assert_eq!(inferred.family(), ModelFamily::Qwen);
     assert_eq!(spec.max_position_embeddings(), 40960);
     assert_eq!(spec.num_hidden_layers(), 2);
     assert_eq!(spec.hidden_size(), 1024);
@@ -129,12 +130,15 @@ fn deepseek_family_declares_mlx_production_backend() {
 }
 
 #[test]
-fn gemma_family_supports_mlx_text_chat_before_native_parity() {
+fn gemma_family_declares_native_and_mlx_text_backends() {
     let adapter = GemmaFamilyAdapter;
     let capabilities = adapter.capabilities();
 
     assert_eq!(adapter.family(), ModelFamily::Gemma);
-    assert_eq!(adapter.production_backends(), &[BackendKind::Mlx]);
+    assert_eq!(
+        adapter.production_backends(),
+        &[BackendKind::NativeMetal, BackendKind::Mlx]
+    );
     assert_eq!(adapter.cache_template_id(), "gemma/text-it/v1");
     assert_eq!(adapter.tensor_namespace(), "gemma4_text");
     assert_eq!(adapter.promotion_stage(), PromotionStage::Production);

@@ -7,7 +7,8 @@ tokens, and why some pieces are deliberately narrow today.
 
 The project is building a no-Python, Rust-owned local inference engine for
 agentic coding workflows. The first working surface is an OpenAI-compatible
-server with strict runtime semantics and a constrained native Qwen backend.
+server with strict runtime semantics and constrained native text backends for
+Qwen and Gemma.
 
 The architecture favours clear boundaries over early throughput optimisation.
 The code separates API contracts, runtime validation, prompt rendering, tool
@@ -26,41 +27,41 @@ HTTP client
   -> llm-engine JSON or SSE response
 ```
 
-For native Qwen:
+For native text execution:
 
 ```text
-NativeQwenBackend
-  -> load config.json into QwenModelSpec
+NativeTextBackend
+  -> load config.json into a family model spec
   -> load tokenizer.json
   -> open model.safetensors.index.json through SafeTensorShardStore
   -> tokenise prompt
   -> keep bounded context tail
-  -> run Qwen prefill layers
+  -> run family-specific prefill layers
   -> apply final norm
   -> stream LM-head rows in chunks
   -> choose a decoded top candidate
   -> return BackendOutput
 ```
 
-The runtime then applies stop sequences, parses Qwen tool calls, validates JSON
-object mode, classifies no-progress completions, and builds OpenAI-shaped
-responses.
+The runtime then applies stop sequences, parses family-specific tool calls,
+validates JSON object mode, classifies no-progress completions, and builds
+OpenAI-shaped responses.
 
 ## Crate Map
 
 | Crate | Responsibility | Current status |
 | --- | --- | --- |
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
-| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend`, native Qwen is isolated under the native backend module, and MLX manifests proxy through the MLX backend module. |
+| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend`, native Qwen/Gemma use the native text backend, and MLX manifests proxy through the MLX backend module. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
-| `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and CPU Qwen math behind Qwen-specific functions. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
+| `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and native CPU tensor primitives. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen ChatML, DeepSeek chat/tool, Gemma 4 text/tool, and Llama 3 instruct chat templates. |
 | `llm-tool-parser` | Family assistant output parser selection. | Supports Qwen reasoning tags and JSON/XML tool-call forms, DeepSeek DSML/native tool-call blocks, Gemma 4 thought/tool-call channels, and Llama/OpenAI JSON tool calls without breaking JSON-object content. |
-| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports dense Qwen3 plus Qwen3.5/Qwen3.6 MoE text config, declares Qwen production backends as native Metal plus MLX, and declares DeepSeek/Gemma/Llama production serving through MLX. |
+| `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports dense Qwen3, Qwen3.5/Qwen3.6 MoE, and Gemma 4 text config; declares Qwen/Gemma native Metal plus MLX serving and DeepSeek/Llama serving through MLX. |
 | `llm-hub` | Hugging Face planning, download, snapshot promotion, and verification. | Requires immutable resolved commits, validates paths, supports resumable downloads, writes engine manifests, and includes Gemma and Llama text-chat acquisition profiles that skip non-text artifacts. |
-| `llm-metal` | Metal device and kernel experiments. | Smoke-tested vector add only. Not wired into Qwen inference yet. |
-| `llm-sampler` | Greedy argmax sampler. | Standalone and tested. Native backend currently chooses from LM-head top-k directly. |
-| `llm-kv-cache` | KV-cache budget accounting. | Placeholder utility. No actual key/value tensor cache yet. |
+| `llm-metal` | Metal device and kernel experiments. | Provides BF16 matvec, softmax/top-k, RMSNorm, attention helpers, and cache mirror kernels used by native text inference with CPU fallback. |
+| `llm-sampler` | Greedy and top-p sampling. | Standalone and tested; native text backends use it for non-greedy full-vocab sampling. |
+| `llm-kv-cache` | KV-cache and linear-attention cache storage plus token budget accounting. | Used by native Qwen/Gemma execution and mirrored by the Metal backend where supported. |
 | `llm-telemetry` | Token counters and request metrics. | Standalone metrics primitives. Runtime currently constructs API usage directly. |
 
 ## Protocol Test Backend
@@ -76,14 +77,14 @@ with fast, stable responses for:
 - client compatibility tests
 
 It must not grow prompt-specific chat behavior. Real generation belongs behind
-snapshot-backed native backends such as `NativeQwenBackend`.
+snapshot-backed native backends.
 
-## Why Native Qwen Is Opt-In
+## Why Native Text Is Opt-In
 
-Native Qwen serving requires a complete local snapshot and currently runs a
+Native text serving requires a complete local snapshot and currently runs a
 bounded correctness path. The server does real tokenisation, safetensors reads,
-Qwen layer execution, final norm, and LM-head top-k, but it does not yet have the
-performance properties expected from production serving.
+family layer execution, final norm, and LM-head top-k, but it does not yet have
+the performance properties expected from production serving.
 
 The opt-in `--snapshot` boundary keeps protocol work easy while making native
 model execution explicit.
@@ -145,10 +146,10 @@ probes to Metal kernels without changing API or model-store semantics.
 ## Current Design Constraints
 
 - The runtime selects chat rendering and parser behaviour from backend model
-  metadata; Qwen is implemented, while non-Qwen families fail closed until their
-  adapters exist.
+  metadata; Qwen and Gemma native text execution are implemented, while other
+  families fail closed until their adapters exist.
 - Native model execution is BF16 safetensors-oriented.
-- Native Qwen uses `--max-prefill-tokens` as a prefill chunk size; retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
+- Native text uses `--max-prefill-tokens` as a prefill chunk size; retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
 - Multi-token decode recomputes bounded context instead of maintaining reusable
   KV or recurrent state caches.
 - The server does not use downloaded `generation_config.json` sampling settings.

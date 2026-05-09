@@ -35,8 +35,11 @@ fn parses_representative_gemma4_dense_text_config() {
 fn parses_gemma4_text_only_config_with_model_root_tensors() {
     let spec = GemmaModelSpec::from_config_json(&gemma4_text_only_config())
         .expect("Gemma 4 text-only config parses");
+    let inferred = NativeTextModelSpec::infer_from_config_json(&gemma4_text_only_config())
+        .expect("Gemma 4 text-only config infers native family");
 
     assert_eq!(spec.family, ModelFamily::Gemma);
+    assert_eq!(inferred.family(), ModelFamily::Gemma);
     assert_eq!(spec.architecture, "Gemma4TextForCausalLM");
     assert_eq!(spec.model_type, "gemma4_text");
     assert_eq!(spec.text_model_type, "gemma4_text");

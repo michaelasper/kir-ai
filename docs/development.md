@@ -155,7 +155,7 @@ families or layer formats.
 
 ## Work On Native Tensor Math
 
-Most native Qwen math lives in `crates/llm-backend/src/lib.rs`.
+Most native tensor math lives under `crates/llm-backend/src/core`.
 
 Use the existing tests in `crates/llm-backend/tests/safetensors_loader.rs` as
 the pattern for:

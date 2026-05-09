@@ -184,4 +184,4 @@ data: [DONE]
 You have run the Rust HTTP edge, confirmed that it does not depend on Python at
 request time, and exercised the OpenAI-compatible chat, text completion, and SSE
 shapes. Use [how-to-run-server.md](how-to-run-server.md) when you want to switch
-from the protocol test backend to a native Qwen snapshot.
+from the protocol test backend to a native text snapshot.

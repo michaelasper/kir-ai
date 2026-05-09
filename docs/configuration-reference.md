@@ -51,7 +51,7 @@ Mise tasks:
 | `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--protocol-test-backend`. |
 | `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
-| `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata | Supplies model-family metadata for raw snapshots. Raw MLX snapshots must set this explicitly. Qwen, DeepSeek, Gemma, and Llama are serveable through MLX. Conflicting manifest metadata is rejected. |
+| `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
@@ -59,7 +59,7 @@ Mise tasks:
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 
-Native Qwen backend internal defaults:
+Native text backend internal defaults:
 
 | Field | Default | Notes |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ Built-in profiles:
 | Profile | Family | Loader | Quantisation |
 | --- | --- | --- | --- |
 | `gemma4-e2b-it-mlx-4bit` | `gemma` | `mlx` | `4bit` |
-| `gemma4-text-safetensors-bf16` | `gemma` | `mlx` | `bf16` |
+| `gemma4-text-safetensors-bf16` | `gemma` | `native-metal` | `bf16` |
 | `llama32-3b-instruct-mlx-4bit` | `llama` | `mlx` | `4bit` |
 | `qwen35-4b-mlx-4bit` | `qwen` | `mlx` | `4bit` |
 | `qwen35-4b-mlx-8bit` | `qwen` | `mlx` | `8bit` |
@@ -196,7 +196,7 @@ SHA-256 verification happens only when `sha256` is present.
 
 ## Native Snapshot Requirements
 
-`NativeQwenBackend::open` requires these files:
+Native text backends require these files:
 
 - `config.json`
 - `tokenizer.json`
@@ -205,8 +205,9 @@ SHA-256 verification happens only when `sha256` is present.
 
 `llm-engine-manifest.json` is required for `model list`, `model inspect`, and
 `model verify`. Serving validates runnable readiness for manifest-bearing
-snapshots before opening a backend; raw snapshots without a Kir manifest still
-use the explicit `--loader` and `--family` path.
+snapshots before opening a backend. Raw native snapshots without a Kir manifest
+infer Qwen or Gemma from `config.json` when `--family` is omitted; raw MLX
+snapshots still use the explicit `--loader mlx --family ...` path.
 
 `generation_config.json` and `chat_template.jinja` may be present, but the
 runtime does not read them.
@@ -292,7 +293,7 @@ The index schema is:
 }
 ```
 
-The native text loader expects:
+Qwen native text indexes must include:
 
 - embedding weight
 - final norm weight
@@ -301,6 +302,16 @@ The native text loader expects:
 - per-layer MoE gate and expert tensors
 - `linear_attn.*` tensors for `linear_attention` layers
 - `self_attn.*` tensors for `full_attention` layers
+
+Gemma native text indexes must include:
+
+- embedding and final norm weights
+- `lm_head.weight` unless embeddings are tied
+- per-layer attention, feedforward, and scalar norm tensors
+- per-layer `self_attn` q/o projections, q norm, and required k/v projections
+- per-layer dense MLP gate/up/down projections
+- optional per-layer-input embedding, projection, gate, and norm tensors
+- optional Gemma MoE expert and router tensors
 
 Safetensors headers are capped at 64 MiB. Native row and matvec readers are
 BF16-oriented and expect rank-2 tensors for row-major operations.
@@ -319,7 +330,7 @@ Chat request defaults:
 | `stream_options.include_usage` | `false` |
 | `temperature` | unset |
 | `top_p` | unset |
-| `max_tokens` | backend default; native Qwen uses `256` unless `--max-new-tokens` changes it |
+| `max_tokens` | backend default; native text uses `256` unless `--max-new-tokens` changes it |
 | `stop` | `[]` |
 
 Completion request defaults:
@@ -328,7 +339,7 @@ Completion request defaults:
 | --- | --- |
 | `stream` | `false` |
 | `stream_options.include_usage` | `false` |
-| `max_tokens` | backend default; native Qwen uses `256` unless `--max-new-tokens` changes it |
+| `max_tokens` | backend default; native text uses `256` unless `--max-new-tokens` changes it |
 | `stop` | `[]` |
 
 Validation rules:

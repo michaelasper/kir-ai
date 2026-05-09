@@ -1,7 +1,7 @@
 # How To Run The Server
 
 This guide shows the practical server modes: protocol test mode,
-native Qwen snapshot mode, and the loopback MLX sidecar mode.
+native text snapshot mode, and the loopback MLX sidecar mode.
 
 ## Run Protocol Mode
 
@@ -32,9 +32,10 @@ curl -s http://127.0.0.1:3000/health | jq
 curl -s http://127.0.0.1:3000/v1/models | jq
 ```
 
-## Run Native Qwen Mode
+## Run Native Text Mode
 
-Use native Qwen mode when you have a complete local Qwen snapshot containing:
+Use native text mode when you have a complete local Qwen or Gemma snapshot
+containing:
 
 - `config.json`
 - `tokenizer.json`
@@ -65,8 +66,8 @@ cargo run -p llm-engine -- serve \
 ```
 
 The native path tokenises the rendered prompt, keeps a bounded tail of prompt
-tokens, runs Qwen prefill, applies final norm and LM-head top-k, then returns
-decoded text.
+tokens, runs family-specific prefill, applies final norm and LM-head top-k,
+then returns decoded text.
 
 ## Run MLX Sidecar Mode
 
@@ -97,9 +98,11 @@ cargo run -p llm-engine -- serve \
 ```
 
 If the snapshot was populated by the Hugging Face cache and has no Kir manifest,
-select the MLX loader and model family explicitly. Raw MLX snapshots without
-`--family` fail at startup. Qwen, DeepSeek, Gemma, and Llama are serveable
-runtime chat families through family-specific MLX sidecars:
+raw native Qwen and Gemma snapshots can infer family metadata from
+`config.json`. Raw MLX snapshots still require selecting the MLX loader and
+model family explicitly. Raw MLX snapshots without `--family` fail at startup.
+Qwen, DeepSeek, Gemma, and Llama are serveable runtime chat families through
+family-specific MLX sidecars:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/<resolved-commit>
@@ -143,7 +146,7 @@ cargo run -p llm-engine -- serve \
 ```
 
 The MLX endpoint must be loopback. Kir rejects remote MLX endpoints and does
-not fall back to protocol-test mode or native Qwen when an MLX manifest is selected.
+not fall back to protocol-test mode or native text when an MLX manifest is selected.
 This is a bootstrap comparison path; the no-Python production target remains a
 native MLX bridge.
 
@@ -153,9 +156,9 @@ native MLX bridge.
 is clamped to at least `1`.
 
 `--max-prefill-tokens` controls the native prefill chunk size. It defaults to
-`32` and is clamped to at least `1`. Native Qwen retains the accepted prompt
-context by sizing full-attention caches from prompt length plus generation
-budget, and rejects requests that exceed the model context limit.
+`32` and is clamped to at least `1`. Native text backends retain the accepted
+prompt context by sizing full-attention caches from prompt length plus
+generation budget, and reject requests that exceed the model context limit.
 
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
@@ -199,7 +202,7 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
 ```
 
 The request `model` must match `--model-id`. `temperature: 0` selects greedy
-decode. Non-greedy native Qwen sampling accepts finite non-negative
+decode. Non-greedy native text sampling accepts finite non-negative
 `temperature` and `top_p` in `(0, 1]`.
 
 ## Call Text Completions

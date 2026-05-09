@@ -18,6 +18,22 @@ impl NativeTextModelSpec {
         }
     }
 
+    pub fn infer_from_config_json(json: &str) -> Result<Self, ModelSpecError> {
+        let value: serde_json::Value = serde_json::from_str(json)
+            .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        let model_type = value
+            .get("model_type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ModelSpecError::unsupported("native text config missing model_type"))?;
+        match model_type {
+            "qwen3" | "qwen3_5_moe" => Self::from_config_json(ModelFamily::Qwen, json),
+            "gemma4" | "gemma4_text" => Self::from_config_json(ModelFamily::Gemma, json),
+            other => Err(ModelSpecError::unsupported(format!(
+                "native text config model_type `{other}` is not supported for native tensor execution"
+            ))),
+        }
+    }
+
     pub fn family(&self) -> ModelFamily {
         match self {
             Self::Qwen(spec) => spec.family,

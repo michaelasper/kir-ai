@@ -20,13 +20,13 @@ no-Python local inference experiments on Apple Silicon.
 The project is intentionally explicit about its current state:
 
 - Running `llm-engine serve` requires an explicit backend: use
-  `--deterministic-test-backend` for protocol and client integration work, or
+  `--protocol-test-backend` for protocol and client integration work, or
   `--snapshot <path>` for manifest-selected model serving. Implicit
-  no-snapshot deterministic serving was intentionally removed.
+  no-snapshot stub serving was intentionally removed.
 - Running `llm-engine serve --snapshot <path>` starts the constrained native
-  Qwen path for native-metal manifests, or an opt-in loopback MLX sidecar path
+  text path for native-metal manifests, or an opt-in loopback MLX sidecar path
   for MLX manifests.
-- The native Qwen path is a correctness and integration path, not a production
+- The native text path is a correctness and integration path, not a production
   throughput path. It uses chunked prefill, context-limit validation,
   conservative generation defaults, prefix-cache reuse, and native Metal BF16
   matvecs with CPU fallbacks.
@@ -60,7 +60,7 @@ Run the workspace checks:
 mise run check
 ```
 
-Start the deterministic protocol server:
+Start the protocol test server:
 
 ```sh
 mise run run-protocol
@@ -78,10 +78,10 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
   }' | jq
 ```
 
-You should see an OpenAI-shaped `chat.completion` response from the
-deterministic Rust backend.
+You should see an OpenAI-shaped `chat.completion` response from the protocol
+test backend.
 
-## Native Qwen Snapshot Flow
+## Native Text Snapshot Flow
 
 Plan a practical dense Qwen3 BF16 native profile before downloading it:
 
@@ -97,6 +97,14 @@ The larger Qwen3.6 MoE profile is still available when you need that family:
 cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B \
   --revision main \
   --profile qwen36-safetensors-bf16
+```
+
+Plan a BF16 Gemma 4 text native profile when you need that family:
+
+```sh
+cargo run -p llm-engine -- model plan google/gemma-4-31b-it \
+  --revision main \
+  --profile gemma4-text-safetensors-bf16
 ```
 
 Pull metadata only when you want to inspect manifests and static artefacts
@@ -162,7 +170,7 @@ cargo run -p llm-engine -- serve \
 | --- | --- |
 | Learn the first working flow | [Getting started](docs/getting-started.md) |
 | Set up a developer machine | [Setup](docs/setup.md) |
-| Run the server for protocol or native Qwen testing | [How to run the server](docs/how-to-run-server.md) |
+| Run the server for protocol or native text testing | [How to run the server](docs/how-to-run-server.md) |
 | Plan, pull, inspect, and verify model snapshots | [How to manage model snapshots](docs/how-to-manage-models.md) |
 | Look up CLI commands and flags | [CLI reference](docs/cli-reference.md) |
 | Look up HTTP endpoints, request fields, streaming, and errors | [HTTP API reference](docs/http-api-reference.md) |
@@ -176,15 +184,16 @@ The north-star product direction and implementation tracker live in
 
 ## Current Limitations
 
-- Dense Qwen3 and Qwen3.5/Qwen3.6 MoE text loading are the native
+- Dense Qwen3, Qwen3.5/Qwen3.6 MoE, and Gemma 4 text loading are the native
   model-family paths.
 - The server does not execute `generation_config.json` or the downloaded
-  `chat_template.jinja`; chat prompts use the Rust Qwen ChatML renderer.
+  `chat_template.jinja`; chat prompts use Rust family-specific renderers.
 - Streaming responses are OpenAI-shaped SSE. Text paths can forward backend
   chunks incrementally; tool-call and JSON-object validation paths may buffer to
   preserve fail-closed response semantics.
-- Native Qwen accepts `temperature` and `top_p` sampling controls. Use
+- Native text accepts `temperature` and `top_p` sampling controls. Use
   `temperature: 0` for greedy decode, or finite non-negative `temperature` with
   `top_p` in `(0, 1]` for top-p sampling.
-- Metal has smoke-tested vector add, RMSNorm, and row-major matvec kernels, but
-  the Qwen server path still runs layer execution through CPU code.
+- Metal has smoke-tested vector add, RMSNorm, softmax/top-k, and matvec
+  kernels; native text execution uses those kernels where available with CPU
+  fallbacks.

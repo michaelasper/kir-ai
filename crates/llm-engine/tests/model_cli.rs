@@ -225,7 +225,7 @@ fn serve_help_prints_without_backend_validation() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("Qwen, DeepSeek, Gemma, and Llama are serveable through MLX"),
+        stdout.contains("Raw native snapshots infer Qwen/Gemma from config.json"),
         "stdout: {stdout}"
     );
     assert!(
