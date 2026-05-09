@@ -220,6 +220,8 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["successful_requests"], 1);
     assert_eq!(body["failed_requests"], 0);
     assert_eq!(body["streamed_requests"], 0);
+    assert_eq!(body["stream_client_disconnected_requests"], 0);
+    assert_eq!(body["stream_stalled_requests"], 0);
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
     let completion_tokens = body["tokens"]["completion_tokens"]
         .as_u64()
@@ -471,6 +473,8 @@ async fn admin_metrics_report_active_and_cancelled_requests() {
     assert_eq!(body["decode_requests"], 0);
     assert_eq!(body["prefill_requests"], 0);
     assert_eq!(body["cancelled_requests"], 1);
+    assert_eq!(body["stream_client_disconnected_requests"], 0);
+    assert_eq!(body["stream_stalled_requests"], 0);
     assert_eq!(body["failed_requests"], 1);
 }
 

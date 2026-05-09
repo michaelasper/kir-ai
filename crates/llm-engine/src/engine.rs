@@ -1,4 +1,3 @@
-use crate::sync_ext::RecoverPoisonedMutex;
 use axum::{
     Json, Router,
     extract::rejection::JsonRejection,
@@ -6,11 +5,11 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use llm_api::{ApiError, Usage};
+use llm_api::ApiError;
 use llm_backend::{BackendError, ModelBackend, ProtocolTestBackend};
 use llm_hub::{HubClient, HubError};
 use llm_runtime::{Runtime, RuntimeError};
-use llm_telemetry::{ServerMetrics, TokenCounters};
+use llm_telemetry::ServerMetrics;
 use serde_json::json;
 use std::{
     path::PathBuf,
@@ -21,6 +20,7 @@ use std::{
 mod admin;
 mod inference;
 mod lifecycle;
+mod metrics;
 mod requests;
 mod scheduler;
 mod streaming;
@@ -309,61 +309,6 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
     }
 }
 
-fn record_success_metrics(state: &AppState, usage: &Usage, streamed: bool, latency: Duration) {
-    state.metrics.lock_or_recover("metrics").record_success(
-        TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
-        streamed,
-        latency,
-    );
-}
-
-fn record_failure_metrics(state: &AppState) {
-    state.metrics.lock_or_recover("metrics").record_failure();
-}
-
-fn record_runtime_error_metrics(state: &AppState, err: &RuntimeError) {
-    let mut metrics = state.metrics.lock_or_recover("metrics");
-    if matches!(err, RuntimeError::NoProgress(_)) {
-        metrics.record_no_progress_failure();
-    }
-    metrics.record_failure();
-}
-
-fn record_cancellation_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_recover("metrics")
-        .record_cancellation();
-}
-
-fn record_model_pull_success_metrics(state: &AppState, bytes: u64) {
-    state
-        .metrics
-        .lock_or_recover("metrics")
-        .record_model_pull_success(bytes);
-}
-
-fn record_model_pull_failure_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_recover("metrics")
-        .record_model_pull_failure();
-}
-
-fn record_artifact_verification_failure_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_recover("metrics")
-        .record_artifact_verification_failure();
-}
-
-fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_recover("metrics")
-        .record_time_to_first_token(latency);
-}
-
 fn parse_json_request<T>(
     request: Result<Json<T>, JsonRejection>,
     state: &AppState,
@@ -371,7 +316,7 @@ fn parse_json_request<T>(
     match request {
         Ok(Json(request)) => Ok(request),
         Err(err) => {
-            record_failure_metrics(state);
+            metrics::record_failure_metrics(state);
             Err(RuntimeError::Api(ApiError::invalid_request(format!(
                 "invalid JSON request body: {err}"
             )))
@@ -383,6 +328,7 @@ fn parse_json_request<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync_ext::RecoverPoisonedMutex;
 
     #[test]
     fn poisoned_mutex_lock_recovers_inner_state() {

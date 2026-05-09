@@ -1,8 +1,10 @@
-use super::requests::CancelRequestResult;
 use super::{
-    AppState, EngineError, record_artifact_verification_failure_metrics,
-    record_cancellation_metrics, record_model_pull_failure_metrics,
-    record_model_pull_success_metrics,
+    AppState, EngineError,
+    metrics::{
+        record_artifact_verification_failure_metrics, record_cancellation_metrics,
+        record_model_pull_failure_metrics, record_model_pull_success_metrics,
+    },
+    requests::CancelRequestResult,
 };
 use crate::{
     native_qwen::{native_qwen_metal_metrics_snapshot, native_qwen_prefix_cache_metrics_snapshot},
@@ -18,7 +20,7 @@ use llm_api::{ApiError, ModelCard, ModelList};
 use llm_backend::{BackendError, BackendModelMetadata};
 use llm_hub::{DownloadPlan, HubRepoId, ModelProfile, ModelStore};
 use llm_runtime::RuntimeError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -256,59 +258,123 @@ pub(super) async fn admin_metrics(
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
-    Ok(Json(json!({
-        "requests_total": metrics.requests_total(),
-        "successful_requests": metrics.successful_requests(),
-        "failed_requests": metrics.failed_requests(),
-        "streamed_requests": metrics.streamed_requests(),
-        "active_requests": active_requests,
-        "queued_requests": scheduler.queued_total(),
-        "queued_prefill_requests": scheduler.queued_prefill,
-        "queued_decode_requests": scheduler.queued_decode,
-        "prefill_requests": state.generation_phases.prefill_requests(),
-        "decode_requests": state.generation_phases.decode_requests(),
-        "active_prefill_requests": scheduler.active_prefill,
-        "active_decode_requests": scheduler.active_decode,
-        "scheduler_admitted_prefill_requests": scheduler.admitted_prefill,
-        "scheduler_admitted_decode_requests": scheduler.admitted_decode,
-        "scheduler_completed_requests": scheduler.completed,
-        "scheduler_cancelled_requests": scheduler.cancelled,
-        "scheduler_failed_requests": scheduler.failed,
-        "scheduler_queued_cancelled_requests": scheduler.queued_cancelled,
-        "scheduler_queue_timeouts": scheduler.queue_timeouts,
-        "cancelled_requests": metrics.cancelled_requests(),
-        "no_progress_failures": metrics.no_progress_failures(),
-        "model_pull_operations": metrics.model_pull_operations(),
-        "model_pull_successes": metrics.model_pull_successes(),
-        "model_pull_failures": metrics.model_pull_failures(),
-        "model_pull_bytes": metrics.model_pull_bytes(),
-        "model_store_snapshots": model_store_usage.snapshots,
-        "model_store_bytes": model_store_usage.bytes,
-        "model_store_quarantined_snapshots": model_store_usage.quarantined_snapshots,
-        "model_store_quarantined_bytes": model_store_usage.quarantined_bytes,
-        "artifact_verification_failures": metrics.artifact_verification_failures(),
-        "process_rss_bytes": process_rss_bytes(),
-        "tokens_per_second": metrics.tokens_per_second(),
-        "native_qwen_metal": native_qwen_metal_metrics_snapshot(),
-        "native_qwen_prefix_cache": native_qwen_prefix_cache_metrics_snapshot(),
-        "request_latency_ms": {
-            "count": request_latency.count(),
-            "min": request_latency.min_ms(),
-            "max": request_latency.max_ms(),
-            "avg": request_latency.avg_ms(),
+    let response = AdminMetricsResponse {
+        requests_total: metrics.requests_total(),
+        successful_requests: metrics.successful_requests(),
+        failed_requests: metrics.failed_requests(),
+        streamed_requests: metrics.streamed_requests(),
+        stream_client_disconnected_requests: metrics.stream_client_disconnected_requests(),
+        stream_stalled_requests: metrics.stream_stalled_requests(),
+        active_requests,
+        queued_requests: scheduler.queued_total(),
+        queued_prefill_requests: scheduler.queued_prefill,
+        queued_decode_requests: scheduler.queued_decode,
+        prefill_requests: state.generation_phases.prefill_requests(),
+        decode_requests: state.generation_phases.decode_requests(),
+        active_prefill_requests: scheduler.active_prefill,
+        active_decode_requests: scheduler.active_decode,
+        scheduler_admitted_prefill_requests: scheduler.admitted_prefill,
+        scheduler_admitted_decode_requests: scheduler.admitted_decode,
+        scheduler_completed_requests: scheduler.completed,
+        scheduler_cancelled_requests: scheduler.cancelled,
+        scheduler_failed_requests: scheduler.failed,
+        scheduler_queued_cancelled_requests: scheduler.queued_cancelled,
+        scheduler_queue_timeouts: scheduler.queue_timeouts,
+        cancelled_requests: metrics.cancelled_requests(),
+        no_progress_failures: metrics.no_progress_failures(),
+        model_pull_operations: metrics.model_pull_operations(),
+        model_pull_successes: metrics.model_pull_successes(),
+        model_pull_failures: metrics.model_pull_failures(),
+        model_pull_bytes: metrics.model_pull_bytes(),
+        model_store_snapshots: model_store_usage.snapshots,
+        model_store_bytes: model_store_usage.bytes,
+        model_store_quarantined_snapshots: model_store_usage.quarantined_snapshots,
+        model_store_quarantined_bytes: model_store_usage.quarantined_bytes,
+        artifact_verification_failures: metrics.artifact_verification_failures(),
+        process_rss_bytes: process_rss_bytes(),
+        tokens_per_second: metrics.tokens_per_second(),
+        native_qwen_metal: native_qwen_metal_metrics_snapshot(),
+        native_qwen_prefix_cache: native_qwen_prefix_cache_metrics_snapshot(),
+        request_latency_ms: LatencySummary::from_metrics(request_latency),
+        time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
+        tokens: TokenSummary {
+            prompt_tokens: tokens.prompt_tokens(),
+            completion_tokens: tokens.completion_tokens(),
+            total_tokens: tokens.total_tokens(),
         },
-        "time_to_first_token_ms": {
-            "count": time_to_first_token.count(),
-            "min": time_to_first_token.min_ms(),
-            "max": time_to_first_token.max_ms(),
-            "avg": time_to_first_token.avg_ms(),
-        },
-        "tokens": {
-            "prompt_tokens": tokens.prompt_tokens(),
-            "completion_tokens": tokens.completion_tokens(),
-            "total_tokens": tokens.total_tokens(),
+    };
+    Ok(Json(
+        serde_json::to_value(response).expect("admin metrics response serializes"),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+struct AdminMetricsResponse {
+    requests_total: u64,
+    successful_requests: u64,
+    failed_requests: u64,
+    streamed_requests: u64,
+    stream_client_disconnected_requests: u64,
+    stream_stalled_requests: u64,
+    active_requests: usize,
+    queued_requests: usize,
+    queued_prefill_requests: usize,
+    queued_decode_requests: usize,
+    prefill_requests: u64,
+    decode_requests: u64,
+    active_prefill_requests: usize,
+    active_decode_requests: usize,
+    scheduler_admitted_prefill_requests: u64,
+    scheduler_admitted_decode_requests: u64,
+    scheduler_completed_requests: u64,
+    scheduler_cancelled_requests: u64,
+    scheduler_failed_requests: u64,
+    scheduler_queued_cancelled_requests: u64,
+    scheduler_queue_timeouts: u64,
+    cancelled_requests: u64,
+    no_progress_failures: u64,
+    model_pull_operations: u64,
+    model_pull_successes: u64,
+    model_pull_failures: u64,
+    model_pull_bytes: u64,
+    model_store_snapshots: usize,
+    model_store_bytes: u64,
+    model_store_quarantined_snapshots: usize,
+    model_store_quarantined_bytes: u64,
+    artifact_verification_failures: u64,
+    process_rss_bytes: u64,
+    tokens_per_second: f64,
+    native_qwen_metal: Value,
+    native_qwen_prefix_cache: Value,
+    request_latency_ms: LatencySummary,
+    time_to_first_token_ms: LatencySummary,
+    tokens: TokenSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct LatencySummary {
+    count: u64,
+    min: f64,
+    max: f64,
+    avg: f64,
+}
+
+impl LatencySummary {
+    fn from_metrics(metrics: llm_telemetry::LatencyMetrics) -> Self {
+        Self {
+            count: metrics.count(),
+            min: metrics.min_ms(),
+            max: metrics.max_ms(),
+            avg: metrics.avg_ms(),
         }
-    })))
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TokenSummary {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

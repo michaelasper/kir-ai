@@ -118,6 +118,8 @@ pub struct ServerMetrics {
     successful_requests: u64,
     failed_requests: u64,
     streamed_requests: u64,
+    stream_client_disconnected_requests: u64,
+    stream_stalled_requests: u64,
     cancelled_requests: u64,
     no_progress_failures: u64,
     model_pull_operations: u64,
@@ -146,6 +148,18 @@ impl ServerMetrics {
     pub fn record_failure(&mut self) {
         self.requests_total += 1;
         self.failed_requests += 1;
+    }
+
+    pub fn record_stream_client_disconnect(&mut self) {
+        self.requests_total += 1;
+        self.failed_requests += 1;
+        self.stream_client_disconnected_requests += 1;
+    }
+
+    pub fn record_stream_stall(&mut self) {
+        self.requests_total += 1;
+        self.failed_requests += 1;
+        self.stream_stalled_requests += 1;
     }
 
     pub fn record_cancellation(&mut self) {
@@ -189,6 +203,14 @@ impl ServerMetrics {
 
     pub fn streamed_requests(&self) -> u64 {
         self.streamed_requests
+    }
+
+    pub fn stream_client_disconnected_requests(&self) -> u64 {
+        self.stream_client_disconnected_requests
+    }
+
+    pub fn stream_stalled_requests(&self) -> u64 {
+        self.stream_stalled_requests
     }
 
     pub fn cancelled_requests(&self) -> u64 {
@@ -280,6 +302,8 @@ mod tests {
         assert_eq!(metrics.successful_requests(), 2);
         assert_eq!(metrics.failed_requests(), 1);
         assert_eq!(metrics.streamed_requests(), 1);
+        assert_eq!(metrics.stream_client_disconnected_requests(), 0);
+        assert_eq!(metrics.stream_stalled_requests(), 0);
         assert_eq!(metrics.cancelled_requests(), 0);
         assert_eq!(metrics.no_progress_failures(), 0);
         assert_eq!(metrics.model_pull_operations(), 0);
@@ -298,6 +322,14 @@ mod tests {
         assert_eq!(metrics.time_to_first_token().count(), 1);
         assert_eq!(metrics.time_to_first_token().avg_ms(), 7.0);
 
+        metrics.record_stream_client_disconnect();
+        assert_eq!(metrics.requests_total(), 4);
+        assert_eq!(metrics.failed_requests(), 2);
+        assert_eq!(metrics.stream_client_disconnected_requests(), 1);
+        metrics.record_stream_stall();
+        assert_eq!(metrics.requests_total(), 5);
+        assert_eq!(metrics.failed_requests(), 3);
+        assert_eq!(metrics.stream_stalled_requests(), 1);
         metrics.record_cancellation();
         assert_eq!(metrics.cancelled_requests(), 1);
         metrics.record_no_progress_failure();

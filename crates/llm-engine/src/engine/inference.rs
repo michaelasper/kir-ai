@@ -1,6 +1,7 @@
 use super::{
-    AppState, EngineError, lifecycle, parse_json_request, record_failure_metrics,
-    record_success_metrics,
+    AppState, EngineError, lifecycle,
+    metrics::{record_failure_metrics, record_success_metrics},
+    parse_json_request,
 };
 use axum::{
     Json,
@@ -32,20 +33,10 @@ pub(super) async fn chat_completions(
                 Err(err) => return Err(run.finish_runtime_error(&state, err)),
             };
             let stream_run = run.into_streaming();
-            let lifecycle::StreamingGenerationRun {
-                request_id,
-                active_request,
-                scheduler_slot,
-                phase,
-                request_started,
-            } = stream_run;
+            let request_id = stream_run.request_id.clone();
             let events = super::streaming::stream_runtime_events(
-                state.clone(),
-                active_request,
-                scheduler_slot,
-                phase,
+                super::streaming::StreamRunLifecycle::new(state.clone(), stream_run),
                 response.into_events(),
-                request_started,
                 streamed,
             );
             let mut response = Sse::new(events)
@@ -58,26 +49,17 @@ pub(super) async fn chat_completions(
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
         let events = async_stream::stream! {
-            let lifecycle::StreamingGenerationRun {
-                active_request,
-                mut scheduler_slot,
-                phase,
-                request_started,
-                ..
-            } = stream_run;
+            let mut stream_lifecycle =
+                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run);
             match stream_state
                 .runtime
-                .chat_stream_with_cancel(request, active_request.cancellation.clone())
+                .chat_stream_with_cancel(request, stream_lifecycle.cancellation())
                 .await
             {
                 Ok(response) => {
                     let events = super::streaming::stream_runtime_events(
-                        stream_state.clone(),
-                        active_request,
-                        scheduler_slot,
-                        phase,
+                        stream_lifecycle,
                         response.into_events(),
-                        request_started,
                         streamed,
                     );
                     tokio::pin!(events);
@@ -86,12 +68,7 @@ pub(super) async fn chat_completions(
                     }
                 }
                 Err(err) => {
-                    for event in super::streaming::stream_runtime_error_events(
-                        &stream_state,
-                        &active_request,
-                        &mut scheduler_slot,
-                        err,
-                    ) {
+                    for event in stream_lifecycle.finish_runtime_error(err) {
                         yield event;
                     }
                 }
@@ -133,26 +110,17 @@ pub(super) async fn completions(
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
         let events = async_stream::stream! {
-            let lifecycle::StreamingGenerationRun {
-                active_request,
-                mut scheduler_slot,
-                phase,
-                request_started,
-                ..
-            } = stream_run;
+            let mut stream_lifecycle =
+                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run);
             match stream_state
                 .runtime
-                .completion_stream_with_cancel(request, active_request.cancellation.clone())
+                .completion_stream_with_cancel(request, stream_lifecycle.cancellation())
                 .await
             {
                 Ok(response) => {
                     let events = super::streaming::stream_runtime_events(
-                        stream_state.clone(),
-                        active_request,
-                        scheduler_slot,
-                        phase,
+                        stream_lifecycle,
                         response.into_events(),
-                        request_started,
                         streamed,
                     );
                     tokio::pin!(events);
@@ -161,12 +129,7 @@ pub(super) async fn completions(
                     }
                 }
                 Err(err) => {
-                    for event in super::streaming::stream_runtime_error_events(
-                        &stream_state,
-                        &active_request,
-                        &mut scheduler_slot,
-                        err,
-                    ) {
+                    for event in stream_lifecycle.finish_runtime_error(err) {
                         yield event;
                     }
                 }

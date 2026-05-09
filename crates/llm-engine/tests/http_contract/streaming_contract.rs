@@ -161,7 +161,7 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
 #[tokio::test]
 async fn chat_stream_reports_backend_stall_after_configured_timeout() {
     let release = Arc::new(Semaphore::new(0));
-    let response = build_router_with_backend_and_options(
+    let app = build_router_with_backend_and_options(
         Box::new(DelayedStreamBackend {
             release: release.clone(),
         }),
@@ -170,24 +170,26 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
             ..EngineOptions::default()
         },
     )
-    .expect("router builds")
-    .oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "model": "local-qwen36",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": true
-                })
-                .to_string(),
-            ))
-            .expect("request builds"),
-    )
-    .await
-    .expect("stream response");
+    .expect("router builds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
@@ -195,6 +197,10 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
         .expect("stall response completes");
     assert!(body.contains("\"code\":\"stream_stalled\""));
     assert_eq!(body.matches("data: [DONE]").count(), 1);
+    let metrics = wait_for_metrics(&app, |body| body["stream_stalled_requests"] == 1).await;
+    assert_eq!(metrics["stream_client_disconnected_requests"], 0);
+    assert_eq!(metrics["failed_requests"], 1);
+    assert_eq!(metrics["scheduler_failed_requests"], 1);
 }
 
 #[tokio::test]
@@ -390,26 +396,28 @@ async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
 #[tokio::test]
 async fn dropping_chat_stream_body_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
-    let response = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
-    }))
-    .oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "model": "local-qwen36",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": true
-                })
-                .to_string(),
-            ))
-            .expect("request builds"),
-    )
-    .await
-    .expect("stream response");
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
 
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body().into_data_stream();
@@ -431,4 +439,279 @@ async fn dropping_chat_stream_body_cancels_backend_stream() {
     tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
         .await
         .expect("backend stream receives cancellation");
+    let metrics = wait_for_metrics(&app, |body| {
+        body["stream_client_disconnected_requests"] == 1
+            && body["scheduler_cancelled_requests"] == 1
+    })
+    .await;
+    assert_eq!(metrics["active_requests"], 0);
+    assert_eq!(metrics["successful_requests"], 0);
+    assert_eq!(metrics["failed_requests"], 1);
+    assert_eq!(metrics["streamed_requests"], 0);
+    assert_eq!(metrics["scheduler_completed_requests"], 0);
+    assert_eq!(metrics["scheduler_failed_requests"], 0);
+    assert_eq!(metrics["time_to_first_token_ms"]["count"], 1);
+}
+
+#[tokio::test]
+async fn dropping_completion_stream_body_cancels_backend_stream() {
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+        cancelled: cancelled.clone(),
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "prompt": "hello",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("\"text\":\"first\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first backend chunk arrives");
+
+    drop(body);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend stream receives cancellation");
+    let metrics = wait_for_metrics(&app, |body| {
+        body["stream_client_disconnected_requests"] == 1
+            && body["scheduler_cancelled_requests"] == 1
+    })
+    .await;
+    assert_eq!(metrics["active_requests"], 0);
+    assert_eq!(metrics["successful_requests"], 0);
+    assert_eq!(metrics["failed_requests"], 1);
+    assert_eq!(metrics["streamed_requests"], 0);
+    assert_eq!(metrics["scheduler_completed_requests"], 0);
+    assert_eq!(metrics["scheduler_failed_requests"], 0);
+    assert_eq!(metrics["time_to_first_token_ms"]["count"], 1);
+}
+
+#[tokio::test]
+async fn dropping_chat_stream_before_first_token_records_client_disconnect_without_ttft() {
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(PendingCancellableStreamBackend {
+        cancelled: cancelled.clone(),
+    }));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("llm-engine-heartbeat") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has heartbeat")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("heartbeat arrives before backend output");
+
+    drop(body);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend stream receives cancellation");
+    let metrics = wait_for_metrics(&app, |body| {
+        body["stream_client_disconnected_requests"] == 1
+            && body["scheduler_cancelled_requests"] == 1
+    })
+    .await;
+    assert_eq!(metrics["active_requests"], 0);
+    assert_eq!(metrics["prefill_requests"], 0);
+    assert_eq!(metrics["decode_requests"], 0);
+    assert_eq!(metrics["active_prefill_requests"], 0);
+    assert_eq!(metrics["active_decode_requests"], 0);
+    assert_eq!(metrics["scheduler_completed_requests"], 0);
+    assert_eq!(metrics["time_to_first_token_ms"]["count"], 0);
+}
+
+#[tokio::test]
+async fn dropping_admin_cancelled_stream_does_not_count_as_client_disconnect() {
+    let cancelled = Arc::new(Notify::new());
+    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+        cancelled: cancelled.clone(),
+    }));
+    let request_id = "admin-cancel-then-drop";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-request-id", request_id)
+                .body(Body::from(
+                    json!({
+                        "model": "local-qwen36",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut seen = String::new();
+    tokio::time::timeout(Duration::from_millis(300), async {
+        while !seen.contains("\"content\":\"first\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("body has chunk")
+                .expect("body chunk");
+            seen.push_str(std::str::from_utf8(&chunk).expect("utf8 sse"));
+        }
+    })
+    .await
+    .expect("first backend chunk arrives");
+
+    let cancel_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/requests/{request_id}/cancel"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("cancel response");
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("backend stream receives cancellation");
+
+    drop(body);
+    let metrics = wait_for_metrics(&app, |body| {
+        body["cancelled_requests"] == 1
+            && body["failed_requests"] == 1
+            && body["scheduler_cancelled_requests"] == 1
+    })
+    .await;
+    assert_eq!(metrics["stream_client_disconnected_requests"], 0);
+    assert_eq!(metrics["scheduler_completed_requests"], 0);
+}
+
+struct PendingCancellableStreamBackend {
+    cancelled: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for PendingCancellableStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "pending-cancellable-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_stream_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_stream_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let cancelled = self.cancelled.clone();
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            cancelled.notify_waiters();
+        });
+        futures::stream::pending().boxed()
+    }
+}
+
+async fn wait_for_metrics<F>(app: &Router, predicate: F) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/admin/metrics")
+                        .body(Body::empty())
+                        .expect("request builds"),
+                )
+                .await
+                .expect("metrics response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = body_json(response.into_body()).await;
+            if predicate(&body) {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("metrics matched predicate")
 }

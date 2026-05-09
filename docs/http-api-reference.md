@@ -102,9 +102,10 @@ Unknown aliases return `404` with `model_not_found`.
 Returns aggregate request, stream, failure, prompt-token, completion-token, and
 total-token counters for the running process. The response also includes current
 `active_requests`, `queued_requests`, `prefill_requests`, `decode_requests`,
-cumulative admin-triggered `cancelled_requests`, cumulative `no_progress_failures`, aggregate
-`request_latency_ms`, streamed `time_to_first_token_ms`, and cumulative
-`tokens_per_second`. Model-store pull counters are reported separately as
+cumulative admin-triggered `cancelled_requests`, cumulative
+`stream_client_disconnected_requests`, cumulative `stream_stalled_requests`,
+cumulative `no_progress_failures`, aggregate `request_latency_ms`, streamed
+`time_to_first_token_ms`, and cumulative `tokens_per_second`. Model-store pull counters are reported separately as
 `model_pull_operations`, `model_pull_successes`, `model_pull_failures`, and
 `model_pull_bytes`. The response also reports manifest-backed model-store usage
 as `model_store_snapshots` and `model_store_bytes`, quarantined usage as

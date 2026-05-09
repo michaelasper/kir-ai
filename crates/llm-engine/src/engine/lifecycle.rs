@@ -1,5 +1,6 @@
 use super::{
-    AppState, EngineError, record_failure_metrics, record_runtime_error_metrics,
+    AppState, EngineError,
+    metrics::{record_failure_metrics, record_runtime_error_metrics},
     requests::{ActiveRequest, RequestFinishResult, RequestRegistrationError, RequestStartResult},
     scheduler::{
         GenerationPhase, GenerationPhaseGuard, SchedulerAcquireError, SchedulerClass,
