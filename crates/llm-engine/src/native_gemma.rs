@@ -11,9 +11,10 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    GemmaLayerCache, ModelBackend, NativeMatvecBackend, SafeTensorShardStore, SamplingConfig,
-    gemma_cache_count_for_spec, gemma_decode_token_with_cache_with_matvec,
-    gemma_layer_caches_for_spec, gemma_prefill_sequence_with_cache_with_matvec,
+    GemmaLayerCache, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
+    SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec, gemma_layer_caches_for_spec,
+    native_decode_token_with_cache_for_spec_ref_with_matvec,
+    native_prefill_sequence_with_cache_for_spec_ref_with_matvec,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::GemmaModelSpec;
@@ -272,11 +273,11 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         token_ids: &[usize],
         caches: &mut [GemmaLayerCache],
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        gemma_prefill_sequence_with_cache_with_matvec(
+        native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
             &self.store,
-            &self.spec,
+            (&self.spec).into(),
             token_ids,
-            caches,
+            NativeTextLayerCachesMut::Gemma(caches),
             &self.matvec,
         )
         .map_err(|err| BackendError::Other(err.to_string()))
@@ -336,11 +337,11 @@ impl NativeGemmaDecodeSession {
         matvec: &impl NativeMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        self.hidden = gemma_decode_token_with_cache_with_matvec(
+        self.hidden = native_decode_token_with_cache_for_spec_ref_with_matvec(
             store,
-            spec,
+            spec.into(),
             token_id,
-            &mut self.caches,
+            NativeTextLayerCachesMut::Gemma(&mut self.caches),
             matvec,
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;

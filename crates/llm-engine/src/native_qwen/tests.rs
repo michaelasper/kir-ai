@@ -13,7 +13,7 @@ use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
     BackendCacheContext, CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
-    qwen_layer_caches_for_spec,
+    qwen_layer_caches_for_spec, qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};

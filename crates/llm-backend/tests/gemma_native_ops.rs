@@ -1,14 +1,17 @@
 use llm_backend::{
-    GemmaLayerCache, NativeTextLayerCaches, SafeTensorShardStore, gemma_decode_token_with_cache,
+    CpuNativeMatvecBackend, GemmaLayerCache, NativeTextLayerCaches, NativeTextLayerCachesMut,
+    SafeTensorShardStore, TensorLoadError, gemma_decode_token_with_cache,
     gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec,
     gemma_prefill_sequence_with_cache,
     native_decode_token_with_cache as native_text_decode_token_with_cache,
+    native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_final_norm_for_spec as native_text_final_norm_for_spec,
     native_layer_caches_for_spec as native_text_layer_caches_for_spec,
     native_lm_head_top_k_for_spec as native_text_lm_head_top_k_for_spec,
     native_prefill_sequence_with_cache as native_text_prefill_sequence_with_cache,
+    native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
 };
-use llm_models::{GemmaModelSpec, NativeTextModelSpec};
+use llm_models::{AttentionKind, GemmaModelSpec, ModelFamily, NativeTextModelSpec, QwenModelSpec};
 use serde_json::json;
 use std::{
     path::{Path, PathBuf},
@@ -168,6 +171,23 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
     let native_decode =
         native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches)
             .expect("native text decode");
+    let mut ref_caches = gemma_layer_caches_for_spec(&spec, 8).expect("spec-ref caches");
+    let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&spec).into(),
+        &[0, 1],
+        NativeTextLayerCachesMut::Gemma(&mut ref_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect("native text spec-ref prefill");
+    let ref_decode = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&spec).into(),
+        2,
+        NativeTextLayerCachesMut::Gemma(&mut ref_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect("native text spec-ref decode");
     let native_norm =
         native_text_final_norm_for_spec(&store, &native_spec, &native_decode).expect("native norm");
     let native_top = native_text_lm_head_top_k_for_spec(&store, &native_spec, &native_norm, 2, 64)
@@ -177,7 +197,75 @@ fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() {
     assert_close(&native_prefill[0], &direct_prefill[0], 1e-5);
     assert_close(&native_prefill[1], &direct_prefill[1], 1e-5);
     assert_close(&native_decode, &direct_decode, 1e-5);
+    assert_eq!(ref_prefill.len(), direct_prefill.len());
+    assert_close(&ref_prefill[0], &direct_prefill[0], 1e-5);
+    assert_close(&ref_prefill[1], &direct_prefill[1], 1e-5);
+    assert_close(&ref_decode, &direct_decode, 1e-5);
     assert_eq!(native_top[0].index, 2);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn native_text_spec_ref_rejects_mismatched_cache_families() {
+    let root = temp_snapshot_dir("native-text-cache-family-mismatch");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    write_tiny_gemma4_decoder_snapshot(&root);
+    let gemma_spec = GemmaModelSpec::from_config_json(
+        &std::fs::read_to_string(root.join("config.json")).expect("config"),
+    )
+    .expect("tiny Gemma config parses");
+    let qwen_spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let mut gemma_prefill_caches =
+        gemma_layer_caches_for_spec(&gemma_spec, 8).expect("Gemma prefill caches");
+    let err = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&qwen_spec).into(),
+        &[0, 1],
+        NativeTextLayerCachesMut::Gemma(&mut gemma_prefill_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect_err("Qwen prefill rejects Gemma caches");
+    assert_cache_family_mismatch(err, "prefill", "gemma", "qwen");
+
+    let mut gemma_decode_caches =
+        gemma_layer_caches_for_spec(&gemma_spec, 8).expect("Gemma decode caches");
+    let err = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&qwen_spec).into(),
+        0,
+        NativeTextLayerCachesMut::Gemma(&mut gemma_decode_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect_err("Qwen decode rejects Gemma caches");
+    assert_cache_family_mismatch(err, "decode", "gemma", "qwen");
+
+    let mut qwen_prefill_caches =
+        qwen_layer_caches_for_spec(&qwen_spec, 8).expect("Qwen prefill caches");
+    let err = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&gemma_spec).into(),
+        &[0, 1],
+        NativeTextLayerCachesMut::Qwen(&mut qwen_prefill_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect_err("Gemma prefill rejects Qwen caches");
+    assert_cache_family_mismatch(err, "prefill", "qwen", "gemma");
+
+    let mut qwen_decode_caches =
+        qwen_layer_caches_for_spec(&qwen_spec, 8).expect("Qwen decode caches");
+    let err = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&gemma_spec).into(),
+        0,
+        NativeTextLayerCachesMut::Qwen(&mut qwen_decode_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect_err("Gemma decode rejects Qwen caches");
+    assert_cache_family_mismatch(err, "decode", "qwen", "gemma");
+
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -477,6 +565,51 @@ fn tiny_gemma4_config_with_options(
         "tie_word_embeddings": true
     })
     .to_string()
+}
+
+fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
+    QwenModelSpec {
+        family: ModelFamily::Qwen,
+        architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+        model_type: "qwen3_5_moe".to_owned(),
+        text_model_type: "qwen3_5_moe_text".to_owned(),
+        hidden_size: 2,
+        rms_norm_eps: 1e-6,
+        tie_word_embeddings: false,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+        num_hidden_layers: 1,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+        linear_num_key_heads: 1,
+        linear_num_value_heads: 1,
+        linear_key_head_dim: 1,
+        linear_value_head_dim: 2,
+        linear_conv_kernel_dim: 1,
+        num_experts: 1,
+        num_experts_per_tok: 1,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 1,
+        max_position_embeddings: 128,
+        vocab_size: 8,
+        layer_kinds: vec![kind],
+    }
+}
+
+fn assert_cache_family_mismatch(
+    err: TensorLoadError,
+    operation: &str,
+    cache_family: &str,
+    spec_family: &str,
+) {
+    assert_eq!(err.code(), "unsupported_capability");
+    assert!(
+        err.to_string().contains(&format!(
+            "native text {operation} received `{cache_family}` caches for `{spec_family}` spec"
+        )),
+        "{err}"
+    );
 }
 
 fn tiny_owned_multi_safetensors_bf16(tensors: &[(&str, Vec<usize>, Vec<f32>)]) -> Vec<u8> {

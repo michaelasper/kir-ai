@@ -71,6 +71,21 @@ impl NativeTextLayerCaches {
         self.len() == 0
     }
 
+    pub fn as_mut_refs(&mut self) -> NativeTextLayerCachesMut<'_> {
+        match self {
+            Self::Qwen(caches) => NativeTextLayerCachesMut::Qwen(caches.as_mut_slice()),
+            Self::Gemma(caches) => NativeTextLayerCachesMut::Gemma(caches.as_mut_slice()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NativeTextLayerCachesMut<'a> {
+    Qwen(&'a mut [QwenLayerCache]),
+    Gemma(&'a mut [GemmaLayerCache]),
+}
+
+impl NativeTextLayerCachesMut<'_> {
     fn family_slug(&self) -> &'static str {
         match self {
             Self::Qwen(_) => "qwen",
@@ -115,14 +130,31 @@ pub fn native_prefill_sequence_with_cache_with_matvec(
     caches: &mut NativeTextLayerCaches,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        store,
+        spec.into(),
+        token_ids,
+        caches.as_mut_refs(),
+        matvec,
+    )
+}
+
+pub fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+    store: &SafeTensorShardStore,
+    spec: NativeTextModelSpecRef<'_>,
+    token_ids: &[usize],
+    caches: NativeTextLayerCachesMut<'_>,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let cache_family = caches.family_slug();
     match (spec, caches) {
-        (NativeTextModelSpec::Qwen(spec), NativeTextLayerCaches::Qwen(caches)) => {
+        (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
             qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
         }
-        (NativeTextModelSpec::Gemma(spec), NativeTextLayerCaches::Gemma(caches)) => {
+        (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
             gemma_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec)
         }
-        (_, caches) => Err(cache_family_mismatch("prefill", spec, caches)),
+        (spec, _) => Err(cache_family_mismatch("prefill", spec, cache_family)),
     }
 }
 
@@ -148,14 +180,31 @@ pub fn native_decode_token_with_cache_with_matvec(
     caches: &mut NativeTextLayerCaches,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    native_decode_token_with_cache_for_spec_ref_with_matvec(
+        store,
+        spec.into(),
+        token_id,
+        caches.as_mut_refs(),
+        matvec,
+    )
+}
+
+pub fn native_decode_token_with_cache_for_spec_ref_with_matvec(
+    store: &SafeTensorShardStore,
+    spec: NativeTextModelSpecRef<'_>,
+    token_id: usize,
+    caches: NativeTextLayerCachesMut<'_>,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let cache_family = caches.family_slug();
     match (spec, caches) {
-        (NativeTextModelSpec::Qwen(spec), NativeTextLayerCaches::Qwen(caches)) => {
+        (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
             qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec)
         }
-        (NativeTextModelSpec::Gemma(spec), NativeTextLayerCaches::Gemma(caches)) => {
+        (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
             gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec)
         }
-        (_, caches) => Err(cache_family_mismatch("decode", spec, caches)),
+        (spec, _) => Err(cache_family_mismatch("decode", spec, cache_family)),
     }
 }
 
@@ -309,12 +358,12 @@ pub fn native_lm_head_logits_for_spec_ref_with_matvec(
 
 fn cache_family_mismatch(
     operation: &str,
-    spec: &NativeTextModelSpec,
-    caches: &NativeTextLayerCaches,
+    spec: NativeTextModelSpecRef<'_>,
+    cache_family: &str,
 ) -> TensorLoadError {
     TensorLoadError::unsupported(format!(
         "native text {operation} received `{}` caches for `{}` spec",
-        caches.family_slug(),
+        cache_family,
         spec.family().canonical_slug(),
     ))
 }

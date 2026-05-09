@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, NativeMatvecBackend, QwenLayerCache, SafeTensorShardStore, SamplingConfig,
-    qwen_decode_token_with_cache_with_matvec, qwen_layer_caches_for_spec,
-    qwen_prefill_sequence_with_cache_with_matvec,
+    ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut, QwenLayerCache,
+    SafeTensorShardStore, SamplingConfig, native_decode_token_with_cache_for_spec_ref_with_matvec,
+    native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
@@ -299,11 +299,11 @@ impl NativeTextAdapter for NativeQwenAdapter {
         token_ids: &[usize],
         caches: &mut [QwenLayerCache],
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        qwen_prefill_sequence_with_cache_with_matvec(
+        native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
             &self.store,
-            &self.spec,
+            (&self.spec).into(),
             token_ids,
-            caches,
+            NativeTextLayerCachesMut::Qwen(caches),
             &self.matvec,
         )
         .map_err(|err| BackendError::Other(err.to_string()))
@@ -368,11 +368,11 @@ impl NativeQwenDecodeSession {
         matvec: &impl NativeMatvecBackend,
         token_id: usize,
     ) -> Result<(), BackendError> {
-        self.hidden = qwen_decode_token_with_cache_with_matvec(
+        self.hidden = native_decode_token_with_cache_for_spec_ref_with_matvec(
             store,
-            spec,
+            spec.into(),
             token_id,
-            &mut self.caches,
+            NativeTextLayerCachesMut::Qwen(&mut self.caches),
             matvec,
         )
         .map_err(|err| BackendError::Other(err.to_string()))?;

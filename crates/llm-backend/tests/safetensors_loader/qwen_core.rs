@@ -334,10 +334,32 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
     let native_decode = native_decode_token_with_cache(&store, &native_spec, 0, &mut native_caches)
         .expect("native text decode");
 
+    let mut ref_caches = qwen_layer_caches_for_spec(&qwen_spec, 3).expect("ref caches");
+    let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&qwen_spec).into(),
+        &[0, 1],
+        NativeTextLayerCachesMut::Qwen(&mut ref_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect("native text spec-ref prefill");
+    let ref_decode = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        &store,
+        (&qwen_spec).into(),
+        0,
+        NativeTextLayerCachesMut::Qwen(&mut ref_caches),
+        &CpuNativeMatvecBackend,
+    )
+    .expect("native text spec-ref decode");
+
     assert_eq!(native_prefill.len(), direct_prefill.len());
     assert_close(&native_prefill[0], &direct_prefill[0], 1e-5);
     assert_close(&native_prefill[1], &direct_prefill[1], 1e-5);
     assert_close(&native_decode, &direct_decode, 1e-5);
+    assert_eq!(ref_prefill.len(), direct_prefill.len());
+    assert_close(&ref_prefill[0], &direct_prefill[0], 1e-5);
+    assert_close(&ref_prefill[1], &direct_prefill[1], 1e-5);
+    assert_close(&ref_decode, &direct_decode, 1e-5);
     std::fs::remove_dir_all(root).ok();
 }
 
