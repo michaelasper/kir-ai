@@ -3,10 +3,9 @@ use crate::{
         NativeTextMatvecBackend, NativeTextMetalState, native_text_metal_weight_cache_bytes,
     },
     native_text::{
-        NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver,
-        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
+        NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
+        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
 use async_trait::async_trait;
@@ -248,19 +247,11 @@ impl NativeTextAdapter for NativeQwenAdapter {
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
-    fn observe_candidate(
-        &self,
-        tokenizer: &HuggingFaceTokenizer,
-        _emitted_tokens: &[u32],
-        token_id: usize,
-    ) -> Result<NativeTextCandidateDecision, BackendError> {
-        if tokenizer
-            .token_to_id("<|im_end|>")
-            .is_some_and(|stop_id| token_id == stop_id as usize)
-        {
-            return Ok(NativeTextCandidateDecision::Stop);
+    fn stop_tokens(&self) -> NativeTextStopTokens {
+        NativeTextStopTokens {
+            token_ids: &[],
+            token_strings: &["<|im_end|>"],
         }
-        Ok(NativeTextCandidateDecision::Emit(token_id))
     }
 
     fn max_position_embeddings(&self) -> u32 {

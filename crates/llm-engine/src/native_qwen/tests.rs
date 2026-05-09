@@ -5,8 +5,9 @@ use crate::native_matvec::{
     MetalBackendMetrics, NativeTextMetalWarmup as NativeQwenMetalWarmup,
 };
 use crate::native_text::{
-    NativeStreamTextDeltas, native_text_cache_token_capacity,
-    native_text_prefill_context_with_cache, sample_token_id_with_draw,
+    NativeStreamTextDeltas, NativeTextCandidateDecision, NativeTextStopTokens,
+    native_text_cache_token_capacity, native_text_prefill_context_with_cache,
+    sample_token_id_with_draw,
 };
 use crate::sync_ext::RecoverPoisonedMutex;
 use futures::StreamExt;
@@ -521,6 +522,57 @@ fn native_qwen_cache_capacity_rejects_context_beyond_position_limit() {
         err.to_string().contains("model context limit"),
         "error should name context limit: {err}"
     );
+}
+
+#[test]
+fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
+    let snapshot = temp_snapshot_dir("qwen-stop-tokens");
+    std::fs::remove_dir_all(&snapshot).ok();
+    std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+    copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+    write_tiny_linear_decoder_snapshot(&snapshot);
+    let backend = native_qwen_test_backend(
+        &snapshot,
+        "local-qwen36",
+        tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
+        8,
+        1,
+        2,
+        64,
+    );
+    let im_end = backend
+        .driver
+        .tokenizer
+        .token_to_id("<|im_end|>")
+        .expect("qwen tokenizer has im_end token") as usize;
+    let non_stop = (0..16)
+        .find(|token_id| *token_id != im_end)
+        .expect("small non-stop token id exists");
+
+    assert_eq!(
+        backend.driver.adapter.stop_tokens(),
+        NativeTextStopTokens {
+            token_ids: &[],
+            token_strings: &["<|im_end|>"],
+        }
+    );
+    assert!(matches!(
+        backend
+            .driver
+            .adapter
+            .observe_candidate(&backend.driver.tokenizer, &[], im_end)
+            .expect("im_end candidate is observed"),
+        NativeTextCandidateDecision::Stop
+    ));
+    assert!(matches!(
+        backend
+            .driver
+            .adapter
+            .observe_candidate(&backend.driver.tokenizer, &[], non_stop)
+            .expect("non-stop candidate is observed"),
+        NativeTextCandidateDecision::Emit(token_id) if token_id == non_stop
+    ));
+    std::fs::remove_dir_all(snapshot).ok();
 }
 
 #[test]

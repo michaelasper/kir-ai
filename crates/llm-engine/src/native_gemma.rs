@@ -2,10 +2,9 @@ use crate::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
     native_matvec::{NativeTextMatvecBackend, native_text_metal_weight_cache_bytes},
     native_text::{
-        NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver,
-        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
+        NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
+        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
 use async_trait::async_trait;
@@ -221,20 +220,11 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             .map_err(|err| BackendError::Other(err.to_string()))
     }
 
-    fn observe_candidate(
-        &self,
-        tokenizer: &HuggingFaceTokenizer,
-        _emitted_tokens: &[u32],
-        token_id: usize,
-    ) -> Result<NativeTextCandidateDecision, BackendError> {
-        if token_id == 1
-            || tokenizer
-                .token_to_id("<eos>")
-                .is_some_and(|stop_id| token_id == stop_id as usize)
-        {
-            return Ok(NativeTextCandidateDecision::Stop);
+    fn stop_tokens(&self) -> NativeTextStopTokens {
+        NativeTextStopTokens {
+            token_ids: &[1],
+            token_strings: &["<eos>"],
         }
-        Ok(NativeTextCandidateDecision::Emit(token_id))
     }
 
     fn max_position_embeddings(&self) -> u32 {
@@ -457,9 +447,47 @@ impl ModelBackend for NativeGemmaBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_text::{NativeTextCandidateDecision, NativeTextStopTokens};
     use llm_backend::BackendCacheContext;
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn native_gemma_adapter_stop_tokens_use_eos_mapping() {
+        let snapshot = temp_snapshot_dir("native-gemma-stop-tokens");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_gemma4_decoder_snapshot(&snapshot);
+        copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
+
+        let backend =
+            NativeGemmaBackend::open("local-gemma", &snapshot).expect("backend opens snapshot");
+
+        assert_eq!(
+            backend.driver.adapter.stop_tokens(),
+            NativeTextStopTokens {
+                token_ids: &[1],
+                token_strings: &["<eos>"],
+            }
+        );
+        assert!(matches!(
+            backend
+                .driver
+                .adapter
+                .observe_candidate(&backend.driver.tokenizer, &[], 1)
+                .expect("eos candidate is observed"),
+            NativeTextCandidateDecision::Stop
+        ));
+        assert!(matches!(
+            backend
+                .driver
+                .adapter
+                .observe_candidate(&backend.driver.tokenizer, &[], 0)
+                .expect("non-stop candidate is observed"),
+            NativeTextCandidateDecision::Emit(0)
+        ));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
 
     #[test]
     fn native_gemma_backend_runs_tiny_prefill_and_selects_tied_lm_head_token() {

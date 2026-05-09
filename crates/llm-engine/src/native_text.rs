@@ -272,12 +272,21 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         tokenizer: &HuggingFaceTokenizer,
         output_ids: &[u32],
     ) -> Result<String, BackendError>;
+    fn stop_tokens(&self) -> NativeTextStopTokens {
+        NativeTextStopTokens::default()
+    }
     fn observe_candidate(
         &self,
         tokenizer: &HuggingFaceTokenizer,
-        emitted_tokens: &[u32],
+        _emitted_tokens: &[u32],
         token_id: usize,
-    ) -> Result<NativeTextCandidateDecision, BackendError>;
+    ) -> Result<NativeTextCandidateDecision, BackendError> {
+        Ok(native_text_candidate_decision_for_stop_tokens(
+            self.stop_tokens(),
+            tokenizer,
+            token_id,
+        ))
+    }
     fn max_position_embeddings(&self) -> u32;
     fn max_prefill_tokens(&self) -> usize;
     fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache>;
@@ -311,6 +320,35 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
 pub(crate) enum NativeTextCandidateDecision {
     Emit(usize),
     Stop,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NativeTextStopTokens {
+    pub(crate) token_ids: &'static [usize],
+    pub(crate) token_strings: &'static [&'static str],
+}
+
+impl NativeTextStopTokens {
+    fn contains(self, tokenizer: &HuggingFaceTokenizer, token_id: usize) -> bool {
+        self.token_ids.contains(&token_id)
+            || self.token_strings.iter().any(|token| {
+                tokenizer
+                    .token_to_id(token)
+                    .is_some_and(|stop_id| token_id == stop_id as usize)
+            })
+    }
+}
+
+fn native_text_candidate_decision_for_stop_tokens(
+    stop_tokens: NativeTextStopTokens,
+    tokenizer: &HuggingFaceTokenizer,
+    token_id: usize,
+) -> NativeTextCandidateDecision {
+    if stop_tokens.contains(tokenizer, token_id) {
+        NativeTextCandidateDecision::Stop
+    } else {
+        NativeTextCandidateDecision::Emit(token_id)
+    }
 }
 
 #[derive(Clone)]
@@ -1335,6 +1373,292 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TestDecodeSession {
+        hidden: Vec<f32>,
+    }
+
+    #[derive(Clone)]
+    struct TestAdapter {
+        script: std::sync::Arc<[usize]>,
+        stop_tokens: NativeTextStopTokens,
+        max_prefill_tokens: usize,
+        prefix_cache: std::sync::Arc<NativeTextPrefixCache<TestCache>>,
+        prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
+    }
+
+    impl TestAdapter {
+        fn new(script: impl Into<std::sync::Arc<[usize]>>) -> Self {
+            Self {
+                script: script.into(),
+                stop_tokens: NativeTextStopTokens::default(),
+                max_prefill_tokens: 4,
+                prefix_cache: std::sync::Arc::new(NativeTextPrefixCache::new(1024)),
+                prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
+            }
+        }
+
+        fn with_stop_tokens(mut self, stop_tokens: NativeTextStopTokens) -> Self {
+            self.stop_tokens = stop_tokens;
+            self
+        }
+    }
+
+    impl NativeTextAdapter for TestAdapter {
+        type DecodeSession = TestDecodeSession;
+        type LayerCache = TestCache;
+
+        fn family_display_name(&self) -> &'static str {
+            "Test"
+        }
+
+        fn worker_label(&self) -> &'static str {
+            "native test"
+        }
+
+        fn set_max_prefill_tokens(&mut self, max_prefill_tokens: usize) {
+            self.max_prefill_tokens = max_prefill_tokens;
+        }
+
+        fn encode_prompt(
+            &self,
+            _tokenizer: &HuggingFaceTokenizer,
+            _request: &BackendRequest,
+        ) -> Result<Vec<u32>, BackendError> {
+            Ok(vec![42])
+        }
+
+        fn decode_output(
+            &self,
+            _tokenizer: &HuggingFaceTokenizer,
+            output_ids: &[u32],
+        ) -> Result<String, BackendError> {
+            Ok(output_ids
+                .iter()
+                .map(|token_id| format!("<{token_id}>"))
+                .collect::<String>())
+        }
+
+        fn stop_tokens(&self) -> NativeTextStopTokens {
+            self.stop_tokens
+        }
+
+        fn max_position_embeddings(&self) -> u32 {
+            16
+        }
+
+        fn max_prefill_tokens(&self) -> usize {
+            self.max_prefill_tokens
+        }
+
+        fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache> {
+            &self.prefix_cache
+        }
+
+        fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics {
+            &self.prefix_cache_metrics
+        }
+
+        fn prefix_cache_namespace(
+            &self,
+            _request: &BackendRequest,
+            cache_tokens: usize,
+        ) -> NativeTextPrefixCacheNamespace {
+            NativeTextPrefixCacheNamespace {
+                cache_tokens,
+                ..namespace("driver-test")
+            }
+        }
+
+        fn layer_count(&self) -> usize {
+            1
+        }
+
+        fn allocate_caches(
+            &self,
+            _cache_tokens: usize,
+        ) -> Result<Vec<Self::LayerCache>, BackendError> {
+            Ok(vec![TestCache {
+                bytes: 0,
+                marker: 0,
+            }])
+        }
+
+        fn prefill_chunk_with_cache(
+            &self,
+            token_ids: &[usize],
+            _caches: &mut [Self::LayerCache],
+        ) -> Result<Vec<Vec<f32>>, BackendError> {
+            Ok(token_ids.iter().map(|_| vec![0.0]).collect())
+        }
+
+        fn make_decode_session(
+            &self,
+            hidden: Vec<f32>,
+            _caches: Vec<Self::LayerCache>,
+        ) -> Self::DecodeSession {
+            TestDecodeSession { hidden }
+        }
+
+        fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32] {
+            &session.hidden
+        }
+
+        fn step(
+            &self,
+            session: &mut Self::DecodeSession,
+            _token_id: usize,
+        ) -> Result<(), BackendError> {
+            session.hidden[0] += 1.0;
+            Ok(())
+        }
+
+        fn next_token_from_hidden(
+            &self,
+            hidden: &[f32],
+            _sampling: SamplingConfig,
+        ) -> Result<usize, BackendError> {
+            let script_index = hidden[0] as usize;
+            Ok(*self
+                .script
+                .get(script_index)
+                .expect("test script includes requested token"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct ContextSensitiveTestAdapter {
+        base: TestAdapter,
+        stop_after_emitted: usize,
+    }
+
+    impl ContextSensitiveTestAdapter {
+        fn new(script: impl Into<std::sync::Arc<[usize]>>, stop_after_emitted: usize) -> Self {
+            Self {
+                base: TestAdapter::new(script),
+                stop_after_emitted,
+            }
+        }
+    }
+
+    impl NativeTextAdapter for ContextSensitiveTestAdapter {
+        type DecodeSession = TestDecodeSession;
+        type LayerCache = TestCache;
+
+        fn family_display_name(&self) -> &'static str {
+            self.base.family_display_name()
+        }
+
+        fn worker_label(&self) -> &'static str {
+            self.base.worker_label()
+        }
+
+        fn set_max_prefill_tokens(&mut self, max_prefill_tokens: usize) {
+            self.base.set_max_prefill_tokens(max_prefill_tokens);
+        }
+
+        fn encode_prompt(
+            &self,
+            tokenizer: &HuggingFaceTokenizer,
+            request: &BackendRequest,
+        ) -> Result<Vec<u32>, BackendError> {
+            self.base.encode_prompt(tokenizer, request)
+        }
+
+        fn decode_output(
+            &self,
+            tokenizer: &HuggingFaceTokenizer,
+            output_ids: &[u32],
+        ) -> Result<String, BackendError> {
+            self.base.decode_output(tokenizer, output_ids)
+        }
+
+        fn observe_candidate(
+            &self,
+            tokenizer: &HuggingFaceTokenizer,
+            emitted_tokens: &[u32],
+            token_id: usize,
+        ) -> Result<NativeTextCandidateDecision, BackendError> {
+            if emitted_tokens.len() >= self.stop_after_emitted {
+                Ok(NativeTextCandidateDecision::Stop)
+            } else {
+                self.base
+                    .observe_candidate(tokenizer, emitted_tokens, token_id)
+            }
+        }
+
+        fn max_position_embeddings(&self) -> u32 {
+            self.base.max_position_embeddings()
+        }
+
+        fn max_prefill_tokens(&self) -> usize {
+            self.base.max_prefill_tokens()
+        }
+
+        fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache> {
+            self.base.prefix_cache()
+        }
+
+        fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics {
+            self.base.prefix_cache_metrics()
+        }
+
+        fn prefix_cache_namespace(
+            &self,
+            request: &BackendRequest,
+            cache_tokens: usize,
+        ) -> NativeTextPrefixCacheNamespace {
+            self.base.prefix_cache_namespace(request, cache_tokens)
+        }
+
+        fn layer_count(&self) -> usize {
+            self.base.layer_count()
+        }
+
+        fn allocate_caches(
+            &self,
+            cache_tokens: usize,
+        ) -> Result<Vec<Self::LayerCache>, BackendError> {
+            self.base.allocate_caches(cache_tokens)
+        }
+
+        fn prefill_chunk_with_cache(
+            &self,
+            token_ids: &[usize],
+            caches: &mut [Self::LayerCache],
+        ) -> Result<Vec<Vec<f32>>, BackendError> {
+            self.base.prefill_chunk_with_cache(token_ids, caches)
+        }
+
+        fn make_decode_session(
+            &self,
+            hidden: Vec<f32>,
+            caches: Vec<Self::LayerCache>,
+        ) -> Self::DecodeSession {
+            self.base.make_decode_session(hidden, caches)
+        }
+
+        fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32] {
+            self.base.hidden(session)
+        }
+
+        fn step(
+            &self,
+            session: &mut Self::DecodeSession,
+            token_id: usize,
+        ) -> Result<(), BackendError> {
+            self.base.step(session, token_id)
+        }
+
+        fn next_token_from_hidden(
+            &self,
+            hidden: &[f32],
+            sampling: SamplingConfig,
+        ) -> Result<usize, BackendError> {
+            self.base.next_token_from_hidden(hidden, sampling)
+        }
+    }
+
     fn namespace(label: &str) -> NativeTextPrefixCacheNamespace {
         NativeTextPrefixCacheNamespace {
             model_id: format!("model-{label}"),
@@ -1353,6 +1677,39 @@ mod tests {
             cache_tokens: 16,
             max_prefill_tokens: 4,
         }
+    }
+
+    fn driver_test_tokenizer() -> HuggingFaceTokenizer {
+        let tokenizer_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36/tokenizer.json");
+        HuggingFaceTokenizer::from_file(tokenizer_path).expect("tokenizer loads")
+    }
+
+    fn driver_test_request(max_tokens: u32) -> BackendRequest {
+        BackendRequest {
+            model: "model-test".to_owned(),
+            prompt: "test".to_owned(),
+            chat_context: None,
+            max_tokens: Some(max_tokens),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: llm_backend::BackendCacheContext::default(),
+        }
+    }
+
+    fn driver_for_test<A>(adapter: A) -> NativeTextDriver<A>
+    where
+        A: NativeTextAdapter,
+    {
+        NativeTextDriver::new(
+            "model-test".to_owned(),
+            BackendModelMetadata::new("model-test", "native-test").with_family("test"),
+            driver_test_tokenizer(),
+            adapter,
+            8,
+        )
     }
 
     #[test]
@@ -1422,6 +1779,81 @@ mod tests {
         assert_eq!(namespace.cache_layout_version, 7);
         assert_eq!(namespace.cache_tokens, 64);
         assert_eq!(namespace.max_prefill_tokens, 8);
+    }
+
+    #[test]
+    fn stop_tokens_match_literal_ids_and_tokenizer_tokens() {
+        let tokenizer_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36/tokenizer.json");
+        let tokenizer = HuggingFaceTokenizer::from_file(tokenizer_path).expect("tokenizer loads");
+        let im_end = tokenizer
+            .token_to_id("<|im_end|>")
+            .expect("qwen tokenizer has im_end token") as usize;
+        let stop_tokens = NativeTextStopTokens {
+            token_ids: &[1],
+            token_strings: &["<|im_end|>"],
+        };
+        let non_stop = (0..16)
+            .find(|token_id| *token_id != 1 && *token_id != im_end)
+            .expect("small non-stop token id exists");
+
+        assert!(stop_tokens.contains(&tokenizer, 1));
+        assert!(stop_tokens.contains(&tokenizer, im_end));
+        assert!(!stop_tokens.contains(&tokenizer, non_stop));
+    }
+
+    #[test]
+    fn driver_stop_token_candidate_is_not_emitted_for_blocking_generation() {
+        let driver = driver_for_test(TestAdapter::new([1_usize]).with_stop_tokens(
+            NativeTextStopTokens {
+                token_ids: &[1],
+                token_strings: &[],
+            },
+        ));
+
+        let output = driver
+            .generate_blocking(driver_test_request(4), CancellationToken::new())
+            .expect("generation stops cleanly");
+
+        assert_eq!(output.text, "");
+        assert_eq!(output.completion_tokens, 0);
+        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    }
+
+    #[test]
+    fn driver_stop_token_candidate_is_not_emitted_for_streaming_generation() {
+        let driver = driver_for_test(TestAdapter::new([1_usize]).with_stop_tokens(
+            NativeTextStopTokens {
+                token_ids: &[1],
+                token_strings: &[],
+            },
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+
+        driver
+            .generate_blocking_stream(driver_test_request(4), tx, CancellationToken::new())
+            .expect("streaming generation stops cleanly");
+        let final_chunk = rx
+            .blocking_recv()
+            .expect("final chunk is sent")
+            .expect("final chunk is ok");
+        assert_eq!(final_chunk.text, "");
+        assert_eq!(final_chunk.completion_tokens, 0);
+        assert_eq!(final_chunk.finish_reason, Some(llm_api::FinishReason::Stop));
+        assert!(rx.blocking_recv().is_none());
+    }
+
+    #[test]
+    fn driver_allows_adapter_context_sensitive_candidate_observation() {
+        let driver = driver_for_test(ContextSensitiveTestAdapter::new([7_usize, 8_usize], 1));
+
+        let output = driver
+            .generate_blocking(driver_test_request(4), CancellationToken::new())
+            .expect("generation stops through adapter hook");
+
+        assert_eq!(output.text, "<7>");
+        assert_eq!(output.completion_tokens, 1);
+        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
     }
 
     #[test]
