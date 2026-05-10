@@ -361,7 +361,8 @@ pub(super) fn request_id_from_headers(
 }
 
 pub(super) fn response_request_id(state: &AppState, headers: &HeaderMap) -> String {
-    request_id_from_headers(state, headers).unwrap_or_else(|_| state.active_requests.next_request_id())
+    request_id_from_headers(state, headers)
+        .unwrap_or_else(|_| state.active_requests.next_request_id())
 }
 
 pub(super) fn insert_request_id_header(response: &mut Response, request_id: &str) {

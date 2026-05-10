@@ -4,9 +4,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+#[allow(unused_imports)]
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend,
+    InferenceScratchpad, ModelBackend,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use std::path::Path;
@@ -21,14 +22,13 @@ mod streaming;
 pub(crate) use driver::{
     NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextStopTokens,
 };
-#[allow(unused_imports)]
-pub(crate) use generation::{
-    NativeTextNextTokenContext, native_text_cache_token_capacity,
-    resolve_native_text_max_tokens,
-    sample_token_id_with_draw,
-};
 #[cfg(test)]
 pub(crate) use generation::native_text_prefill_context_with_cache;
+#[allow(unused_imports)]
+pub(crate) use generation::{
+    NativeTextNextTokenContext, native_text_cache_token_capacity, resolve_native_text_max_tokens,
+    sample_token_id_with_draw,
+};
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
     NativeTextPrefixCache, NativeTextPrefixCacheCounters, NativeTextPrefixCacheEntry,
@@ -37,9 +37,7 @@ pub(crate) use prefix_cache::{
     NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
     native_text_prefix_request_mode,
 };
-pub(crate) use streaming::{
-    NativeStreamTextDeltas, native_text_worker_stream,
-};
+pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS;
 
@@ -586,7 +584,9 @@ mod tests {
             caches: &mut [Self::LayerCache],
             scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
-            self.base.prefill_chunk_with_cache(token_ids, caches, scratch).await
+            self.base
+                .prefill_chunk_with_cache(token_ids, caches, scratch)
+                .await
         }
 
         fn make_decode_session(
@@ -620,7 +620,9 @@ mod tests {
             sampling: SamplingConfig,
             scratch: &mut InferenceScratchpad,
         ) -> Result<usize, BackendError> {
-            self.base.next_token_from_hidden(hidden, sampling, scratch).await
+            self.base
+                .next_token_from_hidden(hidden, sampling, scratch)
+                .await
         }
     }
 

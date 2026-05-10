@@ -542,11 +542,8 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest_with_family(&snapshot, "native-metal", "deep_seek");
 
-        let err = match open_blocking(
-            "local-native",
-            &snapshot,
-            SnapshotBackendOptions::default(),
-        ) {
+        let err = match open_blocking("local-native", &snapshot, SnapshotBackendOptions::default())
+        {
             Ok(_) => panic!("native-metal DeepSeek manifest should fail closed"),
             Err(err) => err,
         };
@@ -567,11 +564,7 @@ mod tests {
         write_gemma4_native_config(&snapshot);
         write_gemma4_native_index(&snapshot, false);
 
-        let err = match open_blocking(
-            "local-gemma",
-            &snapshot,
-            SnapshotBackendOptions::default(),
-        ) {
+        let err = match open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default()) {
             Ok(_) => panic!("native Gemma snapshot missing text tensors should fail closed"),
             Err(err) => err,
         };
@@ -594,9 +587,8 @@ mod tests {
         write_gemma4_native_index(&snapshot, true);
         copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-        let backend =
-            open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
-                .expect("native Gemma backend opens");
+        let backend = open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
+            .expect("native Gemma backend opens");
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
@@ -616,9 +608,8 @@ mod tests {
         write_gemma4_native_index(&snapshot, true);
         copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-        let backend =
-            open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
-                .expect("raw native Gemma backend opens by config detection");
+        let backend = open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
+            .expect("raw native Gemma backend opens by config detection");
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));

@@ -35,7 +35,15 @@ pub async fn qwen_final_norm_with_matvec(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let mut output = vec![0.0; hidden_size];
-    qwen_final_norm_with_matvec_in_place(store, hidden_states, hidden_size, rms_norm_eps, matvec, &mut output).await?;
+    qwen_final_norm_with_matvec_in_place(
+        store,
+        hidden_states,
+        hidden_size,
+        rms_norm_eps,
+        matvec,
+        &mut output,
+    )
+    .await?;
     Ok(output)
 }
 
@@ -66,7 +74,14 @@ pub async fn qwen_final_norm_for_spec(
     hidden_states: &[f32],
 ) -> Result<Vec<f32>, TensorLoadError> {
     let mut output = vec![0.0; spec.hidden_size as usize];
-    qwen_final_norm_for_spec_with_matvec_in_place(store, spec, hidden_states, &CpuNativeMatvecBackend, &mut output).await?;
+    qwen_final_norm_for_spec_with_matvec_in_place(
+        store,
+        spec,
+        hidden_states,
+        &CpuNativeMatvecBackend,
+        &mut output,
+    )
+    .await?;
     Ok(output)
 }
 
@@ -77,7 +92,8 @@ pub async fn qwen_final_norm_for_spec_with_matvec(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let mut output = vec![0.0; spec.hidden_size as usize];
-    qwen_final_norm_for_spec_with_matvec_in_place(store, spec, hidden_states, matvec, &mut output).await?;
+    qwen_final_norm_for_spec_with_matvec_in_place(store, spec, hidden_states, matvec, &mut output)
+        .await?;
     Ok(output)
 }
 
@@ -193,7 +209,13 @@ pub async fn qwen_lm_head_logits_with_matvec_in_place(
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
     matvec
-        .bf16_matvec_rows_f32_in_place(store, QWEN_LM_HEAD_WEIGHT, hidden_states, chunk_rows, output)
+        .bf16_matvec_rows_f32_in_place(
+            store,
+            QWEN_LM_HEAD_WEIGHT,
+            hidden_states,
+            chunk_rows,
+            output,
+        )
         .await
 }
 
@@ -203,7 +225,14 @@ pub async fn qwen_lm_head_logits_for_spec(
     hidden_states: &[f32],
     chunk_rows: usize,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, &CpuNativeMatvecBackend).await
+    qwen_lm_head_logits_for_spec_with_matvec(
+        store,
+        spec,
+        hidden_states,
+        chunk_rows,
+        &CpuNativeMatvecBackend,
+    )
+    .await
 }
 
 pub async fn qwen_lm_head_logits_for_spec_with_matvec(

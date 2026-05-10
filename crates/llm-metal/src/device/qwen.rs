@@ -338,7 +338,8 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(command_buffer, "linear_attention_recurrent_update_f32").await?;
+        finish_command_buffer_async(command_buffer, "linear_attention_recurrent_update_f32")
+            .await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per recurrent-state element.
@@ -499,7 +500,8 @@ impl MetalDevice {
         finish_command_buffer_async(
             command_buffer,
             "linear_attention_recurrent_update_state_f32",
-        ).await?;
+        )
+        .await?;
         Ok(())
     }
 }

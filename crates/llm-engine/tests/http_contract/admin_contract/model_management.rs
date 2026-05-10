@@ -37,10 +37,7 @@ async fn admin_model_endpoint_reports_ready_model() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/admin/models/{}",
-                    llm_engine::DEFAULT_MODEL_ID
-                ))
+                .uri(format!("/admin/models/{}", llm_engine::DEFAULT_MODEL_ID))
                 .header("x-request-id", request_id)
                 .body(Body::empty())
                 .expect("request builds"),
@@ -69,10 +66,7 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
     let response = build_router_with_backend(Box::new(MetadataBackend))
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/admin/models/{}",
-                    llm_engine::DEFAULT_MODEL_ID
-                ))
+                .uri(format!("/admin/models/{}", llm_engine::DEFAULT_MODEL_ID))
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -123,11 +117,14 @@ async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     }))
     .oneshot(
         Request::builder()
-                .method("POST")
-                .uri(format!("/admin/models/{}/verify", llm_engine::DEFAULT_MODEL_ID))
-                .body(Body::empty())
-                .expect("request builds"),
-            )
+            .method("POST")
+            .uri(format!(
+                "/admin/models/{}/verify",
+                llm_engine::DEFAULT_MODEL_ID
+            ))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
     .await
     .expect("admin model verify response");
 
@@ -155,10 +152,13 @@ async fn admin_model_plan_endpoint_returns_download_plan() {
     )
     .expect("router builds")
     .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/admin/models/{}/plan", llm_engine::DEFAULT_MODEL_ID))
-                .header("authorization", "Bearer secret-admin-token")
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/admin/models/{}/plan",
+                llm_engine::DEFAULT_MODEL_ID
+            ))
+            .header("authorization", "Bearer secret-admin-token")
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -207,10 +207,13 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
     )
     .expect("router builds")
     .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/admin/models/{}/pull", llm_engine::DEFAULT_MODEL_ID))
-                .header("authorization", "Bearer secret-admin-token")
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/admin/models/{}/pull",
+                llm_engine::DEFAULT_MODEL_ID
+            ))
+            .header("authorization", "Bearer secret-admin-token")
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({

@@ -157,11 +157,16 @@ pub async fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec, scratch).await
+            qwen_prefill_sequence_with_cache_with_matvec(
+                store, spec, token_ids, caches, matvec, scratch,
+            )
+            .await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_prefill_sequence_with_cache_with_matvec(store, spec, token_ids, caches, matvec, scratch)
-                .await
+            gemma_prefill_sequence_with_cache_with_matvec(
+                store, spec, token_ids, caches, matvec, scratch,
+            )
+            .await
         }
         (spec, _) => Err(cache_family_mismatch("prefill", spec, cache_family)),
     }
@@ -215,10 +220,14 @@ pub async fn native_decode_token_with_cache_for_spec_ref_with_matvec(
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec, scratch).await
+            qwen_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec, scratch)
+                .await
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_decode_token_with_cache_with_matvec(store, spec, token_id, caches, matvec, scratch).await
+            gemma_decode_token_with_cache_with_matvec(
+                store, spec, token_id, caches, matvec, scratch,
+            )
+            .await
         }
         (spec, _) => Err(cache_family_mismatch("decode", spec, cache_family)),
     }
@@ -229,7 +238,8 @@ pub async fn native_final_norm_for_spec(
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
 ) -> Result<Vec<f32>, TensorLoadError> {
-    native_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend).await
+    native_final_norm_for_spec_with_matvec(store, spec, hidden_states, &CpuNativeMatvecBackend)
+        .await
 }
 
 pub async fn native_final_norm_for_spec_with_matvec(
@@ -306,12 +316,26 @@ pub async fn native_lm_head_top_k_for_spec_ref_with_matvec(
 ) -> Result<Vec<TopKLogit>, TensorLoadError> {
     match spec {
         NativeTextModelSpecRef::Qwen(spec) => {
-            qwen_lm_head_top_k_for_spec_with_matvec(store, spec, hidden_states, top_k, chunk_rows, matvec)
-                .await
+            qwen_lm_head_top_k_for_spec_with_matvec(
+                store,
+                spec,
+                hidden_states,
+                top_k,
+                chunk_rows,
+                matvec,
+            )
+            .await
         }
         NativeTextModelSpecRef::Gemma(spec) => {
-            gemma_lm_head_top_k_for_spec_with_matvec(store, spec, hidden_states, top_k, chunk_rows, matvec)
-                .await
+            gemma_lm_head_top_k_for_spec_with_matvec(
+                store,
+                spec,
+                hidden_states,
+                top_k,
+                chunk_rows,
+                matvec,
+            )
+            .await
         }
     }
 }
@@ -358,11 +382,20 @@ pub async fn native_lm_head_logits_for_spec_ref_with_matvec(
 ) -> Result<Vec<f32>, TensorLoadError> {
     match spec {
         NativeTextModelSpecRef::Qwen(spec) => {
-            qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec).await
+            qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec)
+                .await
         }
         NativeTextModelSpecRef::Gemma(spec) => {
             let mut output = vec![0.0; spec.vocab_size as usize];
-            gemma_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec, &mut output).await?;
+            gemma_lm_head_logits_for_spec_with_matvec(
+                store,
+                spec,
+                hidden_states,
+                chunk_rows,
+                matvec,
+                &mut output,
+            )
+            .await?;
             Ok(output)
         }
     }

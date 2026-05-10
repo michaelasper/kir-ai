@@ -3,9 +3,7 @@ use super::{
     NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, native_text_cache_token_capacity,
     native_text_worker_stream, resolve_native_text_max_tokens,
 };
-use crate::native_matvec::{
-    NativeTextCacheMirrorSource,
-};
+use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
@@ -72,7 +70,12 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> Self::DecodeSession;
     fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {}
     fn hidden<'a>(&self, session: &'a Self::DecodeSession) -> &'a [f32];
-    async fn step(&self, session: &mut Self::DecodeSession, token_id: usize, scratch: &mut InferenceScratchpad) -> Result<(), BackendError>;
+    async fn step(
+        &self,
+        session: &mut Self::DecodeSession,
+        token_id: usize,
+        scratch: &mut InferenceScratchpad,
+    ) -> Result<(), BackendError>;
     async fn next_token_from_hidden(
         &self,
         hidden: &[f32],
@@ -97,10 +100,10 @@ impl NativeTextStopTokens {
         if self.token_ids.contains(&token_id) {
             return true;
         }
-        if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false) {
-            if self.token_strings.contains(&token_string.as_str()) {
-                return true;
-            }
+        if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false)
+            && self.token_strings.contains(&token_string.as_str())
+        {
+            return true;
         }
         false
     }
@@ -225,8 +228,15 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut scratch = InferenceScratchpad::new();
-        let mut decode =
-            self.start_decode_session(&context_tokens, requested, &request, &cancellation, &mut scratch).await?;
+        let mut decode = self
+            .start_decode_session(
+                &context_tokens,
+                requested,
+                &request,
+                &cancellation,
+                &mut scratch,
+            )
+            .await?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -237,7 +247,12 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling, &mut scratch).await?;
+                .next_token_from_hidden(
+                    self.adapter.hidden(&decode),
+                    request.sampling,
+                    &mut scratch,
+                )
+                .await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -259,7 +274,9 @@ where
                 ))
             })?);
             if step_idx + 1 < requested {
-                self.adapter.step(&mut decode, token_id, &mut scratch).await?;
+                self.adapter
+                    .step(&mut decode, token_id, &mut scratch)
+                    .await?;
             }
         }
 
@@ -306,14 +323,22 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut scratch = InferenceScratchpad::new();
-        let mut decode =
-            match self.start_decode_session(&context_tokens, requested, &request, &cancellation, &mut scratch).await {
-                Ok(decode) => decode,
-                Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
-                    return Err(BackendError::Cancelled);
-                }
-                Err(err) => return Err(err),
-            };
+        let mut decode = match self
+            .start_decode_session(
+                &context_tokens,
+                requested,
+                &request,
+                &cancellation,
+                &mut scratch,
+            )
+            .await
+        {
+            Ok(decode) => decode,
+            Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
+                return Err(BackendError::Cancelled);
+            }
+            Err(err) => return Err(err),
+        };
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -324,7 +349,12 @@ where
             }
             let candidate = self
                 .adapter
-                .next_token_from_hidden(self.adapter.hidden(&decode), request.sampling, &mut scratch).await?;
+                .next_token_from_hidden(
+                    self.adapter.hidden(&decode),
+                    request.sampling,
+                    &mut scratch,
+                )
+                .await?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -353,17 +383,21 @@ where
             }
             if let Some(delta) = delta {
                 tx.send(Ok(BackendStreamChunk {
-                        text: delta,
-                        prompt_tokens: prompt_tokens.len() as u64,
-                        completion_tokens: std::mem::take(&mut unreported_completion_tokens),
-                        finish_reason: None,
-                    })).await.map_err(|err| BackendError::Other(err.to_string()))?;
+                    text: delta,
+                    prompt_tokens: prompt_tokens.len() as u64,
+                    completion_tokens: std::mem::take(&mut unreported_completion_tokens),
+                    finish_reason: None,
+                }))
+                .await
+                .map_err(|err| BackendError::Other(err.to_string()))?;
             }
             if step_idx + 1 < requested {
                 if cancellation.is_cancelled() {
                     return Err(BackendError::Cancelled);
                 }
-                self.adapter.step(&mut decode, token_id, &mut scratch).await?;
+                self.adapter
+                    .step(&mut decode, token_id, &mut scratch)
+                    .await?;
             }
         }
 
@@ -377,11 +411,13 @@ where
             text_deltas.finish(final_decoded)?
         };
         tx.send(Ok(BackendStreamChunk {
-                text: final_text.unwrap_or_default(),
-                prompt_tokens: prompt_tokens.len() as u64,
-                completion_tokens: std::mem::take(&mut unreported_completion_tokens),
-                finish_reason: Some(finish_reason),
-            })).await.map_err(|err| BackendError::Other(err.to_string()))?;
+            text: final_text.unwrap_or_default(),
+            prompt_tokens: prompt_tokens.len() as u64,
+            completion_tokens: std::mem::take(&mut unreported_completion_tokens),
+            finish_reason: Some(finish_reason),
+        }))
+        .await
+        .map_err(|err| BackendError::Other(err.to_string()))?;
         Ok(())
     }
 
@@ -499,7 +535,6 @@ where
         cache_cleanup.disarm();
         Ok(self.adapter.make_decode_session(hidden, caches))
     }
-
 }
 
 #[async_trait]
@@ -544,7 +579,10 @@ where
         let label = driver.adapter.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let worker = tokio::spawn(async move {
-            if let Err(err) = driver.generate_stream_async(request, tx.clone(), cancellation).await {
+            if let Err(err) = driver
+                .generate_stream_async(request, tx.clone(), cancellation)
+                .await
+            {
                 let _ = tx.send(Err(err)).await;
             }
         });

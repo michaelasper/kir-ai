@@ -35,9 +35,15 @@ async fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
     .expect("lm head");
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
-    let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0).await.expect("final norm");
-    let top = qwen_lm_head_top_k(&store, &normalized, 1, 1).await.expect("lm head");
-    let logits = qwen_lm_head_logits(&store, &normalized, 1).await.expect("lm head logits");
+    let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0)
+        .await
+        .expect("final norm");
+    let top = qwen_lm_head_top_k(&store, &normalized, 1, 1)
+        .await
+        .expect("lm head");
+    let logits = qwen_lm_head_logits(&store, &normalized, 1)
+        .await
+        .expect("lm head logits");
 
     assert_close(&normalized, &[0.84852815, 2.2627418], 1e-6);
     assert_eq!(top[0].index, 1);
@@ -104,7 +110,9 @@ async fn qwen_final_norm_uses_configured_rms_norm_backend() {
     .expect("norm");
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let matvec = RecordingMatvecBackend::default();
-    let expected = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0).await.expect("cpu final norm");
+    let expected = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0)
+        .await
+        .expect("cpu final norm");
 
     let output = qwen_final_norm_with_matvec(&store, &[3.0, 4.0], 2, 0.0, &matvec)
         .await

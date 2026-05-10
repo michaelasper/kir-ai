@@ -30,11 +30,10 @@ fn test_runtime() -> tokio::runtime::Runtime {
         .expect("test runtime")
 }
 
-fn open_qwen_backend_blocking(
-    model_id: &str,
-    snapshot: &Path,
-) -> NativeQwenBackend {
-    test_runtime().block_on(NativeQwenBackend::open(model_id, snapshot)).expect("backend opens snapshot")
+fn open_qwen_backend_blocking(model_id: &str, snapshot: &Path) -> NativeQwenBackend {
+    test_runtime()
+        .block_on(NativeQwenBackend::open(model_id, snapshot))
+        .expect("backend opens snapshot")
 }
 
 fn open_qwen_backend_with_options_blocking(
@@ -42,7 +41,11 @@ fn open_qwen_backend_with_options_blocking(
     snapshot: &Path,
     options: NativeQwenLoadOptions,
 ) -> NativeQwenBackend {
-    test_runtime().block_on(NativeQwenBackend::open_with_options(model_id, snapshot, options)).expect("backend opens snapshot")
+    test_runtime()
+        .block_on(NativeQwenBackend::open_with_options(
+            model_id, snapshot, options,
+        ))
+        .expect("backend opens snapshot")
 }
 
 #[derive(Default)]
@@ -455,10 +458,9 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
         .enable_all()
         .build()
         .expect("test runtime");
-    let warmup = rt.block_on(
-        NativeTextMatvecBackend::Cpu.warm_bf16_matrix_cache(&store),
-    )
-    .expect("cpu warmup reports stats");
+    let warmup = rt
+        .block_on(NativeTextMatvecBackend::Cpu.warm_bf16_matrix_cache(&store))
+        .expect("cpu warmup reports stats");
 
     assert_eq!(
         warmup,
@@ -836,8 +838,10 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
                 .enable_all()
                 .build()
                 .expect("test runtime");
-            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(&store, &spec, chunk, caches, &matvec, scratch))
-                .map_err(|err| BackendError::Other(err.to_string()))
+            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
+                &store, &spec, chunk, caches, &matvec, scratch,
+            ))
+            .map_err(|err| BackendError::Other(err.to_string()))
         },
     )
     .expect_err("cancelled after first chunk");
@@ -1706,7 +1710,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
-        CpuNativeMatvecBackend.bf16_matvec_row_major_f32_in_place(store, tensor, input, output).await
+        CpuNativeMatvecBackend
+            .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+            .await
     }
 
     async fn bf16_matvec_rows_f32_in_place(
@@ -1717,7 +1723,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         chunk_rows: usize,
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
-        CpuNativeMatvecBackend.bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await
+        CpuNativeMatvecBackend
+            .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+            .await
     }
 
     async fn matvec_row_major_f32_in_place(
@@ -1728,7 +1736,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         columns: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        CpuNativeMatvecBackend.matvec_row_major_f32_in_place(input, weights, rows, columns, output).await
+        CpuNativeMatvecBackend
+            .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+            .await
     }
 
     async fn rms_norm_one_centered_f32_in_place(
@@ -1738,7 +1748,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         eps: f32,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        CpuNativeMatvecBackend.rms_norm_one_centered_f32_in_place(input, weight, eps, output).await
+        CpuNativeMatvecBackend
+            .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+            .await
     }
 
     async fn softmax_f32_in_place(
@@ -1746,7 +1758,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         scores: &[f32],
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        CpuNativeMatvecBackend.softmax_f32_in_place(scores, output).await
+        CpuNativeMatvecBackend
+            .softmax_f32_in_place(scores, output)
+            .await
     }
 
     async fn linear_attention_conv1d_silu_f32_in_place(
@@ -1761,14 +1775,15 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         if self.conv_calls.get() == 1 {
             self.cancellation.cancel();
         }
-        CpuNativeMatvecBackend.linear_attention_conv1d_silu_f32_in_place(
-            window,
-            weights,
-            conv_dim,
-            kernel_size,
-            output,
-        )
-        .await
+        CpuNativeMatvecBackend
+            .linear_attention_conv1d_silu_f32_in_place(
+                window,
+                weights,
+                conv_dim,
+                kernel_size,
+                output,
+            )
+            .await
     }
 
     async fn weighted_sum_f32_in_place(
@@ -1778,7 +1793,9 @@ impl NativeMatvecBackend for CancelAfterFirstConv {
         vector_len: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        CpuNativeMatvecBackend.weighted_sum_f32_in_place(values, weights, vector_len, output).await
+        CpuNativeMatvecBackend
+            .weighted_sum_f32_in_place(values, weights, vector_len, output)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -9,10 +9,10 @@ pub(crate) async fn finish_command_buffer_async(
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = std::sync::Mutex::new(Some(tx));
         let block = block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
-            if let Ok(mut guard) = tx.lock() {
-                if let Some(tx) = guard.take() {
-                    let _ = tx.send(cb.status());
-                }
+            if let Ok(mut guard) = tx.lock()
+                && let Some(tx) = guard.take()
+            {
+                let _ = tx.send(cb.status());
             }
         })
         .copy();

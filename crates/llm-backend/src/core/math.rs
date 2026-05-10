@@ -19,7 +19,7 @@ impl InferenceScratchpad {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     pub fn get_mut(buf: &mut Vec<f32>, len: usize) -> &mut [f32] {
         if buf.len() < len {
             buf.resize(len, 0.0);
@@ -129,10 +129,13 @@ pub fn matvec_row_major_f32_in_place(
         )));
     }
     if output.len() < rows {
-        return Err(MathError::InvalidShape("output buffer too small".to_owned()));
+        return Err(MathError::InvalidShape(
+            "output buffer too small".to_owned(),
+        ));
     }
     for (out, row) in output.iter_mut().zip(weights.chunks_exact(columns)) {
-        *out = row.iter()
+        *out = row
+            .iter()
             .zip(input)
             .map(|(weight, value)| weight * value)
             .sum();
@@ -161,7 +164,15 @@ pub fn swiglu_mlp_f32(
 ) -> Result<Vec<f32>, MathError> {
     let mut scratch = InferenceScratchpad::new();
     let mut out = vec![0.0; down_weight.len() / intermediate_size];
-    swiglu_mlp_f32_in_place(input, gate_weight, up_weight, down_weight, intermediate_size, &mut scratch, &mut out)?;
+    swiglu_mlp_f32_in_place(
+        input,
+        gate_weight,
+        up_weight,
+        down_weight,
+        intermediate_size,
+        &mut scratch,
+        &mut out,
+    )?;
     Ok(out)
 }
 

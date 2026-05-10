@@ -1,11 +1,11 @@
 use llm_backend::{
-    CpuNativeMatvecBackend, InferenceScratchpad, QwenMoeDims, SafeTensorFile,
-    SafeTensorShardStore, qwen_embedding_and_layer0_norm,
+    CpuNativeMatvecBackend, InferenceScratchpad, QwenMoeDims, SafeTensorFile, SafeTensorShardStore,
+    qwen_embedding_and_layer0_norm,
 };
 use llm_backend::{
-    qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer0_linear_attention_first_token,
+    qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer_moe_forward_with_matvec_in_place,
+    qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_first_token,
     qwen_layer0_linear_attention_projections, qwen_layer0_post_attention_norm,
-    qwen_layer_moe_forward_with_matvec_in_place, qwen_layer_moe_router_with_matvec,
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
@@ -147,7 +147,8 @@ async fn main() -> anyhow::Result<()> {
                         max_new_tokens,
                         max_prefill_tokens,
                     },
-                ).await?;
+                )
+                .await?;
                 if let Err(err) = ModelStore::mark_snapshot_used(&snapshot_path).await {
                     tracing::warn!(error = %err, snapshot = %snapshot_path.display(), "failed to record snapshot usage");
                 }
@@ -514,7 +515,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 let mut hidden = probe.embedding.clone();
                 let mut layers = Vec::new();
                 for layer_idx in 0..count {
-                    hidden = qwen_decoder_layer_first_token(&store, &spec, layer_idx, &hidden).await?;
+                    hidden =
+                        qwen_decoder_layer_first_token(&store, &spec, layer_idx, &hidden).await?;
                     layers.push(serde_json::json!({
                         "layer": layer_idx,
                         "kind": format!("{:?}", spec.layer_kinds[layer_idx]),
@@ -554,17 +556,13 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let run_layer0_projections =
                 args.iter().any(|arg| arg == "--layer0-projections") || run_layer0_attention;
             let projections = if run_layer0_projections {
-                Some(
-                    qwen_layer0_linear_attention_projections(&store, &probe.normalized).await?,
-                )
+                Some(qwen_layer0_linear_attention_projections(&store, &probe.normalized).await?)
             } else {
                 None
             };
             let layer0_attention_output = if run_layer0_attention {
                 let projections = projections.as_ref().expect("projections are computed");
-                Some(
-                    qwen_layer0_linear_attention_first_token(&store, &spec, projections).await?,
-                )
+                Some(qwen_layer0_linear_attention_first_token(&store, &spec, projections).await?)
             } else {
                 None
             };

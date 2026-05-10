@@ -1,6 +1,5 @@
 use llm_backend::{
-    CpuNativeMatvecBackend, GemmaLayerCache, InferenceScratchpad, LayerKvCache, MathError,
-    NativeKvCacheTensor, NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut,
+    CpuNativeMatvecBackend, GemmaLayerCache, InferenceScratchpad, MathError, NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut,
     NativeTextModelSpec, SafeTensorShardStore, TensorLoadError, gemma_decode_token_with_cache,
     gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec,
     gemma_prefill_sequence_with_cache, gemma_prefill_sequence_with_cache_with_matvec,
@@ -100,7 +99,13 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
         output: &mut [f32],
     ) -> Result<(), MathError> {
         CpuNativeMatvecBackend
-            .linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output)
+            .linear_attention_conv1d_silu_f32_in_place(
+                window,
+                weights,
+                conv_dim,
+                kernel_size,
+                output,
+            )
             .await
     }
 
@@ -132,7 +137,15 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
     ) -> Result<(), MathError> {
         CpuNativeMatvecBackend
             .linear_attention_recurrent_update_f32_in_place(
-                state, key, value, memory, beta, decay, key_head_dim, value_head_dim, output,
+                state,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+                output,
             )
             .await
     }
@@ -185,15 +198,18 @@ async fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
 
     let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch)
+            .await
+            .expect("prefill");
     assert_close(&prefill[0], &[2.0_f32.sqrt(), 0.0], 1e-5);
     assert_close(&prefill[1], &[0.0, 2.0_f32.sqrt()], 1e-5);
     match &caches[0] {
         GemmaLayerCache::Attention(cache) => assert_eq!(cache.token_count(), 2),
     }
 
-    let decoded =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut caches, &mut scratch).await.expect("decode token");
+    let decoded = gemma_decode_token_with_cache(&store, &spec, 2, &mut caches, &mut scratch)
+        .await
+        .expect("decode token");
     assert_close(&decoded, &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-5);
     match &caches[0] {
         GemmaLayerCache::Attention(cache) => {
@@ -220,7 +236,9 @@ async fn gemma_prefill_supports_per_layer_inputs() {
 
     let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch)
+            .await
+            .expect("prefill");
 
     assert!(spec.uses_per_layer_input());
     assert_close(&prefill[0], &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-4);
@@ -249,7 +267,9 @@ async fn gemma_prefill_reuses_shared_kv_cache_layers() {
 
     let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch)
+            .await
+            .expect("prefill");
 
     assert_eq!(caches.len(), 1);
     assert!(spec.is_kv_shared_layer(1));
@@ -279,10 +299,16 @@ async fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_
     let matvec = RecordingGemmaMatvecBackend::default();
     let mut scratch = InferenceScratchpad::default();
 
-    let prefill =
-        gemma_prefill_sequence_with_cache_with_matvec(&store, &spec, &[0, 1], &mut caches, &matvec, &mut scratch)
-            .await
-            .expect("prefill with recording matvec");
+    let prefill = gemma_prefill_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        &[0, 1],
+        &mut caches,
+        &matvec,
+        &mut scratch,
+    )
+    .await
+    .expect("prefill with recording matvec");
 
     assert_eq!(prefill.len(), 2);
     assert_eq!(matvec.softmax_calls.load(Ordering::Relaxed), 4);
@@ -305,9 +331,13 @@ async fn gemma_final_norm_and_tied_lm_head_select_top_token() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
     let mut final_norm = vec![0.0; 2];
-    gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0], &mut final_norm).await.expect("norm");
+    gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0], &mut final_norm)
+        .await
+        .expect("norm");
     assert_close(&final_norm, &[2.0_f32.sqrt(), 0.0], 1e-5);
-    let top = gemma_lm_head_top_k_for_spec(&store, &spec, &final_norm, 2, 64).await.expect("top logits");
+    let top = gemma_lm_head_top_k_for_spec(&store, &spec, &final_norm, 2, 64)
+        .await
+        .expect("top logits");
 
     assert_eq!(top[0].index, 2);
     assert!((top[0].logit - 2.0 * 2.0_f32.sqrt()).abs() < 1e-5);
@@ -329,25 +359,42 @@ async fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() 
 
     let mut direct_caches = gemma_layer_caches_for_spec(&spec, 8).expect("direct caches");
     let mut direct_scratch = InferenceScratchpad::default();
-    let direct_prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut direct_caches, &mut direct_scratch)
-            .await
-            .expect("direct prefill");
+    let direct_prefill = gemma_prefill_sequence_with_cache(
+        &store,
+        &spec,
+        &[0, 1],
+        &mut direct_caches,
+        &mut direct_scratch,
+    )
+    .await
+    .expect("direct prefill");
     let direct_decode =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches, &mut direct_scratch).await.expect("direct decode");
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches, &mut direct_scratch)
+            .await
+            .expect("direct decode");
 
     let mut native_caches =
         native_text_layer_caches_for_spec(&native_spec, 8).expect("native text caches");
     assert!(matches!(native_caches, NativeTextLayerCaches::Gemma(_)));
     let mut native_scratch = InferenceScratchpad::default();
-    let native_prefill =
-        native_text_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches, &mut native_scratch)
-            .await
-            .expect("native text prefill");
-    let native_decode =
-        native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches, &mut native_scratch)
-            .await
-            .expect("native text decode");
+    let native_prefill = native_text_prefill_sequence_with_cache(
+        &store,
+        &native_spec,
+        &[0, 1],
+        &mut native_caches,
+        &mut native_scratch,
+    )
+    .await
+    .expect("native text prefill");
+    let native_decode = native_text_decode_token_with_cache(
+        &store,
+        &native_spec,
+        2,
+        &mut native_caches,
+        &mut native_scratch,
+    )
+    .await
+    .expect("native text decode");
     let mut ref_caches = gemma_layer_caches_for_spec(&spec, 8).expect("spec-ref caches");
     let mut ref_scratch = InferenceScratchpad::default();
     let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
@@ -370,8 +417,9 @@ async fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() 
     )
     .await
     .expect("native text spec-ref decode");
-    let native_norm =
-        native_text_final_norm_for_spec(&store, &native_spec, &native_decode).await.expect("native norm");
+    let native_norm = native_text_final_norm_for_spec(&store, &native_spec, &native_decode)
+        .await
+        .expect("native norm");
     let native_top = native_text_lm_head_top_k_for_spec(&store, &native_spec, &native_norm, 2, 64)
         .await
         .expect("native top logits");

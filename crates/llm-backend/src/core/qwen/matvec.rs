@@ -28,7 +28,9 @@ pub(super) async fn rms_norm_f32_with_matvec_in_place(
         ));
     }
     let qwen_weight = weight.iter().map(|value| value - 1.0).collect::<Vec<_>>();
-    matvec.rms_norm_one_centered_f32_in_place(input, &qwen_weight, eps, output).await
+    matvec
+        .rms_norm_one_centered_f32_in_place(input, &qwen_weight, eps, output)
+        .await
 }
 
 pub(super) async fn l2_normalize_f32_with_matvec(
@@ -38,7 +40,14 @@ pub(super) async fn l2_normalize_f32_with_matvec(
 ) -> Result<Vec<f32>, MathError> {
     let mut qwen_weight = Vec::new();
     let mut output = vec![0.0; input.len()];
-    l2_normalize_f32_with_matvec_and_weight_scratch(input, eps, matvec, &mut qwen_weight, &mut output).await?;
+    l2_normalize_f32_with_matvec_and_weight_scratch(
+        input,
+        eps,
+        matvec,
+        &mut qwen_weight,
+        &mut output,
+    )
+    .await?;
     Ok(output)
 }
 
@@ -61,7 +70,9 @@ pub(super) async fn l2_normalize_f32_with_matvec_and_weight_scratch(
     let weight_scale = (input.len() as f32).sqrt().recip();
     qwen_weight.clear();
     qwen_weight.resize(input.len(), weight_scale - 1.0);
-    matvec.rms_norm_one_centered_f32_in_place(input, qwen_weight, eps / input.len() as f32, output).await
+    matvec
+        .rms_norm_one_centered_f32_in_place(input, qwen_weight, eps / input.len() as f32, output)
+        .await
 }
 
 #[cfg(test)]

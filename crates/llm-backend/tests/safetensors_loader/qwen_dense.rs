@@ -9,8 +9,9 @@ async fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
     let spec = tiny_qwen3_dense_spec();
     let mut caches = caches_for_spec(&spec, 4);
 
-    let hidden =
-        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
+    let hidden = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .await
+        .expect("prefill");
 
     assert_eq!(hidden.len(), 2);
     assert_eq!(hidden[0].len(), 2);
@@ -54,12 +55,15 @@ async fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let spec = tiny_qwen3_dense_spec();
 
-    let normalized =
-        qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0]).await.expect("final norm uses model.norm");
-    let top =
-        qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2).await.expect("tied top-k works");
-    let logits =
-        qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2).await.expect("tied logits work");
+    let normalized = qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0])
+        .await
+        .expect("final norm uses model.norm");
+    let top = qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2)
+        .await
+        .expect("tied top-k works");
+    let logits = qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2)
+        .await
+        .expect("tied logits work");
 
     assert_close(&normalized, &[std::f32::consts::SQRT_2, 0.0], 1e-5);
     assert_eq!(top[0].index, 0);

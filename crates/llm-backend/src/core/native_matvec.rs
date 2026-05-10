@@ -1,11 +1,12 @@
 use super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
     linear_attention_recurrent_update_f32, matvec_row_major_f32_in_place,
-    rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32,
-    softmax_f32, softmax_top_k_f32, weighted_sum_f32,
+    rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32, softmax_f32,
+    softmax_top_k_f32, weighted_sum_f32,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn swiglu_mlp_f32_with_matvec(
     input: &[f32],
     gate_weight: &[f32],
@@ -116,6 +117,7 @@ pub trait NativeMatvecBackend {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn bf16_matvec_range_row_major_f32_in_place(
         &self,
         store: &SafeTensorShardStore,
@@ -214,8 +216,14 @@ pub trait NativeMatvecBackend {
         kernel_size: usize,
     ) -> Result<Vec<f32>, MathError> {
         let mut output = vec![0.0; conv_dim];
-        self.linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, &mut output)
-            .await?;
+        self.linear_attention_conv1d_silu_f32_in_place(
+            window,
+            weights,
+            conv_dim,
+            kernel_size,
+            &mut output,
+        )
+        .await?;
         Ok(output)
     }
 
@@ -299,8 +307,15 @@ pub trait NativeMatvecBackend {
         head_len: usize,
     ) -> Result<Vec<f32>, MathError> {
         let mut output = vec![0.0; row_count * head_len];
-        self.select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, &mut output)
-            .await?;
+        self.select_head_rows_f32_in_place(
+            values,
+            row_count,
+            row_len,
+            head_start,
+            head_len,
+            &mut output,
+        )
+        .await?;
         Ok(output)
     }
 

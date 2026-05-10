@@ -79,7 +79,8 @@ pub async fn native_full_attention_sequence_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
 ) -> Result<Vec<Vec<f32>>, MathError> {
-    native_full_attention_sequence_from_parts_with_matvec(dims, parts, &CpuNativeMatvecBackend).await
+    native_full_attention_sequence_from_parts_with_matvec(dims, parts, &CpuNativeMatvecBackend)
+        .await
 }
 
 pub async fn native_full_attention_sequence_from_parts_with_matvec(
@@ -630,8 +631,9 @@ mod tests {
             score_scale: 1.0,
         };
 
-        let uncached =
-            native_full_attention_sequence_from_parts(dims, &parts).await.expect("uncached succeeds");
+        let uncached = native_full_attention_sequence_from_parts(dims, &parts)
+            .await
+            .expect("uncached succeeds");
         let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
         let cached = native_full_attention_sequence_with_cache_from_parts(dims, &parts, &mut cache)
             .await

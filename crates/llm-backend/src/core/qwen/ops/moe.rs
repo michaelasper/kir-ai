@@ -1,9 +1,5 @@
-use super::super::super::math::{
-    InferenceScratchpad, silu_f32, softmax_top_k_f32,
-};
-use super::super::super::{
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
-};
+use super::super::super::math::{InferenceScratchpad, silu_f32, softmax_top_k_f32};
+use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
 use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
 use llm_models::QwenModelSpec;
 
@@ -44,27 +40,23 @@ pub async fn qwen_layer_dense_mlp_with_matvec(
         )
         .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen dense MLP up failed: {err}")))?;
-    
+
     let activated = InferenceScratchpad::get_mut(&mut scratch.buf2, intermediate_size);
     for (a, (g, u)) in activated.iter_mut().zip(gate.iter().zip(up.iter())) {
         *a = silu_f32(*g) * *u;
     }
-    
+
     let down_tensor = spec.mlp_tensor(layer_idx, "down_proj.weight");
     let down_meta = store.tensor_metadata(&down_tensor)?;
     if down_meta.shape[0] != output.len() {
         return Err(TensorLoadError::integrity(format!(
             "down output length {} does not match hidden size {}",
-            down_meta.shape[0], output.len()
+            down_meta.shape[0],
+            output.len()
         )));
     }
     matvec
-        .bf16_matvec_row_major_f32_in_place(
-            store,
-            &down_tensor,
-            activated,
-            output,
-        )
+        .bf16_matvec_row_major_f32_in_place(store, &down_tensor, activated, output)
         .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen dense MLP down failed: {err}")))?;
     Ok(())
@@ -80,9 +72,18 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
     if spec.is_qwen3_dense() {
-        return qwen_layer_dense_mlp_with_matvec(store, spec, layer_idx, hidden_states, matvec, scratch, output).await;
+        return qwen_layer_dense_mlp_with_matvec(
+            store,
+            spec,
+            layer_idx,
+            hidden_states,
+            matvec,
+            scratch,
+            output,
+        )
+        .await;
     }
-    
+
     // MoE case
     let router = qwen_layer_moe_router_with_matvec(
         store,
@@ -92,7 +93,7 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
         matvec,
     )
     .await?;
-    
+
     qwen_layer_moe_forward_with_matvec_in_place(
         store,
         layer_idx,
@@ -121,11 +122,13 @@ pub async fn qwen_layer_moe_router_with_matvec(
         )
         .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
-    let selected = softmax_top_k_f32(&logits, top_k)
-        .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router softmax failed: {err}")))?;
+    let selected = softmax_top_k_f32(&logits, top_k).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen MoE router softmax failed: {err}"))
+    })?;
     Ok(QwenMoeRouterProbe { logits, selected })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn qwen_layer_moe_forward_with_matvec_in_place(
     store: &SafeTensorShardStore,
     layer_idx: usize,
@@ -140,8 +143,9 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
         return Err(TensorLoadError::integrity("output buffer too small"));
     }
     output.fill(0.0);
-    
-    let expert_gate_up = InferenceScratchpad::get_mut(&mut scratch.buf0, dims.moe_intermediate_size * 2);
+
+    let expert_gate_up =
+        InferenceScratchpad::get_mut(&mut scratch.buf0, dims.moe_intermediate_size * 2);
     let expert_down = InferenceScratchpad::get_mut(&mut scratch.buf1, dims.hidden_size);
     let activated = InferenceScratchpad::get_mut(&mut scratch.buf2, dims.moe_intermediate_size);
 
@@ -158,13 +162,17 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
             )
             .await
             .map_err(|err| {
-                TensorLoadError::integrity(format!("Qwen expert{layer_idx}.{} gate_up failed: {err}", expert.index))
+                TensorLoadError::integrity(format!(
+                    "Qwen expert{layer_idx}.{} gate_up failed: {err}",
+                    expert.index
+                ))
             })?;
-            
+
         for i in 0..dims.moe_intermediate_size {
-            activated[i] = silu_f32(expert_gate_up[i]) * expert_gate_up[i + dims.moe_intermediate_size];
+            activated[i] =
+                silu_f32(expert_gate_up[i]) * expert_gate_up[i + dims.moe_intermediate_size];
         }
-        
+
         matvec
             .bf16_matvec_range_row_major_f32_in_place(
                 store,
@@ -177,26 +185,41 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
             )
             .await
             .map_err(|err| {
-                TensorLoadError::integrity(format!("Qwen expert{layer_idx}.{} down failed: {err}", expert.index))
+                TensorLoadError::integrity(format!(
+                    "Qwen expert{layer_idx}.{} down failed: {err}",
+                    expert.index
+                ))
             })?;
-            
+
         for (o, d) in output.iter_mut().zip(expert_down.iter()) {
             *o += *d * expert.weight;
         }
     }
-    
+
     let mut shared_output = vec![0.0; dims.hidden_size];
-    qwen_layer_shared_expert_forward_with_matvec(store, layer_idx, dims, hidden_states, matvec, scratch, &mut shared_output).await?;
-    
-    let shared_gate_vec = matvec.bf16_matvec_row_major_f32(
+    qwen_layer_shared_expert_forward_with_matvec(
         store,
-        &qwen_layer_tensor(layer_idx, "mlp.shared_expert_gate.weight"),
+        layer_idx,
+        dims,
         hidden_states,
-    ).await.map_err(|err| {
-        TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
-    })?;
+        matvec,
+        scratch,
+        &mut shared_output,
+    )
+    .await?;
+
+    let shared_gate_vec = matvec
+        .bf16_matvec_row_major_f32(
+            store,
+            &qwen_layer_tensor(layer_idx, "mlp.shared_expert_gate.weight"),
+            hidden_states,
+        )
+        .await
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen shared expert gate failed: {err}"))
+        })?;
     let shared_gate = sigmoid_f32(shared_gate_vec[0]);
-    
+
     for (o, s) in output.iter_mut().zip(shared_output.iter()) {
         *o += *s * shared_gate;
     }
@@ -212,30 +235,38 @@ pub(super) async fn qwen_layer_shared_expert_forward_with_matvec(
     scratch: &mut InferenceScratchpad,
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
-    let gate = InferenceScratchpad::get_mut(&mut scratch.buf1, dims.shared_expert_intermediate_size);
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &qwen_layer_tensor(layer_idx, "mlp.shared_expert.gate_proj.weight"),
-        hidden_states,
-        gate,
-    ).await?;
+    let gate =
+        InferenceScratchpad::get_mut(&mut scratch.buf1, dims.shared_expert_intermediate_size);
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &qwen_layer_tensor(layer_idx, "mlp.shared_expert.gate_proj.weight"),
+            hidden_states,
+            gate,
+        )
+        .await?;
     let up = InferenceScratchpad::get_mut(&mut scratch.buf2, dims.shared_expert_intermediate_size);
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &qwen_layer_tensor(layer_idx, "mlp.shared_expert.up_proj.weight"),
-        hidden_states,
-        up,
-    ).await?;
-    let activated = InferenceScratchpad::get_mut(&mut scratch.buf3, dims.shared_expert_intermediate_size);
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &qwen_layer_tensor(layer_idx, "mlp.shared_expert.up_proj.weight"),
+            hidden_states,
+            up,
+        )
+        .await?;
+    let activated =
+        InferenceScratchpad::get_mut(&mut scratch.buf3, dims.shared_expert_intermediate_size);
     for i in 0..dims.shared_expert_intermediate_size {
         activated[i] = silu_f32(gate[i]) * up[i];
     }
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &qwen_layer_tensor(layer_idx, "mlp.shared_expert.down_proj.weight"),
-        activated,
-        output,
-    ).await?;
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &qwen_layer_tensor(layer_idx, "mlp.shared_expert.down_proj.weight"),
+            activated,
+            output,
+        )
+        .await?;
     Ok(())
 }
 

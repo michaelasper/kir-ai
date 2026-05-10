@@ -256,7 +256,15 @@ impl MetalDevice {
         output: &mut [f32],
     ) -> Result<(), MetalError> {
         let values_buffer = self.new_f32_buffer(values)?;
-        self.select_head_rows_f32_buffered(&values_buffer, row_count, row_len, head_start, head_len, output).await
+        self.select_head_rows_f32_buffered(
+            &values_buffer,
+            row_count,
+            row_len,
+            head_start,
+            head_len,
+            output,
+        )
+        .await
     }
 
     pub async fn select_head_rows_f32_buffered(

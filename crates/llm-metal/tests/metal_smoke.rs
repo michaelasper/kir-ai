@@ -55,7 +55,10 @@ async fn metal_softmax_f32_matches_cpu_reference() {
         .collect::<Vec<_>>();
 
     let mut output = vec![0.0; scores.len()];
-    device.softmax_f32(&scores, &mut output).await.expect("metal softmax succeeds");
+    device
+        .softmax_f32(&scores, &mut output)
+        .await
+        .expect("metal softmax succeeds");
 
     assert_close(&output, &expected, 1e-6);
     assert_close(&[output.iter().sum::<f32>()], &[1.0], 1e-6);
@@ -91,7 +94,12 @@ async fn metal_weighted_sum_f32_matches_cpu_reference() {
 
     let mut output = vec![0.0; 3];
     device
-        .weighted_sum_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0.25, -0.5], 3, &mut output)
+        .weighted_sum_f32(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            &[0.25, -0.5],
+            3,
+            &mut output,
+        )
         .await
         .expect("metal weighted sum succeeds");
 
@@ -169,7 +177,14 @@ async fn metal_select_head_rows_f32_matches_cpu_reference() {
 
     let mut output = vec![0.0; 4];
     device
-        .select_head_rows_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 2, 4, 1, 2, &mut output)
+        .select_head_rows_f32(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            2,
+            4,
+            1,
+            2,
+            &mut output,
+        )
         .await
         .expect("metal head row selection succeeds");
 
@@ -208,7 +223,13 @@ async fn metal_matvec_f32_matches_cpu_reference() {
 
     let mut output = vec![0.0; 2];
     device
-        .matvec_f32(&[1.0, 2.0, 3.0, 4.0, -1.0, 0.5], 2, 3, &[0.5, -2.0, 4.0], &mut output)
+        .matvec_f32(
+            &[1.0, 2.0, 3.0, 4.0, -1.0, 0.5],
+            2,
+            3,
+            &[0.5, -2.0, 4.0],
+            &mut output,
+        )
         .await
         .expect("metal matvec succeeds");
 
@@ -261,7 +282,12 @@ async fn metal_buffered_matvec_bf16_f32_reuses_matrix_buffer() {
         .expect("buffered bf16 matvec succeeds again");
     let mut batched = vec![0.0; 4];
     device
-        .batched_matvec_bf16_f32_buffered(&matrix_buffer, &[0.5, -2.0, 4.0, 1.0, 0.0, -1.0], 2, &mut batched)
+        .batched_matvec_bf16_f32_buffered(
+            &matrix_buffer,
+            &[0.5, -2.0, 4.0, 1.0, 0.0, -1.0],
+            2,
+            &mut batched,
+        )
         .await
         .expect("buffered batched bf16 matvec succeeds");
 
@@ -281,7 +307,14 @@ async fn metal_batched_matvec_bf16_f32_matches_cpu_reference() {
 
     let mut output = vec![0.0; 4];
     device
-        .batched_matvec_bf16_f32(&matrix, 2, 3, &[1.0, 2.0, 3.0, 3.0, 2.0, 1.0], 2, &mut output)
+        .batched_matvec_bf16_f32(
+            &matrix,
+            2,
+            3,
+            &[1.0, 2.0, 3.0, 3.0, 2.0, 1.0],
+            2,
+            &mut output,
+        )
         .await
         .expect("metal batched bf16 matvec succeeds");
 
@@ -300,7 +333,10 @@ async fn metal_argmax_f32_matches_cpu_reference_with_stable_ties() {
     logits[311] = 4.5;
     logits[599] = 3.25;
 
-    let output = device.argmax_f32(&logits).await.expect("metal argmax succeeds");
+    let output = device
+        .argmax_f32(&logits)
+        .await
+        .expect("metal argmax succeeds");
 
     assert_eq!(output.index, 42);
     assert_eq!(output.value, 4.5);
@@ -319,8 +355,17 @@ async fn metal_top_k_f32_matches_cpu_reference_with_stable_ties() {
     logits[499] = 12.0;
     logits[612] = 5.0;
 
-    let mut output = vec![llm_metal::TopKResult { index: 0, value: 0.0 }; 3];
-    device.top_k_f32(&logits, 3, &mut output).await.expect("metal top-k succeeds");
+    let mut output = vec![
+        llm_metal::TopKResult {
+            index: 0,
+            value: 0.0
+        };
+        3
+    ];
+    device
+        .top_k_f32(&logits, 3, &mut output)
+        .await
+        .expect("metal top-k succeeds");
 
     assert_eq!(output.len(), 3);
     assert_eq!(output[0].index, 288);

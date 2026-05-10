@@ -81,7 +81,10 @@ async fn admin_metrics_report_artifact_verification_failures() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/admin/models/{}/verify", llm_engine::DEFAULT_MODEL_ID))
+                .uri(format!(
+                    "/admin/models/{}/verify",
+                    llm_engine::DEFAULT_MODEL_ID
+                ))
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -127,7 +130,10 @@ async fn admin_metrics_report_model_pull_operations() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/admin/models/{}/pull", llm_engine::DEFAULT_MODEL_ID))
+                .uri(format!(
+                    "/admin/models/{}/pull",
+                    llm_engine::DEFAULT_MODEL_ID
+                ))
                 .header("authorization", "Bearer secret-admin-token")
                 .header("content-type", "application/json")
                 .body(Body::from(

@@ -12,12 +12,12 @@ use super::{
     state::AppState,
 };
 use axum::{
+    Router,
     body::Body,
     extract::State,
-    http::{header::HeaderName, Request},
+    http::{Request, header::HeaderName},
     middleware::{self, Next},
     response::Response,
-    Router,
     routing::{get, post},
 };
 use llm_backend::ModelBackend;

@@ -1,31 +1,13 @@
+#![allow(dead_code)]
 use llm_backend::{
-    CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeKvCacheTensor,
-    NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut, QWEN_FINAL_NORM_WEIGHT,
-    QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
-    TensorLoadError, TopKLogit, native_decode_token_with_cache,
-    native_decode_token_with_cache_for_spec_ref_with_matvec, native_layer_caches_for_spec,
-    native_prefill_sequence_with_cache,
-    native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_decode_token_with_cache,
-    qwen_decode_token_with_cache_with_matvec, qwen_embedding_and_layer0_norm, qwen_final_norm,
-    qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
-    qwen_layer_full_attention_first_token, qwen_layer_full_attention_sequence,
-    qwen_layer_full_attention_sequence_with_cache,
-    qwen_layer_full_attention_sequence_with_cache_with_matvec,
-    qwen_layer_full_attention_step_with_cache,
-    qwen_layer_full_attention_step_with_cache_with_matvec, qwen_layer_linear_attention_first_token,
-    qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
-    qwen_layer_linear_attention_sequence_with_cache,
-    qwen_layer_linear_attention_sequence_with_cache_with_matvec,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_forward_with_matvec_in_place,
-    qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_projections,
-    qwen_layer0_post_attention_norm,
-    qwen_lm_head_logits, qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec,
-    qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec,
-    qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
-    qwen_prefill_sequence_with_cache_with_matvec, rms_norm_one_centered_f32,
+    CpuNativeMatvecBackend, MathError,
+    NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT,
+    QwenLayerCache, SafeTensorShardStore,
+    TensorLoadError, qwen_final_norm,
+    qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_lm_head_logits, qwen_lm_head_logits_for_spec,
+    qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec,
+    qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence_with_cache,
 };
-use llm_backend::{NativeTextModelSpec, QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
-use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -139,7 +121,13 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
     ) -> Result<(), MathError> {
         self.conv1d_calls.fetch_add(1, Ordering::Relaxed);
         CpuNativeMatvecBackend
-            .linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output)
+            .linear_attention_conv1d_silu_f32_in_place(
+                window,
+                weights,
+                conv_dim,
+                kernel_size,
+                output,
+            )
             .await
     }
 

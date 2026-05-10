@@ -189,7 +189,8 @@ impl NativeQwenBackend {
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
-        self.driver.generate_blocking_stream(request, tx, cancellation)
+        self.driver
+            .generate_blocking_stream(request, tx, cancellation)
     }
 
     #[cfg(test)]
@@ -219,11 +220,13 @@ impl NativeQwenBackend {
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
         let token_id = tokio::task::block_in_place(|| {
-            self.driver.runtime().block_on(
-                self.driver
-                    .adapter
-                    .next_token_from_hidden(hidden, sampling, &mut InferenceScratchpad::new()),
-            )
+            self.driver
+                .runtime()
+                .block_on(self.driver.adapter.next_token_from_hidden(
+                    hidden,
+                    sampling,
+                    &mut InferenceScratchpad::new(),
+                ))
         })?;
         Ok(NativeQwenCandidate { token_id })
     }
@@ -359,7 +362,9 @@ impl NativeTextAdapter for NativeQwenAdapter {
         token_id: usize,
         scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
-        session.step(&self.store, &self.spec, &self.matvec, token_id, scratch).await
+        session
+            .step(&self.store, &self.spec, &self.matvec, token_id, scratch)
+            .await
     }
 
     async fn next_token_from_hidden(

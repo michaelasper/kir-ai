@@ -1,4 +1,4 @@
-use crate::{flag_value, has_flag, DEFAULT_MODEL_ID};
+use crate::{DEFAULT_MODEL_ID, flag_value, has_flag};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use llm_hub::ModelStore;

@@ -1,10 +1,12 @@
 use super::super::math::{
-    InferenceScratchpad, MathError, TopKLogit, apply_rope_to_head, require_len, rms_norm_f32_in_place,
+    InferenceScratchpad, MathError, TopKLogit, apply_rope_to_head, require_len,
+    rms_norm_f32_in_place,
 };
 use super::super::{
     CpuNativeMatvecBackend, LayerKvCache, NativeFullAttentionCacheSequenceParts,
     NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
-    SafeTensorShardStore, TensorLoadError, native_full_attention_sequence_from_cache_parts_with_matvec,
+    SafeTensorShardStore, TensorLoadError,
+    native_full_attention_sequence_from_cache_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
 };
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
@@ -203,9 +205,15 @@ pub async fn gemma_decode_token_with_cache_with_matvec(
     matvec: &impl NativeMatvecBackend,
     scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    let hidden_states =
-        gemma_prefill_sequence_with_cache_with_matvec(store, spec, &[token_id], caches, matvec, scratch)
-            .await?;
+    let hidden_states = gemma_prefill_sequence_with_cache_with_matvec(
+        store,
+        spec,
+        &[token_id],
+        caches,
+        matvec,
+        scratch,
+    )
+    .await?;
     hidden_states
         .into_iter()
         .next()
@@ -262,11 +270,13 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
         .ok_or_else(|| TensorLoadError::integrity("Gemma PLE shape overflow"))?;
     let projection_norm_weight =
         store.bf16_tensor_f32_range(&spec.per_layer_projection_norm_weight(), 0, per_layer_size)?;
-    let projected = matvec.bf16_matvecs_row_major_f32(
-        store,
-        &spec.per_layer_model_projection_weight(),
-        input_embeddings,
-    ).await?;
+    let projected = matvec
+        .bf16_matvecs_row_major_f32(
+            store,
+            &spec.per_layer_model_projection_weight(),
+            input_embeddings,
+        )
+        .await?;
     if projected.len() != token_ids.len() {
         return Err(TensorLoadError::integrity(format!(
             "Gemma PLE projection count {} must match token count {}",
@@ -308,12 +318,15 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
                 .map(|value| value * model_projection_scale)
                 .collect::<Vec<_>>();
             let mut normalized_projection = vec![0.0; per_layer_size];
-            rms_norm_f32_in_place(&projected_slice, &projection_norm_weight, spec.rms_norm_eps, &mut normalized_projection)
-                    .map_err(|err| {
-                        TensorLoadError::integrity(format!(
-                            "Gemma PLE projection RMSNorm failed: {err}"
-                        ))
-                    })?;
+            rms_norm_f32_in_place(
+                &projected_slice,
+                &projection_norm_weight,
+                spec.rms_norm_eps,
+                &mut normalized_projection,
+            )
+            .map_err(|err| {
+                TensorLoadError::integrity(format!("Gemma PLE projection RMSNorm failed: {err}"))
+            })?;
             let combined = normalized_projection
                 .iter()
                 .zip(&token_per_layer[start..end])
@@ -325,6 +338,7 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
     Ok(layer_inputs)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
@@ -350,7 +364,8 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
         caches,
         matvec,
         scratch,
-    ).await?;
+    )
+    .await?;
     let post_attention = gemma_norm_sequence_after_projection(
         store,
         spec,
@@ -369,7 +384,16 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
     let mut mlp_output = Vec::with_capacity(pre_feed_forward.len());
     for hidden in &pre_feed_forward {
         let mut output = vec![0.0; spec.hidden_size as usize];
-        gemma_layer_dense_mlp_with_matvec(store, spec, layer_idx, hidden, matvec, scratch, &mut output).await?;
+        gemma_layer_dense_mlp_with_matvec(
+            store,
+            spec,
+            layer_idx,
+            hidden,
+            matvec,
+            scratch,
+            &mut output,
+        )
+        .await?;
         mlp_output.push(output);
     }
     let post_feed_forward = gemma_norm_sequence_after_projection(
@@ -393,7 +417,8 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
             per_layer_input,
             matvec,
             scratch,
-        ).await?;
+        )
+        .await?;
     }
     apply_gemma_layer_scalar(store, spec, layer_idx, &mut output)?;
     Ok(output)
@@ -437,36 +462,46 @@ async fn gemma_apply_per_layer_input_sequence_with_matvec(
             )));
         }
         let gate = InferenceScratchpad::get_mut(&mut scratch.buf0, per_layer_size);
-        matvec.bf16_matvec_row_major_f32_in_place(
-            store,
-            &spec.layer_tensor(layer_idx, "per_layer_input_gate.weight"),
-            hidden,
-            gate,
-        ).await?;
-        
+        matvec
+            .bf16_matvec_row_major_f32_in_place(
+                store,
+                &spec.layer_tensor(layer_idx, "per_layer_input_gate.weight"),
+                hidden,
+                gate,
+            )
+            .await?;
+
         let activated = InferenceScratchpad::get_mut(&mut scratch.buf1, per_layer_size);
         for (a, (g, i)) in activated.iter_mut().zip(gate.iter().zip(per_layer_input)) {
             *a = gelu_pytorch_tanh_f32(*g) * *i;
         }
 
         let projected = InferenceScratchpad::get_mut(&mut scratch.buf2, hidden_size);
-        matvec.bf16_matvec_row_major_f32_in_place(
-            store,
-            &spec.layer_tensor(layer_idx, "per_layer_projection.weight"),
-            activated,
-            projected,
-        ).await?;
+        matvec
+            .bf16_matvec_row_major_f32_in_place(
+                store,
+                &spec.layer_tensor(layer_idx, "per_layer_projection.weight"),
+                activated,
+                projected,
+            )
+            .await?;
 
         let normalized = InferenceScratchpad::get_mut(&mut scratch.buf3, hidden_size);
         rms_norm_f32_in_place(projected, &norm_weight, spec.rms_norm_eps, normalized).map_err(
-            |err| TensorLoadError::integrity(format!("Gemma layer{layer_idx} PLE RMSNorm failed: {err}")),
+            |err| {
+                TensorLoadError::integrity(format!(
+                    "Gemma layer{layer_idx} PLE RMSNorm failed: {err}"
+                ))
+            },
         )?;
 
-        results.push(hidden
-            .iter()
-            .zip(normalized)
-            .map(|(h, u)| *h + *u)
-            .collect());
+        results.push(
+            hidden
+                .iter()
+                .zip(normalized)
+                .map(|(h, u)| *h + *u)
+                .collect(),
+        );
     }
     Ok(results)
 }
@@ -501,29 +536,35 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
     let GemmaLayerCache::Attention(cache) = cache;
     require_gemma_attention_cache_shape(&dims, cache, layer_idx)?;
 
-    let q_proj = matvec.bf16_matvecs_row_major_f32(
-        store,
-        &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
-        hidden_states,
-    ).await?;
+    let q_proj = matvec
+        .bf16_matvecs_row_major_f32(
+            store,
+            &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
+            hidden_states,
+        )
+        .await?;
     let k_proj = if is_shared_layer {
         Vec::new()
     } else {
-        matvec.bf16_matvecs_row_major_f32(
-            store,
-            &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
-            hidden_states,
-        ).await?
+        matvec
+            .bf16_matvecs_row_major_f32(
+                store,
+                &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
+                hidden_states,
+            )
+            .await?
     };
     let use_k_eq_v = spec.attention_k_eq_v && matches!(kind, GemmaAttentionKind::FullAttention);
     let v_proj = if is_shared_layer || use_k_eq_v {
         Vec::new()
     } else {
-        matvec.bf16_matvecs_row_major_f32(
-            store,
-            &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
-            hidden_states,
-        ).await?
+        matvec
+            .bf16_matvecs_row_major_f32(
+                store,
+                &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
+                hidden_states,
+            )
+            .await?
     };
     let q_norm_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
@@ -622,7 +663,8 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
             },
             cache,
             matvec,
-        ).await
+        )
+        .await
     } else {
         native_full_attention_sequence_with_cache_from_parts_with_matvec(
             dims.native(),
@@ -636,7 +678,8 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
             },
             cache,
             matvec,
-        ).await
+        )
+        .await
     }
     .map_err(|err| {
         TensorLoadError::integrity(format!("Gemma layer{layer_idx} attention failed: {err}"))
@@ -662,21 +705,25 @@ async fn gemma_layer_dense_mlp_with_matvec(
         )));
     }
     let gate = InferenceScratchpad::get_mut(&mut scratch.buf0, intermediate_size);
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &spec.mlp_tensor(layer_idx, "gate_proj.weight"),
-        hidden_states,
-        gate,
-    ).await?;
-    
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &spec.mlp_tensor(layer_idx, "gate_proj.weight"),
+            hidden_states,
+            gate,
+        )
+        .await?;
+
     let up = InferenceScratchpad::get_mut(&mut scratch.buf1, intermediate_size);
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &spec.mlp_tensor(layer_idx, "up_proj.weight"),
-        hidden_states,
-        up,
-    ).await?;
-    
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &spec.mlp_tensor(layer_idx, "up_proj.weight"),
+            hidden_states,
+            up,
+        )
+        .await?;
+
     if gate.len() != intermediate_size || up.len() != intermediate_size {
         return Err(TensorLoadError::integrity(format!(
             "Gemma dense MLP gate/up lengths {}, {} must match intermediate size {intermediate_size}",
@@ -684,19 +731,21 @@ async fn gemma_layer_dense_mlp_with_matvec(
             up.len()
         )));
     }
-    
+
     let activated = InferenceScratchpad::get_mut(&mut scratch.buf2, intermediate_size);
     for (a, (g, u)) in activated.iter_mut().zip(gate.iter().zip(up.iter())) {
         *a = gelu_pytorch_tanh_f32(*g) * *u;
     }
-    
-    matvec.bf16_matvec_row_major_f32_in_place(
-        store,
-        &spec.mlp_tensor(layer_idx, "down_proj.weight"),
-        activated,
-        output,
-    ).await?;
-    
+
+    matvec
+        .bf16_matvec_row_major_f32_in_place(
+            store,
+            &spec.mlp_tensor(layer_idx, "down_proj.weight"),
+            activated,
+            output,
+        )
+        .await?;
+
     if output.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
             "Gemma dense MLP down output length {} must match hidden size {hidden_size}",
@@ -738,7 +787,8 @@ pub async fn gemma_lm_head_top_k_for_spec(
         top_k,
         chunk_rows,
         &CpuNativeMatvecBackend,
-    ).await
+    )
+    .await
 }
 
 pub async fn gemma_lm_head_top_k_for_spec_with_matvec(
@@ -749,13 +799,15 @@ pub async fn gemma_lm_head_top_k_for_spec_with_matvec(
     chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    matvec.bf16_matvec_top_k_rows_f32(
-        store,
-        &spec.lm_head_weight(),
-        hidden_states,
-        top_k,
-        chunk_rows,
-    ).await
+    matvec
+        .bf16_matvec_top_k_rows_f32(
+            store,
+            &spec.lm_head_weight(),
+            hidden_states,
+            top_k,
+            chunk_rows,
+        )
+        .await
 }
 
 pub async fn gemma_lm_head_logits_for_spec_with_matvec(
@@ -766,7 +818,15 @@ pub async fn gemma_lm_head_logits_for_spec_with_matvec(
     matvec: &impl NativeMatvecBackend,
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
-    matvec.bf16_matvec_rows_f32_in_place(store, &spec.lm_head_weight(), hidden_states, chunk_rows, output).await
+    matvec
+        .bf16_matvec_rows_f32_in_place(
+            store,
+            &spec.lm_head_weight(),
+            hidden_states,
+            chunk_rows,
+            output,
+        )
+        .await
 }
 
 fn gemma_layer_norm_sequence(
@@ -799,9 +859,9 @@ fn gemma_norm_sequence_after_projection(
                 )));
             }
             let mut output = vec![0.0; hidden_size];
-            rms_norm_f32_in_place(hidden, &norm_weight, spec.rms_norm_eps, &mut output).map_err(|err| {
-                TensorLoadError::integrity(format!("Gemma layer RMSNorm failed: {err}"))
-            })?;
+            rms_norm_f32_in_place(hidden, &norm_weight, spec.rms_norm_eps, &mut output).map_err(
+                |err| TensorLoadError::integrity(format!("Gemma layer RMSNorm failed: {err}")),
+            )?;
             Ok(output)
         })
         .collect()
@@ -888,10 +948,15 @@ fn gemma_projected_heads_normed_and_rotary(
     for head in 0..head_count {
         let start = head * head_dim;
         let mut normalized = vec![0.0; head_dim];
-        rms_norm_f32_in_place(&projected[start..start + head_dim], norm_weight, eps, &mut normalized)
-            .map_err(|err| {
-                TensorLoadError::integrity(format!("Gemma attention RMSNorm failed: {err}"))
-            })?;
+        rms_norm_f32_in_place(
+            &projected[start..start + head_dim],
+            norm_weight,
+            eps,
+            &mut normalized,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Gemma attention RMSNorm failed: {err}"))
+        })?;
         apply_rope_to_head(
             &mut normalized,
             position,

@@ -120,7 +120,8 @@ impl MetalDevice {
         output: &mut [f32],
     ) -> Result<(), MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.matvec_bf16_f32_buffered(&matrix_buffer, vector, output).await
+        self.matvec_bf16_f32_buffered(&matrix_buffer, vector, output)
+            .await
     }
 
     pub fn new_bf16_matrix_buffer(
@@ -263,7 +264,8 @@ impl MetalDevice {
         output: &mut [f32],
     ) -> Result<(), MetalError> {
         let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count, output).await
+        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count, output)
+            .await
     }
 
     pub async fn batched_matvec_bf16_f32_buffered(

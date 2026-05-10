@@ -201,11 +201,13 @@ impl NativeGemmaBackend {
         sampling: SamplingConfig,
     ) -> Result<usize, BackendError> {
         tokio::task::block_in_place(|| {
-            self.driver.runtime().block_on(
-                self.driver
-                    .adapter
-                    .next_token_from_hidden(hidden, sampling, &mut InferenceScratchpad::new()),
-            )
+            self.driver
+                .runtime()
+                .block_on(self.driver.adapter.next_token_from_hidden(
+                    hidden,
+                    sampling,
+                    &mut InferenceScratchpad::new(),
+                ))
         })
     }
 }
@@ -340,7 +342,9 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         token_id: usize,
         scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
-        session.step(&self.store, &self.spec, &self.matvec, token_id, scratch).await
+        session
+            .step(&self.store, &self.spec, &self.matvec, token_id, scratch)
+            .await
     }
 
     async fn next_token_from_hidden(
@@ -526,15 +530,13 @@ mod tests {
         }
     }
 
-    fn open_gemma_backend(
-        model_id: &str,
-        snapshot: &Path,
-    ) -> NativeGemmaBackend {
+    fn open_gemma_backend(model_id: &str, snapshot: &Path) -> NativeGemmaBackend {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime");
-        rt.block_on(NativeGemmaBackend::open(model_id, snapshot)).expect("backend opens snapshot")
+        rt.block_on(NativeGemmaBackend::open(model_id, snapshot))
+            .expect("backend opens snapshot")
     }
 
     fn open_gemma_backend_with_options(
@@ -546,7 +548,10 @@ mod tests {
             .enable_all()
             .build()
             .expect("test runtime");
-        rt.block_on(NativeGemmaBackend::open_with_options(model_id, snapshot, options)).expect("backend opens snapshot")
+        rt.block_on(NativeGemmaBackend::open_with_options(
+            model_id, snapshot, options,
+        ))
+        .expect("backend opens snapshot")
     }
 
     #[test]
