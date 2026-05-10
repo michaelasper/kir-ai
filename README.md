@@ -96,8 +96,7 @@ For full script controls, see [`docs/ci-and-release.md`][docs-setup].
 ### Serve with a Snapshot
 
 ```sh
-cargo run -p llm-engine -- serve \
-  --addr 127.0.0.1:3000 \
+kirai serve \
   --snapshot .llm-models/<manifest-snapshot-path> \
   --model-id local-qwen36 \
   --max-new-tokens 256 \
@@ -107,7 +106,7 @@ cargo run -p llm-engine -- serve \
 For MLX manifests, set the loopback endpoint:
 
 ```sh
-cargo run -p llm-engine -- serve \
+kirai serve \
   --snapshot .llm-models/<mlx-snapshot-path> \
   --loader mlx \
   --family qwen \
@@ -158,19 +157,21 @@ curl -N http://127.0.0.1:3000/v1/chat/completions \
 
 ## Native Text Snapshot Flow
 
-Use `llm-engine` model commands to plan, inspect, verify, and pull profiles before serving.
+Use `kirai` model commands to plan, inspect, verify, and pull profiles before serving.
 
 ```sh
-cargo run -p llm-engine -- model plan Qwen/Qwen3-0.6B \
+kirai model plan Qwen/Qwen3-0.6B \
   --revision main \
   --profile qwen3-dense-safetensors-bf16
 
-cargo run -p llm-engine -- model pull Qwen/Qwen3.6-35B-A3B \
+kirai model pull Qwen/Qwen3.6-35B-A3B \
   --metadata-only \
   --model-home .llm-models
 
-cargo run -p llm-engine -- model inspect .llm-models/<snapshot-path>
+kirai model inspect .llm-models/<snapshot-path>
 ```
+
+Want direct source commands? Use `cargo run -p llm-engine -- ...` from a local checkout (development mode).
 
 ## Documentation Map
 
