@@ -75,7 +75,7 @@ cargo run -p llm-engine -- serve \
 
 [tasks.run-protocol]
 description = "Run the deterministic protocol backend for HTTP/client contract tests"
-run = "cargo run -p llm-engine -- serve --deterministic-test-backend"
+run = "cargo run -p llm-engine -- serve --protocol-test-backend"
 
 [tasks.bench-qwen-long-context-plan]
 description = "Print the Qwen 135K/200K/256K long-context benchmark plan without running inference"
