@@ -5,12 +5,18 @@ use super::{
     },
     config::{EngineConfigError, EngineOptions, default_model_home, parse_hub_client},
     inference::{chat_completions, completions},
+    lifecycle,
     protocol::protocol_test_backend,
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions},
     state::AppState,
 };
 use axum::{
+    body::Body,
+    extract::State,
+    http::{header::HeaderName, Request},
+    middleware::{self, Next},
+    response::Response,
     Router,
     routing::{get, post},
 };
@@ -66,6 +72,7 @@ pub fn build_router_with_backend_and_options(
 }
 
 fn router_for_state(state: AppState) -> Router {
+    let request_id_state = state.clone();
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
@@ -81,7 +88,25 @@ fn router_for_state(state: AppState) -> Router {
         .route("/admin/metrics", get(admin_metrics))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            request_id_state,
+            attach_request_id_header,
+        ))
+}
+
+async fn attach_request_id_header(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let request_id = lifecycle::response_request_id(&state, request.headers());
+    let mut response = next.run(request).await;
+    let header_name = HeaderName::from_static("x-request-id");
+    if !response.headers().contains_key(&header_name) {
+        lifecycle::insert_request_id_header(&mut response, &request_id);
+    }
+    response
 }
 
 fn engine_state(

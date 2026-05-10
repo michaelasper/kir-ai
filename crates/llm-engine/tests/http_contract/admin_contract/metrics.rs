@@ -1,6 +1,73 @@
 use super::*;
 
 #[tokio::test]
+async fn admin_metrics_endpoint_reports_supplied_request_id() {
+    let request_id = "admin-metrics-request-id";
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .header("x-request-id", request_id)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .expect("request id header")
+            .to_str()
+            .expect("request id header is string"),
+        request_id
+    );
+    let body = body_json(response.into_body()).await;
+    assert!(body.as_object().is_some());
+}
+
+#[tokio::test]
+async fn admin_metrics_endpoint_reports_request_id_when_auth_is_required() {
+    let request_id = "admin-metrics-auth-request-id";
+    let response = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .uri("/admin/metrics")
+            .header("authorization", "Bearer wrong-token")
+            .header("x-request-id", request_id)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin metrics response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .expect("request id header")
+            .to_str()
+            .expect("request id header is string"),
+        request_id
+    );
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "admin_auth_required");
+    assert_eq!(body["error"]["phase"], "admin_auth");
+}
+
+#[tokio::test]
 async fn admin_metrics_report_artifact_verification_failures() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot_path = write_verified_test_snapshot(temp.path()).await;

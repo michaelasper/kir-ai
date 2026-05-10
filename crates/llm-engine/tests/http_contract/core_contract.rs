@@ -13,6 +13,7 @@ async fn health_endpoint_reports_no_python_runtime() {
         .expect("health response");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("x-request-id").is_some());
     let body = body_json(response.into_body()).await;
     assert_eq!(body["runtime"], "rust");
     assert_eq!(body["python_runtime"], false);
@@ -31,6 +32,7 @@ async fn models_endpoint_lists_qwen_alias() {
         .expect("models response");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("x-request-id").is_some());
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "list");
     assert_eq!(body["data"][0]["id"], "local-qwen36");

@@ -2,10 +2,12 @@ use super::*;
 
 #[tokio::test]
 async fn admin_models_endpoint_reports_ready_model() {
+    let request_id = "admin-models-request-id";
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models")
+                .header("x-request-id", request_id)
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -13,6 +15,15 @@ async fn admin_models_endpoint_reports_ready_model() {
         .expect("admin models response");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .expect("request id header")
+            .to_str()
+            .expect("request id header is string"),
+        request_id
+    );
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "list");
     assert_eq!(body["data"][0]["id"], "local-qwen36");
@@ -22,10 +33,12 @@ async fn admin_models_endpoint_reports_ready_model() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_ready_model() {
+    let request_id = "admin-model-request-id";
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/local-qwen36")
+                .header("x-request-id", request_id)
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -33,6 +46,15 @@ async fn admin_model_endpoint_reports_ready_model() {
         .expect("admin model response");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .expect("request id header")
+            .to_str()
+            .expect("request id header is string"),
+        request_id
+    );
     let body = body_json(response.into_body()).await;
     assert_eq!(body["id"], "local-qwen36");
     assert_eq!(body["status"], "ready");
@@ -220,10 +242,12 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
 
 #[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
+    let request_id = "admin-model-not-found-request-id";
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
                 .uri("/admin/models/not-loaded")
+                .header("x-request-id", request_id)
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -231,6 +255,15 @@ async fn admin_model_endpoint_uses_stable_missing_model_error() {
         .expect("admin model response");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .expect("request id header")
+            .to_str()
+            .expect("request id header is string"),
+        request_id
+    );
     let body = body_json(response.into_body()).await;
     assert_eq!(body["error"]["code"], "model_not_found");
     assert_eq!(body["error"]["phase"], "model_resolution");
