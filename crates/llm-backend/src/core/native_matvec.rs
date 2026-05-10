@@ -1,7 +1,7 @@
 use super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
-    linear_attention_recurrent_update_f32, matvec_row_major_f32, matvec_row_major_f32_in_place,
-    rms_norm_one_centered_f32, rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32,
+    linear_attention_recurrent_update_f32, matvec_row_major_f32_in_place,
+    rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32,
     softmax_f32, softmax_top_k_f32, weighted_sum_f32,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
@@ -40,6 +40,7 @@ pub async fn swiglu_mlp_f32_with_matvec(
         .await
 }
 
+#[allow(async_fn_in_trait)]
 pub trait NativeMatvecBackend {
     async fn bf16_matvec_row_major_f32(
         &self,
@@ -47,7 +48,7 @@ pub trait NativeMatvecBackend {
         tensor: &str,
         input: &[f32],
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let mut output = vec![0.0; store.index().tensor_shape(tensor)?[0]];
+        let mut output = vec![0.0; store.tensor_metadata(tensor)?.shape[0]];
         self.bf16_matvec_row_major_f32_in_place(store, tensor, input, &mut output)
             .await?;
         Ok(output)
@@ -77,7 +78,7 @@ pub trait NativeMatvecBackend {
         input: &[f32],
         chunk_rows: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let mut output = vec![0.0; store.index().tensor_shape(tensor)?[0]];
+        let mut output = vec![0.0; store.tensor_metadata(tensor)?.shape[0]];
         self.bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, &mut output)
             .await?;
         Ok(output)

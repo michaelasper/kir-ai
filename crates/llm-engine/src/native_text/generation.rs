@@ -7,6 +7,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(test)]
 use tokio_util::sync::CancellationToken;
 
 pub(crate) fn resolve_native_text_max_tokens(
@@ -66,17 +67,21 @@ pub(crate) fn native_text_cache_token_capacity(
         .min(max_position_embeddings))
 }
 
-pub(crate) async fn native_text_prefill_context_with_cache<C, F, Fut>(
+#[cfg(test)]
+use llm_backend::InferenceScratchpad;
+
+#[cfg(test)]
+pub(crate) fn native_text_prefill_context_with_cache<C, F>(
     family_display_name: &str,
     prefill_chunk_tokens: usize,
     context_tokens: &[usize],
     caches: &mut [C],
     cancellation: &CancellationToken,
+    scratch: &mut InferenceScratchpad,
     mut prefill_chunk: F,
 ) -> Result<Vec<f32>, BackendError>
 where
-    F: FnMut(&[usize], &mut [C]) -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<Vec<f32>>, BackendError>>,
+    F: FnMut(&[usize], &mut [C], &mut InferenceScratchpad) -> Result<Vec<Vec<f32>>, BackendError>,
 {
     if cancellation.is_cancelled() {
         return Err(BackendError::Cancelled);
@@ -86,7 +91,7 @@ where
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let hidden_states = prefill_chunk(chunk, caches).await?;
+        let hidden_states = prefill_chunk(chunk, caches, scratch)?;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }

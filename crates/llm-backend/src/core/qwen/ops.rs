@@ -1,7 +1,6 @@
 use super::super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight, apply_rope_to_head, require_len,
-    rms_norm_one_centered_f32, rms_norm_one_centered_f32_in_place, sigmoid_f32, silu_f32,
-    softplus_f32,
+    rms_norm_one_centered_f32, sigmoid_f32, silu_f32, softplus_f32,
 };
 use super::super::{
     CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeFullAttentionDims,
@@ -9,10 +8,11 @@ use super::super::{
     SafeTensorShardStore, TensorLoadError, native_full_attention_sequence_from_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
     native_full_attention_step_with_cache_from_parts_with_matvec,
+    native_full_attention_step_with_cache_from_parts_with_matvec_in_place,
 };
 use super::matvec::{
-    l2_normalize_f32_with_matvec, l2_normalize_f32_with_matvec_and_weight_scratch,
-    rms_norm_f32_with_matvec,
+    l2_normalize_f32_with_matvec,
+    rms_norm_f32_with_matvec, rms_norm_f32_with_matvec_in_place,
 };
 use llm_models::{AttentionKind, QwenModelSpec};
 
@@ -21,18 +21,20 @@ mod moe;
 
 use moe::qwen_layer_feed_forward_with_matvec;
 pub use moe::{
-    qwen_layer_moe_forward, qwen_layer_moe_forward_with_matvec, qwen_layer_moe_router,
-    qwen_layer_moe_router_with_matvec, qwen_layer0_moe_forward, qwen_layer0_moe_router,
+    qwen_layer_dense_mlp_with_matvec, qwen_layer_moe_forward_with_matvec_in_place,
+    qwen_layer_moe_router_with_matvec,
 };
 
 pub use lm_head::{
     qwen_final_norm, qwen_final_norm_for_spec, qwen_final_norm_for_spec_with_matvec,
-    qwen_final_norm_with_matvec, qwen_lm_head_logits, qwen_lm_head_logits_for_spec,
-    qwen_lm_head_logits_for_spec_with_matvec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
+    qwen_final_norm_for_spec_with_matvec_in_place, qwen_final_norm_with_matvec,
+    qwen_final_norm_with_matvec_in_place, qwen_lm_head_logits, qwen_lm_head_logits_for_spec,
+    qwen_lm_head_logits_for_spec_with_matvec, qwen_lm_head_logits_for_spec_with_matvec_in_place,
+    qwen_lm_head_logits_with_matvec, qwen_lm_head_logits_with_matvec_in_place, qwen_lm_head_top_k,
     qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_for_spec_with_matvec,
     qwen_lm_head_top_k_with_matvec,
 };
-use lm_head::{qwen_layer_tensor, qwen_linear_attn_tensor, qwen_mlp_tensor};
+use lm_head::{qwen_layer_tensor, qwen_linear_attn_tensor};
 
 pub const QWEN_EMBED_TOKENS_WEIGHT: &str = "model.language_model.embed_tokens.weight";
 pub const QWEN_LAYER0_INPUT_NORM_WEIGHT: &str =
@@ -447,6 +449,27 @@ async fn qwen_layer_input_norm_for_spec_with_matvec(
     hidden_states: &[f32],
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
+    let mut output = vec![0.0; hidden_states.len()];
+    qwen_layer_input_norm_for_spec_with_matvec_in_place(
+        store,
+        spec,
+        layer_idx,
+        hidden_states,
+        matvec,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
+async fn qwen_layer_input_norm_for_spec_with_matvec_in_place(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    layer_idx: usize,
+    hidden_states: &[f32],
+    matvec: &impl NativeMatvecBackend,
+    output: &mut [f32],
+) -> Result<(), TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
     if hidden_states.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
@@ -459,7 +482,7 @@ async fn qwen_layer_input_norm_for_spec_with_matvec(
         0,
         hidden_size,
     )?;
-    qwen_rms_norm_for_spec_with_matvec(spec, hidden_states, &norm_weight, matvec)
+    qwen_rms_norm_for_spec_with_matvec_in_place(spec, hidden_states, &norm_weight, matvec, output)
         .await
         .map_err(|err| {
             TensorLoadError::integrity(format!("Qwen layer input RMSNorm failed: {err}"))
@@ -506,11 +529,23 @@ async fn qwen_rms_norm_for_spec_with_matvec(
     weight: &[f32],
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
+    let mut output = vec![0.0; input.len()];
+    qwen_rms_norm_for_spec_with_matvec_in_place(spec, input, weight, matvec, &mut output).await?;
+    Ok(output)
+}
+
+async fn qwen_rms_norm_for_spec_with_matvec_in_place(
+    spec: &QwenModelSpec,
+    input: &[f32],
+    weight: &[f32],
+    matvec: &impl NativeMatvecBackend,
+    output: &mut [f32],
+) -> Result<(), MathError> {
     if spec.is_qwen3_dense() {
-        rms_norm_f32_with_matvec(input, weight, spec.rms_norm_eps, matvec).await
+        rms_norm_f32_with_matvec_in_place(input, weight, spec.rms_norm_eps, matvec, output).await
     } else {
         matvec
-            .rms_norm_one_centered_f32(input, weight, spec.rms_norm_eps)
+            .rms_norm_one_centered_f32_in_place(input, weight, spec.rms_norm_eps, output)
             .await
     }
 }
@@ -710,6 +745,26 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts(
     .await
 }
 
+pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec(
+    dims: &QwenLinearAttentionDims,
+    parts: &QwenLinearAttentionStepParts<'_>,
+    cache: &mut LinearAttentionCache,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<f32>, MathError> {
+    let mut scratch = InferenceScratchpad::default();
+    let mut output = vec![0.0; dims.hidden_size as usize];
+    qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_place(
+        dims,
+        parts,
+        cache,
+        matvec,
+        &mut scratch,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
 pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_place(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionStepParts<'_>,
@@ -721,9 +776,11 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_pla
     let key_dim = dims.key_dim()?;
     let value_dim = dims.value_dim()?;
     let conv_dim = dims.conv_dim()?;
-    
+    let repeat = dims.num_value_heads / dims.num_key_heads;
+    let scale = 1.0 / (dims.key_head_dim as f32).sqrt();
+
     let conv_output = InferenceScratchpad::get_mut(&mut scratch.buf0, conv_dim);
-    cache.append_sliding_conv(parts.qkv, parts.z, parts.b);
+    cache.push_conv_input(parts.qkv).map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
     matvec.linear_attention_conv1d_silu_f32_in_place(
         cache.conv_window(),
         parts.conv1d_weight,
@@ -731,40 +788,119 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_pla
         dims.conv_kernel_size,
         conv_output,
     ).await?;
-    
+
     let key = &conv_output[..key_dim];
-    let query = &conv_output[key_dim..key_dim * 2];
+    let _query = &conv_output[key_dim..key_dim * 2];
     let value = &conv_output[key_dim * 2..];
-    
-    let dt = matvec.matvec_row_major_f32(parts.a, parts.dt_bias, dims.num_key_heads, dims.key_head_dim).await?;
-    let mut gates = dt;
-    for (g, &bias) in gates.iter_mut().zip(parts.dt_bias) {
-        *g = softplus_f32(*g + bias);
-    }
-    
-    let recurrent_state = cache.recurrent_state_mut();
-    for head in 0..dims.num_key_heads {
-        let q_start = head * dims.key_head_dim;
-        let v_start = head * dims.value_head_dim;
-        let state_start = head * dims.key_head_dim * dims.value_head_dim;
-        
-        let beta = gates[head];
-        let decay = (-beta * parts.a_log[head].exp()).exp();
-        
-        matvec.linear_attention_recurrent_update_f32_in_place(
-            &recurrent_state[state_start..state_start + dims.key_head_dim * dims.value_head_dim],
-            &key[q_start..q_start + dims.key_head_dim],
-            &value[v_start..v_start + dims.value_head_dim],
-            &[0.0; 0], // memory not used in this variant
-            beta,
-            decay,
+
+    let zero_memory = vec![0.0; dims.value_head_dim];
+    let mut gated = vec![0.0; value_dim];
+    let mut value_major_state = Vec::new();
+    let mut query_scaled = vec![0.0; dims.key_head_dim];
+
+    for value_head in 0..dims.num_value_heads {
+        let key_head = value_head / repeat;
+        let key_start = key_head * dims.key_head_dim;
+        let value_start = value_head * dims.value_head_dim;
+        let query_head = l2_normalize_f32_with_matvec(
+            &key[key_start..key_start + dims.key_head_dim],
+            1e-6,
+            matvec,
+        )
+        .await?;
+        let key_head_values = l2_normalize_f32_with_matvec(
+            &key[key_start..key_start + dims.key_head_dim],
+            1e-6,
+            matvec,
+        )
+        .await?;
+        for (o, v) in query_scaled.iter_mut().zip(&query_head) {
+            *o = v * scale;
+        }
+        let beta = sigmoid_f32(parts.b[value_head]);
+        let decay = (-parts.a_log[value_head].exp()
+            * softplus_f32(parts.a[value_head] + parts.dt_bias[value_head]))
+        .exp();
+
+        let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
+        let _state_len = dims.key_head_dim * dims.value_head_dim;
+
+        let decayed_state = matvec
+            .linear_attention_recurrent_cache_update_f32(
+                cache,
+                state_start,
+                &key_head_values,
+                &value[value_start..value_start + dims.value_head_dim],
+                &zero_memory,
+                0.0,
+                decay,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            )
+            .await?;
+        cache
+            .replace_recurrent_state_range(state_start, &decayed_state)
+            .map_err(|err| MathError::InvalidShape(format!("linear attention cache update failed: {err}")))?;
+
+        copy_linear_attention_value_major_state_rows(
+            cache.recurrent_state(),
+            state_start,
             dims.key_head_dim,
             dims.value_head_dim,
-            &mut recurrent_state[state_start..state_start + dims.key_head_dim * dims.value_head_dim],
-        ).await?;
+            &mut value_major_state,
+        )?;
+        let memory = matvec
+            .matvec_row_major_f32(
+                &key_head_values,
+                &value_major_state,
+                dims.value_head_dim,
+                dims.key_head_dim,
+            )
+            .await?;
+
+        let updated_state = matvec
+            .linear_attention_recurrent_cache_update_f32(
+                cache,
+                state_start,
+                &key_head_values,
+                &value[value_start..value_start + dims.value_head_dim],
+                &memory,
+                beta,
+                1.0,
+                dims.key_head_dim,
+                dims.value_head_dim,
+            )
+            .await?;
+        cache
+            .replace_recurrent_state_range(state_start, &updated_state)
+            .map_err(|err| MathError::InvalidShape(format!("linear attention cache update failed: {err}")))?;
+
+        copy_linear_attention_value_major_state_rows(
+            cache.recurrent_state(),
+            state_start,
+            dims.key_head_dim,
+            dims.value_head_dim,
+            &mut value_major_state,
+        )?;
+        let core_head = matvec
+            .matvec_row_major_f32(
+                &query_scaled,
+                &value_major_state,
+                dims.value_head_dim,
+                dims.key_head_dim,
+            )
+            .await?;
+        let normalized =
+            rms_norm_f32_with_matvec(&core_head, parts.norm_weight, dims.rms_norm_eps, matvec)
+                .await?;
+        for value_offset in 0..dims.value_head_dim {
+            gated[value_start + value_offset] =
+                normalized[value_offset] * silu_f32(parts.z[value_start + value_offset]);
+        }
     }
-    
-    // ... complete implementation ...
+    matvec
+        .matvec_row_major_f32_in_place(&gated, parts.out_proj_weight, dims.hidden_size as usize, value_dim, output)
+        .await?;
     Ok(())
 }
 
@@ -879,7 +1015,7 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
         .value_head_dim
         .checked_mul(dims.key_head_dim)
         .ok_or_else(|| MathError::InvalidShape("value-major state shape overflow".to_owned()))?;
-    let mut l2_weight_scratch = Vec::with_capacity(dims.key_head_dim);
+    let mut _l2_weight_scratch: Vec<f32> = Vec::with_capacity(dims.key_head_dim);
     let zero_memory = vec![0.0; dims.value_head_dim];
     let mut value_major_state = Vec::with_capacity(value_major_len);
     let mut query_scaled = vec![0.0; dims.key_head_dim];
@@ -896,18 +1032,16 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
             let key_head = value_head / repeat;
             let key_start = key_head * dims.key_head_dim;
             let value_start = value_head * dims.value_head_dim;
-            let query_head = l2_normalize_f32_with_matvec_and_weight_scratch(
+            let query_head = l2_normalize_f32_with_matvec(
                 &query[key_start..key_start + dims.key_head_dim],
                 1e-6,
                 matvec,
-                &mut l2_weight_scratch,
             )
             .await?;
-            let key_head_values = l2_normalize_f32_with_matvec_and_weight_scratch(
+            let key_head_values = l2_normalize_f32_with_matvec(
                 &key[key_start..key_start + dims.key_head_dim],
                 1e-6,
                 matvec,
-                &mut l2_weight_scratch,
             )
             .await?;
             for (output, value) in query_scaled.iter_mut().zip(&query_head) {
@@ -2064,13 +2198,13 @@ pub async fn qwen_layer_full_attention_step_with_cache_with_matvec(
             v_proj,
         )
         .await?;
-    let q_norm_weight =
+    let _q_norm_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
-    let k_norm_weight =
+    let _k_norm_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "k_norm.weight"))?;
     let o_proj_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "o_proj.weight"))?;
-    native_full_attention_step_with_cache_from_parts_with_matvec(
+    native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
         dims.native(),
         &NativeFullAttentionStepParts {
             query: q_proj,
@@ -2383,8 +2517,18 @@ pub async fn qwen_linear_decoder_layer_first_token_with_matvec(
         matvec,
     )
     .await?;
-    let mlp_output =
-        qwen_layer_feed_forward_with_matvec(store, spec, layer_idx, &post_attention, matvec).await?;
+    let mut mlp_output = vec![0.0; spec.hidden_size as usize];
+    let mut scratch = InferenceScratchpad::default();
+    qwen_layer_feed_forward_with_matvec(
+        store,
+        spec,
+        layer_idx,
+        &post_attention,
+        matvec,
+        &mut scratch,
+        &mut mlp_output,
+    )
+    .await?;
     hidden_states
         .iter()
         .zip(attention_output)
@@ -2448,8 +2592,18 @@ pub async fn qwen_full_decoder_layer_first_token_with_matvec(
         matvec,
     )
     .await?;
-    let mlp_output =
-        qwen_layer_feed_forward_with_matvec(store, spec, layer_idx, &post_attention, matvec).await?;
+    let mut mlp_output = vec![0.0; spec.hidden_size as usize];
+    let mut scratch = InferenceScratchpad::default();
+    qwen_layer_feed_forward_with_matvec(
+        store,
+        spec,
+        layer_idx,
+        &post_attention,
+        matvec,
+        &mut scratch,
+        &mut mlp_output,
+    )
+    .await?;
     hidden_states
         .iter()
         .zip(attention_output)
@@ -2510,6 +2664,7 @@ pub async fn qwen_decoder_layer_sequence(
     layer_idx: usize,
     hidden_states: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let mut scratch = InferenceScratchpad::default();
     qwen_decoder_layer_sequence_impl(
         store,
         spec,
@@ -2517,6 +2672,7 @@ pub async fn qwen_decoder_layer_sequence(
         hidden_states,
         None,
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
 }
@@ -2587,10 +2743,10 @@ pub async fn qwen_decoder_layer_step_with_cache_with_matvec(
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
-    let input_norm = InferenceScratchpad::get_mut(&mut scratch.buf0, hidden_size);
-    qwen_layer_input_norm_for_spec_with_matvec(store, spec, layer_idx, hidden_states, matvec, input_norm)
+    let mut input_norm = vec![0.0; hidden_size];
+    qwen_layer_input_norm_for_spec_with_matvec_in_place(store, spec, layer_idx, hidden_states, matvec, &mut input_norm)
         .await?;
-    let attention_output = InferenceScratchpad::get_mut(&mut scratch.buf1, hidden_size);
+    let mut attention_output = vec![0.0; hidden_size];
     match spec.layer_kinds.get(layer_idx) {
         Some(AttentionKind::LinearAttention) => match cache {
             QwenLayerCache::Linear(cache) => {
@@ -2598,11 +2754,11 @@ pub async fn qwen_decoder_layer_step_with_cache_with_matvec(
                     store,
                     spec,
                     layer_idx,
-                    input_norm,
+                    &input_norm,
                     cache,
                     matvec,
                     scratch,
-                    attention_output,
+                    &mut attention_output,
                 )
                 .await?
             }
@@ -2617,11 +2773,11 @@ pub async fn qwen_decoder_layer_step_with_cache_with_matvec(
                 store,
                 spec,
                 layer_idx,
-                input_norm,
+                &input_norm,
                 cache,
                 matvec,
                 scratch,
-                attention_output,
+                &mut attention_output,
             )
             .await?,
             _ => {
@@ -2636,29 +2792,32 @@ pub async fn qwen_decoder_layer_step_with_cache_with_matvec(
             )));
         }
     };
-    let post_attention_norm = InferenceScratchpad::get_mut(&mut scratch.buf2, hidden_size);
+    let mut post_attention_norm = vec![0.0; hidden_size];
     qwen_layer_post_attention_norm_for_spec_with_matvec_in_place(
         store,
         spec,
         layer_idx,
         hidden_states,
-        attention_output,
+        &attention_output,
         matvec,
         scratch,
-        post_attention_norm,
+        &mut post_attention_norm,
     )
     .await?;
-    qwen_layer_feed_forward_with_matvec(store, spec, layer_idx, post_attention_norm, matvec, scratch, output).await?;
+    qwen_layer_feed_forward_with_matvec(
+        store,
+        spec,
+        layer_idx,
+        &post_attention_norm,
+        matvec,
+        scratch,
+        output,
+    )
+    .await?;
     
     if output.len() < hidden_size {
         return Err(TensorLoadError::integrity("output buffer too small"));
     }
-    for (i, ((h, a), m)) in hidden_states.iter().zip(attention_output.iter()).zip(output.iter()).enumerate() {
-        // Wait, output currently contains mlp_output. We need to add h and a to it!
-        // Wait, qwen_layer_feed_forward_with_matvec writes directly to output.
-        // So we just need to add hidden_states and attention_output to output.
-    }
-    // Correct addition:
     for i in 0..hidden_size {
         output[i] += hidden_states[i] + attention_output[i];
     }
@@ -2789,12 +2948,14 @@ pub async fn qwen_prefill_sequence_with_cache(
     token_ids: &[usize],
     caches: &mut [QwenLayerCache],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let mut scratch = InferenceScratchpad::default();
     qwen_prefill_sequence_with_cache_with_matvec(
         store,
         spec,
         token_ids,
         caches,
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
 }

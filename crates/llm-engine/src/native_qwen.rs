@@ -13,8 +13,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut, QwenLayerCache,
-    SafeTensorShardStore, SamplingConfig, native_decode_token_with_cache_for_spec_ref_with_matvec,
+    InferenceScratchpad, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
+    QwenLayerCache, SafeTensorShardStore, SamplingConfig,
+    native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
 };
 use llm_hub::SnapshotManifest;
@@ -188,8 +189,7 @@ impl NativeQwenBackend {
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
-        self.driver
-            .generate_blocking_stream(request, tx, cancellation)
+        self.driver.generate_blocking_stream(request, tx, cancellation)
     }
 
     #[cfg(test)]
@@ -200,8 +200,16 @@ impl NativeQwenBackend {
         request: &BackendRequest,
         cancellation: &CancellationToken,
     ) -> Result<NativeQwenDecodeSession, BackendError> {
-        self.driver
-            .start_decode_session(context_tokens, max_new_tokens, request, cancellation)
+        let driver = &self.driver;
+        tokio::task::block_in_place(|| {
+            driver.runtime().block_on(driver.start_decode_session(
+                context_tokens,
+                max_new_tokens,
+                request,
+                cancellation,
+                &mut InferenceScratchpad::new(),
+            ))
+        })
     }
 
     #[cfg(test)]
@@ -210,15 +218,18 @@ impl NativeQwenBackend {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
-        Ok(NativeQwenCandidate {
-            token_id: self
-                .driver
-                .adapter
-                .next_token_from_hidden(hidden, sampling)?,
-        })
+        let token_id = tokio::task::block_in_place(|| {
+            self.driver.runtime().block_on(
+                self.driver
+                    .adapter
+                    .next_token_from_hidden(hidden, sampling, &mut InferenceScratchpad::new()),
+            )
+        })?;
+        Ok(NativeQwenCandidate { token_id })
     }
 }
 
+#[async_trait]
 impl NativeTextAdapter for NativeQwenAdapter {
     type DecodeSession = NativeQwenDecodeSession;
     type LayerCache = QwenLayerCache;
@@ -355,7 +366,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
-        scratch: &mut InferenceScratchpad,
+        _scratch: &mut InferenceScratchpad,
     ) -> Result<usize, BackendError> {
         NativeTextNextTokenContext {
             store: &self.store,
@@ -365,7 +376,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             matvec: &self.matvec,
             family_display_name: "Qwen",
         }
-        .select_next_token(hidden, sampling, scratch)
+        .select_next_token(hidden, sampling)
         .await
     }
 }
@@ -467,13 +478,6 @@ impl ModelBackend for NativeQwenBackend {
     }
 }
 
-#[cfg(test)]
-fn native_qwen_worker_stream(
-    rx: tokio::sync::mpsc::Receiver<Result<BackendStreamChunk, BackendError>>,
-    worker: tokio::task::JoinHandle<()>,
-) -> BoxStream<'static, Result<BackendStreamChunk, BackendError>> {
-    crate::native_text::native_text_worker_stream("native Qwen", rx, worker)
-}
 fn native_qwen_metadata(
     model_id: &str,
     snapshot_path: &Path,

@@ -1,10 +1,10 @@
-use super::super::math::{
-    InferenceScratchpad, MathError, TopKWeight, silu_f32, softmax_top_k_f32,
+use super::super::super::math::{
+    InferenceScratchpad, silu_f32, softmax_top_k_f32,
 };
-use super::super::{
-    CpuNativeMatvecBackend, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+use super::super::super::{
+    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
 };
-use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor, qwen_mlp_tensor};
+use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
 use llm_models::QwenModelSpec;
 
 pub async fn qwen_layer_dense_mlp_with_matvec(
@@ -17,7 +17,7 @@ pub async fn qwen_layer_dense_mlp_with_matvec(
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
-    let intermediate_size = spec.intermediate_size as usize;
+    let intermediate_size = spec.moe_intermediate_size as usize;
     if hidden_states.len() != hidden_size {
         return Err(TensorLoadError::integrity(format!(
             "Qwen dense MLP hidden length {} must match hidden size {hidden_size}",
@@ -28,7 +28,7 @@ pub async fn qwen_layer_dense_mlp_with_matvec(
     matvec
         .bf16_matvec_row_major_f32_in_place(
             store,
-            &qwen_mlp_tensor(layer_idx, "gate_proj.weight"),
+            &spec.mlp_tensor(layer_idx, "gate_proj.weight"),
             hidden_states,
             gate,
         )
@@ -38,7 +38,7 @@ pub async fn qwen_layer_dense_mlp_with_matvec(
     matvec
         .bf16_matvec_row_major_f32_in_place(
             store,
-            &qwen_mlp_tensor(layer_idx, "up_proj.weight"),
+            &spec.mlp_tensor(layer_idx, "up_proj.weight"),
             hidden_states,
             up,
         )
@@ -50,10 +50,18 @@ pub async fn qwen_layer_dense_mlp_with_matvec(
         *a = silu_f32(*g) * *u;
     }
     
+    let down_tensor = spec.mlp_tensor(layer_idx, "down_proj.weight");
+    let down_meta = store.tensor_metadata(&down_tensor)?;
+    if down_meta.shape[0] != output.len() {
+        return Err(TensorLoadError::integrity(format!(
+            "down output length {} does not match hidden size {}",
+            down_meta.shape[0], output.len()
+        )));
+    }
     matvec
         .bf16_matvec_row_major_f32_in_place(
             store,
-            &qwen_mlp_tensor(layer_idx, "down_proj.weight"),
+            &down_tensor,
             activated,
             output,
         )
@@ -177,8 +185,8 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
         }
     }
     
-    let shared_output = InferenceScratchpad::get_mut(&mut scratch.buf0, dims.hidden_size);
-    qwen_layer_shared_expert_forward_with_matvec(store, layer_idx, dims, hidden_states, matvec, scratch, shared_output).await?;
+    let mut shared_output = vec![0.0; dims.hidden_size];
+    qwen_layer_shared_expert_forward_with_matvec(store, layer_idx, dims, hidden_states, matvec, scratch, &mut shared_output).await?;
     
     let shared_gate_vec = matvec.bf16_matvec_row_major_f32(
         store,
@@ -195,7 +203,7 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
     Ok(())
 }
 
-async fn qwen_layer_shared_expert_forward_with_matvec(
+pub(super) async fn qwen_layer_shared_expert_forward_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     dims: &QwenMoeDims,

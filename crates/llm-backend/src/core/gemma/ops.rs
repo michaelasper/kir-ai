@@ -3,11 +3,9 @@ use super::super::math::{
 };
 use super::super::{
     CpuNativeMatvecBackend, LayerKvCache, NativeFullAttentionCacheSequenceParts,
-    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeFullAttentionStepParts,
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
-    native_full_attention_sequence_from_cache_parts_with_matvec,
+    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError, native_full_attention_sequence_from_cache_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
-    native_full_attention_step_with_cache_from_parts_with_matvec,
 };
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
@@ -245,7 +243,7 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
     token_ids: &[usize],
     input_embeddings: &[Vec<f32>],
     matvec: &impl NativeMatvecBackend,
-    scratch: &mut InferenceScratchpad,
+    _scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<Vec<f32>>>, TensorLoadError> {
     let layer_count = spec.num_hidden_layers as usize;
     let per_layer_size = spec.hidden_size_per_layer_input as usize;
@@ -467,7 +465,7 @@ async fn gemma_apply_per_layer_input_sequence_with_matvec(
         results.push(hidden
             .iter()
             .zip(normalized)
-            .map(|(h, u)| h + u)
+            .map(|(h, u)| *h + *u)
             .collect());
     }
     Ok(results)
@@ -1068,14 +1066,4 @@ fn ensure_supported_gemma_execution(spec: &GemmaModelSpec) -> Result<(), TensorL
 fn gelu_pytorch_tanh_f32(value: f32) -> f32 {
     const SQRT_2_OVER_PI: f32 = 0.797_884_6;
     0.5 * value * (1.0 + (SQRT_2_OVER_PI * (value + 0.044_715 * value.powi(3))).tanh())
-}
-
-trait IsMultipleOf {
-    fn is_multiple_of(self, other: Self) -> bool;
-}
-
-impl IsMultipleOf for usize {
-    fn is_multiple_of(self, other: Self) -> bool {
-        if other == 0 { false } else { self % other == 0 }
-    }
 }

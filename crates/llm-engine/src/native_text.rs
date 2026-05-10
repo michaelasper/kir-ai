@@ -5,8 +5,7 @@ use crate::{
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk, ModelBackend,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use std::path::Path;
@@ -24,9 +23,11 @@ pub(crate) use driver::{
 #[allow(unused_imports)]
 pub(crate) use generation::{
     NativeTextNextTokenContext, native_text_cache_token_capacity,
-    native_text_prefill_context_with_cache, resolve_native_text_max_tokens,
+    resolve_native_text_max_tokens,
     sample_token_id_with_draw,
 };
+#[cfg(test)]
+pub(crate) use generation::native_text_prefill_context_with_cache;
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
     NativeTextPrefixCache, NativeTextPrefixCacheCounters, NativeTextPrefixCacheEntry,
@@ -36,7 +37,7 @@ pub(crate) use prefix_cache::{
     native_text_prefix_request_mode,
 };
 pub(crate) use streaming::{
-    NativeStreamTextDeltas, native_text_worker_stream, send_backend_stream_chunk,
+    NativeStreamTextDeltas, native_text_worker_stream,
 };
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS;
@@ -348,6 +349,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl NativeTextAdapter for TestAdapter {
         type DecodeSession = TestDecodeSession;
         type LayerCache = TestCache;
@@ -428,10 +430,11 @@ mod tests {
             }])
         }
 
-        fn prefill_chunk_with_cache(
+        async fn prefill_chunk_with_cache(
             &self,
             token_ids: &[usize],
             _caches: &mut [Self::LayerCache],
+            _scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
             if self.fail_prefill {
                 return Err(BackendError::Other("test prefill failed".to_owned()));
@@ -455,19 +458,21 @@ mod tests {
             &session.hidden
         }
 
-        fn step(
+        async fn step(
             &self,
             session: &mut Self::DecodeSession,
             _token_id: usize,
+            _scratch: &mut InferenceScratchpad,
         ) -> Result<(), BackendError> {
             session.hidden[0] += 1.0;
             Ok(())
         }
 
-        fn next_token_from_hidden(
+        async fn next_token_from_hidden(
             &self,
             hidden: &[f32],
             _sampling: SamplingConfig,
+            _scratch: &mut InferenceScratchpad,
         ) -> Result<usize, BackendError> {
             let script_index = hidden[0] as usize;
             Ok(*self
@@ -492,6 +497,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl NativeTextAdapter for ContextSensitiveTestAdapter {
         type DecodeSession = TestDecodeSession;
         type LayerCache = TestCache;
@@ -573,12 +579,13 @@ mod tests {
             self.base.allocate_caches(cache_tokens)
         }
 
-        fn prefill_chunk_with_cache(
+        async fn prefill_chunk_with_cache(
             &self,
             token_ids: &[usize],
             caches: &mut [Self::LayerCache],
+            scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
-            self.base.prefill_chunk_with_cache(token_ids, caches)
+            self.base.prefill_chunk_with_cache(token_ids, caches, scratch).await
         }
 
         fn make_decode_session(
@@ -597,20 +604,22 @@ mod tests {
             self.base.hidden(session)
         }
 
-        fn step(
+        async fn step(
             &self,
             session: &mut Self::DecodeSession,
             token_id: usize,
+            scratch: &mut InferenceScratchpad,
         ) -> Result<(), BackendError> {
-            self.base.step(session, token_id)
+            self.base.step(session, token_id, scratch).await
         }
 
-        fn next_token_from_hidden(
+        async fn next_token_from_hidden(
             &self,
             hidden: &[f32],
             sampling: SamplingConfig,
+            scratch: &mut InferenceScratchpad,
         ) -> Result<usize, BackendError> {
-            self.base.next_token_from_hidden(hidden, sampling)
+            self.base.next_token_from_hidden(hidden, sampling, scratch).await
         }
     }
 
@@ -843,16 +852,19 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut observed_chunks = Vec::new();
 
+        let mut prefill_caches = [TestCache {
+            bytes: 0,
+            marker: 0,
+        }];
+        let mut prefill_scratch = InferenceScratchpad::new();
         let hidden = native_text_prefill_context_with_cache(
             "Test",
             2,
             &[1, 2, 3],
-            &mut [TestCache {
-                bytes: 0,
-                marker: 0,
-            }],
+            &mut prefill_caches,
             &cancellation,
-            |chunk, _caches| {
+            &mut prefill_scratch,
+            |chunk, _caches, _scratch| {
                 observed_chunks.push(chunk.to_vec());
                 Ok(chunk
                     .iter()
@@ -871,16 +883,19 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut calls = 0;
 
+        let mut cancel_caches = [TestCache {
+            bytes: 0,
+            marker: 0,
+        }];
+        let mut cancel_scratch = InferenceScratchpad::new();
         let err = native_text_prefill_context_with_cache(
             "Test",
             1,
             &[1, 2],
-            &mut [TestCache {
-                bytes: 0,
-                marker: 0,
-            }],
+            &mut cancel_caches,
             &cancellation,
-            |chunk, _caches| {
+            &mut cancel_scratch,
+            |chunk, _caches, _scratch| {
                 calls += 1;
                 assert_eq!(chunk, &[1]);
                 cancellation.cancel();

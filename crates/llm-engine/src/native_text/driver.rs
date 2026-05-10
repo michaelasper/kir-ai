@@ -1,20 +1,18 @@
 use super::{
     NativeStreamTextDeltas, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
     NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, native_text_cache_token_capacity,
-    native_text_prefill_context_with_cache,
+    native_text_worker_stream, resolve_native_text_max_tokens,
 };
 use crate::native_matvec::{
-    NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
+    NativeTextCacheMirrorSource,
 };
 use async_trait::async_trait;
-use futures::StreamExt;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     InferenceScratchpad, ModelBackend, SamplingConfig,
 };
 use llm_tokenizer::HuggingFaceTokenizer;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[async_trait]
@@ -94,6 +92,9 @@ pub(crate) struct NativeTextStopTokens {
     pub(crate) token_strings: &'static [&'static str],
 }
 
+impl NativeTextStopTokens {
+}
+
 pub(crate) fn native_text_candidate_decision_for_stop_tokens(
     stop_tokens: NativeTextStopTokens,
     tokenizer: &HuggingFaceTokenizer,
@@ -151,6 +152,39 @@ where
         self.adapter
             .set_max_prefill_tokens(max_prefill_tokens.max(1));
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generate_blocking(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        tokio::task::block_in_place(|| {
+            self.runtime()
+                .block_on(self.generate_async(request, cancellation))
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generate_blocking_stream(
+        &self,
+        request: BackendRequest,
+        tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
+        cancellation: CancellationToken,
+    ) -> Result<(), BackendError> {
+        tokio::task::block_in_place(|| {
+            self.runtime()
+                .block_on(self.generate_stream_async(request, tx, cancellation))
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime(&self) -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test tokio runtime")
     }
 
     pub async fn generate_async(
@@ -402,18 +436,30 @@ where
             return Err(BackendError::Cancelled);
         }
         if cached_prefix_len < context_tokens.len() {
-            hidden = match self.prefill_context_with_cache(
-                &context_tokens[cached_prefix_len..],
-                &mut caches,
-                cancellation,
-                scratch,
-            ).await {
-                Ok(hidden) => Some(hidden),
-                Err(err) => {
+            let mut prefill_hidden = None;
+            let prefill_chunk_tokens = self.adapter.max_prefill_tokens();
+            for chunk in context_tokens[cached_prefix_len..].chunks(prefill_chunk_tokens.max(1)) {
+                if cancellation.is_cancelled() {
                     cache_cleanup.cleanup(&caches);
-                    return Err(err);
+                    return Err(BackendError::Cancelled);
                 }
-            };
+                let hidden_states = self
+                    .adapter
+                    .prefill_chunk_with_cache(chunk, &mut caches, scratch)
+                    .await?;
+                if cancellation.is_cancelled() {
+                    cache_cleanup.cleanup(&caches);
+                    return Err(BackendError::Cancelled);
+                }
+                prefill_hidden = hidden_states.last().cloned();
+            }
+            hidden = Some(prefill_hidden.ok_or_else(|| {
+                cache_cleanup.cleanup(&caches);
+                BackendError::Other(format!(
+                    "{} prefill returned no hidden states",
+                    self.adapter.family_display_name()
+                ))
+            })?);
         }
         let hidden = match hidden {
             Some(hidden) => hidden,
@@ -440,22 +486,6 @@ where
         Ok(self.adapter.make_decode_session(hidden, caches))
     }
 
-    pub async fn prefill_context_with_cache(
-        &self,
-        context_tokens: &[usize],
-        caches: &mut [A::LayerCache],
-        cancellation: &CancellationToken,
-        scratch: &mut InferenceScratchpad,
-    ) -> Result<Vec<f32>, BackendError> {
-        native_text_prefill_context_with_cache(
-            self.adapter.family_display_name(),
-            self.adapter.max_prefill_tokens(),
-            context_tokens,
-            caches,
-            cancellation,
-            |chunk, caches| self.adapter.prefill_chunk_with_cache(chunk, caches, scratch),
-        ).await
-    }
 }
 
 #[async_trait]
@@ -497,7 +527,7 @@ where
         cancellation: CancellationToken,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         let driver = self.clone();
-        let label = driver.worker_label();
+        let label = driver.adapter.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let worker = tokio::spawn(async move {
             if let Err(err) = driver.generate_stream_async(request, tx.clone(), cancellation).await {
@@ -530,53 +560,4 @@ impl<'a, A: NativeTextAdapter> NativeTextCacheMirrorCleanupGuard<'a, A> {
             self.adapter.cleanup_cache_mirrors(caches);
         }
     }
-}
-
-pub(crate) fn native_text_worker_stream<'a, T, Fut>(
-    label: &'static str,
-    rx: tokio::sync::mpsc::Receiver<Result<T, BackendError>>,
-    worker: tokio::task::JoinHandle<Fut>,
-) -> BoxStream<'a, Result<T, BackendError>>
-where
-    T: Send + 'static,
-    Fut: Send + 'static,
-{
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let worker_guard = StreamWorkerGuard { label, worker };
-    stream
-        .map(move |item| {
-            let _ = &worker_guard;
-            item
-        })
-        .boxed()
-}
-
-struct StreamWorkerGuard<T> {
-    label: &'static str,
-    worker: tokio::task::JoinHandle<T>,
-}
-
-impl<T> Drop for StreamWorkerGuard<T> {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
-}
-
-fn resolve_native_text_max_tokens(
-    requested: Option<u32>,
-    driver_max: u32,
-    family_display_name: &str,
-) -> Result<u32, BackendError> {
-    let requested = requested.unwrap_or(driver_max);
-    if requested == 0 {
-        return Err(BackendError::Other(format!(
-            "{family_display_name} cannot generate zero tokens"
-        )));
-    }
-    if requested > driver_max {
-        return Err(BackendError::Other(format!(
-            "{family_display_name} requested {requested} tokens, but max is {driver_max}"
-        )));
-    }
-    Ok(requested)
 }
