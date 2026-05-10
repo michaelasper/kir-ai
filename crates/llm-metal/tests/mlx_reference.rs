@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 const METAL_LATENCY_WARMUP_RUNS: usize = 1;
 const METAL_LATENCY_SAMPLE_RUNS: usize = 5;
 
-#[test]
-fn metal_kernels_match_mlx_reference_trace() {
+#[tokio::test]
+async fn metal_kernels_match_mlx_reference_trace() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
         eprintln!("no Metal device available; skipping MLX reference test");
@@ -20,47 +20,61 @@ fn metal_kernels_match_mlx_reference_trace() {
 
     let add_left = [1.0, 2.5, -3.0, 8.0];
     let add_right = [4.0, -1.5, 3.0, 0.25];
-    let vector_add = device
-        .add_f32(&add_left, &add_right)
+    let mut vector_add = vec![0.0; 4];
+    device
+        .add_f32(&add_left, &add_right, &mut vector_add)
+        .await
         .expect("metal vector add succeeds");
     assert_close(&vector_add, &fixture.cases.vector_add_f32.output, 1e-6);
     assert_latency_delta(
         "vector_add_f32",
         fixture.cases.vector_add_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 4];
             device
-                .add_f32(&add_left, &add_right)
+                .add_f32(&add_left, &add_right, &mut output)
+                .await
                 .expect("metal vector add succeeds")
         },
-    );
+    ).await;
 
-    let rms = device
-        .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0)
+    let mut rms = vec![0.0; 2];
+    device
+        .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut rms)
+        .await
         .expect("metal qwen rms norm succeeds");
     assert_close(&rms, &fixture.cases.qwen_rms_norm_f32.output, 1e-6);
     assert_latency_delta(
         "qwen_rms_norm_f32",
         fixture.cases.qwen_rms_norm_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 2];
             device
-                .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0)
+                .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut output)
+                .await
                 .expect("metal qwen rms norm succeeds")
         },
-    );
+    ).await;
 
     let scores = [1.0, 2.0, -1.0, 0.5];
-    let softmax = device.softmax_f32(&scores).expect("metal softmax succeeds");
+    let mut softmax = vec![0.0; 4];
+    device.softmax_f32(&scores, &mut softmax).await.expect("metal softmax succeeds");
     assert_close(&softmax, &fixture.cases.softmax_f32.output, 1e-6);
     assert_latency_delta(
         "softmax_f32",
         fixture.cases.softmax_f32.mlx_median_us,
-        || device.softmax_f32(&scores).expect("metal softmax succeeds"),
-    );
+        || async {
+            let mut output = vec![0.0; 4];
+            device.softmax_f32(&scores, &mut output).await.expect("metal softmax succeeds")
+        },
+    ).await;
 
     let conv_window = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let conv_weights = [0.5, 1.0, -1.0, 0.25, 2.0, -0.5];
-    let conv = device
-        .linear_attention_conv1d_silu_f32(&conv_window, &conv_weights, 3, 2)
+    let mut conv = vec![0.0; 3];
+    device
+        .linear_attention_conv1d_silu_f32(&conv_window, &conv_weights, 3, 2, &mut conv)
+        .await
         .expect("metal linear attention conv succeeds");
     assert_close(
         &conv,
@@ -70,44 +84,56 @@ fn metal_kernels_match_mlx_reference_trace() {
     assert_latency_delta(
         "linear_attention_conv1d_silu_f32",
         fixture.cases.linear_attention_conv1d_silu_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 3];
             device
-                .linear_attention_conv1d_silu_f32(&conv_window, &conv_weights, 3, 2)
+                .linear_attention_conv1d_silu_f32(&conv_window, &conv_weights, 3, 2, &mut output)
+                .await
                 .expect("metal linear attention conv succeeds")
         },
-    );
+    ).await;
 
     let matvec_matrix = [1.0, 2.0, 3.0, 4.0, -1.0, 0.5];
     let matvec_vector = [0.5, -2.0, 4.0];
-    let matvec = device
-        .matvec_f32(&matvec_matrix, 2, 3, &matvec_vector)
+    let mut matvec = vec![0.0; 2];
+    device
+        .matvec_f32(&matvec_matrix, 2, 3, &matvec_vector, &mut matvec)
+        .await
         .expect("metal matvec succeeds");
     assert_close(&matvec, &fixture.cases.matvec_f32.output, 1e-6);
-    assert_latency_delta("matvec_f32", fixture.cases.matvec_f32.mlx_median_us, || {
+    assert_latency_delta("matvec_f32", fixture.cases.matvec_f32.mlx_median_us, || async {
+        let mut output = vec![0.0; 2];
         device
-            .matvec_f32(&matvec_matrix, 2, 3, &matvec_vector)
+            .matvec_f32(&matvec_matrix, 2, 3, &matvec_vector, &mut output)
+            .await
             .expect("metal matvec succeeds")
-    });
+    }).await;
 
     let matrix = matvec_matrix.map(f32_to_bf16_bits);
-    let bf16_matvec = device
-        .matvec_bf16_f32(&matrix, 2, 3, &matvec_vector)
+    let mut bf16_matvec = vec![0.0; 2];
+    device
+        .matvec_bf16_f32(&matrix, 2, 3, &matvec_vector, &mut bf16_matvec)
+        .await
         .expect("metal bf16 matvec succeeds");
     assert_close(&bf16_matvec, &fixture.cases.matvec_bf16_f32.output, 1e-6);
     assert_latency_delta(
         "matvec_bf16_f32",
         fixture.cases.matvec_bf16_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 2];
             device
-                .matvec_bf16_f32(&matrix, 2, 3, &matvec_vector)
+                .matvec_bf16_f32(&matrix, 2, 3, &matvec_vector, &mut output)
+                .await
                 .expect("metal bf16 matvec succeeds")
         },
-    );
+    ).await;
 
     let batched_matrix = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(f32_to_bf16_bits);
     let batched_vectors = [1.0, 2.0, 3.0, 3.0, 2.0, 1.0];
-    let batched = device
-        .batched_matvec_bf16_f32(&batched_matrix, 2, 3, &batched_vectors, 2)
+    let mut batched = vec![0.0; 4];
+    device
+        .batched_matvec_bf16_f32(&batched_matrix, 2, 3, &batched_vectors, 2, &mut batched)
+        .await
         .expect("metal batched bf16 matvec succeeds");
     assert_close(
         &batched,
@@ -117,34 +143,41 @@ fn metal_kernels_match_mlx_reference_trace() {
     assert_latency_delta(
         "batched_matvec_bf16_f32",
         fixture.cases.batched_matvec_bf16_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 4];
             device
-                .batched_matvec_bf16_f32(&batched_matrix, 2, 3, &batched_vectors, 2)
+                .batched_matvec_bf16_f32(&batched_matrix, 2, 3, &batched_vectors, 2, &mut output)
+                .await
                 .expect("metal batched bf16 matvec succeeds")
         },
-    );
+    ).await;
 
     let weighted_values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let weighted_weights = [0.25, -0.5];
-    let weighted = device
-        .weighted_sum_f32(&weighted_values, &weighted_weights, 3)
+    let mut weighted = vec![0.0; 3];
+    device
+        .weighted_sum_f32(&weighted_values, &weighted_weights, 3, &mut weighted)
+        .await
         .expect("metal weighted sum succeeds");
     assert_close(&weighted, &fixture.cases.weighted_sum_f32.output, 1e-6);
     assert_latency_delta(
         "weighted_sum_f32",
         fixture.cases.weighted_sum_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 3];
             device
-                .weighted_sum_f32(&weighted_values, &weighted_weights, 3)
+                .weighted_sum_f32(&weighted_values, &weighted_weights, 3, &mut output)
+                .await
                 .expect("metal weighted sum succeeds")
         },
-    );
+    ).await;
 
     let recurrent_state = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let recurrent_key = [0.5, -1.0];
     let recurrent_value = [10.0, 20.0, 30.0];
     let recurrent_memory = [1.0, 2.0, 3.0];
-    let recurrent = device
+    let mut recurrent = vec![0.0; 6];
+    device
         .linear_attention_recurrent_update_f32(
             &recurrent_state,
             &recurrent_key,
@@ -154,7 +187,9 @@ fn metal_kernels_match_mlx_reference_trace() {
             0.5,
             2,
             3,
+            &mut recurrent,
         )
+        .await
         .expect("metal recurrent update succeeds");
     assert_close(
         &recurrent,
@@ -167,7 +202,8 @@ fn metal_kernels_match_mlx_reference_trace() {
             .cases
             .linear_attention_recurrent_update_f32
             .mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 6];
             device
                 .linear_attention_recurrent_update_f32(
                     &recurrent_state,
@@ -178,14 +214,18 @@ fn metal_kernels_match_mlx_reference_trace() {
                     0.5,
                     2,
                     3,
+                    &mut output,
                 )
+                .await
                 .expect("metal recurrent update succeeds")
         },
-    );
+    ).await;
 
     let head_rows = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-    let selected_head_rows = device
-        .select_head_rows_f32(&head_rows, 2, 4, 1, 2)
+    let mut selected_head_rows = vec![0.0; 4];
+    device
+        .select_head_rows_f32(&head_rows, 2, 4, 1, 2, &mut selected_head_rows)
+        .await
         .expect("metal head row selection succeeds");
     assert_close(
         &selected_head_rows,
@@ -195,12 +235,14 @@ fn metal_kernels_match_mlx_reference_trace() {
     assert_latency_delta(
         "select_head_rows_f32",
         fixture.cases.select_head_rows_f32.mlx_median_us,
-        || {
+        || async {
+            let mut output = vec![0.0; 4];
             device
-                .select_head_rows_f32(&head_rows, 2, 4, 1, 2)
+                .select_head_rows_f32(&head_rows, 2, 4, 1, 2, &mut output)
+                .await
                 .expect("metal head row selection succeeds")
         },
-    );
+    ).await;
 
     let mut argmax_logits = vec![-1.0; 600];
     argmax_logits[42] = 4.5;
@@ -208,22 +250,26 @@ fn metal_kernels_match_mlx_reference_trace() {
     argmax_logits[599] = 3.25;
     let argmax = device
         .argmax_f32(&argmax_logits)
+        .await
         .expect("metal argmax succeeds");
     assert_eq!(argmax.index, fixture.cases.argmax_f32.index);
     assert_eq!(argmax.value, fixture.cases.argmax_f32.value);
-    assert_latency_delta("argmax_f32", fixture.cases.argmax_f32.mlx_median_us, || {
+    assert_latency_delta("argmax_f32", fixture.cases.argmax_f32.mlx_median_us, || async {
         device
             .argmax_f32(&argmax_logits)
+            .await
             .expect("metal argmax succeeds")
-    });
+    }).await;
 
     let mut top_k_logits = vec![-10.0; 700];
     top_k_logits[7] = 9.0;
     top_k_logits[288] = 12.0;
     top_k_logits[499] = 12.0;
     top_k_logits[612] = 5.0;
-    let top_k = device
-        .top_k_f32(&top_k_logits, 3)
+    let mut top_k = vec![llm_metal::TopKResult { index: 0, value: 0.0 }; 3];
+    device
+        .top_k_f32(&top_k_logits, 3, &mut top_k)
+        .await
         .expect("metal top-k succeeds");
     assert_eq!(
         top_k.iter().map(|item| item.index).collect::<Vec<_>>(),
@@ -234,11 +280,13 @@ fn metal_kernels_match_mlx_reference_trace() {
         &fixture.cases.top_k_f32.values,
         1e-6,
     );
-    assert_latency_delta("top_k_f32", fixture.cases.top_k_f32.mlx_median_us, || {
+    assert_latency_delta("top_k_f32", fixture.cases.top_k_f32.mlx_median_us, || async {
+        let mut output = vec![llm_metal::TopKResult { index: 0, value: 0.0 }; 3];
         device
-            .top_k_f32(&top_k_logits, 3)
+            .top_k_f32(&top_k_logits, 3, &mut output)
+            .await
             .expect("metal top-k succeeds")
-    });
+    }).await;
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,18 +378,19 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
     }
 }
 
-fn assert_latency_delta<F, T>(name: &str, mlx_median_us: f64, mut operation: F)
+async fn assert_latency_delta<F, Fut, T>(name: &str, mlx_median_us: f64, mut operation: F)
 where
-    F: FnMut() -> T,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = T>,
 {
     for _ in 0..METAL_LATENCY_WARMUP_RUNS {
-        std::hint::black_box(operation());
+        std::hint::black_box(operation().await);
     }
 
     let mut samples = Vec::with_capacity(METAL_LATENCY_SAMPLE_RUNS);
     for _ in 0..METAL_LATENCY_SAMPLE_RUNS {
         let started = Instant::now();
-        std::hint::black_box(operation());
+        std::hint::black_box(operation().await);
         samples.push(started.elapsed());
     }
     samples.sort_unstable();

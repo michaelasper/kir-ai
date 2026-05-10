@@ -7,13 +7,13 @@ use crate::native_matvec::{
 use crate::native_text::{
     NativeStreamTextDeltas, NativeTextCandidateDecision, NativeTextStopTokens,
     native_text_cache_token_capacity, native_text_prefill_context_with_cache,
-    sample_token_id_with_draw,
+    native_text_worker_stream, sample_token_id_with_draw,
 };
 use crate::sync_ext::RecoverPoisonedMutex;
-use futures::StreamExt;
 use llm_backend::{
-    BackendCacheContext, CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
-    qwen_layer_caches_for_spec, qwen_prefill_sequence_with_cache_with_matvec,
+    BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
+    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
+    qwen_prefill_sequence_with_cache_with_matvec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -21,6 +21,28 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+
+fn test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+fn open_qwen_backend_blocking(
+    model_id: &str,
+    snapshot: &Path,
+) -> NativeQwenBackend {
+    test_runtime().block_on(NativeQwenBackend::open(model_id, snapshot)).expect("backend opens snapshot")
+}
+
+fn open_qwen_backend_with_options_blocking(
+    model_id: &str,
+    snapshot: &Path,
+    options: NativeQwenLoadOptions,
+) -> NativeQwenBackend {
+    test_runtime().block_on(NativeQwenBackend::open_with_options(model_id, snapshot, options)).expect("backend opens snapshot")
+}
 
 #[derive(Default)]
 struct TestQwenCacheMirrorCleaner {
@@ -428,9 +450,14 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
     .expect("write index");
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
 
-    let warmup = NativeTextMatvecBackend::Cpu
-        .warm_bf16_matrix_cache(&store)
-        .expect("cpu warmup reports stats");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let warmup = rt.block_on(
+        NativeTextMatvecBackend::Cpu.warm_bf16_matrix_cache(&store),
+    )
+    .expect("cpu warmup reports stats");
 
     assert_eq!(
         warmup,
@@ -697,24 +724,32 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
         .expect("expected cache capacity"),
     )
     .expect("expected caches allocate");
+    let expected_cancellation = CancellationToken::new();
+    let mut expected_scratch = InferenceScratchpad::new();
     let expected_hidden = native_text_prefill_context_with_cache(
         "Qwen",
         1,
         &[0, 1, 0],
         &mut expected_caches,
-        &CancellationToken::new(),
-        |chunk, caches| {
-            qwen_prefill_sequence_with_cache_with_matvec(
+        &expected_cancellation,
+        &mut expected_scratch,
+        |chunk, caches, scratch| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
                 &backend.driver.adapter.store,
                 &backend.driver.adapter.spec,
                 chunk,
                 caches,
                 &NativeTextMatvecBackend::Cpu,
-            )
+                scratch,
+            ))
             .map_err(|err| BackendError::Other(err.to_string()))
         },
-    )
-    .expect("fresh prefill succeeds");
+    );
+    let expected_hidden = expected_hidden.expect("fresh prefill succeeds");
     assert_close_vec(second.hidden(), &expected_hidden);
     match (&second.caches[0], &expected_caches[0]) {
         (QwenLayerCache::Linear(actual), QwenLayerCache::Linear(expected)) => {
@@ -737,24 +772,32 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
     let mut caches = qwen_layer_caches_for_spec(&spec, 1).expect("caches allocate");
 
+    let prefill_cancellation = CancellationToken::new();
+    let mut prefill_scratch = InferenceScratchpad::new();
     let hidden = native_text_prefill_context_with_cache(
         "Qwen",
         1,
         &[0, 1, 0],
         &mut caches,
-        &CancellationToken::new(),
-        |chunk, caches| {
-            qwen_prefill_sequence_with_cache_with_matvec(
+        &prefill_cancellation,
+        &mut prefill_scratch,
+        |chunk, caches, scratch| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
                 &store,
                 &spec,
                 chunk,
                 caches,
                 &NativeTextMatvecBackend::Cpu,
-            )
+                scratch,
+            ))
             .map_err(|err| BackendError::Other(err.to_string()))
         },
-    )
-    .expect("sequence prefill succeeds");
+    );
+    let hidden = hidden.expect("sequence prefill succeeds");
 
     assert_eq!(hidden.len(), 2);
     match &caches[0] {
@@ -779,14 +822,20 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
         conv_calls: std::cell::Cell::new(0),
     };
 
+    let mut cancel_scratch = InferenceScratchpad::new();
     let err = native_text_prefill_context_with_cache(
         "Qwen",
         1,
         &[0, 1, 0],
         &mut caches,
         &cancellation,
-        |chunk, caches| {
-            qwen_prefill_sequence_with_cache_with_matvec(&store, &spec, chunk, caches, &matvec)
+        &mut cancel_scratch,
+        |chunk, caches, scratch| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(&store, &spec, chunk, caches, &matvec, scratch))
                 .map_err(|err| BackendError::Other(err.to_string()))
         },
     )
@@ -812,8 +861,7 @@ fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
         snapshot.join("model.safetensors.index.json"),
     );
 
-    let backend =
-        NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+    let backend = open_qwen_backend_blocking("local-qwen36", &snapshot);
     let metadata = backend.model_metadata();
 
     assert_eq!(
@@ -836,8 +884,7 @@ fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
     write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
     copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-    let mut backend =
-        NativeQwenBackend::open("local-qwen3", &snapshot).expect("backend opens snapshot");
+    let mut backend = open_qwen_backend_blocking("local-qwen3", &snapshot);
     backend.driver.adapter.top_k = 2;
     let decode = backend
         .start_decode_session(
@@ -868,8 +915,7 @@ fn native_qwen_full_attention_prefill_keeps_context_beyond_chunk_size() {
     write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
     copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-    let mut backend =
-        NativeQwenBackend::open("local-qwen3", &snapshot).expect("backend opens snapshot");
+    let mut backend = open_qwen_backend_blocking("local-qwen3", &snapshot);
     backend.driver.adapter.max_prefill_tokens = 1;
     let context = [0, 1].repeat(6);
     let decode = backend
@@ -905,15 +951,14 @@ fn native_qwen_backend_can_eagerly_materialize_indexed_shards_on_open() {
     write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
     write_tiny_qwen3_dense_model_index(&snapshot);
 
-    let backend = NativeQwenBackend::open_with_options(
+    let backend = open_qwen_backend_with_options_blocking(
         "local-qwen36",
         &snapshot,
         NativeQwenLoadOptions {
             eager_materialize_shards: true,
             ..NativeQwenLoadOptions::default()
         },
-    )
-    .expect("backend opens and materializes shards");
+    );
 
     assert_eq!(backend.driver.adapter.store.materialized_shard_count(), 1);
     std::fs::remove_dir_all(snapshot).ok();
@@ -930,8 +975,9 @@ async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend =
-        NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+    let backend = NativeQwenBackend::open("local-qwen36", &snapshot)
+        .await
+        .expect("backend opens snapshot");
     let cancellation = CancellationToken::new();
     cancellation.cancel();
 
@@ -968,8 +1014,7 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend =
-        NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+    let backend = open_qwen_backend_blocking("local-qwen36", &snapshot);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -1000,7 +1045,7 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
 async fn native_qwen_worker_stream_reports_join_failure_after_channel_close() {
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
     let worker = tokio::task::spawn_blocking(|| panic!("stream worker panic"));
-    let mut stream = native_qwen_worker_stream(rx, worker);
+    let mut stream = native_text_worker_stream("native Qwen", rx, worker);
 
     let err = stream
         .next()
@@ -1026,8 +1071,7 @@ fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend =
-        NativeQwenBackend::open("local-qwen36", &snapshot).expect("backend opens snapshot");
+    let backend = open_qwen_backend_blocking("local-qwen36", &snapshot);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
 
@@ -1654,23 +1698,128 @@ struct CancelAfterFirstConv {
 }
 
 impl NativeMatvecBackend for CancelAfterFirstConv {
-    fn linear_attention_conv1d_silu_f32(
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        CpuNativeMatvecBackend.bf16_matvec_row_major_f32_in_place(store, tensor, input, output).await
+    }
+
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        CpuNativeMatvecBackend.bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output).await
+    }
+
+    async fn matvec_row_major_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend.matvec_row_major_f32_in_place(input, weights, rows, columns, output).await
+    }
+
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend.rms_norm_one_centered_f32_in_place(input, weight, eps, output).await
+    }
+
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend.softmax_f32_in_place(scores, output).await
+    }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
         &self,
         window: &[f32],
         weights: &[f32],
         conv_dim: usize,
         kernel_size: usize,
-    ) -> Result<Vec<f32>, MathError> {
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
         self.conv_calls.set(self.conv_calls.get() + 1);
         if self.conv_calls.get() == 1 {
             self.cancellation.cancel();
         }
-        CpuNativeMatvecBackend.linear_attention_conv1d_silu_f32(
+        CpuNativeMatvecBackend.linear_attention_conv1d_silu_f32_in_place(
             window,
             weights,
             conv_dim,
             kernel_size,
+            output,
         )
+        .await
+    }
+
+    async fn weighted_sum_f32_in_place(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend.weighted_sum_f32_in_place(values, weights, vector_len, output).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_update_f32_in_place(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend
+            .linear_attention_recurrent_update_f32_in_place(
+                state,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+                output,
+            )
+            .await
+    }
+
+    async fn select_head_rows_f32_in_place(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend
+            .select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output)
+            .await
     }
 }
 fn temp_snapshot_dir(label: &str) -> PathBuf {

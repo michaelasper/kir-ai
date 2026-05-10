@@ -26,16 +26,15 @@ anyhow = "1.0.100"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 axum = { version = "0.8.7", features = ["json", "macros", "tokio"] }
-bytes = "1.11.0"
 chrono = { version = "0.4.42", features = ["serde"] }
 futures = "0.3.31"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 libc = "0.2.177"
 metal = "0.33.0"
+block = "0.1.6"
 memmap2 = "0.9.10"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
-schemars = { version = "1.1.0", features = ["chrono04", "uuid1"] }
 safetensors = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
@@ -47,7 +46,6 @@ tokio-stream = "0.1.17"
 tokio-util = "0.7.17"
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
 tower = { version = "0.5.2", features = ["util"] }
-tower-http = { version = "0.6.7", features = ["trace"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 url = "2.5.7"

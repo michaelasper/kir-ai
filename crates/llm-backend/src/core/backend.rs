@@ -98,14 +98,11 @@ pub enum SamplingConfig {
 impl SamplingConfig {
     pub fn from_openai_controls(temperature: Option<f32>, top_p: Option<f32>) -> Self {
         match (temperature, top_p) {
-            (None, None | Some(1.0)) | (Some(0.0), _) => Self::Greedy,
-            (None, Some(top_p)) => Self::TopP {
-                temperature: 1.0,
-                top_p,
-            },
-            (Some(temperature), top_p) => Self::TopP {
-                temperature,
-                top_p: top_p.unwrap_or(1.0),
+            (Some(0.0), _) => Self::Greedy,
+            (None, None) => Self::Greedy,
+            (t, p) => Self::TopP {
+                temperature: t.unwrap_or(1.0),
+                top_p: p.unwrap_or(1.0),
             },
         }
     }

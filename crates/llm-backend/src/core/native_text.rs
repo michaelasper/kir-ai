@@ -52,17 +52,30 @@ impl NativeTextLayerCachesMut<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum NativeTextModelSpecRef<'a> {
     Qwen(&'a llm_models::QwenModelSpec),
     Gemma(&'a llm_models::GemmaModelSpec),
 }
 
-impl From<&NativeTextModelSpec> for NativeTextModelSpecRef<'_> {
-    fn from(spec: &NativeTextModelSpec) -> Self {
+impl<'a> From<&'a NativeTextModelSpec> for NativeTextModelSpecRef<'a> {
+    fn from(spec: &'a NativeTextModelSpec) -> Self {
         match spec {
             NativeTextModelSpec::Qwen(spec) => Self::Qwen(spec),
             NativeTextModelSpec::Gemma(spec) => Self::Gemma(spec),
         }
+    }
+}
+
+impl<'a> From<&'a llm_models::QwenModelSpec> for NativeTextModelSpecRef<'a> {
+    fn from(spec: &'a llm_models::QwenModelSpec) -> Self {
+        Self::Qwen(spec)
+    }
+}
+
+impl<'a> From<&'a llm_models::GemmaModelSpec> for NativeTextModelSpecRef<'a> {
+    fn from(spec: &'a llm_models::GemmaModelSpec) -> Self {
+        Self::Gemma(spec)
     }
 }
 
@@ -239,7 +252,9 @@ pub async fn native_final_norm_for_spec_ref_with_matvec(
             qwen_final_norm_for_spec_with_matvec(store, spec, hidden_states, matvec).await
         }
         NativeTextModelSpecRef::Gemma(spec) => {
-            gemma_final_norm_for_spec(store, spec, hidden_states).await
+            let mut output = vec![0.0; hidden_states.len()];
+            gemma_final_norm_for_spec(store, spec, hidden_states, &mut output).await?;
+            Ok(output)
         }
     }
 }
@@ -346,7 +361,9 @@ pub async fn native_lm_head_logits_for_spec_ref_with_matvec(
             qwen_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec).await
         }
         NativeTextModelSpecRef::Gemma(spec) => {
-            gemma_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec).await
+            let mut output = vec![0.0; spec.vocab_size as usize];
+            gemma_lm_head_logits_for_spec_with_matvec(store, spec, hidden_states, chunk_rows, matvec, &mut output).await?;
+            Ok(output)
         }
     }
 }

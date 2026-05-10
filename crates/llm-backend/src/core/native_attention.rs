@@ -219,6 +219,25 @@ pub async fn native_full_attention_step_with_cache_from_parts_with_matvec(
     cache: &mut LayerKvCache,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
+    let mut output = vec![0.0; dims.hidden_size];
+    native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
+        dims,
+        parts,
+        cache,
+        matvec,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
+pub async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
+    dims: NativeFullAttentionDims,
+    parts: &NativeFullAttentionStepParts<'_>,
+    cache: &mut LayerKvCache,
+    matvec: &impl NativeMatvecBackend,
+    output: &mut [f32],
+) -> Result<(), MathError> {
     let shape = validate_full_attention_shape(dims)?;
     require_full_attention_cache_shape(dims, cache)?;
     require_full_attention_token_parts(
@@ -258,13 +277,15 @@ pub async fn native_full_attention_step_with_cache_from_parts_with_matvec(
     )
     .await?;
     matvec
-        .matvec_row_major_f32(
+        .matvec_row_major_f32_in_place(
             &attended,
             parts.output_projection,
             dims.hidden_size,
             shape.attention_dim,
+            output,
         )
         .await
+        .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}")))
 }
 
 async fn native_full_attention_sequence_impl(
@@ -556,8 +577,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_full_attention_sequence_is_causal_without_cache() {
+    #[tokio::test]
+    async fn native_full_attention_sequence_is_causal_without_cache() {
         let dims = NativeFullAttentionDims {
             hidden_size: 1,
             num_attention_heads: 1,
@@ -580,14 +601,15 @@ mod tests {
                 score_scale: 1.0,
             },
         )
+        .await
         .expect("attention succeeds");
 
         assert_close(output[0][0], 10.0);
         assert!(output[1][0] > 27.0, "second token should attend to new key");
     }
 
-    #[test]
-    fn native_full_attention_cache_matches_uncached_sequence() {
+    #[tokio::test]
+    async fn native_full_attention_cache_matches_uncached_sequence() {
         let dims = NativeFullAttentionDims {
             hidden_size: 2,
             num_attention_heads: 2,
@@ -609,9 +631,10 @@ mod tests {
         };
 
         let uncached =
-            native_full_attention_sequence_from_parts(dims, &parts).expect("uncached succeeds");
+            native_full_attention_sequence_from_parts(dims, &parts).await.expect("uncached succeeds");
         let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
         let cached = native_full_attention_sequence_with_cache_from_parts(dims, &parts, &mut cache)
+            .await
             .expect("cached succeeds");
 
         assert_eq!(uncached.len(), cached.len());
@@ -622,8 +645,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_full_attention_uses_caller_score_scale() {
+    #[tokio::test]
+    async fn native_full_attention_uses_caller_score_scale() {
         let dims = NativeFullAttentionDims {
             hidden_size: 1,
             num_attention_heads: 1,
@@ -646,6 +669,7 @@ mod tests {
                 score_scale: 0.0,
             },
         )
+        .await
         .expect("flat scale attention succeeds");
         let sharp_scaled = native_full_attention_sequence_from_parts(
             dims,
@@ -658,6 +682,7 @@ mod tests {
                 score_scale: 1.0,
             },
         )
+        .await
         .expect("sharp scale attention succeeds");
 
         assert_close(flat_scaled[1][0], 50.0);
@@ -667,8 +692,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_full_attention_cache_sequence_reads_without_appending() {
+    #[tokio::test]
+    async fn native_full_attention_cache_sequence_reads_without_appending() {
         let dims = NativeFullAttentionDims {
             hidden_size: 1,
             num_attention_heads: 1,
@@ -698,6 +723,7 @@ mod tests {
             &cache,
             &CpuNativeMatvecBackend,
         )
+        .await
         .expect("cache-only sequence attention succeeds");
 
         assert_eq!(cache.token_count(), 2);

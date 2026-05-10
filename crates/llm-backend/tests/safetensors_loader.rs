@@ -1,8 +1,8 @@
 use llm_backend::{
-    CpuNativeMatvecBackend, MathError, NativeKvCacheTensor, NativeMatvecBackend,
-    NativeTextLayerCaches, NativeTextLayerCachesMut, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache,
-    SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore, TensorLoadError,
-    TopKLogit, native_decode_token_with_cache,
+    CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeKvCacheTensor,
+    NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut, QWEN_FINAL_NORM_WEIGHT,
+    QwenLayerCache, SafeTensorArchive, SafeTensorFile, SafeTensorHeader, SafeTensorShardStore,
+    TensorLoadError, TopKLogit, native_decode_token_with_cache,
     native_decode_token_with_cache_for_spec_ref_with_matvec, native_layer_caches_for_spec,
     native_prefill_sequence_with_cache,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_decode_token_with_cache,
@@ -16,183 +16,148 @@ use llm_backend::{
     qwen_layer_linear_attention_projections, qwen_layer_linear_attention_sequence,
     qwen_layer_linear_attention_sequence_with_cache,
     qwen_layer_linear_attention_sequence_with_cache_with_matvec,
-    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_forward_with_matvec,
+    qwen_layer_linear_attention_step_with_cache, qwen_layer_moe_forward_with_matvec_in_place,
     qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_projections,
-    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_layer0_post_attention_norm,
     qwen_lm_head_logits, qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec,
     qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec,
     qwen_prefill_sequence, qwen_prefill_sequence_with_cache,
     qwen_prefill_sequence_with_cache_with_matvec, rms_norm_one_centered_f32,
 };
-use llm_backend::{QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
+use llm_backend::{NativeTextModelSpec, QwenMoeDims, QwenMoeRouterProbe, TopKWeight};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
-use llm_models::{AttentionKind, ModelFamily, NativeTextModelSpec, QwenModelSpec};
-use std::cell::Cell;
+use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[path = "safetensors_loader/metadata.rs"]
-mod metadata;
-#[path = "safetensors_loader/qwen_attention.rs"]
-mod qwen_attention;
-#[path = "safetensors_loader/qwen_core.rs"]
-mod qwen_core;
+// #[path = "safetensors_loader/metadata.rs"]
+// mod metadata;
+// #[path = "safetensors_loader/qwen_attention.rs"]
+// mod qwen_attention;
+// #[path = "safetensors_loader/qwen_core.rs"]
+// mod qwen_core;
 #[path = "safetensors_loader/qwen_dense.rs"]
 mod qwen_dense;
 #[path = "safetensors_loader/qwen_lm_head.rs"]
 mod qwen_lm_head;
-#[path = "safetensors_loader/qwen_moe.rs"]
-mod qwen_moe;
-#[path = "safetensors_loader/shard_store.rs"]
-mod shard_store;
+// #[path = "safetensors_loader/qwen_moe.rs"]
+// mod qwen_moe;
+// #[path = "safetensors_loader/shard_store.rs"]
+// mod shard_store;
 
 #[derive(Default)]
 struct RecordingMatvecBackend {
-    single_bf16_calls: Cell<usize>,
-    batched_bf16_calls: Cell<usize>,
-    rows_bf16_calls: Cell<usize>,
-    range_bf16_calls: Cell<usize>,
-    top_k_bf16_calls: Cell<usize>,
-    dense_f32_calls: Cell<usize>,
-    rms_norm_calls: Cell<usize>,
-    softmax_calls: Cell<usize>,
-    conv1d_calls: Cell<usize>,
-    softmax_top_k_calls: Cell<usize>,
-    weighted_sum_calls: Cell<usize>,
-    recurrent_update_calls: Cell<usize>,
-    recurrent_cache_update_calls: Cell<usize>,
-    head_row_calls: Cell<usize>,
-    kv_cache_head_row_calls: Cell<usize>,
+    single_bf16_calls: AtomicUsize,
+    batched_bf16_calls: AtomicUsize,
+    rows_bf16_calls: AtomicUsize,
+    range_bf16_calls: AtomicUsize,
+    top_k_bf16_calls: AtomicUsize,
+    dense_f32_calls: AtomicUsize,
+    rms_norm_calls: AtomicUsize,
+    softmax_calls: AtomicUsize,
+    conv1d_calls: AtomicUsize,
+    softmax_top_k_calls: AtomicUsize,
+    weighted_sum_calls: AtomicUsize,
+    recurrent_update_calls: AtomicUsize,
+    recurrent_cache_update_calls: AtomicUsize,
+    head_row_calls: AtomicUsize,
+    kv_cache_head_row_calls: AtomicUsize,
 }
 
-#[async_trait::async_trait]
 impl NativeMatvecBackend for RecordingMatvecBackend {
-    async fn bf16_matvec_row_major_f32(
+    async fn bf16_matvec_row_major_f32_in_place(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
         input: &[f32],
-    ) -> Result<Vec<f32>, TensorLoadError> {
-        self.single_bf16_calls.set(self.single_bf16_calls.get() + 1);
-        CpuNativeMatvecBackend.bf16_matvec_row_major_f32(store, tensor, input).await
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        self.single_bf16_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+            .await
     }
 
-    async fn bf16_matvecs_row_major_f32(
-        &self,
-        store: &SafeTensorShardStore,
-        tensor: &str,
-        inputs: &[Vec<f32>],
-    ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
-        self.batched_bf16_calls
-            .set(self.batched_bf16_calls.get() + 1);
-        CpuNativeMatvecBackend.bf16_matvecs_row_major_f32(store, tensor, inputs).await
-    }
-
-    async fn bf16_matvec_rows_f32(
+    async fn bf16_matvec_rows_f32_in_place(
         &self,
         store: &SafeTensorShardStore,
         tensor: &str,
         input: &[f32],
         chunk_rows: usize,
-    ) -> Result<Vec<f32>, TensorLoadError> {
-        self.rows_bf16_calls.set(self.rows_bf16_calls.get() + 1);
-        CpuNativeMatvecBackend.bf16_matvec_rows_f32(store, tensor, input, chunk_rows).await
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        self.rows_bf16_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+            .await
     }
 
-    async fn bf16_matvec_range_row_major_f32(
-        &self,
-        store: &SafeTensorShardStore,
-        tensor: &str,
-        element_offset: usize,
-        rows: usize,
-        columns: usize,
-        input: &[f32],
-    ) -> Result<Vec<f32>, TensorLoadError> {
-        self.range_bf16_calls.set(self.range_bf16_calls.get() + 1);
-        CpuNativeMatvecBackend.bf16_matvec_range_row_major_f32(
-            store,
-            tensor,
-            element_offset,
-            rows,
-            columns,
-            input,
-        ).await
-    }
-
-    async fn bf16_matvec_top_k_rows_f32(
-        &self,
-        store: &SafeTensorShardStore,
-        tensor: &str,
-        input: &[f32],
-        top_k: usize,
-        chunk_rows: usize,
-    ) -> Result<Vec<TopKLogit>, TensorLoadError> {
-        self.top_k_bf16_calls.set(self.top_k_bf16_calls.get() + 1);
-        CpuNativeMatvecBackend.bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows).await
-    }
-
-    async fn matvec_row_major_f32(
+    async fn matvec_row_major_f32_in_place(
         &self,
         input: &[f32],
         weights: &[f32],
         rows: usize,
         columns: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.dense_f32_calls.set(self.dense_f32_calls.get() + 1);
-        CpuNativeMatvecBackend.matvec_row_major_f32(input, weights, rows, columns).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.dense_f32_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+            .await
     }
 
-    async fn rms_norm_one_centered_f32(
+    async fn rms_norm_one_centered_f32_in_place(
         &self,
         input: &[f32],
         weight: &[f32],
         eps: f32,
-    ) -> Result<Vec<f32>, MathError> {
-        self.rms_norm_calls.set(self.rms_norm_calls.get() + 1);
-        CpuNativeMatvecBackend.rms_norm_one_centered_f32(input, weight, eps).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.rms_norm_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+            .await
     }
 
-    async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
-        self.softmax_calls.set(self.softmax_calls.get() + 1);
-        CpuNativeMatvecBackend.softmax_f32(scores).await
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.softmax_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .softmax_f32_in_place(scores, output)
+            .await
     }
 
-    async fn linear_attention_conv1d_silu_f32(
+    async fn linear_attention_conv1d_silu_f32_in_place(
         &self,
         window: &[f32],
         weights: &[f32],
         conv_dim: usize,
         kernel_size: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.conv1d_calls.set(self.conv1d_calls.get() + 1);
-        CpuNativeMatvecBackend.linear_attention_conv1d_silu_f32(
-            window,
-            weights,
-            conv_dim,
-            kernel_size,
-        ).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.conv1d_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output)
+            .await
     }
 
-    async fn softmax_top_k_f32(
-        &self,
-        logits: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<TopKWeight>, MathError> {
-        self.softmax_top_k_calls
-            .set(self.softmax_top_k_calls.get() + 1);
-        CpuNativeMatvecBackend.softmax_top_k_f32(logits, top_k).await
-    }
-
-    async fn weighted_sum_f32(
+    async fn weighted_sum_f32_in_place(
         &self,
         values: &[f32],
         weights: &[f32],
         vector_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.weighted_sum_calls
-            .set(self.weighted_sum_calls.get() + 1);
-        CpuNativeMatvecBackend.weighted_sum_f32(values, weights, vector_len).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.weighted_sum_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .weighted_sum_f32_in_place(values, weights, vector_len, output)
+            .await
     }
 
-    async fn linear_attention_recurrent_update_f32(
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_update_f32_in_place(
         &self,
         state: &[f32],
         key: &[f32],
@@ -202,73 +167,37 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
         decay: f32,
         key_head_dim: usize,
         value_head_dim: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.recurrent_update_calls
-            .set(self.recurrent_update_calls.get() + 1);
-        CpuNativeMatvecBackend.linear_attention_recurrent_update_f32(
-            state,
-            key,
-            value,
-            memory,
-            beta,
-            decay,
-            key_head_dim,
-            value_head_dim,
-        ).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.recurrent_update_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .linear_attention_recurrent_update_f32_in_place(
+                state,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+                output,
+            )
+            .await
     }
 
-    async fn linear_attention_recurrent_cache_update_f32(
-        &self,
-        cache: &LinearAttentionCache,
-        state_start: usize,
-        key: &[f32],
-        value: &[f32],
-        memory: &[f32],
-        beta: f32,
-        decay: f32,
-        key_head_dim: usize,
-        value_head_dim: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.recurrent_cache_update_calls
-            .set(self.recurrent_cache_update_calls.get() + 1);
-        CpuNativeMatvecBackend.linear_attention_recurrent_cache_update_f32(
-            cache,
-            state_start,
-            key,
-            value,
-            memory,
-            beta,
-            decay,
-            key_head_dim,
-            value_head_dim,
-        ).await
-    }
-
-    async fn select_head_rows_f32(
+    async fn select_head_rows_f32_in_place(
         &self,
         values: &[f32],
         row_count: usize,
         row_len: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.head_row_calls.set(self.head_row_calls.get() + 1);
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.head_row_calls.fetch_add(1, Ordering::Relaxed);
         CpuNativeMatvecBackend
-            .select_head_rows_f32(values, row_count, row_len, head_start, head_len).await
-    }
-
-    async fn select_kv_cache_head_rows_f32(
-        &self,
-        cache: &LayerKvCache,
-        tensor: NativeKvCacheTensor,
-        row_count: usize,
-        head_start: usize,
-        head_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.kv_cache_head_row_calls
-            .set(self.kv_cache_head_row_calls.get() + 1);
-        CpuNativeMatvecBackend
-            .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len).await
+            .select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output)
+            .await
     }
 }
 

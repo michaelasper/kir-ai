@@ -1,26 +1,25 @@
 use super::MetalError;
 use metal::{CommandBufferRef, MTLCommandBufferStatus};
 
-pub(crate) fn finish_command_buffer(
+pub(crate) async fn finish_command_buffer_async(
     command_buffer: &CommandBufferRef,
     kernel_name: &str,
 ) -> Result<(), MetalError> {
-    command_buffer.commit();
-    command_buffer.wait_until_completed();
-    command_buffer_status_result(command_buffer.status(), kernel_name)
-}
-
-pub(crate) async fn finish_command_buffer_async(
-    command_buffer: &metal::CommandBuffer,
-    kernel_name: &str,
-) -> Result<(), MetalError> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let block = metal::block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
-        let _ = tx.send(cb.status());
-    })
-    .copy();
-    command_buffer.add_completed_handler(&block);
-    command_buffer.commit();
+    let rx = {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let block = block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
+            if let Ok(mut guard) = tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(cb.status());
+                }
+            }
+        })
+        .copy();
+        command_buffer.add_completed_handler(&block);
+        command_buffer.commit();
+        rx
+    };
     let status = rx.await.unwrap_or(MTLCommandBufferStatus::Error);
     command_buffer_status_result(status, kernel_name)
 }

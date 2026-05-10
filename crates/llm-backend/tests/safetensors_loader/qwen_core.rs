@@ -1,7 +1,9 @@
+use std::sync::atomic::Ordering;
+
 use super::*;
 
-#[test]
-fn qwen_embedding_probe_reads_and_normalizes_token() {
+#[tokio::test]
+async fn qwen_embedding_probe_reads_and_normalizes_token() {
     let root = temp_snapshot_dir("qwen-embed");
     std::fs::create_dir_all(&root).expect("snapshot dir");
     std::fs::write(
@@ -43,8 +45,8 @@ fn qwen_embedding_probe_reads_and_normalizes_token() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen_layer0_projection_probe_reads_bf16_matrices() {
+#[tokio::test]
+async fn qwen_layer0_projection_probe_reads_bf16_matrices() {
     let root = temp_snapshot_dir("qwen-projections");
     std::fs::create_dir_all(&root).expect("snapshot dir");
     std::fs::write(
@@ -100,7 +102,7 @@ fn qwen_layer0_projection_probe_reads_bf16_matrices() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
     let projections =
-        qwen_layer0_linear_attention_projections(&store, &[4.0, 5.0]).expect("projections");
+        qwen_layer0_linear_attention_projections(&store, &[4.0, 5.0]).await.expect("projections");
 
     assert_eq!(projections.qkv, vec![4.0, 5.0]);
     assert_eq!(projections.z, vec![9.0]);
@@ -109,8 +111,8 @@ fn qwen_layer0_projection_probe_reads_bf16_matrices() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen_prefill_sequence_with_cache_updates_layer_cache() {
+#[tokio::test]
+async fn qwen_prefill_sequence_with_cache_updates_layer_cache() {
     let root = temp_snapshot_dir("qwen-prefill-cache");
     std::fs::create_dir_all(&root).expect("snapshot dir");
     std::fs::write(
@@ -269,8 +271,9 @@ fn qwen_prefill_sequence_with_cache_updates_layer_cache() {
     let mut caches = qwen_layer_caches_for_spec(&spec, 2).expect("layer caches");
 
     let output = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .await
         .expect("cached prefill");
-    let expected = qwen_prefill_sequence(&store, &spec, &[0, 1]).expect("uncached prefill");
+    let expected = qwen_prefill_sequence(&store, &spec, &[0, 1]).await.expect("uncached prefill");
 
     assert_eq!(output.len(), expected.len());
     assert_close(&output[0], &expected[0], 1e-5);
@@ -285,8 +288,8 @@ fn qwen_prefill_sequence_with_cache_updates_layer_cache() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
+#[tokio::test]
+async fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
     let root = temp_snapshot_dir("qwen-decode-token-cache");
     write_tiny_linear_decoder_snapshot(&root);
     let store = SafeTensorShardStore::open(&root).expect("store opens");
@@ -294,13 +297,16 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
     let mut expected_caches = qwen_layer_caches_for_spec(&spec, 3).expect("expected caches");
     let expected =
         qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1, 0], &mut expected_caches)
+            .await
             .expect("full cached prefill");
     let mut caches = qwen_layer_caches_for_spec(&spec, 3).expect("layer caches");
     qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .await
         .expect("initial cached prefill");
 
+    let mut scratch = InferenceScratchpad::default();
     let output =
-        qwen_decode_token_with_cache(&store, &spec, 0, &mut caches).expect("cached token decode");
+        qwen_decode_token_with_cache(&store, &spec, 0, &mut caches, &mut scratch).await.expect("cached token decode");
 
     assert_close(&output, &expected[2], 1e-5);
     match &caches[0] {
@@ -310,8 +316,8 @@ fn qwen_decode_token_with_cache_matches_cached_prefill_suffix() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
+#[tokio::test]
+async fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
     let root = temp_snapshot_dir("native-text-dispatch-qwen");
     write_tiny_linear_decoder_snapshot(&root);
     let store = SafeTensorShardStore::open(&root).expect("store opens");
@@ -321,17 +327,22 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
     let mut direct_caches = qwen_layer_caches_for_spec(&qwen_spec, 3).expect("direct caches");
     let direct_prefill =
         qwen_prefill_sequence_with_cache(&store, &qwen_spec, &[0, 1], &mut direct_caches)
+            .await
             .expect("direct prefill");
-    let direct_decode = qwen_decode_token_with_cache(&store, &qwen_spec, 0, &mut direct_caches)
+    let mut scratch = InferenceScratchpad::default();
+    let direct_decode = qwen_decode_token_with_cache(&store, &qwen_spec, 0, &mut direct_caches, &mut scratch)
+        .await
         .expect("direct decode");
 
     let mut native_caches =
         native_layer_caches_for_spec(&native_spec, 3).expect("native text caches");
     assert!(matches!(&native_caches, NativeTextLayerCaches::Qwen(_)));
     let native_prefill =
-        native_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
+        native_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches, &mut scratch)
+            .await
             .expect("native text prefill");
-    let native_decode = native_decode_token_with_cache(&store, &native_spec, 0, &mut native_caches)
+    let native_decode = native_decode_token_with_cache(&store, &native_spec, 0, &mut native_caches, &mut scratch)
+        .await
         .expect("native text decode");
 
     let mut ref_caches = qwen_layer_caches_for_spec(&qwen_spec, 3).expect("ref caches");
@@ -341,7 +352,9 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
         &[0, 1],
         NativeTextLayerCachesMut::Qwen(&mut ref_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
+    .await
     .expect("native text spec-ref prefill");
     let ref_decode = native_decode_token_with_cache_for_spec_ref_with_matvec(
         &store,
@@ -349,7 +362,9 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
         0,
         NativeTextLayerCachesMut::Qwen(&mut ref_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
+    .await
     .expect("native text spec-ref decode");
 
     assert_eq!(native_prefill.len(), direct_prefill.len());
@@ -363,8 +378,8 @@ fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
+#[tokio::test]
+async fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
     let root = temp_snapshot_dir("qwen-linear-prefill-cache-chunk");
     write_tiny_linear_decoder_snapshot(&root);
     let store = SafeTensorShardStore::open(&root).expect("store opens");
@@ -372,13 +387,15 @@ fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
     let mut expected_caches = qwen_layer_caches_for_spec(&spec, 3).expect("expected caches");
     let expected =
         qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1, 0], &mut expected_caches)
+            .await
             .expect("full cached prefill");
     let mut caches = qwen_layer_caches_for_spec(&spec, 3).expect("layer caches");
     qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .await
         .expect("initial cached chunk");
 
     let output =
-        qwen_prefill_sequence_with_cache(&store, &spec, &[0], &mut caches).expect("second chunk");
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0], &mut caches).await.expect("second chunk");
 
     assert_eq!(output.len(), 1);
     assert_close(&output[0], &expected[2], 1e-5);
@@ -389,8 +406,8 @@ fn qwen_prefill_sequence_with_cache_appends_to_existing_linear_cache_chunk() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen_prefill_and_decode_use_configured_matvec_backend() {
+#[tokio::test]
+async fn qwen_prefill_and_decode_use_configured_matvec_backend() {
     let root = temp_snapshot_dir("qwen-custom-matvec-cache");
     write_tiny_linear_decoder_snapshot(&root);
     let store = SafeTensorShardStore::open(&root).expect("store opens");
@@ -398,28 +415,33 @@ fn qwen_prefill_and_decode_use_configured_matvec_backend() {
     let matvec = RecordingMatvecBackend::default();
     let expected =
         qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches_for_spec(&spec, 3))
+            .await
             .expect("cpu cached prefill");
     let mut recording_caches = qwen_layer_caches_for_spec(&spec, 3).expect("recording caches");
 
+    let mut scratch = InferenceScratchpad::default();
     let output = qwen_prefill_sequence_with_cache_with_matvec(
         &store,
         &spec,
         &[0, 1],
         &mut recording_caches,
         &matvec,
+        &mut scratch,
     )
+    .await
     .expect("recording cached prefill");
     let decoded =
-        qwen_decode_token_with_cache_with_matvec(&store, &spec, 0, &mut recording_caches, &matvec)
+        qwen_decode_token_with_cache_with_matvec(&store, &spec, 0, &mut recording_caches, &matvec, &mut scratch)
+            .await
             .expect("recording cached decode");
 
     assert_eq!(output.len(), expected.len());
     assert_close(&output[0], &expected[0], 1e-5);
     assert_close(&output[1], &expected[1], 1e-5);
     assert_eq!(decoded.len(), spec.hidden_size as usize);
-    assert!(matvec.batched_bf16_calls.get() > 0);
-    assert!(matvec.single_bf16_calls.get() > 0);
-    assert!(matvec.dense_f32_calls.get() > 0);
-    assert!(matvec.rms_norm_calls.get() > 0);
+    assert!(matvec.batched_bf16_calls.load(Ordering::Relaxed) > 0);
+    assert!(matvec.single_bf16_calls.load(Ordering::Relaxed) > 0);
+    assert!(matvec.dense_f32_calls.load(Ordering::Relaxed) > 0);
+    assert!(matvec.rms_norm_calls.load(Ordering::Relaxed) > 0);
     std::fs::remove_dir_all(root).ok();
 }

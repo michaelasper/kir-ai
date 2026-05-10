@@ -95,17 +95,6 @@ fn rms_norm_with_weight_offset_f32_in_place(
     Ok(())
 }
 
-fn rms_norm_with_weight_offset_f32(
-    input: &[f32],
-    weight: &[f32],
-    eps: f32,
-    weight_offset: f32,
-) -> Result<Vec<f32>, MathError> {
-    let mut out = vec![0.0; input.len()];
-    rms_norm_with_weight_offset_f32_in_place(input, weight, eps, weight_offset, &mut out)?;
-    Ok(out)
-}
-
 pub fn matvec_row_major_f32(
     input: &[f32],
     weights: &[f32],

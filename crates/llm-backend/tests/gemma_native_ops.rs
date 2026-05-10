@@ -1,9 +1,9 @@
 use llm_backend::{
-    CpuNativeMatvecBackend, GemmaLayerCache, LayerKvCache, MathError, NativeKvCacheTensor,
-    NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut, SafeTensorShardStore,
-    TensorLoadError, gemma_decode_token_with_cache, gemma_final_norm_for_spec,
-    gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec, gemma_prefill_sequence_with_cache,
-    gemma_prefill_sequence_with_cache_with_matvec,
+    CpuNativeMatvecBackend, GemmaLayerCache, InferenceScratchpad, LayerKvCache, MathError,
+    NativeKvCacheTensor, NativeMatvecBackend, NativeTextLayerCaches, NativeTextLayerCachesMut,
+    NativeTextModelSpec, SafeTensorShardStore, TensorLoadError, gemma_decode_token_with_cache,
+    gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec,
+    gemma_prefill_sequence_with_cache, gemma_prefill_sequence_with_cache_with_matvec,
     native_decode_token_with_cache as native_text_decode_token_with_cache,
     native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_final_norm_for_spec as native_text_final_norm_for_spec,
@@ -12,63 +12,143 @@ use llm_backend::{
     native_prefill_sequence_with_cache as native_text_prefill_sequence_with_cache,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
 };
-use llm_models::{AttentionKind, GemmaModelSpec, ModelFamily, NativeTextModelSpec, QwenModelSpec};
+use llm_models::{AttentionKind, GemmaModelSpec, ModelFamily, QwenModelSpec};
 use serde_json::json;
 use std::{
-    cell::Cell,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Default)]
 struct RecordingGemmaMatvecBackend {
-    dense_f32_calls: Cell<usize>,
-    softmax_calls: Cell<usize>,
-    weighted_sum_calls: Cell<usize>,
-    kv_cache_head_row_calls: Cell<usize>,
+    dense_f32_calls: AtomicUsize,
+    softmax_calls: AtomicUsize,
+    weighted_sum_calls: AtomicUsize,
+    kv_cache_head_row_calls: AtomicUsize,
 }
 
-#[async_trait::async_trait]
 impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
-    async fn matvec_row_major_f32(
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        CpuNativeMatvecBackend
+            .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+            .await
+    }
+
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        CpuNativeMatvecBackend
+            .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+            .await
+    }
+
+    async fn matvec_row_major_f32_in_place(
         &self,
         input: &[f32],
         weights: &[f32],
         rows: usize,
         columns: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.dense_f32_calls.set(self.dense_f32_calls.get() + 1);
-        CpuNativeMatvecBackend.matvec_row_major_f32(input, weights, rows, columns).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.dense_f32_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+            .await
     }
 
-    async fn softmax_f32(&self, scores: &[f32]) -> Result<Vec<f32>, MathError> {
-        self.softmax_calls.set(self.softmax_calls.get() + 1);
-        CpuNativeMatvecBackend.softmax_f32(scores).await
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend
+            .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+            .await
     }
 
-    async fn weighted_sum_f32(
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.softmax_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .softmax_f32_in_place(scores, output)
+            .await
+    }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend
+            .linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output)
+            .await
+    }
+
+    async fn weighted_sum_f32_in_place(
         &self,
         values: &[f32],
         weights: &[f32],
         vector_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.weighted_sum_calls
-            .set(self.weighted_sum_calls.get() + 1);
-        CpuNativeMatvecBackend.weighted_sum_f32(values, weights, vector_len).await
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.weighted_sum_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .weighted_sum_f32_in_place(values, weights, vector_len, output)
+            .await
     }
 
-    async fn select_kv_cache_head_rows_f32(
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_update_f32_in_place(
         &self,
-        cache: &LayerKvCache,
-        tensor: NativeKvCacheTensor,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        CpuNativeMatvecBackend
+            .linear_attention_recurrent_update_f32_in_place(
+                state, key, value, memory, beta, decay, key_head_dim, value_head_dim, output,
+            )
+            .await
+    }
+
+    async fn select_head_rows_f32_in_place(
+        &self,
+        values: &[f32],
         row_count: usize,
+        row_len: usize,
         head_start: usize,
         head_len: usize,
-    ) -> Result<Vec<f32>, MathError> {
-        self.kv_cache_head_row_calls
-            .set(self.kv_cache_head_row_calls.get() + 1);
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.kv_cache_head_row_calls.fetch_add(1, Ordering::Relaxed);
         CpuNativeMatvecBackend
-            .select_kv_cache_head_rows_f32(cache, tensor, row_count, head_start, head_len)
+            .select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output)
             .await
     }
 }
@@ -103,8 +183,9 @@ async fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
+    let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
     assert_close(&prefill[0], &[2.0_f32.sqrt(), 0.0], 1e-5);
     assert_close(&prefill[1], &[0.0, 2.0_f32.sqrt()], 1e-5);
     match &caches[0] {
@@ -112,7 +193,7 @@ async fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
     }
 
     let decoded =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut caches).await.expect("decode token");
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut caches, &mut scratch).await.expect("decode token");
     assert_close(&decoded, &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-5);
     match &caches[0] {
         GemmaLayerCache::Attention(cache) => {
@@ -137,8 +218,9 @@ async fn gemma_prefill_supports_per_layer_inputs() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
+    let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
 
     assert!(spec.uses_per_layer_input());
     assert_close(&prefill[0], &[2.0 * 2.0_f32.sqrt(), 0.0], 1e-4);
@@ -165,8 +247,9 @@ async fn gemma_prefill_reuses_shared_kv_cache_layers() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
 
+    let mut scratch = InferenceScratchpad::default();
     let prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches, &mut scratch).await.expect("prefill");
 
     assert_eq!(caches.len(), 1);
     assert!(spec.is_kv_shared_layer(1));
@@ -194,17 +277,18 @@ async fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
     let matvec = RecordingGemmaMatvecBackend::default();
+    let mut scratch = InferenceScratchpad::default();
 
     let prefill =
-        gemma_prefill_sequence_with_cache_with_matvec(&store, &spec, &[0, 1], &mut caches, &matvec)
+        gemma_prefill_sequence_with_cache_with_matvec(&store, &spec, &[0, 1], &mut caches, &matvec, &mut scratch)
             .await
             .expect("prefill with recording matvec");
 
     assert_eq!(prefill.len(), 2);
-    assert_eq!(matvec.softmax_calls.get(), 4);
-    assert_eq!(matvec.weighted_sum_calls.get(), 4);
-    assert_eq!(matvec.kv_cache_head_row_calls.get(), 8);
-    assert_eq!(matvec.dense_f32_calls.get(), 8);
+    assert_eq!(matvec.softmax_calls.load(Ordering::Relaxed), 4);
+    assert_eq!(matvec.weighted_sum_calls.load(Ordering::Relaxed), 4);
+    assert_eq!(matvec.kv_cache_head_row_calls.load(Ordering::Relaxed), 8);
+    assert_eq!(matvec.dense_f32_calls.load(Ordering::Relaxed), 8);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -220,8 +304,8 @@ async fn gemma_final_norm_and_tied_lm_head_select_top_token() {
     .expect("tiny Gemma config parses");
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
-    let final_norm =
-        gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0]).await.expect("norm");
+    let mut final_norm = vec![0.0; 2];
+    gemma_final_norm_for_spec(&store, &spec, &[2.0 * 2.0_f32.sqrt(), 0.0], &mut final_norm).await.expect("norm");
     assert_close(&final_norm, &[2.0_f32.sqrt(), 0.0], 1e-5);
     let top = gemma_lm_head_top_k_for_spec(&store, &spec, &final_norm, 2, 64).await.expect("top logits");
 
@@ -244,31 +328,35 @@ async fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() 
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
     let mut direct_caches = gemma_layer_caches_for_spec(&spec, 8).expect("direct caches");
+    let mut direct_scratch = InferenceScratchpad::default();
     let direct_prefill =
-        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut direct_caches)
+        gemma_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut direct_caches, &mut direct_scratch)
             .await
             .expect("direct prefill");
     let direct_decode =
-        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches).await.expect("direct decode");
+        gemma_decode_token_with_cache(&store, &spec, 2, &mut direct_caches, &mut direct_scratch).await.expect("direct decode");
 
     let mut native_caches =
         native_text_layer_caches_for_spec(&native_spec, 8).expect("native text caches");
     assert!(matches!(native_caches, NativeTextLayerCaches::Gemma(_)));
+    let mut native_scratch = InferenceScratchpad::default();
     let native_prefill =
-        native_text_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches)
+        native_text_prefill_sequence_with_cache(&store, &native_spec, &[0, 1], &mut native_caches, &mut native_scratch)
             .await
             .expect("native text prefill");
     let native_decode =
-        native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches)
+        native_text_decode_token_with_cache(&store, &native_spec, 2, &mut native_caches, &mut native_scratch)
             .await
             .expect("native text decode");
     let mut ref_caches = gemma_layer_caches_for_spec(&spec, 8).expect("spec-ref caches");
+    let mut ref_scratch = InferenceScratchpad::default();
     let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
         &store,
         (&spec).into(),
         &[0, 1],
         NativeTextLayerCachesMut::Gemma(&mut ref_caches),
         &CpuNativeMatvecBackend,
+        &mut ref_scratch,
     )
     .await
     .expect("native text spec-ref prefill");
@@ -278,6 +366,7 @@ async fn native_text_dispatch_matches_direct_gemma_prefill_decode_and_lm_head() 
         2,
         NativeTextLayerCachesMut::Gemma(&mut ref_caches),
         &CpuNativeMatvecBackend,
+        &mut ref_scratch,
     )
     .await
     .expect("native text spec-ref decode");
@@ -314,12 +403,14 @@ async fn native_text_spec_ref_rejects_mismatched_cache_families() {
 
     let mut gemma_prefill_caches =
         gemma_layer_caches_for_spec(&gemma_spec, 8).expect("Gemma prefill caches");
+    let mut scratch = InferenceScratchpad::default();
     let err = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
         &store,
         (&qwen_spec).into(),
         &[0, 1],
         NativeTextLayerCachesMut::Gemma(&mut gemma_prefill_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
     .expect_err("Qwen prefill rejects Gemma caches");
@@ -327,12 +418,14 @@ async fn native_text_spec_ref_rejects_mismatched_cache_families() {
 
     let mut gemma_decode_caches =
         gemma_layer_caches_for_spec(&gemma_spec, 8).expect("Gemma decode caches");
+    let mut scratch = InferenceScratchpad::default();
     let err = native_decode_token_with_cache_for_spec_ref_with_matvec(
         &store,
         (&qwen_spec).into(),
         0,
         NativeTextLayerCachesMut::Gemma(&mut gemma_decode_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
     .expect_err("Qwen decode rejects Gemma caches");
@@ -340,12 +433,14 @@ async fn native_text_spec_ref_rejects_mismatched_cache_families() {
 
     let mut qwen_prefill_caches =
         qwen_layer_caches_for_spec(&qwen_spec, 8).expect("Qwen prefill caches");
+    let mut scratch = InferenceScratchpad::default();
     let err = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
         &store,
         (&gemma_spec).into(),
         &[0, 1],
         NativeTextLayerCachesMut::Qwen(&mut qwen_prefill_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
     .expect_err("Gemma prefill rejects Qwen caches");
@@ -353,12 +448,14 @@ async fn native_text_spec_ref_rejects_mismatched_cache_families() {
 
     let mut qwen_decode_caches =
         qwen_layer_caches_for_spec(&qwen_spec, 8).expect("Qwen decode caches");
+    let mut scratch = InferenceScratchpad::default();
     let err = native_decode_token_with_cache_for_spec_ref_with_matvec(
         &store,
         (&gemma_spec).into(),
         0,
         NativeTextLayerCachesMut::Qwen(&mut qwen_decode_caches),
         &CpuNativeMatvecBackend,
+        &mut scratch,
     )
     .await
     .expect_err("Gemma decode rejects Qwen caches");

@@ -1,7 +1,7 @@
 use super::*;
 
-#[test]
-fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
+#[tokio::test]
+async fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
     let root = temp_snapshot_dir("qwen3-dense-prefill");
     std::fs::remove_dir_all(&root).ok();
     write_tiny_qwen3_dense_decoder_snapshot(&root);
@@ -10,7 +10,7 @@ fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
     let mut caches = caches_for_spec(&spec, 4);
 
     let hidden =
-        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).expect("prefill");
+        qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches).await.expect("prefill");
 
     assert_eq!(hidden.len(), 2);
     assert_eq!(hidden[0].len(), 2);
@@ -21,8 +21,8 @@ fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
+#[tokio::test]
+async fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
     let root = temp_snapshot_dir("qwen3-dense-bad-down-proj");
     std::fs::remove_dir_all(&root).ok();
     write_tiny_qwen3_dense_decoder_snapshot(&root);
@@ -36,6 +36,7 @@ fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
     let mut caches = caches_for_spec(&spec, 4);
 
     let err = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
+        .await
         .expect_err("bad down projection width must fail closed");
 
     assert!(
@@ -45,8 +46,8 @@ fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
     std::fs::remove_dir_all(root).ok();
 }
 
-#[test]
-fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
+#[tokio::test]
+async fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
     let root = temp_snapshot_dir("qwen3-dense-lm-head");
     std::fs::remove_dir_all(&root).ok();
     write_tiny_qwen3_dense_lm_head_snapshot(&root);
@@ -54,11 +55,11 @@ fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
     let spec = tiny_qwen3_dense_spec();
 
     let normalized =
-        qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0]).expect("final norm uses model.norm");
+        qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0]).await.expect("final norm uses model.norm");
     let top =
-        qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2).expect("tied top-k works");
+        qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2).await.expect("tied top-k works");
     let logits =
-        qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2).expect("tied logits work");
+        qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2).await.expect("tied logits work");
 
     assert_close(&normalized, &[std::f32::consts::SQRT_2, 0.0], 1e-5);
     assert_eq!(top[0].index, 0);

@@ -973,7 +973,7 @@ impl TensorLoadError {
         self.code
     }
 
-    pub(crate) fn integrity(message: impl Into<String>) -> Self {
+    pub fn integrity(message: impl Into<String>) -> Self {
         Self {
             code: "model_integrity_failed",
             message: message.into(),

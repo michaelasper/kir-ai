@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    GemmaLayerCache, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
-    SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec, gemma_layer_caches_for_spec,
-    native_decode_token_with_cache_for_spec_ref_with_matvec,
+    GemmaLayerCache, InferenceScratchpad, ModelBackend, NativeMatvecBackend,
+    NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec,
+    gemma_layer_caches_for_spec, native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec,
 };
 use llm_hub::SnapshotManifest;
@@ -182,8 +182,16 @@ impl NativeGemmaBackend {
         request: &BackendRequest,
         cancellation: &CancellationToken,
     ) -> Result<NativeGemmaDecodeSession, BackendError> {
-        self.driver
-            .start_decode_session(context_tokens, max_new_tokens, request, cancellation)
+        let driver = &self.driver;
+        tokio::task::block_in_place(|| {
+            driver.runtime().block_on(driver.start_decode_session(
+                context_tokens,
+                max_new_tokens,
+                request,
+                cancellation,
+                &mut InferenceScratchpad::new(),
+            ))
+        })
     }
 
     #[cfg(test)]
@@ -192,10 +200,17 @@ impl NativeGemmaBackend {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<usize, BackendError> {
-        self.driver.adapter.next_token_from_hidden(hidden, sampling)
+        tokio::task::block_in_place(|| {
+            self.driver.runtime().block_on(
+                self.driver
+                    .adapter
+                    .next_token_from_hidden(hidden, sampling, &mut InferenceScratchpad::new()),
+            )
+        })
     }
 }
 
+#[async_trait]
 impl NativeTextAdapter for NativeGemmaAdapter {
     type DecodeSession = NativeGemmaDecodeSession;
     type LayerCache = GemmaLayerCache;
@@ -332,7 +347,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
-        scratch: &mut InferenceScratchpad,
+        _scratch: &mut InferenceScratchpad,
     ) -> Result<usize, BackendError> {
         NativeTextNextTokenContext {
             store: &self.store,
@@ -342,7 +357,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             matvec: &self.matvec,
             family_display_name: "Gemma",
         }
-        .select_next_token(hidden, sampling, scratch)
+        .select_next_token(hidden, sampling)
         .await
     }
 }
@@ -511,6 +526,29 @@ mod tests {
         }
     }
 
+    fn open_gemma_backend(
+        model_id: &str,
+        snapshot: &Path,
+    ) -> NativeGemmaBackend {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(NativeGemmaBackend::open(model_id, snapshot)).expect("backend opens snapshot")
+    }
+
+    fn open_gemma_backend_with_options(
+        model_id: &str,
+        snapshot: &Path,
+        options: NativeGemmaLoadOptions,
+    ) -> NativeGemmaBackend {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(NativeGemmaBackend::open_with_options(model_id, snapshot, options)).expect("backend opens snapshot")
+    }
+
     #[test]
     fn native_gemma_adapter_stop_tokens_use_eos_mapping() {
         let snapshot = temp_snapshot_dir("native-gemma-stop-tokens");
@@ -519,8 +557,7 @@ mod tests {
         write_tiny_gemma4_decoder_snapshot(&snapshot);
         copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
 
-        let backend =
-            NativeGemmaBackend::open("local-gemma", &snapshot).expect("backend opens snapshot");
+        let backend = open_gemma_backend("local-gemma", &snapshot);
 
         assert_eq!(
             backend.driver.adapter.stop_tokens(),
@@ -556,8 +593,7 @@ mod tests {
         write_tiny_gemma4_decoder_snapshot(&snapshot);
         copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
 
-        let backend =
-            NativeGemmaBackend::open("local-gemma", &snapshot).expect("backend opens snapshot");
+        let backend = open_gemma_backend("local-gemma", &snapshot);
         let decode = backend
             .start_decode_session(
                 &[0, 1],
@@ -611,7 +647,11 @@ mod tests {
         config["quantization"] = json!({"bits": 4, "group_size": 64, "mode": "affine"});
         std::fs::write(snapshot.join("config.json"), config.to_string()).expect("config");
 
-        let err = match NativeGemmaBackend::open("local-gemma", &snapshot) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let err = match rt.block_on(NativeGemmaBackend::open("local-gemma", &snapshot)) {
             Err(err) => err,
             Ok(_) => panic!("quantized native Gemma fails explicitly"),
         };
@@ -628,7 +668,7 @@ mod tests {
         write_tiny_gemma4_decoder_snapshot(&snapshot);
         copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
 
-        let backend = NativeGemmaBackend::open_with_options(
+        let backend = open_gemma_backend_with_options(
             "local-gemma",
             &snapshot,
             NativeGemmaLoadOptions {
@@ -636,8 +676,7 @@ mod tests {
                 warm_metal_weight_cache: true,
                 ..NativeGemmaLoadOptions::default()
             },
-        )
-        .expect("backend opens with native-metal cache options");
+        );
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(
@@ -654,6 +693,7 @@ mod tests {
             .map(PathBuf::from)
             .expect("KIR_AI_GEMMA_BF16_SNAPSHOT must point at a local BF16 Gemma 4 snapshot");
         let backend = NativeGemmaBackend::open("local-gemma", &snapshot)
+            .await
             .expect("real BF16 Gemma snapshot opens")
             .with_max_new_tokens(1);
         let output = backend

@@ -98,11 +98,3 @@ pub(crate) fn native_text_worker_stream(
     }
     .boxed()
 }
-
-pub(crate) fn send_backend_stream_chunk(
-    tx: &tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
-    chunk: BackendStreamChunk,
-) -> Result<(), BackendError> {
-    tx.blocking_send(Ok(chunk))
-        .map_err(|_| BackendError::Other("stream receiver dropped".to_owned()))
-}

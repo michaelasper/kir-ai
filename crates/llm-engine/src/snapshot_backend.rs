@@ -223,6 +223,18 @@ fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotMani
 mod tests {
     use super::*;
 
+    fn open_blocking(
+        model_id: impl Into<String>,
+        snapshot_path: impl AsRef<Path>,
+        options: SnapshotBackendOptions,
+    ) -> Result<Box<dyn ModelBackend>, anyhow::Error> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(open_snapshot_backend(model_id, snapshot_path, options))
+    }
+
     #[test]
     fn snapshot_backend_factory_selects_mlx_from_manifest_loader() {
         let snapshot = temp_snapshot_dir("mlx-loader-selection");
@@ -230,7 +242,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest(&snapshot, "mlx");
 
-        let backend = open_snapshot_backend(
+        let backend = open_blocking(
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
@@ -257,7 +269,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let backend = open_snapshot_backend(
+        let backend = open_blocking(
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
@@ -292,7 +304,7 @@ mod tests {
         );
 
         let backend =
-            open_snapshot_backend("local-qwen36", &snapshot, SnapshotBackendOptions::default())
+            open_blocking("local-qwen36", &snapshot, SnapshotBackendOptions::default())
                 .expect("native text backend opens raw Qwen snapshot");
         let metadata = backend.model_metadata();
 
@@ -309,7 +321,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
@@ -339,7 +351,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest(&snapshot, "native-metal");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
@@ -366,7 +378,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest(&snapshot, "mlx");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-mlx",
             &snapshot,
             SnapshotBackendOptions {
@@ -393,7 +405,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let backend = open_snapshot_backend(
+        let backend = open_blocking(
             "local-gemma",
             &snapshot,
             SnapshotBackendOptions {
@@ -419,7 +431,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let backend = open_snapshot_backend(
+        let backend = open_blocking(
             "local-deepseek",
             &snapshot,
             SnapshotBackendOptions {
@@ -448,7 +460,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let backend = open_snapshot_backend(
+        let backend = open_blocking(
             "local-llama",
             &snapshot,
             SnapshotBackendOptions {
@@ -474,7 +486,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-native",
             &snapshot,
             SnapshotBackendOptions {
@@ -500,7 +512,7 @@ mod tests {
         std::fs::remove_dir_all(&snapshot).ok();
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-native",
             &snapshot,
             SnapshotBackendOptions {
@@ -527,7 +539,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest_with_family(&snapshot, "native-metal", "deep_seek");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-native",
             &snapshot,
             SnapshotBackendOptions::default(),
@@ -552,7 +564,7 @@ mod tests {
         write_gemma4_native_config(&snapshot);
         write_gemma4_native_index(&snapshot, false);
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-gemma",
             &snapshot,
             SnapshotBackendOptions::default(),
@@ -580,7 +592,7 @@ mod tests {
         copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
         let backend =
-            open_snapshot_backend("local-gemma", &snapshot, SnapshotBackendOptions::default())
+            open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
                 .expect("native Gemma backend opens");
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
@@ -602,7 +614,7 @@ mod tests {
         copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
         let backend =
-            open_snapshot_backend("local-gemma", &snapshot, SnapshotBackendOptions::default())
+            open_blocking("local-gemma", &snapshot, SnapshotBackendOptions::default())
                 .expect("raw native Gemma backend opens by config detection");
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
@@ -621,7 +633,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest_with_family(&snapshot, "mlx", "glm");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-unknown-family",
             &snapshot,
             SnapshotBackendOptions {
@@ -647,7 +659,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot).expect("snapshot dir");
         write_manifest(&snapshot, "llama-cpp");
 
-        let err = match open_snapshot_backend(
+        let err = match open_blocking(
             "local-unknown",
             &snapshot,
             SnapshotBackendOptions::default(),
