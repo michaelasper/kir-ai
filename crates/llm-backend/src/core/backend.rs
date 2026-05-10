@@ -96,10 +96,18 @@ pub enum SamplingConfig {
 }
 
 impl SamplingConfig {
+    /// Standard multinomial sampling with OpenAI default controls (temperature 1.0, top_p 1.0).
+    pub fn standard() -> Self {
+        Self::TopP {
+            temperature: 1.0,
+            top_p: 1.0,
+        }
+    }
+
     pub fn from_openai_controls(temperature: Option<f32>, top_p: Option<f32>) -> Self {
         match (temperature, top_p) {
             (Some(0.0), _) => Self::Greedy,
-            (None, None) => Self::Greedy,
+            (None, None) => Self::standard(),
             (t, p) => Self::TopP {
                 temperature: t.unwrap_or(1.0),
                 top_p: p.unwrap_or(1.0),
@@ -109,6 +117,10 @@ impl SamplingConfig {
 
     pub fn is_greedy(self) -> bool {
         matches!(self, Self::Greedy)
+    }
+
+    pub fn is_standard(self) -> bool {
+        self == Self::standard()
     }
 }
 
@@ -351,7 +363,13 @@ mod tests {
             }
         );
 
-        assert_eq!(SamplingConfig::from_openai_controls(None, None), SamplingConfig::Greedy);
+        assert_eq!(
+            SamplingConfig::from_openai_controls(None, None),
+            SamplingConfig::TopP {
+                temperature: 1.0,
+                top_p: 1.0,
+            }
+        );
 
         assert_eq!(
             SamplingConfig::from_openai_controls(Some(0.0), Some(1.0)),

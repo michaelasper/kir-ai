@@ -52,7 +52,7 @@ impl ModelBackend for ProtocolTestBackend {
                 available: self.model_id.clone(),
             });
         }
-        if !request.sampling.is_greedy() {
+        if !request.sampling.is_greedy() && !request.sampling.is_standard() {
             return Err(BackendError::UnsupportedRequest(
                 "protocol test backend does not support non-greedy sampling".to_owned(),
             ));

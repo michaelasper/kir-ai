@@ -100,6 +100,33 @@ async fn runtime_maps_none_temperature_and_top_p_one_to_top_p() {
 }
 
 #[tokio::test]
+async fn runtime_maps_omitted_sampling_controls_to_top_p() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingSamplingBackend {
+        observed_sampling: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("sample")],
+            temperature: None,
+            top_p: None,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed sampling lock"),
+        Some(SamplingConfig::TopP {
+            temperature: 1.0,
+            top_p: 1.0,
+        })
+    );
+}
+
+#[tokio::test]
 async fn runtime_rejects_chatml_control_tokens_before_prompt_rendering() {
     let backend = ProtocolTestBackend::new("local-qwen36", "should not run");
     let runtime = Runtime::new(backend);
