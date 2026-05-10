@@ -56,6 +56,33 @@ async fn runtime_forwards_completion_sampling_controls_to_backend() {
 }
 
 #[tokio::test]
+async fn runtime_maps_none_temperature_and_top_p_one_to_top_p() {
+    let observed = Arc::new(Mutex::new(None));
+    let backend = RecordingSamplingBackend {
+        observed_sampling: observed.clone(),
+    };
+    let runtime = Runtime::new(backend);
+    runtime
+        .completion(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "sample".to_owned(),
+            temperature: None,
+            top_p: Some(1.0),
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("runtime completion succeeds");
+
+    assert_eq!(
+        *observed.lock().expect("observed sampling lock"),
+        Some(SamplingConfig::TopP {
+            temperature: 1.0,
+            top_p: 1.0,
+        })
+    );
+}
+
+#[tokio::test]
 async fn chat_preserves_assistant_text_whitespace() {
     let backend =
         ProtocolTestBackend::new("local-qwen36", "  keep leading space\n    indented line\n");

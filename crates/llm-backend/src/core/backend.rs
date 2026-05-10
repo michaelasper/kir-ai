@@ -340,4 +340,22 @@ mod tests {
             cache_context: BackendCacheContext::default(),
         }
     }
+
+    #[test]
+    fn from_openai_controls_maps_none_temperature_and_top_p_one_to_top_p() {
+        assert_eq!(
+            SamplingConfig::from_openai_controls(None, Some(1.0)),
+            SamplingConfig::TopP {
+                temperature: 1.0,
+                top_p: 1.0,
+            }
+        );
+
+        assert_eq!(SamplingConfig::from_openai_controls(None, None), SamplingConfig::Greedy);
+
+        assert_eq!(
+            SamplingConfig::from_openai_controls(Some(0.0), Some(1.0)),
+            SamplingConfig::Greedy
+        );
+    }
 }
