@@ -135,7 +135,7 @@ async fn admin_cancel_request_terminates_pending_chat_stream() {
                 .header("x-request-id", request_id)
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "stream"}],
                         "stream": true
                     })
@@ -208,7 +208,7 @@ async fn admin_cancel_request_terminates_pending_completion_stream() {
                 .header("x-request-id", request_id)
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "stream",
                         "stream": true
                     })

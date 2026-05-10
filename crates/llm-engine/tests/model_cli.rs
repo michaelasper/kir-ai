@@ -39,7 +39,7 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
             "--profile",
             "all",
             "--model",
-            "local-qwen36",
+            llm_engine::DEFAULT_MODEL_ID,
             "--snapshot",
         ])
         .arg(&snapshot)
@@ -62,7 +62,7 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     assert_eq!(trace_value["gate"], "qwen-long-context");
     assert_eq!(value["gate"], "qwen-long-context");
     assert_eq!(value["status"], "dry_run");
-    assert_eq!(value["model"]["id"], "local-qwen36");
+    assert_eq!(value["model"]["id"], llm_engine::DEFAULT_MODEL_ID);
     assert_eq!(
         value["model"]["snapshot_path"],
         snapshot.display().to_string()
@@ -82,7 +82,7 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     assert_eq!(lanes.len(), 1, "lanes: {lanes:?}");
     assert_eq!(lanes[0]["name"], "primary");
     assert_eq!(lanes[0]["status"], "dry_run");
-    assert_eq!(lanes[0]["model"]["id"], "local-qwen36");
+    assert_eq!(lanes[0]["model"]["id"], llm_engine::DEFAULT_MODEL_ID);
     assert_eq!(
         lanes[0]["model"]["snapshot_path"],
         snapshot.display().to_string()

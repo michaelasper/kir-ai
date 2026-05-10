@@ -10,7 +10,7 @@ async fn chat_completions_rejects_zero_max_tokens() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "max_tokens": 0
                     })
@@ -38,7 +38,7 @@ async fn chat_completions_rejects_multiple_choices() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "n": 2
                     })
@@ -75,7 +75,7 @@ async fn invalid_chat_request_validates_before_busy_model_permit() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": []
                     })
                     .to_string(),
@@ -107,7 +107,7 @@ async fn chat_completions_rejects_unsupported_penalties() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "presence_penalty": 0.5
                     })
@@ -134,7 +134,7 @@ async fn chat_completions_rejects_unsupported_logprobs() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "logprobs": true
                     })
@@ -161,7 +161,7 @@ async fn chat_completions_rejects_chatml_control_token_in_message_content() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [
                             {
                                 "role": "user",

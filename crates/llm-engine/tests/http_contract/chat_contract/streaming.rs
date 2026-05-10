@@ -10,7 +10,7 @@ async fn chat_completions_streams_openai_sse_chunks() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true,
                         "max_tokens": 8
@@ -49,7 +49,7 @@ async fn chat_completions_streams_usage_when_requested() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true,
                         "stream_options": {"include_usage": true}
@@ -83,7 +83,7 @@ async fn chat_completions_streams_tool_call_deltas() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "lookup rust"}],
                     "tools": [{
                         "type": "function",
@@ -161,7 +161,7 @@ async fn chat_completions_streaming_json_object_validation_errors_are_sse() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "json"}],
                     "stream": true,
                     "response_format": {"type": "json_object"}

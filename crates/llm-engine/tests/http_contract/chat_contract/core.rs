@@ -47,7 +47,7 @@ async fn chat_completions_returns_openai_shape() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "max_tokens": 8
                     })
@@ -61,7 +61,7 @@ async fn chat_completions_returns_openai_shape() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "chat.completion");
-    assert_eq!(body["model"], "local-qwen36");
+    assert_eq!(body["model"], llm_engine::DEFAULT_MODEL_ID);
     assert!(
         body["choices"][0]["message"]["content"]
             .as_str()
@@ -246,7 +246,7 @@ async fn chat_completions_accepts_text_content_parts() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{
                             "role": "user",
                             "content": [

@@ -10,7 +10,7 @@ async fn chat_completions_rejects_required_tool_choice_without_tools() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "use a tool"}],
                         "tool_choice": "required"
                     })
@@ -37,7 +37,7 @@ async fn chat_completions_returns_required_tool_call_in_protocol_mode() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "lookup rust"}],
                         "tools": [{
                             "type": "function",
@@ -71,7 +71,7 @@ async fn chat_completions_required_any_uses_matching_tool_not_first_tool() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{
                             "role": "user",
                             "content": "Read secret.txt and answer with the value after LOCAL_BENCH_VALUE."
@@ -137,7 +137,7 @@ async fn chat_completions_auto_read_intent_returns_read_tool_call() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{
                             "role": "user",
                             "content": "Read secret.txt and answer with the value after LOCAL_BENCH_VALUE."
@@ -186,7 +186,7 @@ async fn chat_completions_rejects_parallel_tool_calls() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "parallel_tool_calls": true
                     })
@@ -216,7 +216,7 @@ async fn chat_completions_rejects_undeclared_generated_tool_call() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "lookup rust"}],
                     "tools": [{
                         "type": "function",
@@ -252,7 +252,7 @@ async fn chat_completions_stop_sequence_suppresses_later_tool_calls() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "lookup rust"}],
                     "tools": [{
                         "type": "function",

@@ -26,7 +26,7 @@ async fn admin_models_endpoint_reports_ready_model() {
     );
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "list");
-    assert_eq!(body["data"][0]["id"], "local-qwen36");
+    assert_eq!(body["data"][0]["id"], llm_engine::DEFAULT_MODEL_ID);
     assert_eq!(body["data"][0]["status"], "ready");
     assert_eq!(body["data"][0]["python_runtime"], false);
 }
@@ -37,7 +37,10 @@ async fn admin_model_endpoint_reports_ready_model() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
-                .uri("/admin/models/local-qwen36")
+                .uri(format!(
+                    "/admin/models/{}",
+                    llm_engine::DEFAULT_MODEL_ID
+                ))
                 .header("x-request-id", request_id)
                 .body(Body::empty())
                 .expect("request builds"),
@@ -56,7 +59,7 @@ async fn admin_model_endpoint_reports_ready_model() {
         request_id
     );
     let body = body_json(response.into_body()).await;
-    assert_eq!(body["id"], "local-qwen36");
+    assert_eq!(body["id"], llm_engine::DEFAULT_MODEL_ID);
     assert_eq!(body["status"], "ready");
     assert_eq!(body["python_runtime"], false);
 }
@@ -66,7 +69,10 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
     let response = build_router_with_backend(Box::new(MetadataBackend))
         .oneshot(
             Request::builder()
-                .uri("/admin/models/local-qwen36")
+                .uri(format!(
+                    "/admin/models/{}",
+                    llm_engine::DEFAULT_MODEL_ID
+                ))
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -117,11 +123,11 @@ async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     }))
     .oneshot(
         Request::builder()
-            .method("POST")
-            .uri("/admin/models/local-qwen36/verify")
-            .body(Body::empty())
-            .expect("request builds"),
-    )
+                .method("POST")
+                .uri(format!("/admin/models/{}/verify", llm_engine::DEFAULT_MODEL_ID))
+                .body(Body::empty())
+                .expect("request builds"),
+            )
     .await
     .expect("admin model verify response");
 
@@ -149,10 +155,10 @@ async fn admin_model_plan_endpoint_returns_download_plan() {
     )
     .expect("router builds")
     .oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/admin/models/local-qwen36/plan")
-            .header("authorization", "Bearer secret-admin-token")
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/models/{}/plan", llm_engine::DEFAULT_MODEL_ID))
+                .header("authorization", "Bearer secret-admin-token")
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -201,10 +207,10 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
     )
     .expect("router builds")
     .oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/admin/models/local-qwen36/pull")
-            .header("authorization", "Bearer secret-admin-token")
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/models/{}/pull", llm_engine::DEFAULT_MODEL_ID))
+                .header("authorization", "Bearer secret-admin-token")
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({

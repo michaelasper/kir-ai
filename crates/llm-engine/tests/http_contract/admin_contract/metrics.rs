@@ -81,7 +81,7 @@ async fn admin_metrics_report_artifact_verification_failures() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/admin/models/local-qwen36/verify")
+                .uri(format!("/admin/models/{}/verify", llm_engine::DEFAULT_MODEL_ID))
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -127,7 +127,7 @@ async fn admin_metrics_report_model_pull_operations() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/admin/models/local-qwen36/pull")
+                .uri(format!("/admin/models/{}/pull", llm_engine::DEFAULT_MODEL_ID))
                 .header("authorization", "Bearer secret-admin-token")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -259,7 +259,7 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "max_tokens": 8
                     })
@@ -553,7 +553,7 @@ async fn admin_metrics_report_stream_time_to_first_token() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true,
                         "max_tokens": 8
@@ -724,7 +724,7 @@ async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "make progress"}]
                     })
                     .to_string(),
@@ -771,7 +771,7 @@ async fn admin_metrics_report_stream_prefill_phase_before_first_chunk() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -940,7 +940,7 @@ async fn admin_metrics_report_stream_decode_phase_after_first_chunk() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })

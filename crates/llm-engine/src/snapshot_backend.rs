@@ -303,9 +303,12 @@ mod tests {
             snapshot.join("model.safetensors.index.json"),
         );
 
-        let backend =
-            open_blocking("local-qwen36", &snapshot, SnapshotBackendOptions::default())
-                .expect("native text backend opens raw Qwen snapshot");
+        let backend = open_blocking(
+            crate::DEFAULT_MODEL_ID,
+            &snapshot,
+            SnapshotBackendOptions::default(),
+        )
+        .expect("native text backend opens raw Qwen snapshot");
         let metadata = backend.model_metadata();
 
         assert_eq!(metadata.backend, "native-qwen");

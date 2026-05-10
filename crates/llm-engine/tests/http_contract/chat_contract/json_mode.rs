@@ -31,7 +31,7 @@ async fn chat_completions_returns_required_tool_arguments_as_json_string() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{
                             "role": "user",
                             "content": "Use lookup_value for key alpha."
@@ -86,7 +86,7 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "return json"}],
                     "response_format": {"type": "json_object"}
                 })
@@ -120,7 +120,7 @@ async fn chat_completions_returns_json_object_in_protocol_mode() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "return json"}],
                         "response_format": {"type": "json_object"}
                     })

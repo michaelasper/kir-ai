@@ -10,7 +10,7 @@ async fn streaming_chat_validation_errors_return_json_error() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [],
                         "stream": true
                     })
@@ -47,7 +47,7 @@ async fn streaming_chat_response_validation_errors_emit_sse_error_after_headers(
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "return json"}],
                     "response_format": {"type": "json_object"},
                     "stream": true
@@ -89,7 +89,7 @@ async fn chat_stream_headers_return_before_backend_completion() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -122,7 +122,7 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "hello"}],
                     "stream": true
                 })
@@ -180,7 +180,7 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -223,7 +223,7 @@ async fn chat_stream_stall_cancels_backend_work() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
-                    "model": "local-qwen36",
+                    "model": llm_engine::DEFAULT_MODEL_ID,
                     "messages": [{"role": "user", "content": "hello"}],
                     "stream": true
                 })
@@ -254,7 +254,7 @@ async fn chat_stream_runtime_errors_include_stable_metadata() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -290,7 +290,7 @@ async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -350,7 +350,7 @@ async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "lookup while explaining"}],
                         "tools": [{
                             "type": "function",
@@ -408,7 +408,7 @@ async fn dropping_chat_stream_body_cancels_backend_stream() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -468,7 +468,7 @@ async fn dropping_completion_stream_body_cancels_backend_stream() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "hello",
                         "stream": true
                     })
@@ -528,7 +528,7 @@ async fn dropping_chat_stream_before_first_token_records_client_disconnect_witho
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -590,7 +590,7 @@ async fn dropping_admin_cancelled_stream_does_not_count_as_client_disconnect() {
                 .header("x-request-id", request_id)
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                         "stream": true
                     })
@@ -651,7 +651,7 @@ struct PendingCancellableStreamBackend {
 #[async_trait]
 impl ModelBackend for PendingCancellableStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {

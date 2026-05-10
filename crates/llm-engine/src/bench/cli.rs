@@ -1,11 +1,12 @@
 pub(super) fn print_bench_help() {
     println!(
-        "\
+        &format!(
+            "\
 Usage: llm-engine bench qwen-long-context [OPTIONS]
 
 Options:
   --endpoint <url>                    OpenAI-compatible server base URL
-  --model <id>                        Model id to send in requests [default: local-qwen36]
+  --model <id>                        Model id to send in requests [default: {}]
   --snapshot <path>                   Qwen snapshot path with tokenizer.json and manifest
   --lane <spec>                       Named lane: name=<id>,endpoint=<url>,snapshot=<path>[,model=<id>]
   --profile <135k|200k|256k|all>      Benchmark profile [default: 135k]
@@ -17,7 +18,9 @@ Options:
   --connect-timeout-ms <n>            HTTP connect timeout [default: 10000]
   --latency-regression-threshold <f>  Allowed latency increase over baseline [default: 0.20]
   --dry-run                           Print the exact gate plan without HTTP requests
-  -h, --help                          Print help"
+  -h, --help                          Print help",
+            crate::DEFAULT_MODEL_ID
+        )
     );
 }
 

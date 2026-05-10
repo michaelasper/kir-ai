@@ -7,6 +7,8 @@ mod native_text;
 mod snapshot_backend;
 mod sync_ext;
 
+pub const DEFAULT_MODEL_ID: &str = "local-qwen36";
+
 pub mod route {
     pub use super::engine::{
         EngineOptions, build_router, build_router_with_backend,

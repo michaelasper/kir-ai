@@ -59,7 +59,7 @@ fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
 #[async_trait]
 impl ModelBackend for FailingBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -92,7 +92,7 @@ struct FamilyStaticBackend {
 #[async_trait]
 impl ModelBackend for StaticBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -150,7 +150,7 @@ struct ScriptedChatBackend;
 #[async_trait]
 impl ModelBackend for ScriptedChatBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -190,7 +190,7 @@ struct BlockingBackend {
 #[async_trait]
 impl ModelBackend for BlockingBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -226,7 +226,7 @@ struct FairnessBackend {
 #[async_trait]
 impl ModelBackend for FairnessBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -278,7 +278,7 @@ struct AdminCancellableBackend {
 #[async_trait]
 impl ModelBackend for AdminCancellableBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -311,7 +311,7 @@ struct AdminLateErrorBackend {
 #[async_trait]
 impl ModelBackend for AdminLateErrorBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -344,7 +344,7 @@ struct NoProgressBackend;
 #[async_trait]
 impl ModelBackend for NoProgressBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -376,7 +376,7 @@ struct DelayedStreamBackend {
 #[async_trait]
 impl ModelBackend for DelayedStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -414,7 +414,7 @@ struct TwoStageStreamBackend {
 #[async_trait]
 impl ModelBackend for TwoStageStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -484,7 +484,7 @@ struct CancellableStreamBackend {
 #[async_trait]
 impl ModelBackend for CancellableStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -536,7 +536,7 @@ struct FailingStreamBackend;
 #[async_trait]
 impl ModelBackend for FailingStreamBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
@@ -593,12 +593,12 @@ struct MetadataBackend;
 #[async_trait]
 impl ModelBackend for MetadataBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
         BackendModelMetadata {
-            id: "local-qwen36".to_owned(),
+            id: llm_engine::DEFAULT_MODEL_ID.to_owned(),
             backend: "native-qwen".to_owned(),
             family: Some("qwen".to_owned()),
             loader: Some("native-metal".to_owned()),
@@ -606,7 +606,9 @@ impl ModelBackend for MetadataBackend {
             repo_id: Some("Qwen/Qwen3.6-35B-A3B".to_owned()),
             resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             profile: Some("qwen36-safetensors-bf16".to_owned()),
-            snapshot_path: Some(std::path::PathBuf::from("/tmp/local-qwen36")),
+            snapshot_path: Some(std::path::PathBuf::from(format!(
+                "/tmp/{llm_engine::DEFAULT_MODEL_ID}"
+            ))),
             manifest_digest: Some(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             ),
@@ -681,12 +683,12 @@ struct SnapshotMetadataBackend {
 #[async_trait]
 impl ModelBackend for SnapshotMetadataBackend {
     fn model_id(&self) -> &str {
-        "local-qwen36"
+        llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
         BackendModelMetadata {
-            id: "local-qwen36".to_owned(),
+            id: llm_engine::DEFAULT_MODEL_ID.to_owned(),
             backend: "native-qwen".to_owned(),
             family: Some("qwen".to_owned()),
             loader: Some("native-metal".to_owned()),
@@ -806,7 +808,7 @@ async fn protocol_chat_content(messages: Value) -> String {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": messages
                     })
                     .to_string(),
@@ -833,7 +835,7 @@ async fn protocol_test_chat_content(messages: Value) -> String {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": messages
                     })
                     .to_string(),
@@ -925,7 +927,7 @@ fn chat_request_body(content: &str) -> Request<Body> {
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
-                "model": "local-qwen36",
+                "model": llm_engine::DEFAULT_MODEL_ID,
                 "messages": [{"role": "user", "content": content}]
             })
             .to_string(),
@@ -941,7 +943,7 @@ fn chat_request_body_with_id(content: &str, request_id: &str) -> Request<Body> {
         .header("x-request-id", request_id)
         .body(Body::from(
             json!({
-                "model": "local-qwen36",
+                "model": llm_engine::DEFAULT_MODEL_ID,
                 "messages": [{"role": "user", "content": content}]
             })
             .to_string(),
@@ -957,7 +959,7 @@ fn completion_request_body_with_id(prompt: &str, request_id: &str) -> Request<Bo
         .header("x-request-id", request_id)
         .body(Body::from(
             json!({
-                "model": "local-qwen36",
+                "model": llm_engine::DEFAULT_MODEL_ID,
                 "prompt": prompt
             })
             .to_string(),

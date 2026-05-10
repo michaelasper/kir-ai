@@ -9,8 +9,8 @@ use llm_backend::{
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions, NativeTextLoadOptions,
-    NativeTextRuntimeOptions, SnapshotBackendLoader, SnapshotBackendOptions,
+    DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
+    NativeTextLoadOptions, NativeTextRuntimeOptions, SnapshotBackendLoader, SnapshotBackendOptions,
     build_router_with_backend_and_options, open_snapshot_backend, parse_snapshot_model_family,
 };
 use llm_hub::{
@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
             let router = if let Some(snapshot_path) = snapshot_path {
                 let model_id = flag_value(&serve_args, "--model-id")
                     .or(snapshot_alias)
-                    .unwrap_or("local-qwen36");
+                    .unwrap_or(DEFAULT_MODEL_ID);
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
                     .map(str::parse::<u32>)
                     .transpose()?
@@ -162,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
                 build_router_with_backend_and_options(
                     Box::new(
                         llm_backend::ProtocolTestBackend::new(
-                            "local-qwen36",
+                            DEFAULT_MODEL_ID,
                             "hello from rust native backend",
                         )
                         .with_required_tool_protocol()
@@ -188,7 +188,8 @@ async fn main() -> anyhow::Result<()> {
 
 fn print_serve_help() {
     println!(
-        "\
+        &format!(
+            "\
 Usage: llm-engine serve [OPTIONS]
 
 Options:
@@ -196,7 +197,7 @@ Options:
   --snapshot <path>                          Inference snapshot path
   --snapshot-alias <alias>                   Resolve snapshot path from the model store
   --model-alias <alias>                      Alias for --snapshot-alias
-  --model-id <id>                            Served model id [default: local-qwen36]
+  --model-id <id>                            Served model id [default: {}]
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma|llama>      Model family for raw snapshots without a Kir manifest
@@ -212,7 +213,9 @@ Options:
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
-  -h, --help                                 Print help"
+  -h, --help                                 Print help",
+            DEFAULT_MODEL_ID
+        )
     );
 }
 

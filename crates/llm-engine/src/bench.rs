@@ -1,4 +1,4 @@
-use crate::{flag_value, has_flag};
+use crate::{flag_value, has_flag, DEFAULT_MODEL_ID};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use llm_hub::ModelStore;
@@ -19,7 +19,6 @@ use cli::{
 
 const GATE_NAME: &str = "qwen-long-context";
 const CACHE_LAYOUT: &str = "shared-prefix-v1";
-const DEFAULT_MODEL_ID: &str = "local-qwen36";
 const DEFAULT_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10 * 1000;
 const DEFAULT_MAX_TOKENS: u32 = 128;

@@ -10,7 +10,7 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "hello",
                         "max_tokens": 8,
                         "stop": " backend"
@@ -25,7 +25,7 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "text_completion");
-    assert_eq!(body["model"], "local-qwen36");
+    assert_eq!(body["model"], llm_engine::DEFAULT_MODEL_ID);
     assert_eq!(body["choices"][0]["text"], "hello from rust native");
     assert_eq!(body["choices"][0]["finish_reason"], "stop");
 }
@@ -40,7 +40,7 @@ async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "hello",
                         "temperature": 0.7
                     })
@@ -89,7 +89,7 @@ async fn streaming_completion_validation_errors_return_json_error() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "",
                         "stream": true
                     })
@@ -134,7 +134,7 @@ async fn invalid_completion_request_validates_before_busy_model_permit() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": ""
                     })
                     .to_string(),
@@ -166,7 +166,7 @@ async fn completions_endpoint_streams_openai_sse_chunks() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "hello",
                         "stream": true,
                         "max_tokens": 8,
@@ -206,7 +206,7 @@ async fn completions_endpoint_streams_usage_when_requested() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "prompt": "hello",
                         "stream": true,
                         "stream_options": {"include_usage": true}

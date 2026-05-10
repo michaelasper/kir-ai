@@ -35,7 +35,7 @@ async fn models_endpoint_lists_qwen_alias() {
     assert!(response.headers().get("x-request-id").is_some());
     let body = body_json(response.into_body()).await;
     assert_eq!(body["object"], "list");
-    assert_eq!(body["data"][0]["id"], "local-qwen36");
+    assert_eq!(body["data"][0]["id"], llm_engine::DEFAULT_MODEL_ID);
 }
 
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn backend_execution_errors_are_not_reported_as_missing_model() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
-                        "model": "local-qwen36",
+                        "model": llm_engine::DEFAULT_MODEL_ID,
                         "messages": [{"role": "user", "content": "hello"}],
                     })
                     .to_string(),
