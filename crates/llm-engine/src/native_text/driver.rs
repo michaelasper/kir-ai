@@ -93,6 +93,17 @@ pub(crate) struct NativeTextStopTokens {
 }
 
 impl NativeTextStopTokens {
+    pub(crate) fn contains(&self, tokenizer: &HuggingFaceTokenizer, token_id: usize) -> bool {
+        if self.token_ids.contains(&token_id) {
+            return true;
+        }
+        if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false) {
+            if self.token_strings.contains(&token_string.as_str()) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 pub(crate) fn native_text_candidate_decision_for_stop_tokens(
@@ -100,15 +111,11 @@ pub(crate) fn native_text_candidate_decision_for_stop_tokens(
     tokenizer: &HuggingFaceTokenizer,
     token_id: usize,
 ) -> NativeTextCandidateDecision {
-    if stop_tokens.token_ids.contains(&token_id) {
-        return NativeTextCandidateDecision::Stop;
+    if stop_tokens.contains(tokenizer, token_id) {
+        NativeTextCandidateDecision::Stop
+    } else {
+        NativeTextCandidateDecision::Emit(token_id)
     }
-    if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false) {
-        if stop_tokens.token_strings.contains(&token_string.as_str()) {
-            return NativeTextCandidateDecision::Stop;
-        }
-    }
-    NativeTextCandidateDecision::Emit(token_id)
 }
 
 #[derive(Clone)]
@@ -443,10 +450,17 @@ where
                     cache_cleanup.cleanup(&caches);
                     return Err(BackendError::Cancelled);
                 }
-                let hidden_states = self
+                let hidden_states = match self
                     .adapter
                     .prefill_chunk_with_cache(chunk, &mut caches, scratch)
-                    .await?;
+                    .await
+                {
+                    Ok(hs) => hs,
+                    Err(err) => {
+                        cache_cleanup.cleanup(&caches);
+                        return Err(err);
+                    }
+                };
                 if cancellation.is_cancelled() {
                     cache_cleanup.cleanup(&caches);
                     return Err(BackendError::Cancelled);

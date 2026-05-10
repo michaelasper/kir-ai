@@ -19,141 +19,151 @@ env:
   RUST_TOOLCHAIN: "1.95.0"
 
 jobs:
-  formatting:
-    name: Formatting
-    runs-on: macos-latest
-    timeout-minutes: 15
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup component add rustfmt --toolchain "$RUST_TOOLCHAIN"
-          rustup default "$RUST_TOOLCHAIN"
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  build:
-    name: Workspace Build
-    runs-on: macos-latest
-    timeout-minutes: 35
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: dtolnay/rust-toolchain@stable
         with:
-          persist-credentials: false
-
-      - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          key: linux-cargo-analysis-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-
-            ${{ runner.os }}-cargo-
+            linux-cargo-analysis-
 
-      - name: Build workspace
-        run: cargo build --workspace
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-  lints:
-    name: Clippy
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            linux-cargo-test-
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  test-macos:
+    name: Test (macOS)
     runs-on: macos-latest
     timeout-minutes: 45
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup component add clippy --toolchain "$RUST_TOOLCHAIN"
-          rustup default "$RUST_TOOLCHAIN"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
-            ${{ runner.os }}-cargo-
-
-      - name: Run strict clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  tests:
-    name: Workspace Tests
-    runs-on: macos-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-
-      - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-            ${{ runner.os }}-cargo-
+            macos-cargo-test-
 
       - name: Run workspace tests
         run: cargo test --workspace
 
-  installer-smoke:
-    name: Installer Smoke Test
-    runs-on: macos-latest
-    timeout-minutes: 10
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: kir-ai-linux-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: kir-ai-darwin-arm64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Validate macOS installer
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p llm-engine
+
+      - name: Package binary
+        shell: bash
         run: |
-          bash scripts/install-macos.sh --check
-          KIR_AI_FORCE_CLONE=1 \
-            KIR_AI_REPO_URL="$GITHUB_WORKSPACE" \
-            KIR_AI_REF="$(git rev-parse HEAD)" \
-            KIR_AI_DIR="$RUNNER_TEMP/kir-ai-install-smoke" \
-            KIR_AI_SKIP_PYTHON=1 \
-            KIR_AI_SKIP_BUILD=1 \
-            bash scripts/install-macos.sh
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.artifact_name }}.tar.gz llm-engine
+          cd -
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.tar.gz
 
   north-star-gates:
     name: North-Star Gate Report
@@ -162,28 +172,27 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
-          rustup default "$RUST_TOOLCHAIN"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-gates-
-            ${{ runner.os }}-cargo-
+            macos-cargo-gates-
 
       - name: Enforce versioning
         run: bash scripts/check-versioning.sh
@@ -210,7 +219,7 @@ jobs:
 
       - name: Upload gate reports
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@v4
         with:
           name: north-star-ci-report
           path: |

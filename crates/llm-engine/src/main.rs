@@ -188,8 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn print_serve_help() {
     println!(
-        &format!(
-            "\
+        "\
 Usage: llm-engine serve [OPTIONS]
 
 Options:
@@ -214,8 +213,7 @@ Options:
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
   -h, --help                                 Print help",
-            DEFAULT_MODEL_ID
-        )
+        DEFAULT_MODEL_ID
     );
 }
 

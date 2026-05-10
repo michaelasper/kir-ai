@@ -1,7 +1,6 @@
 pub(super) fn print_bench_help() {
     println!(
-        &format!(
-            "\
+        "\
 Usage: llm-engine bench qwen-long-context [OPTIONS]
 
 Options:
@@ -19,8 +18,7 @@ Options:
   --latency-regression-threshold <f>  Allowed latency increase over baseline [default: 0.20]
   --dry-run                           Print the exact gate plan without HTTP requests
   -h, --help                          Print help",
-            crate::DEFAULT_MODEL_ID
-        )
+        crate::DEFAULT_MODEL_ID
     );
 }
 

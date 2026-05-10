@@ -607,7 +607,8 @@ impl ModelBackend for MetadataBackend {
             resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             profile: Some("qwen36-safetensors-bf16".to_owned()),
             snapshot_path: Some(std::path::PathBuf::from(format!(
-                "/tmp/{llm_engine::DEFAULT_MODEL_ID}"
+                "/tmp/{}",
+                llm_engine::DEFAULT_MODEL_ID
             ))),
             manifest_digest: Some(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),

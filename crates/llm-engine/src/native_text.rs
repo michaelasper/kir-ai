@@ -5,7 +5,8 @@ use crate::{
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk, ModelBackend,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    ModelBackend,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use std::path::Path;

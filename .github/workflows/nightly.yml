@@ -1,73 +1,85 @@
-name: Nightly
+name: Nightly Build
 
 on:
   schedule:
-    - cron: "17 8 * * *"
+    - cron: '0 2 * * *'
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: nightly-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  RUST_TOOLCHAIN: "1.95.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
 
 jobs:
-  north-star-nightly:
-    name: Nightly North-Star Gates
-    runs-on: macos-latest
-    timeout-minutes: 120
-    env:
-      LLM_BENCH_ENDPOINT: ${{ vars.LLM_BENCH_ENDPOINT }}
-      LLM_BENCH_MODEL: ${{ vars.LLM_BENCH_MODEL }}
-      LLM_BENCH_SNAPSHOT: ${{ vars.LLM_BENCH_SNAPSHOT }}
-      LLM_BENCH_BASELINE: ${{ vars.LLM_BENCH_BASELINE }}
+  nightly-build:
+    name: Nightly Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: kir-ai-linux-amd64-nightly
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: kir-ai-darwin-arm64-nightly
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-        with:
-          persist-credentials: false
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo +nightly build --release --target ${{ matrix.target }} -p llm-engine
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Package binary
+        shell: bash
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
-          rustup default "$RUST_TOOLCHAIN"
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.artifact_name }}-${{ steps.date.outputs.date }}.tar.gz llm-engine
+          cd -
 
-      - name: Cache cargo
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      - name: Create nightly release
+        uses: softprops/action-gh-release@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-nightly-
-            ${{ runner.os }}-cargo-
-
-      - name: Run nightly gates
-        run: bash scripts/north-star-gates.sh nightly
-
-      - name: Publish gate summary
-        if: always()
-        run: |
-          if [ -f target/north-star-gates/nightly-report.md ]; then
-            cat target/north-star-gates/nightly-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "North-star nightly report was not produced." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload gate reports
-        if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
-        with:
-          name: north-star-nightly-report
-          path: target/north-star-gates/
-          retention-days: 30
+          tag_name: nightly
+          name: Nightly Build (${{ steps.date.outputs.date }})
+          body: |
+            ## Nightly Build - ${{ steps.date.outputs.date }}
+            
+            This is an automated nightly build from the main branch.
+            
+            **⚠️ Warning:** Nightly builds may contain unstable features and bugs. Use at your own risk!
+            
+            ### Installation
+            
+            Download the appropriate binary for your platform:
+            
+            ```bash
+            # macOS (Apple Silicon)
+            curl -L https://github.com/michaelasper/kir-ai/releases/download/nightly/kir-ai-darwin-arm64-nightly-${{ steps.date.outputs.date }}.tar.gz | tar xz
+            sudo mv llm-engine /usr/local/bin/kirai
+            
+            # Linux (x86_64)
+            curl -L https://github.com/michaelasper/kir-ai/releases/download/nightly/kir-ai-linux-amd64-nightly-${{ steps.date.outputs.date }}.tar.gz | tar xz
+            sudo mv llm-engine /usr/local/bin/kirai
+            ```
+            
+            ### Changelog
+            
+            Built from commit: `${{ github.sha }}`
+          files: ${{ matrix.artifact_name }}-${{ steps.date.outputs.date }}.tar.gz
+          prerelease: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

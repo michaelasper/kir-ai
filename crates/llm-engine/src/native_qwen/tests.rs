@@ -10,6 +10,7 @@ use crate::native_text::{
     native_text_worker_stream, sample_token_id_with_draw,
 };
 use crate::sync_ext::RecoverPoisonedMutex;
+use futures::StreamExt;
 use llm_backend::{
     BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
     NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
@@ -596,7 +597,7 @@ fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
     write_tiny_linear_decoder_snapshot(&snapshot);
     let backend = native_qwen_test_backend(
         &snapshot,
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
         8,
         1,
@@ -647,7 +648,7 @@ fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
     write_tiny_linear_decoder_snapshot(&snapshot);
     let backend = native_qwen_test_backend(
         &snapshot,
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
         8,
         16,
@@ -659,7 +660,7 @@ fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
         .start_decode_session(
             &[0, 1, 0],
             8,
-            &native_qwen_test_request(llm_engine::DEFAULT_MODEL_ID),
+            &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
             &CancellationToken::new(),
         )
         .expect("decode session starts");
@@ -680,14 +681,14 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
     write_tiny_linear_decoder_snapshot(&snapshot);
     let backend = native_qwen_test_backend(
         &snapshot,
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         tiny_engine_qwen_spec(llm_models::AttentionKind::LinearAttention),
         8,
         1,
         2,
         64,
     );
-    let request = native_qwen_test_request(llm_engine::DEFAULT_MODEL_ID);
+    let request = native_qwen_test_request(crate::DEFAULT_MODEL_ID);
     let mut top_p_request = request.clone();
     top_p_request.sampling = SamplingConfig::TopP {
         temperature: 0.2,
@@ -861,14 +862,14 @@ fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
         snapshot.join("model.safetensors.index.json"),
     );
 
-    let backend = open_qwen_backend_blocking(llm_engine::DEFAULT_MODEL_ID, &snapshot);
+    let backend = open_qwen_backend_blocking(crate::DEFAULT_MODEL_ID, &snapshot);
     let metadata = backend.model_metadata();
 
     assert_eq!(
         backend.driver.max_new_tokens,
         DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS
     );
-    assert_eq!(metadata.id, llm_engine::DEFAULT_MODEL_ID);
+    assert_eq!(metadata.id, crate::DEFAULT_MODEL_ID);
     assert_eq!(metadata.backend, "native-qwen");
     assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
     assert!(metadata.manifest_digest.is_none());
@@ -952,7 +953,7 @@ fn native_qwen_backend_can_eagerly_materialize_indexed_shards_on_open() {
     write_tiny_qwen3_dense_model_index(&snapshot);
 
     let backend = open_qwen_backend_with_options_blocking(
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         &snapshot,
         NativeQwenLoadOptions {
             eager_materialize_shards: true,
@@ -975,7 +976,7 @@ async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend = NativeQwenBackend::open(llm_engine::DEFAULT_MODEL_ID, &snapshot)
+    let backend = NativeQwenBackend::open(crate::DEFAULT_MODEL_ID, &snapshot)
         .await
         .expect("backend opens snapshot");
     let cancellation = CancellationToken::new();
@@ -984,7 +985,7 @@ async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
     let err = backend
         .generate_with_cancel(
             BackendRequest {
-                model: llm_engine::DEFAULT_MODEL_ID.to_owned(),
+                model: crate::DEFAULT_MODEL_ID.to_owned(),
                 prompt: "say hi".to_owned(),
                 chat_context: None,
                 max_tokens: Some(1),
@@ -1014,7 +1015,7 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend = open_qwen_backend_blocking(llm_engine::DEFAULT_MODEL_ID, &snapshot);
+    let backend = open_qwen_backend_blocking(crate::DEFAULT_MODEL_ID, &snapshot);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -1022,7 +1023,7 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
     let err = backend
         .generate_blocking_stream(
             BackendRequest {
-                model: llm_engine::DEFAULT_MODEL_ID.to_owned(),
+                model: crate::DEFAULT_MODEL_ID.to_owned(),
                 prompt: "say hi".to_owned(),
                 chat_context: None,
                 max_tokens: Some(1),
@@ -1071,14 +1072,14 @@ fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend = open_qwen_backend_blocking(llm_engine::DEFAULT_MODEL_ID, &snapshot);
+    let backend = open_qwen_backend_blocking(crate::DEFAULT_MODEL_ID, &snapshot);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
 
     match backend.start_decode_session(
         &[0],
         1,
-        &native_qwen_test_request(llm_engine::DEFAULT_MODEL_ID),
+        &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
         &cancellation,
     ) {
         Err(BackendError::Cancelled) => {}
@@ -1126,7 +1127,7 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
 
     let backend = native_qwen_test_backend(
         &snapshot,
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         zero_layer_qwen_spec(1, 221),
         1,
         1,
@@ -1184,7 +1185,7 @@ fn native_qwen_greedy_clamps_top_k_to_vocab_size() {
 
     let backend = native_qwen_test_backend(
         &snapshot,
-        llm_engine::DEFAULT_MODEL_ID,
+        crate::DEFAULT_MODEL_ID,
         zero_layer_qwen_spec(1, 2),
         1,
         1,
