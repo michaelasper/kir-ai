@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1](https://github.com/michaelasper/kir-ai/compare/v1.0.0...v1.0.1) (2026-05-10)
+
+### Bug Fixes
+
+* **ci:** fix formatting and clippy lints across the workspace ([b5ce81e](https://github.com/michaelasper/kir-ai/commit/b5ce81e7ab7a3236205a4fe09bd6cf5242848481))
+
 ## 1.0.0 (2026-05-10)
 
 ### Features
