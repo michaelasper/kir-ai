@@ -38,6 +38,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           dry_run: true
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+            conventional-changelog-conventionalcommits
 
   build-linux:
     name: Build (Linux)
@@ -129,3 +133,4 @@ jobs:
           extra_plugins: |
             @semantic-release/changelog
             @semantic-release/git
+            conventional-changelog-conventionalcommits
