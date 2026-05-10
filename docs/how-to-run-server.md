@@ -9,10 +9,11 @@ Use protocol mode when you want fast, repeatable OpenAI-compatible responses
 without model artefacts:
 
 ```sh
-cargo run -p llm-engine -- serve \
-  --addr 127.0.0.1:3000 \
-  --protocol-test-backend
+kirai
 ```
+
+`kirai` is installed by the one-command installer and starts the protocol backend
+on `127.0.0.1:3000` by default.
 
 With `--protocol-test-backend` and no `--snapshot`, the server uses a
 protocol test backend. It serves the model alias `local-qwen36` and returns

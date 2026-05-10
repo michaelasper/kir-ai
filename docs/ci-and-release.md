@@ -86,6 +86,13 @@ The public install command is:
 curl -fsSL https://raw.githubusercontent.com/michaelasper/kir-ai/main/scripts/install-macos.sh | bash
 ```
 
+By default it installs `kirai` into `~/.local/bin` (or `KIR_AI_BIN_DIR`) and
+starts the protocol backend with:
+
+```sh
+kirai
+```
+
 Useful environment controls:
 
 | Variable | Meaning |
@@ -95,9 +102,11 @@ Useful environment controls:
 | `KIR_AI_REPO_URL` | Git remote to clone. Defaults to the public repository. |
 | `KIR_AI_RUST_TOOLCHAIN` | Rust toolchain. Defaults to `1.95.0`. |
 | `KIR_AI_VENV` | Python virtual environment path. Defaults to `.venv` under the checkout. |
+| `KIR_AI_BIN_DIR` | Install directory for the `kirai` wrapper. |
 | `KIR_AI_FORCE_CLONE` | Set to `1` to exercise clone/ref checkout even when running the script from an existing checkout. |
 | `KIR_AI_SKIP_PYTHON` | Set to `1` to skip virtualenv and MLX package installation during installer smoke tests. |
 | `KIR_AI_SKIP_BUILD` | Set to `1` to install dependencies without building or running smoke tests. |
+| `KIR_AI_SKIP_TESTS` | Set to `1` to skip parser/tokenizer checks. |
 
 For CI or script validation without installing dependencies:
 

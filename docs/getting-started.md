@@ -6,48 +6,32 @@ repeatable, and do not require a model download.
 
 You will:
 
-1. Install the pinned Rust toolchain.
-2. Run a focused server test.
-3. Start `llm-engine`.
-4. Call health, models, chat, completion, and streaming endpoints.
+1. Install `kir-ai` with the one-command installer.
+2. Start the protocol backend.
+3. Call health, models, chat, completion, and streaming endpoints.
 
 ## Prerequisites
 
-Install `mise` and make sure `curl` is available. `jq` is optional, but it makes
-the JSON responses easier to read.
+Make sure `curl` is available. `jq` is optional, but it makes the JSON
+responses easier to read.
 
-The workspace pins Rust `1.95.0` in [../mise.toml](../mise.toml). The Cargo
-workspace requires Rust `1.95` and edition `2024`.
+## 1. Install kir-ai
 
-## 1. Install The Toolchain
-
-From the repository root:
+From any shell:
 
 ```sh
-mise install
+curl -fsSL https://raw.githubusercontent.com/michaelasper/kir-ai/main/scripts/install-macos.sh | bash
 ```
 
-This installs the Rust version used by the workspace tasks.
+This installs the pinned toolchain, builds `llm-engine`, and installs `kirai`
+into a local bin directory.
 
-## 2. Run One Contract Test
-
-Run the HTTP contract test before starting the server:
-
-```sh
-cargo test -p llm-engine --test http_contract
-```
-
-The test exercises the same protocol-test router you will call below. It should
-finish without a model snapshot.
-
-## 3. Start The Server
+## 2. Start The Server
 
 Open a terminal and run:
 
 ```sh
-cargo run -p llm-engine -- serve \
-  --addr 127.0.0.1:3000 \
-  --protocol-test-backend
+kirai
 ```
 
 You should see a log line similar to:
@@ -58,7 +42,7 @@ llm-engine listening addr=127.0.0.1:3000
 
 Keep this terminal running.
 
-## 4. Check Health
+## 3. Check Health
 
 In a second terminal:
 
@@ -76,7 +60,7 @@ You should see:
 }
 ```
 
-## 5. List The Served Model
+## 4. List The Served Model
 
 ```sh
 curl -s http://127.0.0.1:3000/v1/models | jq
@@ -97,7 +81,7 @@ The protocol test backend serves the `local-qwen36` alias:
 }
 ```
 
-## 6. Send A Chat Request
+## 5. Send A Chat Request
 
 ```sh
 curl -s http://127.0.0.1:3000/v1/chat/completions \
@@ -130,7 +114,7 @@ Notice that the response has the OpenAI chat shape:
 
 The exact `id`, `created`, and `usage` values vary by run.
 
-## 7. Send A Text Completion Request
+## 6. Send A Text Completion Request
 
 ```sh
 curl -s http://127.0.0.1:3000/v1/completions \

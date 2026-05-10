@@ -62,13 +62,12 @@ Avoid `kir-ai` as a first step if your immediate need is a managed multi-user cl
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/michaelasper/kir-ai/main/scripts/install-macos.sh | bash
-   mise install
    ```
 
 2. Start the protocol test backend.
 
    ```sh
-   mise run run-protocol
+   kirai
    ```
 
 3. Send a smoke request.

@@ -38,7 +38,7 @@ Mise tasks:
 | `mise run clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | `mise run check` | `fmt-check`, `test`, and `clippy` |
 | `mise run run` | Delegates to `mise run run-inference`; requires `LLM_ENGINE_SNAPSHOT` or `LLM_ENGINE_SNAPSHOT_ALIAS`. |
-| `mise run run-protocol` | `cargo run -p llm-engine -- serve --protocol-test-backend` |
+| `mise run run-protocol` | `kirai` (or `cargo run -p llm-engine -- serve --protocol-test-backend`) |
 
 ## Server Configuration
 
