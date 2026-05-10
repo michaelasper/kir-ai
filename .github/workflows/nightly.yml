@@ -15,15 +15,11 @@ permissions:
 jobs:
   nightly-build:
     name: Nightly Build
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: kir-ai-linux-amd64-nightly
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
             artifact_name: kir-ai-darwin-arm64-nightly
 
     steps:
@@ -68,10 +64,6 @@ jobs:
             ```bash
             # macOS (Apple Silicon)
             curl -L https://github.com/michaelasper/kir-ai/releases/download/nightly/kir-ai-darwin-arm64-nightly-${{ steps.date.outputs.date }}.tar.gz | tar xz
-            sudo mv llm-engine /usr/local/bin/kirai
-            
-            # Linux (x86_64)
-            curl -L https://github.com/michaelasper/kir-ai/releases/download/nightly/kir-ai-linux-amd64-nightly-${{ steps.date.outputs.date }}.tar.gz | tar xz
             sudo mv llm-engine /usr/local/bin/kirai
             ```
             
