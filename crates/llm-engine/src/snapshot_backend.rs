@@ -47,7 +47,7 @@ pub async fn open_snapshot_backend(
 ) -> anyhow::Result<Box<dyn ModelBackend>> {
     let model_id = model_id.into();
     let snapshot_path = snapshot_path.as_ref();
-    let manifest = snapshot_manifest(snapshot_path)?;
+    let manifest = snapshot_manifest(snapshot_path).await?;
     let requested_family = options.family.or(options.mlx.family);
     let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
     let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
@@ -208,12 +208,10 @@ fn snapshot_manifest_family(
         .transpose()
 }
 
-fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotManifest>> {
+async fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotManifest>> {
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let manifest_bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+    let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
+        return Ok(None);
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
     Ok(Some(manifest))
