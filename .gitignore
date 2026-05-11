@@ -4,3 +4,4 @@
 *.log
 *.trace.jsonl
 *.tmp
+.opencode/
