@@ -114,8 +114,8 @@ impl NativeQwenBackend {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
-        let metadata = native_qwen_metadata(&model_id, snapshot_path)?;
+        let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
+        let metadata = native_qwen_metadata(&model_id, snapshot_path).await?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
         let spec = QwenModelSpec::from_config_json(&config_json)?;
         store.index().validate_qwen_text_weights(&spec)?;
@@ -483,7 +483,7 @@ impl ModelBackend for NativeQwenBackend {
     }
 }
 
-fn native_qwen_metadata(
+async fn native_qwen_metadata(
     model_id: &str,
     snapshot_path: &Path,
 ) -> anyhow::Result<BackendModelMetadata> {
@@ -492,10 +492,8 @@ fn native_qwen_metadata(
         BackendModelMetadata::new(model_id.to_owned(), "native-qwen").with_family("qwen");
     metadata.loader = Some("native-metal".to_owned());
     metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
-    let manifest_bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(metadata),
-        Err(err) => return Err(err.into()),
+    let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
+        return Ok(metadata);
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
     if manifest.family != "qwen" {
