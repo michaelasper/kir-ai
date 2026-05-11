@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2](https://github.com/michaelasper/kir-ai/compare/v1.3.1...v1.3.2) (2026-05-11)
+
+### Bug Fixes
+
+* **ci:** add --all-features to engine_model_cli_contracts gate ([f7cd043](https://github.com/michaelasper/kir-ai/commit/f7cd043f1c2f8ebfd80870339b628a353364121c))
+* **ci:** add --all-features to north-star gate test commands ([6b6968d](https://github.com/michaelasper/kir-ai/commit/6b6968def601f80e7502583a5f4baa5b7e1db426))
+
 ## [1.3.1](https://github.com/michaelasper/kir-ai/compare/v1.3.0...v1.3.1) (2026-05-11)
 
 ### Bug Fixes
