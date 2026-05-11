@@ -55,7 +55,9 @@ pub fn build_router_with_backend_and_concurrency(
             ..EngineOptions::default()
         },
     )
-    .expect("default engine options are valid")
+    .unwrap_or_else(|err| {
+        unreachable!("EngineOptions with valid concurrency_limit cannot fail: {err}")
+    })
 }
 
 pub fn build_router_with_backend_and_options(

@@ -248,10 +248,14 @@ fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKi
     }
 }
 
+const DEFAULT_MLX_ENDPOINT: &str = "http://127.0.0.1:8080/v1";
+
 impl Default for MlxBackendOptions {
     fn default() -> Self {
         Self {
-            endpoint: Url::parse("http://127.0.0.1:8080/v1").expect("valid default MLX endpoint"),
+            endpoint: Url::parse(DEFAULT_MLX_ENDPOINT).expect(
+                "DEFAULT_MLX_ENDPOINT is a valid URL verified at compile time by this assertion",
+            ),
             family: None,
         }
     }

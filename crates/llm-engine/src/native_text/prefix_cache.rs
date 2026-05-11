@@ -168,10 +168,7 @@ where
             return None;
         };
         let access = inner.next_access();
-        let entry = inner
-            .entries
-            .get_mut(&best_key)
-            .expect("best prefix key came from cache entries");
+        let entry = inner.entries.get_mut(&best_key)?;
         entry.last_used = access;
         metrics.record_hit(best_len as u64);
         Some(NativeTextPrefixCacheHit {

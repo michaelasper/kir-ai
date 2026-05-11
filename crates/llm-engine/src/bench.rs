@@ -162,11 +162,11 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         let endpoint = lane_config
             .endpoint
             .as_deref()
-            .expect("lane endpoint is checked above");
+            .context("lane endpoint is missing")?;
         let snapshot_path = lane_config
             .snapshot_path
             .as_deref()
-            .expect("lane snapshot is checked above");
+            .context("lane snapshot path is missing")?;
         let tokenizer = load_qwen_tokenizer(snapshot_path)?;
         let run_context = BenchExecutionContext {
             client: &client,

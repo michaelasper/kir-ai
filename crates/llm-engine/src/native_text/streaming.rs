@@ -71,14 +71,13 @@ pub(crate) fn native_text_worker_stream(
                     match item {
                         Some(item) => yield item,
                         None => {
-                            let result = worker
-                                .take()
-                                .expect("worker handle exists while stream watches it")
-                                .await;
-                            if let Err(err) = result {
-                                yield Err(BackendError::Other(format!(
-                                    "{label} streaming worker failed: {err}"
-                                )));
+                            if let Some(handle) = worker.take() {
+                                let result = handle.await;
+                                if let Err(err) = result {
+                                    yield Err(BackendError::Other(format!(
+                                        "{label} streaming worker failed: {err}"
+                                    )));
+                                }
                             }
                             break;
                         }

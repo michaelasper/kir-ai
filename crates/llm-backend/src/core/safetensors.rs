@@ -59,10 +59,15 @@ impl SafeTensorArchive {
                 "tensor `{name}` byte length is not divisible by 4"
             )));
         }
-        Ok(data
+        data
             .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has length 4")))
-            .collect())
+            .map(|chunk| {
+                chunk
+                    .try_into()
+                    .map(f32::from_le_bytes)
+                    .map_err(|_| TensorLoadError::integrity("f32 tensor chunk is not 4 bytes"))
+            })
+            .collect::<Result<_, _>>()
     }
 
     fn tensors(&self) -> Result<SafeTensors<'_>, TensorLoadError> {
@@ -802,10 +807,15 @@ fn bf16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, TensorLoadError> {
             "BF16 byte length must be divisible by 2",
         ));
     }
-    Ok(bytes
+    bytes
         .chunks_exact(2)
-        .map(|chunk| bf16_bits_to_f32(u16::from_le_bytes(chunk.try_into().expect("BF16 chunk"))))
-        .collect())
+        .map(|chunk| {
+            chunk
+                .try_into()
+                .map(|b| bf16_bits_to_f32(u16::from_le_bytes(b)))
+                .map_err(|_| TensorLoadError::integrity("BF16 chunk is not 2 bytes"))
+        })
+        .collect::<Result<_, _>>()
 }
 
 fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {
@@ -814,10 +824,15 @@ fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {
             "BF16 byte length must be divisible by 2",
         ));
     }
-    Ok(bytes
+    bytes
         .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes(chunk.try_into().expect("BF16 chunk")))
-        .collect())
+        .map(|chunk| {
+            chunk
+                .try_into()
+                .map(u16::from_le_bytes)
+                .map_err(|_| TensorLoadError::integrity("BF16 chunk is not 2 bytes"))
+        })
+        .collect::<Result<_, _>>()
 }
 
 #[derive(Debug, Clone)]
@@ -873,7 +888,11 @@ fn read_header_prefix(bytes: &[u8], file_len: u64) -> Result<(u64, usize), Tenso
         .get(0..8)
         .ok_or_else(|| TensorLoadError::integrity("safetensors file is missing header prefix"))?;
     let header_len = validate_header_len(
-        u64::from_le_bytes(prefix.try_into().expect("prefix has length 8")),
+        u64::from_le_bytes(
+            prefix
+                .try_into()
+                .map_err(|_| TensorLoadError::integrity("header prefix is not 8 bytes"))?,
+        ),
         file_len,
     )?;
     let header_end = 8_u64

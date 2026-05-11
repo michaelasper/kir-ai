@@ -561,7 +561,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 None
             };
             let layer0_attention_output = if run_layer0_attention {
-                let projections = projections.as_ref().expect("projections are computed");
+                let projections = projections
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("--layer0-projections must be enabled for --layer0-attention"))?;
                 Some(qwen_layer0_linear_attention_first_token(&store, &spec, projections).await?)
             } else {
                 None
@@ -580,7 +582,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let layer0_router = if run_layer0_router {
                 let attention_output = layer0_attention_output
                     .as_ref()
-                    .expect("attention output is computed");
+                    .ok_or_else(|| anyhow::anyhow!("--layer0-attention must be enabled for --layer0-router"))?;
                 let residual = probe
                     .embedding
                     .iter()
@@ -626,8 +628,10 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let layer0_moe = if args.iter().any(|arg| arg == "--layer0-moe") {
                 let post_attention = post_attention_norm
                     .as_ref()
-                    .expect("post-attention norm is computed");
-                let router = router_probe.as_ref().expect("router is computed");
+                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?;
+                let router = router_probe
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?;
                 let mut moe_output = vec![0.0; spec.hidden_size as usize];
                 let mut scratch = InferenceScratchpad::default();
                 qwen_layer_moe_forward_with_matvec_in_place(
@@ -643,7 +647,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 .await?;
                 let final_hidden = attention_residual
                     .as_ref()
-                    .expect("attention residual is computed")
+                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?
                     .iter()
                     .zip(&moe_output)
                     .map(|(residual, moe)| residual + moe)
