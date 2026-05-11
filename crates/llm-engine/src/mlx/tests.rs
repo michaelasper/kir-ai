@@ -1431,6 +1431,51 @@ async fn mlx_backend_rejects_sse_without_done_marker() {
     assert!(err.to_string().contains("[DONE]"));
 }
 
+#[tokio::test]
+async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
+    let server = FakeMlxServer::start_with_stall(
+        "data:{\"choices\":[{\"text\":\"one\",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\n",
+        Duration::from_secs(300),
+    );
+    let mut backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            timeouts: MlxTimeouts {
+                connect: Duration::from_secs(5),
+                request: Duration::from_secs(300),
+                read: Duration::from_millis(100),
+            },
+        },
+    )
+    .await
+    .expect("backend opens");
+    backend.metrics = Arc::new(MlxBackendMetrics::default());
+    let metrics = backend.metrics.clone();
+
+    let err = backend
+        .generate(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .await
+        .expect_err("stalled stream produces timeout error");
+
+    assert!(err.to_string().contains("stalled"), "expected stall error, got: {err}");
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics["failed_requests"], 1);
+    assert_eq!(metrics["stall_failures"], 1);
+}
+
 struct FakeMlxServer {
     endpoint: Url,
     snapshot: TempDir,
@@ -1481,6 +1526,73 @@ impl FakeMlxServer {
             response_content_length,
             Duration::ZERO,
         )
+    }
+
+    fn start_with_stall(first_chunk: &'static str, stall_duration: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake mlx server");
+        let endpoint = Url::parse(&format!(
+            "http://{}/v1",
+            listener.local_addr().expect("addr")
+        ))
+        .expect("endpoint url");
+        let received = Arc::new(Mutex::new(None));
+        let received_path = Arc::new(Mutex::new(None));
+        let received_for_thread = received.clone();
+        let received_path_for_thread = received_path.clone();
+        let _join = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept fake mlx request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let header_end;
+            loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                assert!(read > 0, "client closed before headers");
+                bytes.extend_from_slice(&buffer[..read]);
+                if let Some(index) = find_subsequence(&bytes, b"\r\n\r\n") {
+                    header_end = index + 4;
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let request_path = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("request path")
+                .to_owned();
+            *received_path_for_thread.lock().expect("received path lock") = Some(request_path);
+            let request_content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .expect("content-length header");
+            while bytes.len() < header_end + request_content_length {
+                let read = stream.read(&mut buffer).expect("read body");
+                assert!(read > 0, "client closed before body");
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+            let body = &bytes[header_end..header_end + request_content_length];
+            *received_for_thread.lock().expect("received lock") =
+                Some(serde_json::from_slice(body).expect("json request body"));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.flush();
+            let _ = write!(stream, "{:x}\r\n{}\r\n", first_chunk.len(), first_chunk);
+            let _ = stream.flush();
+            thread::sleep(stall_duration);
+        });
+        Self {
+            endpoint,
+            snapshot: tempfile::tempdir().expect("snapshot tempdir"),
+            received,
+            received_path,
+            join: None,
+        }
     }
 
     fn start_with_response_delay_and_content_length(
