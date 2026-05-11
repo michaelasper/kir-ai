@@ -18,7 +18,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::{is_loopback_endpoint, build_http_client, format_duration, MLX_STALL_PREFIX};
+use client::{MLX_STALL_PREFIX, build_http_client, format_duration, is_loopback_endpoint};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};

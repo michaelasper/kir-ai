@@ -1469,7 +1469,10 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
         .await
         .expect_err("stalled stream produces timeout error");
 
-    assert!(err.to_string().contains("stalled"), "expected stall error, got: {err}");
+    assert!(
+        err.to_string().contains("stalled"),
+        "expected stall error, got: {err}"
+    );
     let metrics = metrics.snapshot();
     assert_eq!(metrics["failed_requests"], 1);
     assert_eq!(metrics["stall_failures"], 1);
