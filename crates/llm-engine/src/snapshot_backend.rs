@@ -52,7 +52,7 @@ pub async fn open_snapshot_backend(
     let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
     let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
     let detected_family =
-        detect_snapshot_family(snapshot_path, loader, manifest_family, requested_family)?;
+        detect_snapshot_family(snapshot_path, loader, manifest_family, requested_family).await?;
     let effective_family = requested_family.or(manifest_family).or(detected_family);
     validate_snapshot_family(manifest_family, requested_family)?;
     validate_snapshot_loader_has_family(loader, manifest_family, requested_family)?;
@@ -83,7 +83,7 @@ pub async fn open_snapshot_backend(
     }
 }
 
-fn detect_snapshot_family(
+async fn detect_snapshot_family(
     snapshot_path: &Path,
     loader: SnapshotBackendLoader,
     manifest_family: Option<ModelFamily>,
@@ -93,7 +93,7 @@ fn detect_snapshot_family(
         && manifest_family.is_none()
         && requested_family.is_none()
     {
-        return infer_native_text_family(snapshot_path).map(Some);
+        return Ok(Some(infer_native_text_family(snapshot_path).await?));
     }
     Ok(None)
 }

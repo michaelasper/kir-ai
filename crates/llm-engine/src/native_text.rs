@@ -142,7 +142,7 @@ impl NativeTextBackend {
         let snapshot_path = snapshot_path.as_ref();
         let family = match options.family {
             Some(family) => family,
-            None => infer_native_text_family(snapshot_path)?,
+            None => infer_native_text_family(snapshot_path).await?,
         };
         match family {
             ModelFamily::Gemma => {
@@ -201,9 +201,9 @@ impl NativeTextBackend {
     }
 }
 
-pub(crate) fn infer_native_text_family(snapshot_path: &Path) -> anyhow::Result<ModelFamily> {
+pub(crate) async fn infer_native_text_family(snapshot_path: &Path) -> anyhow::Result<ModelFamily> {
     let config_path = snapshot_path.join("config.json");
-    let config_json = std::fs::read_to_string(&config_path).map_err(|err| {
+    let config_json = tokio::fs::read_to_string(&config_path).await.map_err(|err| {
         anyhow::anyhow!(
             "native text snapshot without explicit family metadata requires readable config.json for family detection at `{}`: {err}",
             config_path.display()
