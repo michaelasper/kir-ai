@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/michaelasper/kir-ai/compare/v1.0.1...v1.1.0) (2026-05-11)
+
+### Features
+
+* **api:** document and structure admin API responses with schemars ([47d12c6](https://github.com/michaelasper/kir-ai/commit/47d12c63735bc99ed57cdb5282ad6be01dcccfe6))
+
 ## [1.0.1](https://github.com/michaelasper/kir-ai/compare/v1.0.0...v1.0.1) (2026-05-10)
 
 ### Bug Fixes
