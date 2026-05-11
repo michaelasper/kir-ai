@@ -113,7 +113,7 @@ where
                 prompt: request.prompt,
                 chat_context: None,
                 max_tokens: request.max_tokens,
-                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
+                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
                 required_tool_choice: None,
                 json_object_mode: false,
                 conversation_mode: false,
@@ -201,7 +201,7 @@ where
                 prompt,
                 chat_context,
                 max_tokens: request.effective_max_tokens(),
-                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p),
+                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
                 required_tool_choice: required_backend_tool_choice(&request),
                 json_object_mode: matches!(
                     request.response_format,
@@ -263,7 +263,7 @@ where
                     sampling: SamplingConfig::from_openai_controls(
                         request.temperature,
                         request.top_p,
-                    ),
+                    )?,
                     required_tool_choice,
                     json_object_mode: matches!(
                         request.response_format,
@@ -342,7 +342,7 @@ where
                     sampling: SamplingConfig::from_openai_controls(
                         request.temperature,
                         request.top_p,
-                    ),
+                    )?,
                     required_tool_choice: None,
                     json_object_mode: false,
                     conversation_mode: false,

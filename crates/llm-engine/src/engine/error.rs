@@ -35,6 +35,12 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
         RuntimeError::Backend(BackendError::Cancelled) => {
             (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false)
         }
+        RuntimeError::Backend(BackendError::InvalidSamplingConfig(_)) => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "request_validation",
+            false,
+        ),
         RuntimeError::Backend(BackendError::Other(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "backend_execution_failed",

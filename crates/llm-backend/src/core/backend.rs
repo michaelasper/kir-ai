@@ -104,15 +104,32 @@ impl SamplingConfig {
         }
     }
 
-    pub fn from_openai_controls(temperature: Option<f32>, top_p: Option<f32>) -> Self {
-        match (temperature, top_p) {
+    pub fn from_openai_controls(
+        temperature: Option<f32>,
+        top_p: Option<f32>,
+    ) -> Result<Self, BackendError> {
+        if let Some(t) = temperature
+            && (!t.is_finite() || !(0.0..=2.0).contains(&t))
+        {
+            return Err(BackendError::InvalidSamplingConfig(
+                "temperature must be finite and in [0, 2]".to_owned(),
+            ));
+        }
+        if let Some(p) = top_p
+            && (!p.is_finite() || p <= 0.0 || p > 1.0)
+        {
+            return Err(BackendError::InvalidSamplingConfig(
+                "top_p must be finite and in (0, 1]".to_owned(),
+            ));
+        }
+        Ok(match (temperature, top_p) {
             (Some(0.0), _) => Self::Greedy,
             (None, None) => Self::standard(),
             (t, p) => Self::TopP {
                 temperature: t.unwrap_or(1.0),
                 top_p: p.unwrap_or(1.0),
             },
-        }
+        })
     }
 
     pub fn is_greedy(self) -> bool {
@@ -283,6 +300,8 @@ pub enum BackendError {
     },
     #[error("unsupported backend request: {0}")]
     UnsupportedRequest(String),
+    #[error("invalid sampling config: {0}")]
+    InvalidSamplingConfig(String),
     #[error("backend generation cancelled")]
     Cancelled,
     #[error("backend error: {0}")]
@@ -356,7 +375,7 @@ mod tests {
     #[test]
     fn from_openai_controls_maps_none_temperature_and_top_p_one_to_top_p() {
         assert_eq!(
-            SamplingConfig::from_openai_controls(None, Some(1.0)),
+            SamplingConfig::from_openai_controls(None, Some(1.0)).expect("valid controls"),
             SamplingConfig::TopP {
                 temperature: 1.0,
                 top_p: 1.0,
@@ -364,7 +383,7 @@ mod tests {
         );
 
         assert_eq!(
-            SamplingConfig::from_openai_controls(None, None),
+            SamplingConfig::from_openai_controls(None, None).expect("valid controls"),
             SamplingConfig::TopP {
                 temperature: 1.0,
                 top_p: 1.0,
@@ -372,8 +391,121 @@ mod tests {
         );
 
         assert_eq!(
-            SamplingConfig::from_openai_controls(Some(0.0), Some(1.0)),
+            SamplingConfig::from_openai_controls(Some(0.0), Some(1.0)).expect("valid controls"),
             SamplingConfig::Greedy
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_negative_temperature() {
+        let err = SamplingConfig::from_openai_controls(Some(-0.5), None)
+            .expect_err("negative temperature should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_nan_temperature() {
+        let err = SamplingConfig::from_openai_controls(Some(f32::NAN), None)
+            .expect_err("NaN temperature should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_inf_temperature() {
+        let err = SamplingConfig::from_openai_controls(Some(f32::INFINITY), None)
+            .expect_err("inf temperature should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_temperature_above_2() {
+        let err = SamplingConfig::from_openai_controls(Some(2.1), None)
+            .expect_err("temperature > 2.0 should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_accepts_temperature_at_upper_bound() {
+        let config = SamplingConfig::from_openai_controls(Some(2.0), None)
+            .expect("temperature 2.0 is valid");
+        assert_eq!(
+            config,
+            SamplingConfig::TopP {
+                temperature: 2.0,
+                top_p: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_zero_top_p() {
+        let err = SamplingConfig::from_openai_controls(None, Some(0.0))
+            .expect_err("zero top_p should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_neg_inf_temperature() {
+        let err = SamplingConfig::from_openai_controls(Some(f32::NEG_INFINITY), None)
+            .expect_err("neg_inf temperature should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_top_p_above_1() {
+        let err = SamplingConfig::from_openai_controls(None, Some(1.5))
+            .expect_err("top_p > 1.0 should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_inf_top_p() {
+        let err = SamplingConfig::from_openai_controls(None, Some(f32::INFINITY))
+            .expect_err("inf top_p should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_nan_top_p() {
+        let err = SamplingConfig::from_openai_controls(None, Some(f32::NAN))
+            .expect_err("NaN top_p should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_openai_controls_rejects_negative_top_p() {
+        let err = SamplingConfig::from_openai_controls(None, Some(-0.1))
+            .expect_err("negative top_p should be rejected");
+        assert!(
+            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            "expected InvalidSamplingConfig, got {err:?}"
         );
     }
 }

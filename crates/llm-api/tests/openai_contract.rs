@@ -126,6 +126,77 @@ fn rejects_invalid_sampling_controls() {
 }
 
 #[test]
+fn rejects_temperature_above_2() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(2.5),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("temperature above 2.0 is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_nan_temperature() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(f32::NAN),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("NaN temperature is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_inf_temperature() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        temperature: Some(f32::INFINITY),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("inf temperature is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_nan_top_p() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        top_p: Some(f32::NAN),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("NaN top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn rejects_inf_top_p() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("sample")],
+        top_p: Some(f32::INFINITY),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("inf top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
 fn accepts_explicit_greedy_sampling_controls() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -283,6 +354,62 @@ fn completion_rejects_invalid_sampling_controls() {
     };
 
     let err = request.validate().expect_err("zero top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn completion_rejects_temperature_above_2() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        temperature: Some(2.5),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("temperature above 2.0 is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn completion_rejects_nan_temperature() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        temperature: Some(f32::NAN),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("NaN temperature is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn completion_rejects_nan_top_p() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        top_p: Some(f32::NAN),
+        ..CompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("NaN top_p is invalid");
+    assert_eq!(err.code(), "invalid_request");
+}
+
+#[test]
+fn completion_rejects_inf_top_p() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "sample".to_owned(),
+        top_p: Some(f32::INFINITY),
+        ..CompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("inf top_p is invalid");
     assert_eq!(err.code(), "invalid_request");
 }
 

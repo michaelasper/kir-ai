@@ -542,10 +542,10 @@ fn validate_sampling_controls(
     top_p: Option<f32>,
 ) -> Result<(), ApiError> {
     if let Some(temperature) = temperature
-        && (!temperature.is_finite() || temperature < 0.0)
+        && (!temperature.is_finite() || !(0.0..=2.0).contains(&temperature))
     {
         return Err(ApiError::invalid_request(
-            "temperature must be finite and non-negative",
+            "temperature must be finite and in [0, 2]",
         ));
     }
     if let Some(top_p) = top_p
