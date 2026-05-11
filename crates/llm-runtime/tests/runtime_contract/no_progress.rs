@@ -2,13 +2,13 @@ use super::*;
 
 #[test]
 fn classifies_high_output_empty_completion_as_no_progress() {
-    let class = llm_runtime::classify_no_progress("", 4096, false);
+    let class = llm_runtime::classify_no_progress("", 4096);
     assert_eq!(class, Some(NoProgressClass::EmptyHighOutputCompletion));
 }
 
 #[test]
 fn content_delta_is_progress_even_with_many_tokens() {
-    let class = llm_runtime::classify_no_progress("patched Cargo.toml", 4096, false);
+    let class = llm_runtime::classify_no_progress("patched Cargo.toml", 4096);
     assert_eq!(class, None);
 }
 

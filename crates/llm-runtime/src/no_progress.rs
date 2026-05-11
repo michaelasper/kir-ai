@@ -1,6 +1,8 @@
 use llm_api::{ChatCompletionRequest, ChatMessage, ChatRole, ToolCall};
 use llm_tool_parser::ParsedAssistant;
 
+use crate::adapters::ToolMarkupPolicy;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
     EmptyCompletion,
@@ -29,16 +31,12 @@ impl NoProgressClass {
 pub fn classify_no_progress(
     content: &str,
     completion_tokens: u64,
-    required_tool_pending: bool,
 ) -> Option<NoProgressClass> {
     if content.trim().is_empty() && completion_tokens >= 1024 {
         return Some(NoProgressClass::EmptyHighOutputCompletion);
     }
     if content.trim().is_empty() {
         return Some(NoProgressClass::EmptyCompletion);
-    }
-    if required_tool_pending && !content.contains("<tool_call>") {
-        return Some(NoProgressClass::TextFallbackRequiredTool);
     }
     None
 }
@@ -49,8 +47,12 @@ pub(crate) fn classify_chat_no_progress(
     completion_tokens: u64,
     required_tool_pending: bool,
     request: &ChatCompletionRequest,
+    tool_markup_policy: ToolMarkupPolicy,
 ) -> Option<NoProgressClass> {
     if parsed.tool_calls.is_empty() {
+        if required_tool_pending && !tool_markup_policy.contains_start(raw_text) {
+            return Some(NoProgressClass::TextFallbackRequiredTool);
+        }
         if parsed.content.trim().is_empty()
             && parsed
                 .reasoning
@@ -59,9 +61,7 @@ pub(crate) fn classify_chat_no_progress(
         {
             return Some(NoProgressClass::HiddenOnlyOutput);
         }
-        if let Some(class) =
-            classify_no_progress(&parsed.content, completion_tokens, required_tool_pending)
-        {
+        if let Some(class) = classify_no_progress(&parsed.content, completion_tokens) {
             return Some(class);
         }
         if repeated_assistant_content(&parsed.content, request) {
@@ -74,7 +74,7 @@ pub(crate) fn classify_chat_no_progress(
         return Some(NoProgressClass::RepeatedInvalidToolCall);
     }
     if raw_text.trim().is_empty() {
-        return classify_no_progress(raw_text, completion_tokens, required_tool_pending);
+        return classify_no_progress(raw_text, completion_tokens);
     }
     None
 }
@@ -186,4 +186,130 @@ fn normalized_progress_text(content: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::{
+        DEEPSEEK_TOOL_MARKERS, GEMMA_TOOL_MARKERS, JSON_TOOL_MARKERS, ToolMarkupPolicy,
+    };
+    use llm_api::ChatCompletionRequest;
+
+    fn minimal_request() -> ChatCompletionRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deepseek_marker_prevents_text_fallback_when_parser_fails() {
+        let raw_text = r#"<dsml_tool_call>{"name":"lookup","arguments":{"query":"rust"}}</dsml_tool_call>"#;
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_ne!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn gemma_marker_prevents_text_fallback_when_parser_fails() {
+        let raw_text = "<|tool_call>call:lookup{\"query\":\"rust\"}<tool_call|>";
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&GEMMA_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_ne!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn deepseek_native_marker_prevents_text_fallback() {
+        let raw_text = "<｜tool▁calls▁begin｜>{\"name\":\"lookup\",\"arguments\":{\"query\":\"rust\"}}<｜tool▁calls▁end｜>";
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_ne!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn text_without_marker_returns_fallback_when_required_tool_pending() {
+        let raw_text = "I will help you with that task.";
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_eq!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn wrong_family_marker_does_not_prevent_fallback() {
+        let raw_text = "<dsml_tool_call>{\"name\":\"lookup\"}</dsml_tool_call>";
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&GEMMA_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_eq!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn qwen_marker_prevents_text_fallback_when_parser_fails() {
+        let raw_text = "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"query\":\"rust\"}}</tool_call>";
+        let parsed = ParsedAssistant::content(raw_text);
+        let policy = ToolMarkupPolicy::new(&JSON_TOOL_MARKERS);
+
+        let result = classify_chat_no_progress(
+            raw_text,
+            &parsed,
+            100,
+            true,
+            &minimal_request(),
+            policy,
+        );
+
+        assert_ne!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
 }

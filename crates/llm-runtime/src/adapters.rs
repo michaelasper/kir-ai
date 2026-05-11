@@ -20,13 +20,13 @@ pub(crate) struct ToolMarkupPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ToolMarkupMarkers {
-    start_marker: &'static str,
-    end_marker: &'static str,
+pub(crate) struct ToolMarkupMarkers {
+    pub(crate) start_marker: &'static str,
+    pub(crate) end_marker: &'static str,
 }
 
 impl ToolMarkupMarkers {
-    const fn new(start_marker: &'static str, end_marker: &'static str) -> Self {
+    pub(crate) const fn new(start_marker: &'static str, end_marker: &'static str) -> Self {
         Self {
             start_marker,
             end_marker,
@@ -34,17 +34,17 @@ impl ToolMarkupMarkers {
     }
 }
 
-const JSON_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
+pub(crate) const JSON_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
     [ToolMarkupMarkers::new("<tool_call>", "</tool_call>")];
-const DEEPSEEK_TOOL_MARKERS: [ToolMarkupMarkers; 2] = [
+pub(crate) const DEEPSEEK_TOOL_MARKERS: [ToolMarkupMarkers; 2] = [
     ToolMarkupMarkers::new("<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"),
     ToolMarkupMarkers::new("<dsml_tool_call>", "</dsml_tool_call>"),
 ];
-const GEMMA_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
+pub(crate) const GEMMA_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
     [ToolMarkupMarkers::new("<|tool_call>", "<tool_call|>")];
 
 impl ToolMarkupPolicy {
-    const fn new(markers: &'static [ToolMarkupMarkers]) -> Self {
+    pub(crate) const fn new(markers: &'static [ToolMarkupMarkers]) -> Self {
         Self { markers }
     }
 

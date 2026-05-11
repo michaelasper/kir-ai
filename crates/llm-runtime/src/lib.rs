@@ -293,6 +293,7 @@ where
             output.completion_tokens,
             required_tool_pending && parsed.tool_calls.is_empty(),
             &request,
+            adapter.tool_markup_policy(),
         );
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
@@ -352,7 +353,7 @@ where
             .await?;
         let mut text = output.text;
         let stopped = apply_stop_sequences(&mut text, &request.stop);
-        let no_progress = classify_no_progress(&text, output.completion_tokens, false);
+        let no_progress = classify_no_progress(&text, output.completion_tokens);
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
         }
@@ -556,7 +557,7 @@ fn streaming_completion_stream<'a>(
             emitted_len = raw_text.len();
         }
         let visible_text = &raw_text[..emitted_len];
-        if let Some(class) = classify_no_progress(visible_text, completion_tokens, false) {
+        if let Some(class) = classify_no_progress(visible_text, completion_tokens) {
             Err(RuntimeError::NoProgress(class))?;
         }
         let usage = Usage {
@@ -780,6 +781,7 @@ fn streaming_chat_stream<'a>(
             completion_tokens,
             requires_tool_choice && parsed.tool_calls.is_empty(),
             &request,
+            tool_markup_policy,
         ) {
             Err(RuntimeError::NoProgress(class))?;
         }
