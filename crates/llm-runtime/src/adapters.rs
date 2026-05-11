@@ -123,10 +123,19 @@ impl ChatAdapter for SelectedChatAdapter {
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
     ) -> Option<BackendChatContext> {
-        let messages = messages
-            .iter()
-            .map(backend_chat_message)
-            .collect::<Option<Vec<_>>>()?;
+        let total = messages.len();
+        let messages: Vec<_> = messages.iter().filter_map(backend_chat_message).collect();
+        let filtered = total - messages.len();
+        if filtered > 0 {
+            tracing::debug!(
+                filtered_count = filtered,
+                remaining_count = messages.len(),
+                "filtered tool/tool-call messages from structured chat context"
+            );
+        }
+        if messages.is_empty() {
+            return None;
+        }
         Some(BackendChatContext { messages })
     }
 

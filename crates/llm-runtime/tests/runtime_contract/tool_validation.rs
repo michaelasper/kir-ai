@@ -295,11 +295,7 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
             messages: vec![
                 ChatMessage::system("You are a helpful assistant."),
                 ChatMessage::user("lookup rust"),
-                ChatMessage::assistant_tool_call(
-                    "call_1",
-                    "lookup",
-                    json!({"query": "rust"}),
-                ),
+                ChatMessage::assistant_tool_call("call_1", "lookup", json!({"query": "rust"})),
                 ChatMessage::tool("call_1", "Rust is a systems programming language."),
                 ChatMessage::user("tell me more"),
             ],
@@ -325,7 +321,8 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
     );
     assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
     assert_eq!(
-        chat_context.messages[0].content, "You are a helpful assistant."
+        chat_context.messages[0].content,
+        "You are a helpful assistant."
     );
     assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
     assert_eq!(chat_context.messages[1].content, "lookup rust");
