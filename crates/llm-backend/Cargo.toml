@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = []
+slow-tests = []
 test-utils = []
 
 [dependencies]

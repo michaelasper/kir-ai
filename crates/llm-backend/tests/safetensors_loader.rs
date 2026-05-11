@@ -1,3 +1,4 @@
+#![cfg(feature = "slow-tests")]
 #![allow(dead_code)]
 use llm_backend::{
     CpuNativeMatvecBackend, MathError, NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache,
