@@ -588,7 +588,7 @@ pub struct ModelList {
     pub data: Vec<ModelCard>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, JsonSchema)]
 #[error("{code}: {message}")]
 pub struct ApiError {
     code: &'static str,

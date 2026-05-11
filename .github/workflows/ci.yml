@@ -83,6 +83,14 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Verify API schemas are up-to-date
+        run: |
+          if [ -n "$(git status --porcelain docs/schemas/admin/)" ]; then
+            echo "Error: API schemas are out of date. Please run 'cargo test -p llm-engine generate_admin_api_schemas' locally and commit the changes."
+            git diff docs/schemas/admin/
+            exit 1
+          fi
+
   build:
     name: Build
     runs-on: macos-latest

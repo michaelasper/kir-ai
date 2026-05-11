@@ -1,4 +1,5 @@
 use super::admin::*;
+use llm_api::ApiError;
 use schemars::schema_for;
 use std::fs;
 
@@ -11,6 +12,7 @@ fn generate_admin_api_schemas() {
         ("AdminModelVerifyResponse", schema_for!(AdminModelVerifyResponse)),
         ("AdminModelPullResponse", schema_for!(AdminModelPullResponse)),
         ("AdminMetricsResponse", schema_for!(AdminMetricsResponse)),
+        ("ApiError", schema_for!(ApiError)),
     ];
 
     let output_dir = "../../docs/schemas/admin";
