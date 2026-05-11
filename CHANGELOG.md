@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1](https://github.com/michaelasper/kir-ai/compare/v1.4.0...v1.4.1) (2026-05-11)
+
+### Bug Fixes
+
+* filter tool messages instead of dropping entire chat context ([357860d](https://github.com/michaelasper/kir-ai/commit/357860de289dd1d642e0ae9e8b05167986a794de))
+
 ## [1.4.0](https://github.com/michaelasper/kir-ai/compare/v1.3.2...v1.4.0) (2026-05-11)
 
 ### Features
