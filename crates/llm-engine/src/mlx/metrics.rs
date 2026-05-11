@@ -26,6 +26,7 @@ struct MlxBackendMetricCounters {
     stream_read_failures: u64,
     invalid_utf8_failures: u64,
     sse_parse_failures: u64,
+    stall_failures: u64,
     cancelled_requests: u64,
     dropped_requests: u64,
     request_latency: LatencyMetrics,
@@ -38,6 +39,7 @@ pub(super) enum MlxBackendFailureKind {
     StreamRead,
     InvalidUtf8,
     SseParse,
+    Stall,
     Cancelled,
 }
 
@@ -85,6 +87,7 @@ impl MlxBackendMetrics {
             "stream_read_failures": counters.stream_read_failures,
             "invalid_utf8_failures": counters.invalid_utf8_failures,
             "sse_parse_failures": counters.sse_parse_failures,
+            "stall_failures": counters.stall_failures,
             "cancelled_requests": counters.cancelled_requests,
             "dropped_requests": counters.dropped_requests,
             "request_latency_ms": latency_summary(counters.request_latency),
@@ -119,6 +122,7 @@ impl MlxBackendMetrics {
             MlxBackendFailureKind::StreamRead => counters.stream_read_failures += 1,
             MlxBackendFailureKind::InvalidUtf8 => counters.invalid_utf8_failures += 1,
             MlxBackendFailureKind::SseParse => counters.sse_parse_failures += 1,
+            MlxBackendFailureKind::Stall => counters.stall_failures += 1,
             MlxBackendFailureKind::Cancelled => counters.cancelled_requests += 1,
         }
     }
