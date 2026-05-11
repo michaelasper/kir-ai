@@ -630,6 +630,36 @@ async fn runtime_streams_llama_text_after_buffering_unmarked_tool_candidate() {
     );
 }
 
+#[tokio::test]
+async fn runtime_streams_llama_json_object_with_tools_emits_content_once() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text: r#"{"answer":"ok"}<|eot_id|>"#,
+        finish_reason: FinishReason::Stop,
+    };
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            response_format: Some(ResponseFormat::JsonObject),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming starts");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let emitted_content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    assert_eq!(emitted_content, r#"{"answer":"ok"}"#);
+}
+
 async fn assert_streams_tool_call_delta_without_marker_content<B>(
     backend: B,
     model_id: &str,

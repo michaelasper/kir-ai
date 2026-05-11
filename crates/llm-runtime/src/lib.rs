@@ -635,6 +635,33 @@ fn buffered_chat_stream(
     })
 }
 
+enum DeferredEmission {
+    None,
+    JsonObjectMode,
+    ToolChoiceRequired,
+    UnmarkedToolBuffer,
+}
+
+fn deferred_emission_strategy(
+    json_object_mode: bool,
+    requires_tool_choice: bool,
+    buffers_unmarked_tool_candidates: bool,
+) -> DeferredEmission {
+    // Priority: JsonObjectMode > ToolChoiceRequired > UnmarkedToolBuffer > None.
+    // Only one deferred mode can be active at a time; JsonObjectMode takes
+    // precedence because it suppresses all inline emission and performs
+    // post-parse validation that subsumes the other buffering strategies.
+    if json_object_mode {
+        DeferredEmission::JsonObjectMode
+    } else if requires_tool_choice {
+        DeferredEmission::ToolChoiceRequired
+    } else if buffers_unmarked_tool_candidates {
+        DeferredEmission::UnmarkedToolBuffer
+    } else {
+        DeferredEmission::None
+    }
+}
+
 fn streaming_chat_stream<'a>(
     completion: RuntimeCompletionSeed,
     request: ChatCompletionRequest,
@@ -664,10 +691,11 @@ fn streaming_chat_stream<'a>(
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
         let mut stopped_by_sequence = false;
-        let json_object_mode = matches!(request.response_format, Some(ResponseFormat::JsonObject));
-        let requires_tool_choice = request_requires_tool_choice(&request);
-        let buffers_unmarked_tool_candidates =
-            adapter.parses_unmarked_tool_calls() && !request.tools.is_empty();
+        let deferred = deferred_emission_strategy(
+            matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            request_requires_tool_choice(&request),
+            adapter.parses_unmarked_tool_calls() && !request.tools.is_empty(),
+        );
         let mut emitted_tool_calls = 0;
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
@@ -677,10 +705,7 @@ fn streaming_chat_stream<'a>(
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
                 if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
-                    if !json_object_mode
-                        && !requires_tool_choice
-                        && !buffers_unmarked_tool_candidates
-                        && stop_at > emitted_len
+                    if matches!(deferred, DeferredEmission::None) && stop_at > emitted_len
                     {
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
@@ -697,7 +722,7 @@ fn streaming_chat_stream<'a>(
                     stopped_by_sequence = true;
                     break;
                 }
-                if !json_object_mode && !requires_tool_choice && !buffers_unmarked_tool_candidates {
+                if matches!(deferred, DeferredEmission::None) {
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
                         .min(tool_markup_policy.safe_emit_len(&raw_text));
                     if safe_len > emitted_len {
@@ -752,9 +777,7 @@ fn streaming_chat_stream<'a>(
         };
         if !stopped_by_sequence
             && emitted_len < visible_len
-            && !json_object_mode
-            && !requires_tool_choice
-            && !buffers_unmarked_tool_candidates
+            && matches!(deferred, DeferredEmission::None)
             && !tool_markup_policy.contains_start(&raw_text[..visible_len])
         {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -772,14 +795,14 @@ fn streaming_chat_stream<'a>(
         let parsed = parse_chat_text(adapter, visible_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
         validate_tool_calls_against_request(&parsed, &request)?;
-        if json_object_mode {
+        if matches!(deferred, DeferredEmission::JsonObjectMode) {
             validate_json_object_response(&parsed)?;
         }
         if let Some(class) = classify_chat_no_progress(
             visible_text,
             &parsed,
             completion_tokens,
-            requires_tool_choice && parsed.tool_calls.is_empty(),
+            matches!(deferred, DeferredEmission::ToolChoiceRequired) && parsed.tool_calls.is_empty(),
             &request,
             tool_markup_policy,
         ) {
@@ -795,30 +818,32 @@ fn streaming_chat_stream<'a>(
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         };
-        if json_object_mode && !parsed.content.is_empty() {
-            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                &completion,
-                ChatCompletionDelta {
-                    content: Some(parsed.content.clone()),
-                    ..ChatCompletionDelta::default()
-                },
-                None,
-                None,
-            ));
-        }
-        if buffers_unmarked_tool_candidates
-            && parsed.tool_calls.is_empty()
-            && !parsed.content.is_empty()
-        {
-            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                &completion,
-                ChatCompletionDelta {
-                    content: Some(parsed.content.clone()),
-                    ..ChatCompletionDelta::default()
-                },
-                None,
-                None,
-            ));
+        match deferred {
+            DeferredEmission::JsonObjectMode if !parsed.content.is_empty() => {
+                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                    &completion,
+                    ChatCompletionDelta {
+                        content: Some(parsed.content.clone()),
+                        ..ChatCompletionDelta::default()
+                    },
+                    None,
+                    None,
+                ));
+            }
+            DeferredEmission::UnmarkedToolBuffer
+                if parsed.tool_calls.is_empty() && !parsed.content.is_empty() =>
+            {
+                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                    &completion,
+                    ChatCompletionDelta {
+                        content: Some(parsed.content.clone()),
+                        ..ChatCompletionDelta::default()
+                    },
+                    None,
+                    None,
+                ));
+            }
+            _ => {}
         }
         for (index, tool_call) in parsed.tool_calls.iter().enumerate().skip(emitted_tool_calls) {
             let delta = tool_call_delta(index, tool_call)?;
