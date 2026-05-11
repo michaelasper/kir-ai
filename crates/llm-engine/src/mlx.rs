@@ -16,7 +16,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::is_loopback_endpoint;
+use client::{is_loopback_endpoint, build_http_client, MlxTimeouts, format_duration};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};
@@ -28,6 +28,7 @@ use sse::{MlxSseParser, count_whitespace_tokens};
 pub struct MlxBackendOptions {
     pub endpoint: Url,
     pub family: Option<ModelFamily>,
+    pub timeouts: MlxTimeouts,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,7 @@ pub struct MlxBackend {
     endpoint: Url,
     control_stop_tokens: &'static [&'static str],
     client: reqwest::Client,
+    timeouts: MlxTimeouts,
     metrics: Arc<MlxBackendMetrics>,
 }
 
@@ -65,13 +67,16 @@ impl MlxBackend {
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = mlx_metadata(&model_id, snapshot_path, options.family).await?;
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
+        let client = build_http_client(options.timeouts);
+        let timeouts = options.timeouts;
         Ok(Self {
             model_id: model_id.clone(),
             metadata,
             upstream_model,
             endpoint: options.endpoint,
             control_stop_tokens,
-            client: reqwest::Client::new(),
+            client,
+            timeouts,
             metrics: mlx_backend_metrics(),
         })
     }
@@ -257,6 +262,7 @@ impl Default for MlxBackendOptions {
                 "DEFAULT_MLX_ENDPOINT is a valid URL verified at compile time by this assertion",
             ),
             family: None,
+            timeouts: MlxTimeouts::default(),
         }
     }
 }

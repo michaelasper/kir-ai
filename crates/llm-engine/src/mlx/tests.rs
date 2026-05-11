@@ -52,6 +52,7 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -128,6 +129,7 @@ async fn mlx_backend_metrics_record_http_errors() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -170,6 +172,7 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
         MlxBackendOptions {
             endpoint: Url::parse("http://127.0.0.1:1/v1").expect("url"),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -221,6 +224,7 @@ async fn mlx_backend_metrics_count_http_status_even_when_error_body_fails() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -262,6 +266,7 @@ async fn mlx_backend_metrics_record_dropped_streams() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -307,6 +312,7 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -352,6 +358,7 @@ async fn mlx_backend_metrics_record_in_flight_cancellations() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -404,6 +411,7 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -462,6 +470,7 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -515,6 +524,7 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::DeepSeek),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -572,6 +582,7 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -616,6 +627,7 @@ async fn mlx_backend_routes_llama_rendered_prompt_fallback_to_completion_endpoin
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -655,6 +667,7 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -704,6 +717,7 @@ async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -739,6 +753,7 @@ async fn mlx_backend_strips_split_control_stop_tokens_from_stream() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -784,6 +799,7 @@ async fn mlx_backend_strips_gemma_control_stop_tokens_from_completion_text() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -819,6 +835,7 @@ async fn mlx_backend_strips_llama_control_stop_tokens_from_completion_text() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -967,6 +984,7 @@ async fn mlx_backend_streams_completion_chunks() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1016,6 +1034,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1075,6 +1094,7 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1121,6 +1141,7 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1158,6 +1179,7 @@ async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::DeepSeek),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1195,6 +1217,7 @@ async fn mlx_backend_preserves_structured_llama_tool_call_response() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1302,6 +1325,7 @@ async fn mlx_backend_accepts_gemma_requested_family() {
         MlxBackendOptions {
             endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
             family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1343,6 +1367,7 @@ async fn mlx_backend_accepts_llama_requested_family() {
         MlxBackendOptions {
             endpoint: Url::parse("http://127.0.0.1:18080/v1").expect("url"),
             family: Some(ModelFamily::Llama),
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1382,6 +1407,7 @@ async fn mlx_backend_rejects_sse_without_done_marker() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
         },
     )
     .await

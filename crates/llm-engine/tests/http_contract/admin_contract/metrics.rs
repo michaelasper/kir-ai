@@ -392,6 +392,7 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
         llm_engine::MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(llm_models::ModelFamily::Qwen),
+            ..llm_engine::MlxBackendOptions::default()
         },
     )
     .await
@@ -464,6 +465,7 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
         llm_engine::MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(llm_models::ModelFamily::Qwen),
+            ..llm_engine::MlxBackendOptions::default()
         },
     )
     .await
