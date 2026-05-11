@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1](https://github.com/michaelasper/kir-ai/compare/v1.2.0...v1.2.1) (2026-05-11)
+
+### Bug Fixes
+
+* **safety:** replace production panics with Result-based error handling ([fd9b616](https://github.com/michaelasper/kir-ai/commit/fd9b6169ea58f38779fbf1aad12559094d50f73e)), closes [#137](https://github.com/michaelasper/kir-ai/issues/137)
+
 ## [1.2.0](https://github.com/michaelasper/kir-ai/compare/v1.1.0...v1.2.0) (2026-05-11)
 
 ### Features
