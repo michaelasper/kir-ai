@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminMetricsResponse",
+  "type": "object",
+  "properties": {
+    "requests_total": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "successful_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "failed_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "streamed_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "stream_client_disconnected_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "stream_stalled_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "active_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "queued_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "queued_prefill_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "queued_decode_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "prefill_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "decode_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "active_prefill_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "active_decode_requests": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "scheduler_admitted_prefill_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_admitted_decode_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_completed_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_cancelled_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_failed_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_queued_cancelled_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "scheduler_queue_timeouts": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "cancelled_requests": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "no_progress_failures": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_pull_operations": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_pull_successes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_pull_failures": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_pull_bytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_store_snapshots": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "model_store_bytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "model_store_quarantined_snapshots": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "model_store_quarantined_bytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "artifact_verification_failures": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "process_rss_bytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "tokens_per_second": {
+      "type": "number",
+      "format": "double"
+    },
+    "mlx": true,
+    "native_text_metal": true,
+    "native_text_prefix_cache": true,
+    "native_qwen_metal": true,
+    "native_qwen_prefix_cache": true,
+    "request_latency_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "time_to_first_token_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "tokens": {
+      "$ref": "#/$defs/TokenSummary"
+    }
+  },
+  "required": [
+    "requests_total",
+    "successful_requests",
+    "failed_requests",
+    "streamed_requests",
+    "stream_client_disconnected_requests",
+    "stream_stalled_requests",
+    "active_requests",
+    "queued_requests",
+    "queued_prefill_requests",
+    "queued_decode_requests",
+    "prefill_requests",
+    "decode_requests",
+    "active_prefill_requests",
+    "active_decode_requests",
+    "scheduler_admitted_prefill_requests",
+    "scheduler_admitted_decode_requests",
+    "scheduler_completed_requests",
+    "scheduler_cancelled_requests",
+    "scheduler_failed_requests",
+    "scheduler_queued_cancelled_requests",
+    "scheduler_queue_timeouts",
+    "cancelled_requests",
+    "no_progress_failures",
+    "model_pull_operations",
+    "model_pull_successes",
+    "model_pull_failures",
+    "model_pull_bytes",
+    "model_store_snapshots",
+    "model_store_bytes",
+    "model_store_quarantined_snapshots",
+    "model_store_quarantined_bytes",
+    "artifact_verification_failures",
+    "process_rss_bytes",
+    "tokens_per_second",
+    "mlx",
+    "native_text_metal",
+    "native_text_prefix_cache",
+    "native_qwen_metal",
+    "native_qwen_prefix_cache",
+    "request_latency_ms",
+    "time_to_first_token_ms",
+    "tokens"
+  ],
+  "$defs": {
+    "LatencySummary": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "min": {
+          "type": "number",
+          "format": "double"
+        },
+        "max": {
+          "type": "number",
+          "format": "double"
+        },
+        "avg": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "count",
+        "min",
+        "max",
+        "avg"
+      ]
+    },
+    "TokenSummary": {
+      "type": "object",
+      "properties": {
+        "prompt_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "completion_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens"
+      ]
+    }
+  }
+}

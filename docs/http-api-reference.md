@@ -30,6 +30,9 @@ Admin routes are local operational controls. Use `--admin-token` or
 `LLM_ENGINE_ADMIN_TOKEN` to require `Authorization: Bearer <token>`; non-loopback
 serving refuses to start unless an admin token is configured.
 
+> [!TIP]
+> JSON schemas for all admin API responses are available in [`docs/schemas/admin/`](./schemas/admin/).
+
 ## `GET /health`
 
 Response:
@@ -91,7 +94,16 @@ Response for a loaded alias:
   "object": "admin.model",
   "status": "ready",
   "runtime": "rust",
-  "python_runtime": false
+  "python_runtime": false,
+  "backend": "native_qwen",
+  "family": "qwen",
+  "loader": "safetensors",
+  "quantization": "bf16",
+  "repo_id": "michaelasper/qwen36-safetensors-bf16",
+  "resolved_commit": "...",
+  "profile": "qwen36-safetensors-bf16",
+  "snapshot_path": "/Users/...",
+  "manifest_digest": "sha256:..."
 }
 ```
 
@@ -99,25 +111,75 @@ Unknown aliases return `404` with `model_not_found`.
 
 ## `GET /admin/metrics`
 
-Returns aggregate request, stream, failure, prompt-token, completion-token, and
-total-token counters for the running process. The response also includes current
-`active_requests`, `queued_requests`, `prefill_requests`, `decode_requests`,
-cumulative admin-triggered `cancelled_requests`, cumulative
-`stream_client_disconnected_requests`, cumulative `stream_stalled_requests`,
-cumulative `no_progress_failures`, aggregate `request_latency_ms`, streamed
-`time_to_first_token_ms`, and cumulative `tokens_per_second`. Model-store pull counters are reported separately as
-`model_pull_operations`, `model_pull_successes`, `model_pull_failures`, and
-`model_pull_bytes`. The response also reports manifest-backed model-store usage
-as `model_store_snapshots` and `model_store_bytes`, quarantined usage as
-`model_store_quarantined_snapshots` and `model_store_quarantined_bytes`, plus
-cumulative `artifact_verification_failures` from failed admin snapshot
-verification. Process resident memory is exposed as `process_rss_bytes` when
-supported by the host OS. Native text cache telemetry is exposed under
-`native_text_prefix_cache` and `native_text_metal`, including per-family
-prefix-cache hit and residency counters, BF16 weight-cache hit and residency
-counters, KV-cache residency, linear-attention-cache residency, and eviction
-counters. `native_qwen_prefix_cache` and `native_qwen_metal` remain as
-compatibility aliases for existing consumers.
+Returns aggregate request, stream, failure, token, and scheduler counters for the running process.
+
+### Response Fields
+
+- `requests_total`: Total number of requests received.
+- `successful_requests`: Number of requests that completed successfully.
+- `failed_requests`: Number of requests that failed.
+- `streamed_requests`: Number of streaming requests.
+- `stream_client_disconnected_requests`: Number of streaming requests where the client disconnected early.
+- `stream_stalled_requests`: Number of streaming requests that stalled.
+- `active_requests`: Current number of active requests.
+- `queued_requests`: Total number of requests in the scheduler queue.
+- `queued_prefill_requests`: Number of prefill requests in the queue.
+- `queued_decode_requests`: Number of decode requests in the queue.
+- `prefill_requests`: Total cumulative prefill operations.
+- `decode_requests`: Total cumulative decode operations.
+- `active_prefill_requests`: Current number of requests in prefill phase.
+- `active_decode_requests`: Current number of requests in decode phase.
+- `scheduler_admitted_prefill_requests`: Requests admitted to prefill by the scheduler.
+- `scheduler_admitted_decode_requests`: Requests admitted to decode by the scheduler.
+- `scheduler_completed_requests`: Requests completed by the scheduler.
+- `scheduler_cancelled_requests`: Requests cancelled while active in the scheduler.
+- `scheduler_failed_requests`: Requests that failed while active in the scheduler.
+- `scheduler_queued_cancelled_requests`: Requests cancelled while still in the queue.
+- `scheduler_queue_timeouts`: Requests that timed out while in the queue.
+- `cancelled_requests`: Cumulative admin-triggered cancellations.
+- `no_progress_failures`: Cumulative failures due to lack of progress.
+- `model_pull_operations`: Total model pull attempts.
+- `model_pull_successes`: Successful model pulls.
+- `model_pull_failures`: Failed model pulls.
+- `model_pull_bytes`: Total bytes downloaded during model pulls.
+- `model_store_snapshots`: Number of model snapshots in the local store.
+- `model_store_bytes`: Total disk usage of the model store.
+- `model_store_quarantined_snapshots`: Number of quarantined snapshots.
+- `model_store_quarantined_bytes`: Disk usage of quarantined snapshots.
+- `artifact_verification_failures`: Cumulative checksum/signature verification failures.
+- `process_rss_bytes`: Resident set size of the process (when supported).
+- `tokens_per_second`: Current aggregate throughput.
+- `mlx`: Platform-specific MLX backend metrics (e.g., memory usage).
+- `native_text_metal`: Metal kernel performance counters (e.g., matvec_ns).
+- `native_text_prefix_cache`: Prefix cache hit/miss/eviction metrics.
+- `request_latency_ms`: Summary (count, min, max, avg) of total request duration.
+- `time_to_first_token_ms`: Summary of latency to the first token generated.
+- `tokens`: Token usage summary (`prompt_tokens`, `completion_tokens`, `total_tokens`).
+
+### Sample Response
+
+```json
+{
+  "requests_total": 150,
+  "successful_requests": 145,
+  "failed_requests": 5,
+  "streamed_requests": 120,
+  "active_requests": 2,
+  "queued_requests": 0,
+  "tokens_per_second": 45.5,
+  "request_latency_ms": {
+    "count": 145,
+    "min": 10.5,
+    "max": 500.2,
+    "avg": 120.4
+  },
+  "tokens": {
+    "prompt_tokens": 5000,
+    "completion_tokens": 15000,
+    "total_tokens": 20000
+  }
+}
+```
 
 ## `POST /admin/models/{alias}/verify`
 

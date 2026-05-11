@@ -23,6 +23,7 @@ llm-telemetry = { path = "../llm-telemetry" }
 llm-tokenizer = { path = "../llm-tokenizer" }
 libc.workspace = true
 reqwest.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

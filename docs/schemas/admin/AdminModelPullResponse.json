@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminModelPullResponse",
+  "type": "object",
+  "properties": {
+    "snapshot_path": {
+      "type": "string"
+    },
+    "manifest_digest": {
+      "type": "string"
+    },
+    "repo_id": {
+      "type": "string"
+    },
+    "resolved_commit": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "files": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "snapshot_path",
+    "manifest_digest",
+    "repo_id",
+    "resolved_commit",
+    "profile",
+    "files"
+  ]
+}

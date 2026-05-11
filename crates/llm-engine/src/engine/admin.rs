@@ -22,6 +22,7 @@ use llm_api::{ApiError, ModelCard, ModelList};
 use llm_backend::{BackendError, BackendModelMetadata};
 use llm_hub::{DownloadPlan, HubRepoId, ModelProfile, ModelStore};
 use llm_runtime::RuntimeError;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -29,15 +30,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) async fn health() -> impl IntoResponse {
-    Json(json!({
-        "status": "ok",
-        "runtime": "rust",
-        "python_runtime": false
-    }))
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct HealthResponse {
+    status: String,
+    runtime: String,
+    python_runtime: bool,
 }
 
-pub(super) async fn models(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn health() -> impl IntoResponse {
+    Json(HealthResponse {
+        status: "ok".to_owned(),
+        runtime: "rust".to_owned(),
+        python_runtime: false,
+    })
+}
+
+pub(super) async fn models(State(state): State<AppState>) -> Json<ModelList> {
     Json(ModelList {
         object: "list".to_owned(),
         data: vec![ModelCard {
@@ -48,23 +56,29 @@ pub(super) async fn models(State(state): State<AppState>) -> impl IntoResponse {
     })
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct AdminModelListResponse {
+    object: String,
+    data: Vec<AdminModelStatusResponse>,
+}
+
 pub(super) async fn admin_models(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, EngineError> {
+) -> Result<Json<AdminModelListResponse>, EngineError> {
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
-    Ok(Json(json!({
-        "object": "list",
-        "data": [admin_model_status(&metadata)],
-    })))
+    Ok(Json(AdminModelListResponse {
+        object: "list".to_owned(),
+        data: vec![admin_model_status(&metadata)],
+    }))
 }
 
 pub(super) async fn admin_model(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, EngineError> {
+) -> Result<Json<AdminModelStatusResponse>, EngineError> {
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
@@ -77,11 +91,22 @@ pub(super) async fn admin_model(
     Ok(Json(admin_model_status(&metadata)))
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct AdminModelVerifyResponse {
+    status: String,
+    snapshot_path: String,
+    repo_id: String,
+    resolved_commit: String,
+    manifest_digest: String,
+    verified_files: u64,
+    verified_bytes: u64,
+}
+
 pub(super) async fn admin_model_verify(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, EngineError> {
+) -> Result<Json<AdminModelVerifyResponse>, EngineError> {
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
@@ -106,15 +131,19 @@ pub(super) async fn admin_model_verify(
     ModelStore::mark_snapshot_used(&snapshot_path)
         .await
         .map_err(EngineError::ModelStore)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "snapshot_path": verification.snapshot.path,
-        "repo_id": verification.snapshot.manifest.repo_id,
-        "resolved_commit": verification.snapshot.manifest.resolved_commit,
-        "manifest_digest": verification.snapshot.manifest_digest,
-        "verified_files": verification.verified_files,
-        "verified_bytes": verification.verified_bytes,
-    })))
+    Ok(Json(AdminModelVerifyResponse {
+        status: "ok".to_owned(),
+        snapshot_path: verification
+            .snapshot
+            .path
+            .to_string_lossy()
+            .into_owned(),
+        repo_id: verification.snapshot.manifest.repo_id.clone(),
+        resolved_commit: verification.snapshot.manifest.resolved_commit.clone(),
+        manifest_digest: verification.snapshot.manifest_digest.clone(),
+        verified_files: verification.verified_files,
+        verified_bytes: verification.verified_bytes,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,12 +170,22 @@ pub(super) async fn admin_model_plan(
     Ok(Json(plan))
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct AdminModelPullResponse {
+    snapshot_path: String,
+    manifest_digest: String,
+    repo_id: String,
+    resolved_commit: String,
+    profile: String,
+    files: usize,
+}
+
 pub(super) async fn admin_model_pull(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
     request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
-) -> Result<Json<Value>, EngineError> {
+) -> Result<Json<AdminModelPullResponse>, EngineError> {
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
     let request = super::parse_json_request(request, &state)?;
@@ -177,14 +216,14 @@ pub(super) async fn admin_model_pull(
         .map_err(EngineError::ModelStore)?;
     record_model_pull_success_metrics(&state, model_pull_bytes);
     invalidate_model_store_usage_cache(&state);
-    Ok(Json(json!({
-        "snapshot_path": snapshot.path,
-        "manifest_digest": snapshot.manifest_digest,
-        "repo_id": snapshot.manifest.repo_id,
-        "resolved_commit": snapshot.manifest.resolved_commit,
-        "profile": snapshot.manifest.profile,
-        "files": snapshot.manifest.files.len(),
-    })))
+    Ok(Json(AdminModelPullResponse {
+        snapshot_path: snapshot.path.to_string_lossy().into_owned(),
+        manifest_digest: snapshot.manifest_digest,
+        repo_id: snapshot.manifest.repo_id,
+        resolved_commit: snapshot.manifest.resolved_commit,
+        profile: snapshot.manifest.profile,
+        files: snapshot.manifest.files.len(),
+    }))
 }
 
 async fn build_admin_download_plan(
@@ -229,29 +268,50 @@ fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError>
     .into())
 }
 
-fn admin_model_status(metadata: &BackendModelMetadata) -> Value {
-    json!({
-        "id": metadata.id,
-        "object": "admin.model",
-        "status": "ready",
-        "runtime": "rust",
-        "python_runtime": false,
-        "backend": metadata.backend,
-        "family": metadata.family,
-        "loader": metadata.loader,
-        "quantization": metadata.quantization,
-        "repo_id": metadata.repo_id,
-        "resolved_commit": metadata.resolved_commit,
-        "profile": metadata.profile,
-        "snapshot_path": metadata.snapshot_path,
-        "manifest_digest": metadata.manifest_digest,
-    })
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct AdminModelStatusResponse {
+    id: String,
+    object: String,
+    status: String,
+    runtime: String,
+    python_runtime: bool,
+    backend: String,
+    family: Option<String>,
+    loader: Option<String>,
+    quantization: Option<String>,
+    repo_id: Option<String>,
+    resolved_commit: Option<String>,
+    profile: Option<String>,
+    snapshot_path: Option<String>,
+    manifest_digest: Option<String>,
+}
+
+fn admin_model_status(metadata: &BackendModelMetadata) -> AdminModelStatusResponse {
+    AdminModelStatusResponse {
+        id: metadata.id.clone(),
+        object: "admin.model".to_owned(),
+        status: "ready".to_owned(),
+        runtime: "rust".to_owned(),
+        python_runtime: false,
+        backend: metadata.backend.clone(),
+        family: metadata.family.clone(),
+        loader: metadata.loader.clone(),
+        quantization: metadata.quantization.clone(),
+        repo_id: metadata.repo_id.clone(),
+        resolved_commit: metadata.resolved_commit.clone(),
+        profile: metadata.profile.clone(),
+        snapshot_path: metadata
+            .snapshot_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        manifest_digest: metadata.manifest_digest.clone(),
+    }
 }
 
 pub(super) async fn admin_metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, EngineError> {
+) -> Result<Json<AdminMetricsResponse>, EngineError> {
     require_admin(&state, &headers)?;
     let metrics = *state.metrics.lock_or_recover("metrics");
     let tokens = metrics.tokens();
@@ -313,13 +373,11 @@ pub(super) async fn admin_metrics(
             total_tokens: tokens.total_tokens(),
         },
     };
-    Ok(Json(
-        serde_json::to_value(response).expect("admin metrics response serializes"),
-    ))
+    Ok(Json(response))
 }
 
-#[derive(Debug, Serialize)]
-struct AdminMetricsResponse {
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct AdminMetricsResponse {
     requests_total: u64,
     successful_requests: u64,
     failed_requests: u64,
@@ -364,8 +422,8 @@ struct AdminMetricsResponse {
     tokens: TokenSummary,
 }
 
-#[derive(Debug, Serialize)]
-struct LatencySummary {
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct LatencySummary {
     count: u64,
     min: f64,
     max: f64,
@@ -383,8 +441,8 @@ impl LatencySummary {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct TokenSummary {
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct TokenSummary {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,

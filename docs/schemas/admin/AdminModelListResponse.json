@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminModelListResponse",
+  "type": "object",
+  "properties": {
+    "object": {
+      "type": "string"
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AdminModelStatusResponse"
+      }
+    }
+  },
+  "required": [
+    "object",
+    "data"
+  ],
+  "$defs": {
+    "AdminModelStatusResponse": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "object": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "python_runtime": {
+          "type": "boolean"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loader": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quantization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manifest_digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "object",
+        "status",
+        "runtime",
+        "python_runtime",
+        "backend"
+      ]
+    }
+  }
+}

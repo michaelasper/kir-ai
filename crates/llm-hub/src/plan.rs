@@ -1,7 +1,8 @@
 use crate::{HubError, HubFile, HubRepoId, ModelProfile};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactClass {
     Config,
@@ -12,7 +13,7 @@ pub enum ArtifactClass {
     Other,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PlannedFile {
     pub path: String,
     pub size: u64,
@@ -22,7 +23,7 @@ pub struct PlannedFile {
     pub cached: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadPlan {
     pub repo_id: HubRepoId,
     pub requested_revision: String,

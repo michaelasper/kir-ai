@@ -1,4 +1,6 @@
 mod admin;
+#[cfg(test)]
+mod admin_tests;
 mod config;
 mod error;
 mod inference;
