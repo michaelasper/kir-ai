@@ -21,8 +21,8 @@ mod qwen_dense;
 mod qwen_lm_head;
 // #[path = "safetensors_loader/qwen_moe.rs"]
 // mod qwen_moe;
-// #[path = "safetensors_loader/shard_store.rs"]
-// mod shard_store;
+#[path = "safetensors_loader/shard_store.rs"]
+mod shard_store;
 
 #[derive(Default)]
 struct RecordingMatvecBackend {

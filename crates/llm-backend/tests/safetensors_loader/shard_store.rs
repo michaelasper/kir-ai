@@ -218,3 +218,103 @@ fn shard_store_rejects_symlink_that_escapes_snapshot_root() {
     std::fs::remove_dir_all(root).ok();
     std::fs::remove_file(outside).ok();
 }
+
+#[test]
+fn f32_range_cached_returns_same_values_as_uncached() {
+    let root = temp_snapshot_dir("f32-cache-values");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 12 },
+            "weight_map": { "embed.weight": "model-00001-of-00001.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("model-00001-of-00001.safetensors"),
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_f32_count(), 0);
+
+    let uncached = store
+        .bf16_tensor_f32_range("embed.weight", 0, 3)
+        .expect("uncached read");
+    let cached = store
+        .bf16_tensor_f32_range_cached("embed.weight", 0, 3)
+        .expect("cached read");
+    assert_eq!(uncached, cached);
+    assert_eq!(store.cached_f32_count(), 1);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn f32_range_cached_populates_on_first_access_and_hits_on_second() {
+    let root = temp_snapshot_dir("f32-cache-hits");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 12 },
+            "weight_map": { "embed.weight": "model-00001-of-00001.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("model-00001-of-00001.safetensors"),
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_f32_count(), 0);
+
+    let first = store
+        .bf16_tensor_f32_range_cached("embed.weight", 0, 6)
+        .expect("first cached read");
+    assert_eq!(store.cached_f32_count(), 1);
+
+    let second = store
+        .bf16_tensor_f32_range_cached("embed.weight", 0, 6)
+        .expect("second cached read");
+    assert_eq!(store.cached_f32_count(), 1);
+    assert_eq!(first, second);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn f32_cached_reads_full_tensor_and_caches_it() {
+    let root = temp_snapshot_dir("f32-cache-full");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 4 },
+            "weight_map": { "norm.weight": "model-00001-of-00001.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("model-00001-of-00001.safetensors"),
+        tiny_safetensors_bf16("norm.weight", &[2], &[3.0, 4.0]),
+    )
+    .expect("shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_f32_count(), 0);
+
+    let first = store.bf16_tensor_f32_cached("norm.weight").expect("first full cached");
+    assert_eq!(store.cached_f32_count(), 1);
+
+    let second = store.bf16_tensor_f32_cached("norm.weight").expect("second full cached");
+    assert_eq!(store.cached_f32_count(), 1);
+    assert_eq!(first, second);
+    assert_eq!(first, vec![3.0, 4.0]);
+    std::fs::remove_dir_all(root).ok();
+}
