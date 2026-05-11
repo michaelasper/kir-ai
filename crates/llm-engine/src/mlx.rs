@@ -9,6 +9,8 @@ use std::{path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+pub use client::MlxTimeouts;
+
 mod client;
 mod metadata;
 mod metrics;
@@ -16,7 +18,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::{is_loopback_endpoint, build_http_client, MlxTimeouts, format_duration};
+use client::{is_loopback_endpoint, build_http_client, format_duration};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};

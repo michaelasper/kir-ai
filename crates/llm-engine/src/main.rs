@@ -10,8 +10,9 @@ use llm_backend::{
 };
 use llm_engine::{
     DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
-    NativeTextLoadOptions, NativeTextRuntimeOptions, SnapshotBackendLoader, SnapshotBackendOptions,
-    build_router_with_backend_and_options, open_snapshot_backend, parse_snapshot_model_family,
+    MlxTimeouts, NativeTextLoadOptions, NativeTextRuntimeOptions, SnapshotBackendLoader,
+    SnapshotBackendOptions, build_router_with_backend_and_options, open_snapshot_backend,
+    parse_snapshot_model_family,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
@@ -111,6 +112,26 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     MlxBackendOptions::default().endpoint
                 };
+                let mlx_timeouts = {
+                    let defaults = MlxTimeouts::default();
+                    let connect = flag_value(&serve_args, "--mlx-connect-timeout")
+                        .map(str::parse::<u64>)
+                        .transpose()?
+                        .map(std::time::Duration::from_secs);
+                    let request = flag_value(&serve_args, "--mlx-request-timeout")
+                        .map(str::parse::<u64>)
+                        .transpose()?
+                        .map(std::time::Duration::from_secs);
+                    let read = flag_value(&serve_args, "--mlx-read-timeout")
+                        .map(str::parse::<u64>)
+                        .transpose()?
+                        .map(std::time::Duration::from_secs);
+                    MlxTimeouts {
+                        connect: connect.unwrap_or(defaults.connect),
+                        request: request.unwrap_or(defaults.request),
+                        read: read.unwrap_or(defaults.read),
+                    }
+                };
                 let loader = flag_value(&serve_args, "--loader")
                     .or_else(|| flag_value(&serve_args, "--backend"))
                     .map(SnapshotBackendLoader::parse)
@@ -142,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
                         ),
                         mlx: MlxBackendOptions {
                             endpoint: mlx_endpoint,
+                            timeouts: mlx_timeouts,
                             ..MlxBackendOptions::default()
                         },
                         max_new_tokens,
@@ -220,6 +242,9 @@ Options:
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
   --mlx-endpoint <url>                       Loopback mlx_lm.server or mlx_vlm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
+  --mlx-connect-timeout <secs>               MLX sidecar connect timeout [default: 5]
+  --mlx-request-timeout <secs>               MLX sidecar overall request timeout [default: 300]
+  --mlx-read-timeout <secs>                  MLX sidecar per-chunk read timeout [default: 60]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup

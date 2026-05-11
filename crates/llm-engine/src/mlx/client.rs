@@ -18,7 +18,7 @@ pub(super) fn is_loopback_endpoint(endpoint: &Url) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct MlxTimeouts {
+pub struct MlxTimeouts {
     pub connect: Duration,
     pub request: Duration,
     pub read: Duration,
