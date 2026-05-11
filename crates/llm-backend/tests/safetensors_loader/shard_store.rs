@@ -309,10 +309,14 @@ fn f32_cached_reads_full_tensor_and_caches_it() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     assert_eq!(store.cached_f32_count(), 0);
 
-    let first = store.bf16_tensor_f32_cached("norm.weight").expect("first full cached");
+    let first = store
+        .bf16_tensor_f32_cached("norm.weight")
+        .expect("first full cached");
     assert_eq!(store.cached_f32_count(), 1);
 
-    let second = store.bf16_tensor_f32_cached("norm.weight").expect("second full cached");
+    let second = store
+        .bf16_tensor_f32_cached("norm.weight")
+        .expect("second full cached");
     assert_eq!(store.cached_f32_count(), 1);
     assert_eq!(first, second);
     assert_eq!(first, vec![3.0, 4.0]);

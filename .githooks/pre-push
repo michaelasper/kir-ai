@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo ">> pre-push: running CI checks locally..."
+
+echo ">> checking formatting..."
+cargo fmt --all -- --check
+echo "   formatting OK"
+
+echo ">> running clippy..."
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+echo "   clippy OK"
+
+echo ">> running tests..."
+cargo test --workspace --all-features
+echo "   tests OK"
+
+echo ">> all CI checks passed"

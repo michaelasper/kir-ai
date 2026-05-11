@@ -366,7 +366,7 @@ pub(super) fn response_request_id(state: &AppState, headers: &HeaderMap) -> Stri
 }
 
 pub(super) fn insert_request_id_header(response: &mut Response, request_id: &str) {
-    let value = HeaderValue::from_str(request_id)
-        .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
+    let value =
+        HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("unknown"));
     response.headers_mut().insert("x-request-id", value);
 }

@@ -17,12 +17,12 @@ mod state;
 mod streaming;
 
 pub use config::{EngineConfigError, EngineOptions};
+#[cfg(feature = "test-utils")]
+pub use router::build_router_with_protocol_test_backend;
 pub use router::{
     build_router, build_router_with_backend, build_router_with_backend_and_concurrency,
     build_router_with_backend_and_options,
 };
-#[cfg(feature = "test-utils")]
-pub use router::build_router_with_protocol_test_backend;
 
 use error::{EngineError, runtime_error_metadata};
 use request::parse_json_request;

@@ -268,8 +268,11 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
     let total_per_token = layer_count
         .checked_mul(per_layer_size)
         .ok_or_else(|| TensorLoadError::integrity("Gemma PLE shape overflow"))?;
-    let projection_norm_weight =
-        store.bf16_tensor_f32_range_cached(&spec.per_layer_projection_norm_weight(), 0, per_layer_size)?;
+    let projection_norm_weight = store.bf16_tensor_f32_range_cached(
+        &spec.per_layer_projection_norm_weight(),
+        0,
+        per_layer_size,
+    )?;
     let projected = matvec
         .bf16_matvecs_row_major_f32(
             store,
@@ -768,7 +771,8 @@ pub async fn gemma_final_norm_for_spec(
             hidden_states.len()
         )));
     }
-    let norm_weight = store.bf16_tensor_f32_range_cached(&spec.final_norm_weight(), 0, hidden_size)?;
+    let norm_weight =
+        store.bf16_tensor_f32_range_cached(&spec.final_norm_weight(), 0, hidden_size)?;
     rms_norm_f32_in_place(hidden_states, &norm_weight, spec.rms_norm_eps, output)
         .map_err(|err| TensorLoadError::integrity(format!("Gemma final RMSNorm failed: {err}")))
 }
@@ -847,8 +851,11 @@ fn gemma_norm_sequence_after_projection(
     hidden_states: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
-    let norm_weight =
-        store.bf16_tensor_f32_range_cached(&spec.layer_tensor(layer_idx, suffix), 0, hidden_size)?;
+    let norm_weight = store.bf16_tensor_f32_range_cached(
+        &spec.layer_tensor(layer_idx, suffix),
+        0,
+        hidden_size,
+    )?;
     hidden_states
         .iter()
         .map(|hidden| {

@@ -62,11 +62,9 @@ pub async fn open_snapshot_backend(
         SnapshotBackendLoader::Mlx => {
             let mut mlx_options = options.mlx;
             mlx_options.family = effective_family;
-            Ok(Box::new(MlxBackend::open_with_options(
-                model_id,
-                snapshot_path,
-                mlx_options,
-            ).await?))
+            Ok(Box::new(
+                MlxBackend::open_with_options(model_id, snapshot_path, mlx_options).await?,
+            ))
         }
         SnapshotBackendLoader::NativeMetal => {
             let mut native_options = options.native_text;

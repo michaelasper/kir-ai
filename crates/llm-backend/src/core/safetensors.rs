@@ -59,8 +59,7 @@ impl SafeTensorArchive {
                 "tensor `{name}` byte length is not divisible by 4"
             )));
         }
-        data
-            .chunks_exact(4)
+        data.chunks_exact(4)
             .map(|chunk| {
                 chunk
                     .try_into()
@@ -609,8 +608,7 @@ impl SafeTensorShardStore {
                 return Ok((**cached).clone());
             }
         }
-        let values =
-            self.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+        let values = self.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
         // Intentionally re-acquire the lock after the expensive bf16→f32 conversion.
         // A concurrent miss for the same key may do redundant work, but `or_insert_with`
         // ensures only one Arc is stored. After the first access, all subsequent reads
@@ -624,10 +622,7 @@ impl SafeTensorShardStore {
         Ok(values)
     }
 
-    pub fn bf16_tensor_f32_cached(
-        &self,
-        tensor: &str,
-    ) -> Result<Vec<f32>, TensorLoadError> {
+    pub fn bf16_tensor_f32_cached(&self, tensor: &str) -> Result<Vec<f32>, TensorLoadError> {
         let metadata = self.tensor_metadata(tensor)?;
         let element_count = metadata.shape.iter().try_fold(1_usize, |acc, dim| {
             acc.checked_mul(*dim)
@@ -637,10 +632,7 @@ impl SafeTensorShardStore {
     }
 
     pub fn cached_f32_count(&self) -> usize {
-        self.f32_cache
-            .lock()
-            .map(|cache| cache.len())
-            .unwrap_or(0)
+        self.f32_cache.lock().map(|cache| cache.len()).unwrap_or(0)
     }
 
     pub fn cached_f32_bytes(&self) -> u64 {

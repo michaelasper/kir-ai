@@ -133,11 +133,7 @@ pub(super) async fn admin_model_verify(
         .map_err(EngineError::ModelStore)?;
     Ok(Json(AdminModelVerifyResponse {
         status: "ok".to_owned(),
-        snapshot_path: verification
-            .snapshot
-            .path
-            .to_string_lossy()
-            .into_owned(),
+        snapshot_path: verification.snapshot.path.to_string_lossy().into_owned(),
         repo_id: verification.snapshot.manifest.repo_id.clone(),
         resolved_commit: verification.snapshot.manifest.resolved_commit.clone(),
         manifest_digest: verification.snapshot.manifest_digest.clone(),

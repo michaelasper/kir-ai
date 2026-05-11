@@ -477,7 +477,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 .transpose()?
                 .unwrap_or(8);
             let config_json =
-                tokio::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json")).await?;
+                tokio::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json"))
+                    .await?;
             let spec = QwenModelSpec::from_config_json(&config_json)?;
             let store = SafeTensorShardStore::open(snapshot_path)?;
             let lm_head_top_k = flag_value(&args, "--lm-head-top-k")
@@ -571,9 +572,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 None
             };
             let layer0_attention_output = if run_layer0_attention {
-                let projections = projections
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("--layer0-projections must be enabled for --layer0-attention"))?;
+                let projections = projections.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("--layer0-projections must be enabled for --layer0-attention")
+                })?;
                 Some(qwen_layer0_linear_attention_first_token(&store, &spec, projections).await?)
             } else {
                 None
@@ -590,9 +591,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let mut post_attention_norm = None;
             let mut router_probe = None;
             let layer0_router = if run_layer0_router {
-                let attention_output = layer0_attention_output
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("--layer0-attention must be enabled for --layer0-router"))?;
+                let attention_output = layer0_attention_output.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("--layer0-attention must be enabled for --layer0-router")
+                })?;
                 let residual = probe
                     .embedding
                     .iter()
@@ -636,12 +637,12 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 None
             };
             let layer0_moe = if args.iter().any(|arg| arg == "--layer0-moe") {
-                let post_attention = post_attention_norm
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?;
-                let router = router_probe
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?;
+                let post_attention = post_attention_norm.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe")
+                })?;
+                let router = router_probe.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe")
+                })?;
                 let mut moe_output = vec![0.0; spec.hidden_size as usize];
                 let mut scratch = InferenceScratchpad::default();
                 qwen_layer_moe_forward_with_matvec_in_place(
@@ -657,7 +658,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 .await?;
                 let final_hidden = attention_residual
                     .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("--layer0-router must be enabled for --layer0-moe")
+                    })?
                     .iter()
                     .zip(&moe_output)
                     .map(|(residual, moe)| residual + moe)

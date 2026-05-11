@@ -1,3 +1,5 @@
+#[cfg(feature = "test-utils")]
+use super::protocol::protocol_test_backend;
 use super::{
     admin::{
         ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_model, admin_model_plan,
@@ -10,8 +12,6 @@ use super::{
     scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions},
     state::AppState,
 };
-#[cfg(feature = "test-utils")]
-use super::protocol::protocol_test_backend;
 use axum::{
     Router,
     body::Body,

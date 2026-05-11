@@ -149,9 +149,7 @@ fn rejects_nan_temperature() {
         ..ChatCompletionRequest::default()
     };
 
-    let err = request
-        .validate()
-        .expect_err("NaN temperature is invalid");
+    let err = request.validate().expect_err("NaN temperature is invalid");
     assert_eq!(err.code(), "invalid_request");
 }
 
@@ -164,9 +162,7 @@ fn rejects_inf_temperature() {
         ..ChatCompletionRequest::default()
     };
 
-    let err = request
-        .validate()
-        .expect_err("inf temperature is invalid");
+    let err = request.validate().expect_err("inf temperature is invalid");
     assert_eq!(err.code(), "invalid_request");
 }
 
@@ -381,9 +377,7 @@ fn completion_rejects_nan_temperature() {
         ..CompletionRequest::default()
     };
 
-    let err = request
-        .validate()
-        .expect_err("NaN temperature is invalid");
+    let err = request.validate().expect_err("NaN temperature is invalid");
     assert_eq!(err.code(), "invalid_request");
 }
 

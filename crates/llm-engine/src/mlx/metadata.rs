@@ -21,7 +21,7 @@ pub(super) async fn mlx_metadata(
             validate_mlx_serving_family(family)?;
             metadata.loader = Some("mlx".to_owned());
             metadata.family = Some(family.canonical_slug().to_owned());
-            return Ok(metadata);
+            Ok(metadata)
         }
         Some(manifest_bytes) => {
             let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;

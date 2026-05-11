@@ -7,10 +7,22 @@ use std::fs;
 fn generate_admin_api_schemas() {
     let schemas = [
         ("HealthResponse", schema_for!(HealthResponse)),
-        ("AdminModelListResponse", schema_for!(AdminModelListResponse)),
-        ("AdminModelStatusResponse", schema_for!(AdminModelStatusResponse)),
-        ("AdminModelVerifyResponse", schema_for!(AdminModelVerifyResponse)),
-        ("AdminModelPullResponse", schema_for!(AdminModelPullResponse)),
+        (
+            "AdminModelListResponse",
+            schema_for!(AdminModelListResponse),
+        ),
+        (
+            "AdminModelStatusResponse",
+            schema_for!(AdminModelStatusResponse),
+        ),
+        (
+            "AdminModelVerifyResponse",
+            schema_for!(AdminModelVerifyResponse),
+        ),
+        (
+            "AdminModelPullResponse",
+            schema_for!(AdminModelPullResponse),
+        ),
         ("AdminMetricsResponse", schema_for!(AdminMetricsResponse)),
         ("ApiError", schema_for!(ApiError)),
     ];
