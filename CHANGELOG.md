@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0](https://github.com/michaelasper/kir-ai/compare/v1.2.5...v1.3.0) (2026-05-11)
+
+### Features
+
+* **engine:** add shared async file I/O helpers for tokio-safe reads ([47c286c](https://github.com/michaelasper/kir-ai/commit/47c286cfd23090a91f8c7f095ffa451b3ec409f2))
+* **engine:** convert inspect-qwen-input CLI path to tokio::fs ([5954f42](https://github.com/michaelasper/kir-ai/commit/5954f42d6f11a3c0ef884113f36733d16bbcf5f2)), closes [#136](https://github.com/michaelasper/kir-ai/issues/136)
+
+### Performance Improvements
+
+* **backend:** add f32 tensor cache to SafeTensorShardStore ([22aadd9](https://github.com/michaelasper/kir-ai/commit/22aadd94f1073c4310cc2d374b2edf24e9b7c93b)), closes [#147](https://github.com/michaelasper/kir-ai/issues/147)
+
 ## [1.2.5](https://github.com/michaelasper/kir-ai/compare/v1.2.4...v1.2.5) (2026-05-11)
 
 ### Bug Fixes
