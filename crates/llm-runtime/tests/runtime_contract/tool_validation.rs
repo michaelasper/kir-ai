@@ -282,6 +282,58 @@ async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
 }
 
 #[tokio::test]
+async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "gemma",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![
+                ChatMessage::system("You are a helpful assistant."),
+                ChatMessage::user("lookup rust"),
+                ChatMessage::assistant_tool_call(
+                    "call_1",
+                    "lookup",
+                    json!({"query": "rust"}),
+                ),
+                ChatMessage::tool("call_1", "Rust is a systems programming language."),
+                ChatMessage::user("tell me more"),
+            ],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            max_tokens: Some(16),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("Gemma chat with tool messages succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    let chat_context = observed
+        .chat_context
+        .expect("structured chat context must be present even when tool messages exist");
+    assert_eq!(
+        chat_context.messages.len(),
+        3,
+        "should have system, first user, and second user messages (tool messages filtered)"
+    );
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
+    assert_eq!(
+        chat_context.messages[0].content, "You are a helpful assistant."
+    );
+    assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
+    assert_eq!(chat_context.messages[1].content, "lookup rust");
+    assert_eq!(chat_context.messages[2].role, BackendChatRole::User);
+    assert_eq!(chat_context.messages[2].content, "tell me more");
+}
+
+#[tokio::test]
 async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
     let content = Runtime::new(ReplayBackend {
         output: BackendOutput {
