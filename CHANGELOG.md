@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5](https://github.com/michaelasper/kir-ai/compare/v1.2.4...v1.2.5) (2026-05-11)
+
+### Bug Fixes
+
+* **qwen:** correct query/key handling in linear and full attention decode steps ([a5a1d27](https://github.com/michaelasper/kir-ai/commit/a5a1d273abaec7a584f1f58c5f501fdab3396ce9)), closes [#173](https://github.com/michaelasper/kir-ai/issues/173) [#176](https://github.com/michaelasper/kir-ai/issues/176)
+
 ## [1.2.4](https://github.com/michaelasper/kir-ai/compare/v1.2.3...v1.2.4) (2026-05-11)
 
 ### Bug Fixes
