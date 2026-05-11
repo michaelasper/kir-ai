@@ -157,8 +157,8 @@ skip_gate() {
 
 run_ci_gates() {
   run_gate "protocol_api_contracts" true cargo test -p llm-api --test openai_contract
-  run_gate "runtime_agentic_contracts" true cargo test -p llm-runtime --test runtime_contract
-  run_gate "engine_http_contracts" true cargo test -p llm-engine --test http_contract
+  run_gate "runtime_agentic_contracts" true cargo test -p llm-runtime --test runtime_contract --all-features
+  run_gate "engine_http_contracts" true cargo test -p llm-engine --test http_contract --all-features
   run_gate "engine_model_cli_contracts" true cargo test -p llm-engine --test model_cli
   run_gate "model_acquisition_contracts" true cargo test -p llm-hub
   run_gate "model_family_backend_profiles" true cargo test -p llm-models --test family_adapter
