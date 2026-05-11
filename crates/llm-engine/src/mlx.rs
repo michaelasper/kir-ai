@@ -164,8 +164,14 @@ impl MlxBackend {
                 );
                 loop {
                     let item = tokio::select! {
-                        item = bytes.next() => Ok(item),
+                        biased;
                         _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                        result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                            result.map_err(|_| BackendError::Other(format!(
+                                "MLX stream stalled for {} without data",
+                                format_duration(self.timeouts.read)
+                            )))
+                        }
                     };
                     let item = match item {
                         Ok(item) => item,
@@ -248,6 +254,8 @@ impl MlxBackend {
 fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
     if matches!(err, BackendError::Cancelled) {
         MlxBackendFailureKind::Cancelled
+    } else if err.to_string().contains("stalled") {
+        MlxBackendFailureKind::Stall
     } else {
         MlxBackendFailureKind::Transport
     }
