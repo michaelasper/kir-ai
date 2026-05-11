@@ -6,6 +6,7 @@ mod native_qwen;
 mod native_text;
 mod snapshot_backend;
 mod sync_ext;
+mod fs_util;
 
 pub const DEFAULT_MODEL_ID: &str = "local-qwen36";
 
