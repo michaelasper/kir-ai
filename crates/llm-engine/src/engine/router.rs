@@ -6,11 +6,12 @@ use super::{
     config::{EngineConfigError, EngineOptions, default_model_home, parse_hub_client},
     inference::{chat_completions, completions},
     lifecycle,
-    protocol::protocol_test_backend,
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions},
     state::AppState,
 };
+#[cfg(feature = "test-utils")]
+use super::protocol::protocol_test_backend;
 use axum::{
     Router,
     body::Body,
@@ -36,7 +37,12 @@ pub fn build_router() -> Result<Router, EngineConfigError> {
     Err(EngineConfigError::missing_backend())
 }
 
+#[cfg(feature = "test-utils")]
 pub fn build_router_with_protocol_test_backend() -> Router {
+    tracing::warn!(
+        "protocol test backend initialized — do not use in production; \
+         the test-utils feature should never be enabled in release builds"
+    );
     build_router_with_backend(Box::new(protocol_test_backend()))
 }
 

@@ -14,9 +14,9 @@ This repo uses a local Rust codebase.
 ## Testing
 
 ```bash
-cargo test                  # run unit tests
-cargo test --all-targets     # run all test targets
-cargo clippy                # lint
+cargo test --all-features         # run unit tests (includes test-utils)
+cargo test --all-targets --all-features  # run all test targets
+cargo clippy --all-features       # lint
 ```
 
 ## Using `kt`

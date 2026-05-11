@@ -1,5 +1,6 @@
 mod core;
 
+#[cfg(feature = "test-utils")]
 pub mod protocol_test {
     pub use super::core::ProtocolTestBackend;
 }

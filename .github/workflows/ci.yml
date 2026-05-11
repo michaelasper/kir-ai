@@ -81,7 +81,7 @@ jobs:
             macos-cargo-test-
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
 
       - name: Verify API schemas are up-to-date
         run: |

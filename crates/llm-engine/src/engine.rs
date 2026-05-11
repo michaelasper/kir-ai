@@ -6,6 +6,8 @@ mod error;
 mod inference;
 mod lifecycle;
 mod metrics;
+#[cfg(feature = "test-utils")]
+// Security: gated behind non-default feature to prevent production exposure (GH#139).
 mod protocol;
 mod request;
 mod requests;
@@ -17,8 +19,10 @@ mod streaming;
 pub use config::{EngineConfigError, EngineOptions};
 pub use router::{
     build_router, build_router_with_backend, build_router_with_backend_and_concurrency,
-    build_router_with_backend_and_options, build_router_with_protocol_test_backend,
+    build_router_with_backend_and_options,
 };
+#[cfg(feature = "test-utils")]
+pub use router::build_router_with_protocol_test_backend;
 
 use error::{EngineError, runtime_error_metadata};
 use request::parse_json_request;

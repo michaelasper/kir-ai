@@ -160,17 +160,27 @@ async fn main() -> anyhow::Result<()> {
                 }
                 build_router_with_backend_and_options(backend, options)?
             } else if has_flag(&serve_args, "--protocol-test-backend") {
-                build_router_with_backend_and_options(
-                    Box::new(
-                        llm_backend::ProtocolTestBackend::new(
-                            DEFAULT_MODEL_ID,
-                            "hello from rust native backend",
-                        )
-                        .with_required_tool_protocol()
-                        .with_json_object_protocol(),
-                    ),
-                    options,
-                )?
+                #[cfg(feature = "test-utils")]
+                {
+                    build_router_with_backend_and_options(
+                        Box::new(
+                            llm_backend::ProtocolTestBackend::new(
+                                DEFAULT_MODEL_ID,
+                                "hello from rust native backend",
+                            )
+                            .with_required_tool_protocol()
+                            .with_json_object_protocol(),
+                        ),
+                        options,
+                    )?
+                }
+                #[cfg(not(feature = "test-utils"))]
+                {
+                    anyhow::bail!(
+                        "--protocol-test-backend requires the test-utils feature; \
+                         this binary was built without it"
+                    );
+                }
             } else {
                 anyhow::bail!(
                     "llm-engine serve requires --snapshot <path> for inference serving; use --protocol-test-backend only for protocol tests"
