@@ -107,9 +107,9 @@ impl NativeGemmaBackend {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let metadata = native_gemma_metadata(&model_id, snapshot_path)?;
-        reject_native_gemma_quantized_snapshot(snapshot_path)?;
-        let config_json = std::fs::read_to_string(snapshot_path.join("config.json"))?;
+        let metadata = native_gemma_metadata(&model_id, snapshot_path).await?;
+        reject_native_gemma_quantized_snapshot(snapshot_path).await?;
+        let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
         let spec = GemmaModelSpec::from_config_json(&config_json)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
         store.index().validate_gemma4_text_weights(&spec)?;
@@ -407,7 +407,7 @@ impl Drop for NativeGemmaDecodeSession {
     }
 }
 
-fn native_gemma_metadata(
+async fn native_gemma_metadata(
     model_id: &str,
     snapshot_path: &Path,
 ) -> anyhow::Result<BackendModelMetadata> {
@@ -416,10 +416,8 @@ fn native_gemma_metadata(
         BackendModelMetadata::new(model_id.to_owned(), "native-gemma").with_family("gemma");
     metadata.loader = Some("native-metal".to_owned());
     metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
-    let manifest_bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(metadata),
-        Err(err) => return Err(err.into()),
+    let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
+        return Ok(metadata);
     };
     let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
     if manifest.family != "gemma" {
@@ -444,9 +442,9 @@ fn native_gemma_metadata(
     Ok(metadata)
 }
 
-fn reject_native_gemma_quantized_snapshot(snapshot_path: &Path) -> anyhow::Result<()> {
+async fn reject_native_gemma_quantized_snapshot(snapshot_path: &Path) -> anyhow::Result<()> {
     let config_path = snapshot_path.join("config.json");
-    let Ok(config_json) = std::fs::read_to_string(&config_path) else {
+    let Some(config_json) = crate::fs_util::read_optional_string(&config_path).await? else {
         return Ok(());
     };
     let value: Value = serde_json::from_str(&config_json)?;
