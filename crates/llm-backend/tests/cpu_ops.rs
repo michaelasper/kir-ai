@@ -632,9 +632,180 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
     assert_close(cache.values(), expected_cache.values(), 1e-6);
 }
 
+#[tokio::test]
+async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
+    let dims = QwenFullAttentionDims {
+        hidden_size: 2,
+        num_attention_heads: 2,
+        num_key_value_heads: 1,
+        head_dim: 2,
+    };
+    let q_proj = vec![
+        vec![3.0, 1.0, 1.0, 5.0],
+        vec![0.5, 2.0, 4.0, 0.5],
+        vec![2.0, 0.0, 0.0, 1.0],
+    ];
+    let k_proj = vec![vec![1.0, 2.0], vec![3.0, 0.5], vec![0.0, 1.0]];
+    let v_proj = vec![vec![2.0, 1.0], vec![0.0, 4.0], vec![6.0, 8.0]];
+    let q_norm_weight = vec![1.5, 0.5];
+    let k_norm_weight = vec![2.0, 1.0];
+    let o_proj_weight = vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.5, 0.5];
+    let config = QwenFullAttentionSequenceConfig {
+        rms_norm_eps: 1e-6,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+        q_projection_gate: false,
+        one_centered_rms_norm: false,
+    };
+    let expected_parts = QwenFullAttentionSequenceParts {
+        q_proj: &q_proj,
+        k_proj: &k_proj,
+        v_proj: &v_proj,
+        q_norm_weight: &q_norm_weight,
+        k_norm_weight: &k_norm_weight,
+        o_proj_weight: &o_proj_weight,
+    };
+    let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    let expected_output = qwen_full_attention_sequence_with_cache_from_parts(
+        &dims,
+        &expected_parts,
+        config,
+        &mut expected_cache,
+    )
+    .await
+    .expect("full cached sequence with qk norm");
+    let prefill_q_proj = q_proj[..2].to_vec();
+    let prefill_k_proj = k_proj[..2].to_vec();
+    let prefill_v_proj = v_proj[..2].to_vec();
+    let prefill_parts = QwenFullAttentionSequenceParts {
+        q_proj: &prefill_q_proj,
+        k_proj: &prefill_k_proj,
+        v_proj: &prefill_v_proj,
+        q_norm_weight: &q_norm_weight,
+        k_norm_weight: &k_norm_weight,
+        o_proj_weight: &o_proj_weight,
+    };
+    let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
+    qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
+        .await
+        .expect("prefill with qk norm");
+
+    let output = qwen_full_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenFullAttentionStepParts {
+            q_proj: &q_proj[2],
+            k_proj: &k_proj[2],
+            v_proj: &v_proj[2],
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
+        },
+        config,
+        &mut cache,
+    )
+    .await
+    .expect("full attention step with qk norm");
+
+    assert_close(&output, &expected_output[2], 1e-5);
+    assert_eq!(cache.token_count(), 3);
+    assert_close(cache.keys(), expected_cache.keys(), 1e-5);
+    assert_close(cache.values(), expected_cache.values(), 1e-5);
+}
+
 fn rms_pair(values: [f32; 2], gate: f32) -> Vec<f32> {
     let rms = ((values[0] * values[0] + values[1] * values[1]) / 2.0).sqrt();
     vec![values[0] / rms * gate, values[1] / rms * gate]
+}
+
+#[tokio::test]
+async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
+    let dims = QwenLinearAttentionDims {
+        hidden_size: 2,
+        num_key_heads: 1,
+        num_value_heads: 1,
+        key_head_dim: 2,
+        value_head_dim: 2,
+        conv_kernel_size: 1,
+        rms_norm_eps: 0.0,
+    };
+    let qkv = vec![
+        vec![3.0, 1.0, 1.0, 5.0, 2.0, 4.0],
+        vec![0.5, 2.0, 4.0, 0.5, 10.0, 0.0],
+        vec![2.0, 0.0, 0.0, 1.0, 0.0, 8.0],
+    ];
+    let z = vec![vec![1.0, 1.0], vec![1.0, 1.0], vec![1.0, 1.0]];
+    let b = vec![vec![0.0], vec![0.0], vec![0.0]];
+    let a = vec![vec![0.0], vec![0.0], vec![0.0]];
+    let dt_bias = vec![0.0];
+    let a_log = vec![0.0];
+    let conv1d_weight = vec![1.0; 6];
+    let norm_weight = vec![1.0, 1.0];
+    let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
+    let expected_parts = QwenLinearAttentionSequenceParts {
+        qkv: &qkv,
+        z: &z,
+        b: &b,
+        a: &a,
+        dt_bias: &dt_bias,
+        a_log: &a_log,
+        conv1d_weight: &conv1d_weight,
+        norm_weight: &norm_weight,
+        out_proj_weight: &out_proj_weight,
+    };
+    let mut expected_cache = LinearAttentionCache::new(1, 6, 1, 2, 2).expect("cache shape");
+    let expected_output = qwen_linear_attention_sequence_with_cache_from_parts(
+        &dims,
+        &expected_parts,
+        &mut expected_cache,
+    )
+    .await
+    .expect("full cached prefill");
+    let prefill_qkv = qkv[..2].to_vec();
+    let prefill_z = z[..2].to_vec();
+    let prefill_b = b[..2].to_vec();
+    let prefill_a = a[..2].to_vec();
+    let prefill_parts = QwenLinearAttentionSequenceParts {
+        qkv: &prefill_qkv,
+        z: &prefill_z,
+        b: &prefill_b,
+        a: &prefill_a,
+        dt_bias: &dt_bias,
+        a_log: &a_log,
+        conv1d_weight: &conv1d_weight,
+        norm_weight: &norm_weight,
+        out_proj_weight: &out_proj_weight,
+    };
+    let mut cache = LinearAttentionCache::new(1, 6, 1, 2, 2).expect("cache shape");
+    qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
+        .await
+        .expect("initial cached prefill");
+
+    let output = qwen_linear_attention_step_with_cache_from_parts(
+        &dims,
+        &QwenLinearAttentionStepParts {
+            qkv: &qkv[2],
+            z: &z[2],
+            b: &b[2],
+            a: &a[2],
+            dt_bias: &dt_bias,
+            a_log: &a_log,
+            conv1d_weight: &conv1d_weight,
+            norm_weight: &norm_weight,
+            out_proj_weight: &out_proj_weight,
+        },
+        &mut cache,
+    )
+    .await
+    .expect("linear attention decode step");
+
+    assert_close(&output, &expected_output[2], 1e-5);
+    assert_eq!(cache.token_count(), 3);
+    assert_close(cache.conv_window(), expected_cache.conv_window(), 1e-5);
+    assert_close(
+        cache.recurrent_state(),
+        expected_cache.recurrent_state(),
+        1e-5,
+    );
 }
 
 fn l2_scalar(value: f32) -> f32 {

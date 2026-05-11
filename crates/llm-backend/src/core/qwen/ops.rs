@@ -8,7 +8,6 @@ use super::super::{
     SafeTensorShardStore, TensorLoadError, native_full_attention_sequence_from_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
     native_full_attention_step_with_cache_from_parts_with_matvec,
-    native_full_attention_step_with_cache_from_parts_with_matvec_in_place,
 };
 use super::matvec::{
     l2_normalize_f32_with_matvec, rms_norm_f32_with_matvec, rms_norm_f32_with_matvec_in_place,
@@ -792,8 +791,8 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_pla
         )
         .await?;
 
-    let key = &conv_output[..key_dim];
-    let _query = &conv_output[key_dim..key_dim * 2];
+    let query = &conv_output[..key_dim];
+    let key = &conv_output[key_dim..key_dim * 2];
     let value = &conv_output[key_dim * 2..];
 
     let zero_memory = vec![0.0; dims.value_head_dim];
@@ -806,7 +805,7 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_pla
         let key_start = key_head * dims.key_head_dim;
         let value_start = value_head * dims.value_head_dim;
         let query_head = l2_normalize_f32_with_matvec(
-            &key[key_start..key_start + dims.key_head_dim],
+            &query[key_start..key_start + dims.key_head_dim],
             1e-6,
             matvec,
         )
@@ -2213,32 +2212,42 @@ pub async fn qwen_layer_full_attention_step_with_cache_with_matvec(
             v_proj,
         )
         .await?;
-    let _q_norm_weight =
+    let q_norm_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
-    let _k_norm_weight =
+    let k_norm_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "k_norm.weight"))?;
     let o_proj_weight =
         store.bf16_tensor_f32(&spec.self_attn_tensor(layer_idx, "o_proj.weight"))?;
-    native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
-        dims.native(),
-        &NativeFullAttentionStepParts {
-            query: q_proj,
-            key: k_proj,
-            value: v_proj,
-            gate: None,
-            output_projection: &o_proj_weight,
-            score_scale: 1.0,
+    let config = QwenFullAttentionSequenceConfig {
+        rms_norm_eps: spec.rms_norm_eps,
+        rope_theta: spec.rope_theta,
+        partial_rotary_factor: spec.partial_rotary_factor,
+        q_projection_gate: !spec.is_qwen3_dense(),
+        one_centered_rms_norm: !spec.is_qwen3_dense(),
+    };
+    let step_output = qwen_full_attention_step_with_cache_from_parts_with_matvec(
+        &dims,
+        &QwenFullAttentionStepParts {
+            q_proj,
+            k_proj,
+            v_proj,
+            q_norm_weight: &q_norm_weight,
+            k_norm_weight: &k_norm_weight,
+            o_proj_weight: &o_proj_weight,
         },
+        config,
         cache,
         matvec,
-        output,
     )
     .await
     .map_err(|err| {
         TensorLoadError::integrity(format!(
             "Qwen layer{layer_idx} full attention failed: {err}"
         ))
-    })
+    })?;
+    let hidden_size = spec.hidden_size as usize;
+    output[..hidden_size].copy_from_slice(&step_output[..hidden_size]);
+    Ok(())
 }
 
 pub async fn qwen_layer0_linear_attention_projections(
