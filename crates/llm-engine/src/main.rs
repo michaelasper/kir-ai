@@ -477,7 +477,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 .transpose()?
                 .unwrap_or(8);
             let config_json =
-                std::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json"))?;
+                tokio::fs::read_to_string(std::path::Path::new(snapshot_path).join("config.json")).await?;
             let spec = QwenModelSpec::from_config_json(&config_json)?;
             let store = SafeTensorShardStore::open(snapshot_path)?;
             let lm_head_top_k = flag_value(&args, "--lm-head-top-k")
