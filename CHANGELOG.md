@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0](https://github.com/michaelasper/kir-ai/compare/v1.3.2...v1.4.0) (2026-05-11)
+
+### Features
+
+* **mlx:** add --mlx-{connect,request,read}-timeout CLI flags ([f4dc107](https://github.com/michaelasper/kir-ai/commit/f4dc1075e95621922a8ea92bf8e4da8a73bc7b66))
+* **mlx:** add MlxTimeouts type and build_http_client helper ([65f7a50](https://github.com/michaelasper/kir-ai/commit/65f7a50c0b0fafaa744c0c95631734192ae821db))
+* **mlx:** add per-chunk read timeout to stream_completion ([b07c42b](https://github.com/michaelasper/kir-ai/commit/b07c42b961898a198c6b2a4d46a2bbd12ee183a5))
+* **mlx:** add Stall failure metric kind ([f8c2b9e](https://github.com/michaelasper/kir-ai/commit/f8c2b9eb148f80cb5fe89d5c370c1f4d77eb523a))
+* **mlx:** wire MlxTimeouts into MlxBackendOptions and client construction ([46f286f](https://github.com/michaelasper/kir-ai/commit/46f286f8a97434ee004ae3b2af61542fca8facf4))
+
+### Bug Fixes
+
+* **mlx:** remove overall request timeout, use sentinel prefix for stall classification ([f616804](https://github.com/michaelasper/kir-ai/commit/f616804392add9430827a53f83c994862ed4c8be))
+
 ## [1.3.2](https://github.com/michaelasper/kir-ai/compare/v1.3.1...v1.3.2) (2026-05-11)
 
 ### Bug Fixes
