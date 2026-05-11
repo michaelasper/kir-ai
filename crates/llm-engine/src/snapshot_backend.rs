@@ -66,7 +66,7 @@ pub async fn open_snapshot_backend(
                 model_id,
                 snapshot_path,
                 mlx_options,
-            )?))
+            ).await?))
         }
         SnapshotBackendLoader::NativeMetal => {
             let mut native_options = options.native_text;

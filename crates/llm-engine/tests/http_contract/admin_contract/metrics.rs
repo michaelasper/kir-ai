@@ -394,6 +394,7 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
             family: Some(llm_models::ModelFamily::Qwen),
         },
     )
+    .await
     .expect("MLX backend opens");
     let app = build_router_with_backend(Box::new(backend));
 
@@ -465,6 +466,7 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
             family: Some(llm_models::ModelFamily::Qwen),
         },
     )
+    .await
     .expect("MLX backend opens");
     let app = build_router_with_backend(Box::new(backend));
 

@@ -53,7 +53,8 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -128,7 +129,8 @@ async fn mlx_backend_metrics_record_http_errors() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -170,6 +172,7 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
             family: Some(ModelFamily::Qwen),
         },
     )
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -219,7 +222,8 @@ async fn mlx_backend_metrics_count_http_status_even_when_error_body_fails() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -259,7 +263,8 @@ async fn mlx_backend_metrics_record_dropped_streams() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -303,7 +308,8 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -347,7 +353,8 @@ async fn mlx_backend_metrics_record_in_flight_cancellations() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
@@ -398,7 +405,8 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -455,7 +463,8 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -507,7 +516,8 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::DeepSeek),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -563,7 +573,8 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -606,7 +617,8 @@ async fn mlx_backend_routes_llama_rendered_prompt_fallback_to_completion_endpoin
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
         },
-    )
+)
+    .await
     .expect("backend opens");
     let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nlookup rust<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{\"name\":\"lookup\",\"parameters\":{\"query\":\"rust\"}}<|eot_id|><|start_header_id|>ipython<|end_header_id|>\n\n{\"answer\":\"systems\"}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
 
@@ -644,7 +656,8 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -692,7 +705,8 @@ async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -726,7 +740,8 @@ async fn mlx_backend_strips_split_control_stop_tokens_from_stream() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let chunks = backend
@@ -770,7 +785,8 @@ async fn mlx_backend_strips_gemma_control_stop_tokens_from_completion_text() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -804,7 +820,8 @@ async fn mlx_backend_strips_llama_control_stop_tokens_from_completion_text() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -951,7 +968,8 @@ async fn mlx_backend_streams_completion_chunks() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let mut stream = backend.generate_stream(BackendRequest {
@@ -999,7 +1017,8 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -1057,7 +1076,8 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let chunks = backend
@@ -1102,7 +1122,8 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Gemma),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -1138,7 +1159,8 @@ async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::DeepSeek),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -1174,7 +1196,8 @@ async fn mlx_backend_preserves_structured_llama_tool_call_response() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Llama),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let output = backend
@@ -1208,7 +1231,8 @@ async fn mlx_backend_rejects_model_mismatch_before_http_request() {
             family: Some(ModelFamily::Qwen),
             ..MlxBackendOptions::default()
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let err = backend
@@ -1229,8 +1253,8 @@ async fn mlx_backend_rejects_model_mismatch_before_http_request() {
     assert!(matches!(err, BackendError::ModelNotFound { .. }));
 }
 
-#[test]
-fn mlx_backend_rejects_non_loopback_endpoint() {
+#[tokio::test]
+async fn mlx_backend_rejects_non_loopback_endpoint() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
 
     let err = MlxBackend::open_with_options(
@@ -1241,13 +1265,14 @@ fn mlx_backend_rejects_non_loopback_endpoint() {
             ..MlxBackendOptions::default()
         },
     )
+    .await
     .expect_err("remote MLX endpoint is rejected");
 
     assert!(err.to_string().contains("not loopback"));
 }
 
-#[test]
-fn mlx_backend_rejects_manifestless_snapshot_without_family() {
+#[tokio::test]
+async fn mlx_backend_rejects_manifestless_snapshot_without_family() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
 
     let err = MlxBackend::open_with_options(
@@ -1258,6 +1283,7 @@ fn mlx_backend_rejects_manifestless_snapshot_without_family() {
             ..MlxBackendOptions::default()
         },
     )
+    .await
     .expect_err("raw MLX family is required");
 
     assert!(
@@ -1266,8 +1292,8 @@ fn mlx_backend_rejects_manifestless_snapshot_without_family() {
     );
 }
 
-#[test]
-fn mlx_backend_accepts_gemma_requested_family() {
+#[tokio::test]
+async fn mlx_backend_accepts_gemma_requested_family() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
 
     let backend = MlxBackend::open_with_options(
@@ -1278,14 +1304,15 @@ fn mlx_backend_accepts_gemma_requested_family() {
             family: Some(ModelFamily::Gemma),
         },
     )
+    .await
     .expect("Gemma MLX backend opens");
 
     assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
     assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
 }
 
-#[test]
-fn mlx_backend_rejects_non_mlx_manifest_loader() {
+#[tokio::test]
+async fn mlx_backend_rejects_non_mlx_manifest_loader() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
     write_mlx_manifest(snapshot.path(), "native-metal", "qwen");
 
@@ -1297,6 +1324,7 @@ fn mlx_backend_rejects_non_mlx_manifest_loader() {
             ..MlxBackendOptions::default()
         },
     )
+    .await
     .expect_err("MLX backend rejects native manifest loader");
 
     assert!(
@@ -1305,8 +1333,8 @@ fn mlx_backend_rejects_non_mlx_manifest_loader() {
     );
 }
 
-#[test]
-fn mlx_backend_accepts_llama_requested_family() {
+#[tokio::test]
+async fn mlx_backend_accepts_llama_requested_family() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
 
     let backend = MlxBackend::open_with_options(
@@ -1317,14 +1345,15 @@ fn mlx_backend_accepts_llama_requested_family() {
             family: Some(ModelFamily::Llama),
         },
     )
+    .await
     .expect("Llama MLX backend opens");
 
     assert_eq!(backend.model_metadata().family.as_deref(), Some("llama"));
     assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
 }
 
-#[test]
-fn mlx_backend_rejects_unknown_manifest_family() {
+#[tokio::test]
+async fn mlx_backend_rejects_unknown_manifest_family() {
     let snapshot = tempfile::tempdir().expect("snapshot tempdir");
     write_mlx_manifest(snapshot.path(), "mlx", "glm");
 
@@ -1336,6 +1365,7 @@ fn mlx_backend_rejects_unknown_manifest_family() {
             ..MlxBackendOptions::default()
         },
     )
+    .await
     .expect_err("unknown manifest family is rejected");
 
     assert!(err.to_string().contains("unsupported model family `glm`"));
@@ -1353,7 +1383,8 @@ async fn mlx_backend_rejects_sse_without_done_marker() {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
         },
-    )
+)
+    .await
     .expect("backend opens");
 
     let err = backend

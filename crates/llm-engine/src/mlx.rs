@@ -42,14 +42,14 @@ pub struct MlxBackend {
 }
 
 impl MlxBackend {
-    pub fn open(
+    pub async fn open(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
-        Self::open_with_options(model_id, snapshot_path, MlxBackendOptions::default())
+        Self::open_with_options(model_id, snapshot_path, MlxBackendOptions::default()).await
     }
 
-    pub fn open_with_options(
+    pub async fn open_with_options(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
         options: MlxBackendOptions,
@@ -63,7 +63,7 @@ impl MlxBackend {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let metadata = mlx_metadata(&model_id, snapshot_path, options.family)?;
+        let metadata = mlx_metadata(&model_id, snapshot_path, options.family).await?;
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
         Ok(Self {
             model_id: model_id.clone(),
