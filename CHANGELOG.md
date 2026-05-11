@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4](https://github.com/michaelasper/kir-ai/compare/v1.2.3...v1.2.4) (2026-05-11)
+
+### Bug Fixes
+
+* **sampling:** validate temperature/top_p ranges in SamplingConfig::from_openai_controls ([20b0dbc](https://github.com/michaelasper/kir-ai/commit/20b0dbc3dd54545b1cde6635783293043108a968)), closes [#160](https://github.com/michaelasper/kir-ai/issues/160)
+
 ## [1.2.3](https://github.com/michaelasper/kir-ai/compare/v1.2.2...v1.2.3) (2026-05-11)
 
 ### Bug Fixes
