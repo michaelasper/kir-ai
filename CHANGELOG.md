@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1](https://github.com/michaelasper/kir-ai/compare/v1.3.0...v1.3.1) (2026-05-11)
+
+### Bug Fixes
+
+* **runtime:** eliminate duplicate content emission in streaming_chat_stream ([d907aa0](https://github.com/michaelasper/kir-ai/commit/d907aa0f1b6327053014261544c39719f8b99c91)), closes [#150](https://github.com/michaelasper/kir-ai/issues/150)
+
 ## [1.3.0](https://github.com/michaelasper/kir-ai/compare/v1.2.5...v1.3.0) (2026-05-11)
 
 ### Features
