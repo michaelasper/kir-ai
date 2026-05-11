@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3](https://github.com/michaelasper/kir-ai/compare/v1.2.2...v1.2.3) (2026-05-11)
+
+### Bug Fixes
+
+* **security:** gate ProtocolTestBackend behind non-default test-utils feature ([96a938b](https://github.com/michaelasper/kir-ai/commit/96a938bcae5e5c12a0d3f9558a35c216098bd6d7)), closes [#139](https://github.com/michaelasper/kir-ai/issues/139)
+
 ## [1.2.2](https://github.com/michaelasper/kir-ai/compare/v1.2.1...v1.2.2) (2026-05-11)
 
 ### Bug Fixes
