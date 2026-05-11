@@ -1445,7 +1445,6 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
             family: Some(ModelFamily::Qwen),
             timeouts: MlxTimeouts {
                 connect: Duration::from_secs(5),
-                request: Duration::from_secs(300),
                 read: Duration::from_millis(100),
             },
         },

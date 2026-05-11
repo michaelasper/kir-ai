@@ -18,7 +18,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::{is_loopback_endpoint, build_http_client, format_duration};
+use client::{is_loopback_endpoint, build_http_client, format_duration, MLX_STALL_PREFIX};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};
@@ -168,11 +168,11 @@ impl MlxBackend {
                     let item = tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Err(BackendError::Cancelled),
-                        result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                            result.map_err(|_| BackendError::Other(format!(
-                                "MLX stream stalled for {} without data",
-                                format_duration(self.timeouts.read)
-                            )))
+            result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                result.map_err(|_| BackendError::Other(format!(
+                    "{MLX_STALL_PREFIX} stream stalled for {} without data",
+                    format_duration(self.timeouts.read)
+                )))
                         }
                     };
                     let item = match item {
@@ -256,8 +256,12 @@ impl MlxBackend {
 fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
     if matches!(err, BackendError::Cancelled) {
         MlxBackendFailureKind::Cancelled
-    } else if err.to_string().contains("stalled") {
-        MlxBackendFailureKind::Stall
+    } else if let BackendError::Other(msg) = err {
+        if msg.starts_with(MLX_STALL_PREFIX) {
+            MlxBackendFailureKind::Stall
+        } else {
+            MlxBackendFailureKind::Transport
+        }
     } else {
         MlxBackendFailureKind::Transport
     }

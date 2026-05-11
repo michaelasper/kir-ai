@@ -118,17 +118,12 @@ async fn main() -> anyhow::Result<()> {
                         .map(str::parse::<u64>)
                         .transpose()?
                         .map(std::time::Duration::from_secs);
-                    let request = flag_value(&serve_args, "--mlx-request-timeout")
-                        .map(str::parse::<u64>)
-                        .transpose()?
-                        .map(std::time::Duration::from_secs);
                     let read = flag_value(&serve_args, "--mlx-read-timeout")
                         .map(str::parse::<u64>)
                         .transpose()?
                         .map(std::time::Duration::from_secs);
                     MlxTimeouts {
                         connect: connect.unwrap_or(defaults.connect),
-                        request: request.unwrap_or(defaults.request),
                         read: read.unwrap_or(defaults.read),
                     }
                 };
@@ -243,7 +238,6 @@ Options:
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
   --mlx-endpoint <url>                       Loopback mlx_lm.server or mlx_vlm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
   --mlx-connect-timeout <secs>               MLX sidecar connect timeout [default: 5]
-  --mlx-request-timeout <secs>               MLX sidecar overall request timeout [default: 300]
   --mlx-read-timeout <secs>                  MLX sidecar per-chunk read timeout [default: 60]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup

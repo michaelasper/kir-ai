@@ -20,7 +20,6 @@ pub(super) fn is_loopback_endpoint(endpoint: &Url) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MlxTimeouts {
     pub connect: Duration,
-    pub request: Duration,
     pub read: Duration,
 }
 
@@ -28,7 +27,6 @@ impl Default for MlxTimeouts {
     fn default() -> Self {
         Self {
             connect: Duration::from_secs(5),
-            request: Duration::from_secs(300),
             read: Duration::from_secs(60),
         }
     }
@@ -37,10 +35,11 @@ impl Default for MlxTimeouts {
 pub(super) fn build_http_client(timeouts: MlxTimeouts) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(timeouts.connect)
-        .timeout(timeouts.request)
         .build()
         .expect("MLX HTTP client builds")
 }
+
+pub const MLX_STALL_PREFIX: &str = "MLX_STALL:";
 
 pub(super) fn format_duration(duration: Duration) -> String {
     if duration.as_secs() > 0 {
