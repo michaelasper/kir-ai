@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2](https://github.com/michaelasper/kir-ai/compare/v1.2.1...v1.2.2) (2026-05-11)
+
+### Bug Fixes
+
+* **runtime:** use family-aware tool markers in no-progress classifier ([204f981](https://github.com/michaelasper/kir-ai/commit/204f9814bb7a3a76ebd3587b20c073dabdfc0687)), closes [#154](https://github.com/michaelasper/kir-ai/issues/154)
+
 ## [1.2.1](https://github.com/michaelasper/kir-ai/compare/v1.2.0...v1.2.1) (2026-05-11)
 
 ### Bug Fixes
