@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0](https://github.com/michaelasper/kir-ai/compare/v1.1.0...v1.2.0) (2026-05-11)
+
+### Features
+
+* **api:** implement review suggestions for structured errors and CI schema validation ([752bb04](https://github.com/michaelasper/kir-ai/commit/752bb045bc9a78bdccabbd57ea25cb0e9e505d39))
+
 ## [1.1.0](https://github.com/michaelasper/kir-ai/compare/v1.0.1...v1.1.0) (2026-05-11)
 
 ### Features
