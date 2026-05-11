@@ -184,6 +184,11 @@ pub(crate) async fn verify_file_sha256(
     expected_sha256: Option<&str>,
 ) -> Result<(), HubError> {
     let Some(expected_sha256) = expected_sha256 else {
+        tracing::warn!(
+            "SHA-256 verification skipped for `{}` — no expected hash available. \
+             File accepted without integrity verification.",
+            path.display()
+        );
         return Ok(());
     };
     let mut file = tokio::fs::File::open(path).await.map_err(HubError::io)?;
