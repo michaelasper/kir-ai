@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.17](https://github.com/michaelasper/kir-ai/compare/v1.4.16...v1.4.17) (2026-05-12)
+
+### Bug Fixes
+
+* **hub:** serialize model pull promotion ([2ed7cd9](https://github.com/michaelasper/kir-ai/commit/2ed7cd93b44a9d869c952d0fc9e01f4989d448f9)), closes [#181](https://github.com/michaelasper/kir-ai/issues/181)
+
 ## [1.4.16](https://github.com/michaelasper/kir-ai/compare/v1.4.15...v1.4.16) (2026-05-12)
 
 ### Bug Fixes
