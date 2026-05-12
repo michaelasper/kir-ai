@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.31](https://github.com/michaelasper/kir-ai/compare/v1.4.30...v1.4.31) (2026-05-12)
+
+### Bug Fixes
+
+* **native-text:** reuse worker runtime and shallow driver clones ([2f9ba01](https://github.com/michaelasper/kir-ai/commit/2f9ba01f1ebaa11df439dca59b20226f6061f354)), closes [#230](https://github.com/michaelasper/kir-ai/issues/230)
+
 ## [1.4.30](https://github.com/michaelasper/kir-ai/compare/v1.4.29...v1.4.30) (2026-05-12)
 
 ### Bug Fixes
