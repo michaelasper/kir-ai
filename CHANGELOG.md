@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.10](https://github.com/michaelasper/kir-ai/compare/v1.4.9...v1.4.10) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** require protocol backend acknowledgement ([4391650](https://github.com/michaelasper/kir-ai/commit/43916507c7d10d5cfcc7ee693748dc619f7afe63)), closes [#152](https://github.com/michaelasper/kir-ai/issues/152)
+
 ## [1.4.9](https://github.com/michaelasper/kir-ai/compare/v1.4.8...v1.4.9) (2026-05-12)
 
 ### Bug Fixes
