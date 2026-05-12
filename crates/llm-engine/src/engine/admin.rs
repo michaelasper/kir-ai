@@ -29,6 +29,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+use subtle::ConstantTimeEq;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct HealthResponse {
@@ -597,7 +598,10 @@ pub(super) async fn admin_cancel_request(
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), EngineError> {
     let Some(token) = &state.admin_token else {
-        return Ok(());
+        if state.allow_unauthenticated_admin {
+            return Ok(());
+        }
+        return Err(EngineError::UnauthorizedAdmin);
     };
     let Some(header_value) = headers
         .get(header::AUTHORIZATION)
@@ -605,7 +609,10 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), EngineErro
     else {
         return Err(EngineError::UnauthorizedAdmin);
     };
-    if header_value == format!("Bearer {token}") {
+    let Some(header_token) = header_value.strip_prefix("Bearer ") else {
+        return Err(EngineError::UnauthorizedAdmin);
+    };
+    if header_token.as_bytes().ct_eq(token.as_bytes()).into() {
         return Ok(());
     }
     Err(EngineError::UnauthorizedAdmin)

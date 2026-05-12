@@ -43,7 +43,11 @@ pub fn build_router_with_protocol_test_backend() -> Router {
         "protocol test backend initialized — do not use in production; \
          the test-utils feature should never be enabled in release builds"
     );
-    build_router_with_backend(Box::new(protocol_test_backend()))
+    build_router_with_backend_and_options_allowing_unauthenticated_admin(
+        Box::new(protocol_test_backend()),
+        EngineOptions::default(),
+    )
+    .unwrap_or_else(|err| unreachable!("protocol test backend options are valid: {err}"))
 }
 
 pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
@@ -70,13 +74,33 @@ pub fn build_router_with_backend_and_options(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
 ) -> Result<Router, EngineConfigError> {
+    build_router_with_backend_and_options_impl(backend, options, false)
+}
+
+pub fn build_router_with_backend_and_options_allowing_unauthenticated_admin(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+) -> Result<Router, EngineConfigError> {
+    build_router_with_backend_and_options_impl(backend, options, true)
+}
+
+fn build_router_with_backend_and_options_impl(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+    allow_unauthenticated_admin: bool,
+) -> Result<Router, EngineConfigError> {
     let hub_client = options
         .hub_endpoint
         .as_deref()
         .map(|endpoint| parse_hub_client(endpoint, options.hf_token.as_deref()))
         .transpose()?
         .unwrap_or_default();
-    Ok(router_for_state(engine_state(backend, options, hub_client)))
+    Ok(router_for_state(engine_state(
+        backend,
+        options,
+        hub_client,
+        allow_unauthenticated_admin,
+    )))
 }
 
 fn router_for_state(state: AppState) -> Router {
@@ -121,6 +145,7 @@ fn engine_state(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
     hub_client: HubClient,
+    allow_unauthenticated_admin: bool,
 ) -> AppState {
     AppState {
         runtime: Arc::new(Runtime::new(backend)),
@@ -135,6 +160,7 @@ fn engine_state(
         })),
         active_requests: ActiveRequestRegistry::default(),
         admin_token: options.admin_token.map(Arc::from),
+        allow_unauthenticated_admin,
         model_home: options.model_home.unwrap_or_else(default_model_home),
         model_store_usage: Arc::new(Mutex::new(ModelStoreUsageCache::default())),
         hub_client,

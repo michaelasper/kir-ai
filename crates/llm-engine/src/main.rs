@@ -11,7 +11,8 @@ use llm_backend::{
 use llm_engine::{
     DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
     MlxTimeouts, NativeTextLoadOptions, NativeTextRuntimeOptions, SnapshotBackendLoader,
-    SnapshotBackendOptions, build_router_with_backend_and_options, open_snapshot_backend,
+    SnapshotBackendOptions, build_router_with_backend_and_options,
+    build_router_with_backend_and_options_allowing_unauthenticated_admin, open_snapshot_backend,
     parse_snapshot_model_family,
 };
 use llm_hub::{
@@ -63,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
                 );
             }
+            let allow_unauthenticated_admin = admin_token.is_none() && addr.ip().is_loopback();
             let options = EngineOptions {
                 concurrency_limit: max_concurrent_requests,
                 admin_token,
@@ -175,21 +177,31 @@ async fn main() -> anyhow::Result<()> {
                 {
                     tracing::warn!(error = %err, alias = model_id, snapshot = %snapshot_path.display(), "failed to record model alias");
                 }
-                build_router_with_backend_and_options(backend, options)?
+                if allow_unauthenticated_admin {
+                    build_router_with_backend_and_options_allowing_unauthenticated_admin(
+                        backend, options,
+                    )?
+                } else {
+                    build_router_with_backend_and_options(backend, options)?
+                }
             } else if has_flag(&serve_args, "--protocol-test-backend") {
                 #[cfg(feature = "test-utils")]
                 {
-                    build_router_with_backend_and_options(
-                        Box::new(
-                            llm_backend::ProtocolTestBackend::new(
-                                DEFAULT_MODEL_ID,
-                                "hello from rust native backend",
-                            )
-                            .with_required_tool_protocol()
-                            .with_json_object_protocol(),
-                        ),
-                        options,
-                    )?
+                    let backend = Box::new(
+                        llm_backend::ProtocolTestBackend::new(
+                            DEFAULT_MODEL_ID,
+                            "hello from rust native backend",
+                        )
+                        .with_required_tool_protocol()
+                        .with_json_object_protocol(),
+                    );
+                    if allow_unauthenticated_admin {
+                        build_router_with_backend_and_options_allowing_unauthenticated_admin(
+                            backend, options,
+                        )?
+                    } else {
+                        build_router_with_backend_and_options(backend, options)?
+                    }
                 }
                 #[cfg(not(feature = "test-utils"))]
                 {

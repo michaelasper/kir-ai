@@ -43,7 +43,7 @@ async fn concurrent_generation_queues_once_then_returns_model_overloaded_when_fu
     let order = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend(Box::new(FairnessBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(FairnessBackend {
         order: order.clone(),
         entered: entered.clone(),
         release: release.clone(),
@@ -84,7 +84,7 @@ async fn queued_generation_can_be_cancelled_before_scheduler_admission() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(FairnessBackend {
             order: order.clone(),
             entered,
@@ -159,7 +159,7 @@ async fn queued_generation_latency_includes_scheduler_wait() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(FairnessBackend {
             order: order.clone(),
             entered,
@@ -203,7 +203,7 @@ async fn scheduler_prioritizes_decode_after_prefill_burst() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(FairnessBackend {
             order: order.clone(),
             entered: entered.clone(),

@@ -40,6 +40,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 sha2 = "0.10.9"
 schemars = { version = "1.0.0", features = ["chrono04", "derive", "uuid1"] }
+subtle = "2.6.1"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }

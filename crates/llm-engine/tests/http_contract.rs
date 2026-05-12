@@ -11,6 +11,7 @@ use llm_backend::{
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
+    build_router_with_backend_and_options_allowing_unauthenticated_admin,
     build_router_with_protocol_test_backend,
 };
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
@@ -54,6 +55,22 @@ struct FailingBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
+}
+
+fn unauthenticated_admin_options() -> EngineOptions {
+    EngineOptions::default()
+}
+
+fn build_router_with_unauthenticated_admin(backend: Box<dyn ModelBackend>) -> Router {
+    build_router_with_unauthenticated_admin_and_options(backend, unauthenticated_admin_options())
+        .expect("unauthenticated admin test router builds")
+}
+
+fn build_router_with_unauthenticated_admin_and_options(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+) -> Result<Router, llm_engine::EngineConfigError> {
+    build_router_with_backend_and_options_allowing_unauthenticated_admin(backend, options)
 }
 
 #[async_trait]

@@ -22,6 +22,7 @@ pub use router::build_router_with_protocol_test_backend;
 pub use router::{
     build_router, build_router_with_backend, build_router_with_backend_and_concurrency,
     build_router_with_backend_and_options,
+    build_router_with_backend_and_options_allowing_unauthenticated_admin,
 };
 
 use error::{EngineError, runtime_error_metadata};

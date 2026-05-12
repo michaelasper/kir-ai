@@ -63,7 +63,7 @@ async fn admin_model_endpoint_reports_ready_model() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_backend_artifact_identity() {
-    let response = build_router_with_backend(Box::new(MetadataBackend))
+    let response = build_router_with_unauthenticated_admin(Box::new(MetadataBackend))
         .oneshot(
             Request::builder()
                 .uri(format!("/admin/models/{}", llm_engine::DEFAULT_MODEL_ID))
@@ -89,7 +89,7 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_mlx_backend_identity() {
-    let response = build_router_with_backend(Box::new(MlxMetadataBackend))
+    let response = build_router_with_unauthenticated_admin(Box::new(MlxMetadataBackend))
         .oneshot(
             Request::builder()
                 .uri("/admin/models/local-qwen36-mlx")
@@ -112,7 +112,7 @@ async fn admin_model_endpoint_reports_mlx_backend_identity() {
 async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot_path = write_verified_test_snapshot(temp.path()).await;
-    let response = build_router_with_backend(Box::new(SnapshotMetadataBackend {
+    let response = build_router_with_unauthenticated_admin(Box::new(SnapshotMetadataBackend {
         snapshot_path: snapshot_path.clone(),
     }))
     .oneshot(

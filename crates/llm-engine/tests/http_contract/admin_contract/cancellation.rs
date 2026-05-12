@@ -4,7 +4,7 @@ use super::*;
 async fn admin_cancel_request_cancels_active_chat_generation() {
     let entered = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(AdminCancellableBackend {
         entered: entered.clone(),
         cancelled: cancelled.clone(),
     }));
@@ -46,7 +46,7 @@ async fn admin_cancel_request_cancels_active_chat_generation() {
 async fn admin_cancel_request_cancels_active_text_completion() {
     let entered = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(AdminCancellableBackend {
         entered: entered.clone(),
         cancelled: cancelled.clone(),
     }));
@@ -84,7 +84,7 @@ async fn admin_cancel_request_cancels_active_text_completion() {
 async fn admin_cancel_request_wins_over_late_backend_error() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend(Box::new(AdminLateErrorBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(AdminLateErrorBackend {
         entered: entered.clone(),
         release: release.clone(),
     }));
@@ -121,7 +121,7 @@ async fn admin_cancel_request_wins_over_late_backend_error() {
 #[tokio::test]
 async fn admin_cancel_request_terminates_pending_chat_stream() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let request_id = "cancel-chat-stream";
@@ -194,7 +194,7 @@ async fn admin_cancel_request_terminates_pending_chat_stream() {
 #[tokio::test]
 async fn admin_cancel_request_terminates_pending_completion_stream() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let request_id = "cancel-completion-stream";

@@ -74,7 +74,9 @@ async fn admin_metrics_report_artifact_verification_failures() {
     tokio::fs::write(snapshot_path.join("config.json"), "bad")
         .await
         .expect("corrupt config");
-    let app = build_router_with_backend(Box::new(SnapshotMetadataBackend { snapshot_path }));
+    let app = build_router_with_unauthenticated_admin(Box::new(SnapshotMetadataBackend {
+        snapshot_path,
+    }));
 
     let response = app
         .clone()
@@ -174,7 +176,7 @@ async fn admin_metrics_report_model_pull_operations() {
 async fn admin_metrics_report_model_store_usage() {
     let temp = tempfile::tempdir().expect("tempdir");
     write_verified_test_snapshot(temp.path()).await;
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(StaticBackend {
             text: "unused".to_owned(),
         }),
@@ -225,7 +227,7 @@ async fn admin_metrics_report_quarantined_model_store_usage() {
         .quarantine_snapshot(&snapshot_path, "test corruption")
         .await
         .expect("snapshot quarantined");
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(StaticBackend {
             text: "unused".to_owned(),
         }),
@@ -397,7 +399,7 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
     )
     .await
     .expect("MLX backend opens");
-    let app = build_router_with_backend(Box::new(backend));
+    let app = build_router_with_unauthenticated_admin(Box::new(backend));
 
     let before = app
         .clone()
@@ -470,7 +472,7 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     )
     .await
     .expect("MLX backend opens");
-    let app = build_router_with_backend(Box::new(backend));
+    let app = build_router_with_unauthenticated_admin(Box::new(backend));
 
     let before = app
         .clone()
@@ -656,7 +658,7 @@ async fn admin_metrics_accepts_configured_bearer_token() {
 async fn admin_metrics_report_active_and_cancelled_requests() {
     let entered = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(AdminCancellableBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(AdminCancellableBackend {
         entered: entered.clone(),
         cancelled: cancelled.clone(),
     }));
@@ -724,7 +726,7 @@ async fn admin_metrics_report_active_and_cancelled_requests() {
 
 #[tokio::test]
 async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
-    let app = build_router_with_backend(Box::new(NoProgressBackend));
+    let app = build_router_with_unauthenticated_admin(Box::new(NoProgressBackend));
     let response = app
         .clone()
         .oneshot(
@@ -769,7 +771,7 @@ async fn admin_metrics_report_no_progress_failures_and_queue_depth() {
 #[tokio::test]
 async fn admin_metrics_report_stream_prefill_phase_before_first_chunk() {
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend(Box::new(DelayedStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(DelayedStreamBackend {
         release: release.clone(),
     }));
     let response = app
@@ -937,7 +939,7 @@ fn find_subsequence(bytes: &[u8], needle: &[u8]) -> Option<usize> {
 async fn admin_metrics_report_stream_decode_phase_after_first_chunk() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(TwoStageStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(TwoStageStreamBackend {
         first: first.clone(),
         finish: finish.clone(),
     }));

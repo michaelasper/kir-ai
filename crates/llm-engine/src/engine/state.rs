@@ -23,6 +23,7 @@ pub(super) struct AppState {
     pub(super) model_scheduler: Arc<ModelScheduler>,
     pub(super) active_requests: ActiveRequestRegistry,
     pub(super) admin_token: Option<Arc<str>>,
+    pub(super) allow_unauthenticated_admin: bool,
     pub(super) model_home: PathBuf,
     pub(super) model_store_usage: Arc<Mutex<ModelStoreUsageCache>>,
     pub(super) hub_client: HubClient,

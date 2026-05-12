@@ -161,7 +161,7 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
 #[tokio::test]
 async fn chat_stream_reports_backend_stall_after_configured_timeout() {
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_backend_and_options(
+    let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(DelayedStreamBackend {
             release: release.clone(),
         }),
@@ -396,7 +396,7 @@ async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
 #[tokio::test]
 async fn dropping_chat_stream_body_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let response = app
@@ -456,7 +456,7 @@ async fn dropping_chat_stream_body_cancels_backend_stream() {
 #[tokio::test]
 async fn dropping_completion_stream_body_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let response = app
@@ -516,7 +516,7 @@ async fn dropping_completion_stream_body_cancels_backend_stream() {
 #[tokio::test]
 async fn dropping_chat_stream_before_first_token_records_client_disconnect_without_ttft() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(PendingCancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(PendingCancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let response = app
@@ -576,7 +576,7 @@ async fn dropping_chat_stream_before_first_token_records_client_disconnect_witho
 #[tokio::test]
 async fn dropping_admin_cancelled_stream_does_not_count_as_client_disconnect() {
     let cancelled = Arc::new(Notify::new());
-    let app = build_router_with_backend(Box::new(CancellableStreamBackend {
+    let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
         cancelled: cancelled.clone(),
     }));
     let request_id = "admin-cancel-then-drop";
