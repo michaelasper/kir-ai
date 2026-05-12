@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.33](https://github.com/michaelasper/kir-ai/compare/v1.4.32...v1.4.33) (2026-05-12)
+
+### Bug Fixes
+
+* **protocol:** parameterize protocol test backend family ([4fd7f39](https://github.com/michaelasper/kir-ai/commit/4fd7f391add352f0c33c41d7122b437a22cfef27)), closes [#223](https://github.com/michaelasper/kir-ai/issues/223)
+
 ## [1.4.32](https://github.com/michaelasper/kir-ai/compare/v1.4.31...v1.4.32) (2026-05-12)
 
 ### Bug Fixes
