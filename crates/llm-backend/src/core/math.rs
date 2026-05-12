@@ -207,12 +207,13 @@ pub fn silu_f32(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
-pub(crate) fn linear_attention_conv1d_silu_f32(
+pub(crate) fn linear_attention_conv1d_silu_f32_in_place(
     window: &[f32],
     weights: &[f32],
     conv_dim: usize,
     kernel_size: usize,
-) -> Result<Vec<f32>, MathError> {
+    output: &mut [f32],
+) -> Result<(), MathError> {
     if kernel_size == 0 {
         return Err(MathError::InvalidShape(
             "linear attention conv kernel size must be non-zero".to_owned(),
@@ -223,7 +224,11 @@ pub(crate) fn linear_attention_conv1d_silu_f32(
     })?;
     require_len("conv window", window.len(), expected_len)?;
     require_len("conv weight", weights.len(), expected_len)?;
-    let mut output = vec![0.0; conv_dim];
+    if output.len() < conv_dim {
+        return Err(MathError::InvalidShape(
+            "conv output buffer too small".to_owned(),
+        ));
+    }
     for channel in 0..conv_dim {
         let mut mixed = 0.0;
         for kernel_idx in 0..kernel_size {
@@ -232,34 +237,40 @@ pub(crate) fn linear_attention_conv1d_silu_f32(
         }
         output[channel] = silu_f32(mixed);
     }
-    Ok(output)
+    Ok(())
 }
 
-pub(crate) fn weighted_sum_f32(
+pub(crate) fn weighted_sum_f32_in_place(
     values: &[f32],
     weights: &[f32],
     vector_len: usize,
-) -> Result<Vec<f32>, MathError> {
+    output: &mut [f32],
+) -> Result<(), MathError> {
     let row_count = weights.len();
     let expected_len = row_count
         .checked_mul(vector_len)
         .ok_or_else(|| MathError::InvalidShape("weighted sum shape overflows usize".to_owned()))?;
     require_len("weighted sum values", values.len(), expected_len)?;
     if vector_len == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut output = vec![0.0; vector_len];
+    if output.len() < vector_len {
+        return Err(MathError::InvalidShape(
+            "weighted sum output buffer too small".to_owned(),
+        ));
+    }
+    output[..vector_len].fill(0.0);
     for (row_idx, weight) in weights.iter().enumerate() {
         let row_start = row_idx * vector_len;
         for offset in 0..vector_len {
             output[offset] += values[row_start + offset] * weight;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn linear_attention_recurrent_update_f32(
+pub(crate) fn linear_attention_recurrent_update_f32_in_place(
     state: &[f32],
     key: &[f32],
     value: &[f32],
@@ -268,7 +279,8 @@ pub(crate) fn linear_attention_recurrent_update_f32(
     decay: f32,
     key_head_dim: usize,
     value_head_dim: usize,
-) -> Result<Vec<f32>, MathError> {
+    output: &mut [f32],
+) -> Result<(), MathError> {
     if key_head_dim == 0 || value_head_dim == 0 {
         return Err(MathError::InvalidShape(
             "linear attention recurrent update dimensions must be non-zero".to_owned(),
@@ -295,7 +307,11 @@ pub(crate) fn linear_attention_recurrent_update_f32(
         memory.len(),
         value_head_dim,
     )?;
-    let mut output = vec![0.0; element_count];
+    if output.len() < element_count {
+        return Err(MathError::InvalidShape(
+            "linear attention recurrent output buffer too small".to_owned(),
+        ));
+    }
     for (key_offset, key_value) in key.iter().enumerate().take(key_head_dim) {
         let row_start = key_offset * value_head_dim;
         for value_offset in 0..value_head_dim {
@@ -304,16 +320,17 @@ pub(crate) fn linear_attention_recurrent_update_f32(
                 state[row_start + value_offset] * decay + key_value * delta;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
-pub(crate) fn select_head_rows_f32(
+pub(crate) fn select_head_rows_f32_in_place(
     values: &[f32],
     row_count: usize,
     row_len: usize,
     head_start: usize,
     head_len: usize,
-) -> Result<Vec<f32>, MathError> {
+    output: &mut [f32],
+) -> Result<(), MathError> {
     let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
         MathError::InvalidShape("head row selection shape overflows usize".to_owned())
     })?;
@@ -334,12 +351,18 @@ pub(crate) fn select_head_rows_f32(
     let output_len = row_count.checked_mul(head_len).ok_or_else(|| {
         MathError::InvalidShape("head row selection output shape overflows usize".to_owned())
     })?;
-    let mut output = Vec::with_capacity(output_len);
+    if output.len() < output_len {
+        return Err(MathError::InvalidShape(
+            "head row selection output buffer too small".to_owned(),
+        ));
+    }
     for row_idx in 0..row_count {
         let row_start = row_idx * row_len + head_start;
-        output.extend_from_slice(&values[row_start..row_start + head_len]);
+        let output_start = row_idx * head_len;
+        output[output_start..output_start + head_len]
+            .copy_from_slice(&values[row_start..row_start + head_len]);
     }
-    Ok(output)
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -412,9 +435,14 @@ pub(crate) fn sigmoid_f32(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
-pub(crate) fn softmax_f32(scores: &[f32]) -> Result<Vec<f32>, MathError> {
+pub(crate) fn softmax_f32_in_place(scores: &[f32], output: &mut [f32]) -> Result<(), MathError> {
+    if output.len() < scores.len() {
+        return Err(MathError::InvalidShape(
+            "softmax output buffer too small".to_owned(),
+        ));
+    }
     if scores.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     if scores.iter().any(|value| !value.is_finite()) {
         return Err(MathError::InvalidShape(
@@ -422,17 +450,20 @@ pub(crate) fn softmax_f32(scores: &[f32]) -> Result<Vec<f32>, MathError> {
         ));
     }
     let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let exp_scores = scores
-        .iter()
-        .map(|score| (*score - max_score).exp())
-        .collect::<Vec<_>>();
-    let sum = exp_scores.iter().sum::<f32>();
+    let mut sum = 0.0;
+    for (out, score) in output.iter_mut().zip(scores) {
+        *out = (*score - max_score).exp();
+        sum += *out;
+    }
     if sum == 0.0 || !sum.is_finite() {
         return Err(MathError::InvalidShape(
             "softmax denominator is invalid".to_owned(),
         ));
     }
-    Ok(exp_scores.into_iter().map(|value| value / sum).collect())
+    for value in &mut output[..scores.len()] {
+        *value /= sum;
+    }
+    Ok(())
 }
 
 pub(crate) fn softplus_f32(value: f32) -> f32 {

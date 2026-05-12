@@ -1,8 +1,9 @@
 use super::math::{
-    InferenceScratchpad, MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
-    linear_attention_recurrent_update_f32, matvec_row_major_f32_in_place,
-    rms_norm_f32_in_place as math_rms_norm_f32_in_place, rms_norm_one_centered_f32_in_place,
-    select_head_rows_f32, silu_f32, softmax_f32, softmax_top_k_f32, weighted_sum_f32,
+    InferenceScratchpad, MathError, TopKLogit, TopKWeight,
+    linear_attention_conv1d_silu_f32_in_place, linear_attention_recurrent_update_f32_in_place,
+    matvec_row_major_f32_in_place, rms_norm_f32_in_place as math_rms_norm_f32_in_place,
+    rms_norm_one_centered_f32_in_place, select_head_rows_f32_in_place, silu_f32,
+    softmax_f32_in_place, softmax_top_k_f32, weighted_sum_f32_in_place,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
@@ -497,12 +498,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
-        let vec = store.bf16_matvec_row_major_f32(tensor, input)?;
-        if output.len() < vec.len() {
-            return Err(TensorLoadError::integrity("output buffer too small"));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+        store.bf16_matvec_row_major_f32_in_place(tensor, input, output)
     }
 
     async fn bf16_matvec_rows_f32_in_place(
@@ -513,12 +509,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         chunk_rows: usize,
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
-        let vec = store.bf16_matvec_rows_f32(tensor, input, chunk_rows)?;
-        if output.len() < vec.len() {
-            return Err(TensorLoadError::integrity("output buffer too small"));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+        store.bf16_matvec_rows_f32_in_place(tensor, input, chunk_rows, output)
     }
 
     async fn matvec_row_major_f32_in_place(
@@ -547,12 +538,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         scores: &[f32],
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        let vec = softmax_f32(scores)?;
-        if output.len() < vec.len() {
-            return Err(MathError::InvalidShape("output too small".to_owned()));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+        softmax_f32_in_place(scores, output)
     }
 
     async fn linear_attention_conv1d_silu_f32_in_place(
@@ -563,12 +549,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         kernel_size: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        let vec = linear_attention_conv1d_silu_f32(window, weights, conv_dim, kernel_size)?;
-        if output.len() < vec.len() {
-            return Err(MathError::InvalidShape("output too small".to_owned()));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+        linear_attention_conv1d_silu_f32_in_place(window, weights, conv_dim, kernel_size, output)
     }
 
     async fn weighted_sum_f32_in_place(
@@ -578,12 +559,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         vector_len: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        let vec = weighted_sum_f32(values, weights, vector_len)?;
-        if output.len() < vec.len() {
-            return Err(MathError::InvalidShape("output too small".to_owned()));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+        weighted_sum_f32_in_place(values, weights, vector_len, output)
     }
 
     async fn linear_attention_recurrent_update_f32_in_place(
@@ -598,7 +574,7 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         value_head_dim: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        let vec = linear_attention_recurrent_update_f32(
+        linear_attention_recurrent_update_f32_in_place(
             state,
             key,
             value,
@@ -607,12 +583,8 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
             decay,
             key_head_dim,
             value_head_dim,
-        )?;
-        if output.len() < vec.len() {
-            return Err(MathError::InvalidShape("output too small".to_owned()));
-        }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
+            output,
+        )
     }
 
     async fn select_head_rows_f32_in_place(
@@ -624,11 +596,28 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         head_len: usize,
         output: &mut [f32],
     ) -> Result<(), MathError> {
-        let vec = select_head_rows_f32(values, row_count, row_len, head_start, head_len)?;
-        if output.len() < vec.len() {
-            return Err(MathError::InvalidShape("output too small".to_owned()));
+        select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cpu_in_place_methods_do_not_delegate_through_allocating_vec_wrappers() {
+        let source = include_str!("native_matvec.rs");
+        for disallowed in [
+            concat!("let vec = ", "store.bf16_matvec_row_major_f32("),
+            concat!("let vec = ", "store.bf16_matvec_rows_f32("),
+            concat!("let vec = ", "softmax_f32("),
+            concat!("let vec = ", "linear_attention_conv1d_silu_f32("),
+            concat!("let vec = ", "weighted_sum_f32("),
+            concat!("let vec = ", "linear_attention_recurrent_update_f32("),
+            concat!("let vec = ", "select_head_rows_f32("),
+        ] {
+            assert!(
+                !source.contains(disallowed),
+                "CpuNativeMatvecBackend in-place method still delegates through `{disallowed}`"
+            );
         }
-        output[..vec.len()].copy_from_slice(&vec);
-        Ok(())
     }
 }

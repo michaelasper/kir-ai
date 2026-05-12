@@ -753,6 +753,15 @@ impl SafeTensorShardStore {
         self.bf16_matvec_rows_f32(tensor, input, BF16_MATVEC_CHUNK_ROWS)
     }
 
+    pub fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        self.bf16_matvec_rows_f32_in_place(tensor, input, BF16_MATVEC_CHUNK_ROWS, output)
+    }
+
     pub fn bf16_matvec_rows_f32(
         &self,
         tensor: &str,
@@ -798,6 +807,59 @@ impl SafeTensorShardStore {
             }));
         }
         Ok(output)
+    }
+
+    pub fn bf16_matvec_rows_f32_in_place(
+        &self,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        let file = self.open_tensor_file(tensor)?;
+        let metadata = file.tensor_metadata(tensor)?;
+        if metadata.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{tensor}` matvec expects rank 2, got rank {}",
+                metadata.shape.len()
+            )));
+        }
+        let rows = metadata.shape[0];
+        let columns = metadata.shape[1];
+        if input.len() != columns {
+            return Err(TensorLoadError::integrity(format!(
+                "input length {} does not match tensor `{tensor}` columns {columns}",
+                input.len()
+            )));
+        }
+        if output.len() < rows {
+            return Err(TensorLoadError::integrity(
+                "output buffer too small for BF16 matvec",
+            ));
+        }
+        if chunk_rows == 0 {
+            return Err(TensorLoadError::integrity(
+                "chunk_rows must be greater than zero",
+            ));
+        }
+        for row_start in (0..rows).step_by(chunk_rows) {
+            let rows_in_chunk = chunk_rows.min(rows - row_start);
+            let element_offset = row_start
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("matvec offset overflow"))?;
+            let element_count = rows_in_chunk
+                .checked_mul(columns)
+                .ok_or_else(|| TensorLoadError::integrity("matvec chunk overflow"))?;
+            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
+            for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
+                output[row_start + row_offset] = row
+                    .iter()
+                    .zip(input)
+                    .map(|(weight, value)| weight * value)
+                    .sum::<f32>();
+            }
+        }
+        Ok(())
     }
 
     pub fn bf16_matvecs_row_major_f32(
