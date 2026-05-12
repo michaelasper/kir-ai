@@ -3,7 +3,8 @@ kernel void qwen_rms_norm(
     device const float* weight [[buffer(1)]],
     constant uint& len [[buffer(2)]],
     constant float& eps [[buffer(3)]],
-    device float* output [[buffer(4)]],
+    constant float& weight_offset [[buffer(4)]],
+    device float* output [[buffer(5)]],
     uint id [[thread_position_in_grid]]
 ) {
     if (id >= len) {
@@ -15,7 +16,7 @@ kernel void qwen_rms_norm(
         sum += value * value;
     }
     float inv_rms = rsqrt((sum / float(len)) + eps);
-    output[id] = input[id] * inv_rms * (weight[id] + 1.0);
+    output[id] = input[id] * inv_rms * (weight[id] + weight_offset);
 }
 
 kernel void linear_attention_conv1d_silu_f32(
@@ -79,4 +80,3 @@ kernel void linear_attention_recurrent_update_state_f32(
     float delta = (value[value_index] - memory[value_index]) * beta;
     state[state_index] = (state[state_index] * decay) + (key[key_index] * delta);
 }
-

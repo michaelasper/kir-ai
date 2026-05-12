@@ -4,11 +4,34 @@ use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
 impl MetalDevice {
+    pub async fn rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        self.rms_norm_f32_with_weight_offset(input, weight, eps, 0.0, output)
+            .await
+    }
+
     pub async fn qwen_rms_norm_f32(
         &self,
         input: &[f32],
         weight: &[f32],
         eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        self.rms_norm_f32_with_weight_offset(input, weight, eps, 1.0, output)
+            .await
+    }
+
+    async fn rms_norm_f32_with_weight_offset(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        weight_offset: f32,
         output: &mut [f32],
     ) -> Result<(), MetalError> {
         if input.len() != weight.len() {
@@ -26,6 +49,11 @@ impl MetalDevice {
         if !eps.is_finite() || eps < 0.0 {
             return Err(MetalError::InvalidShape(
                 "epsilon must be finite and non-negative".to_owned(),
+            ));
+        }
+        if !weight_offset.is_finite() {
+            return Err(MetalError::InvalidShape(
+                "weight offset must be finite".to_owned(),
             ));
         }
         if input.is_empty() {
@@ -64,7 +92,12 @@ impl MetalDevice {
             std::mem::size_of_val(&eps) as u64,
             (&eps as *const f32).cast::<c_void>(),
         );
-        encoder.set_buffer(4, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&weight_offset) as u64,
+            (&weight_offset as *const f32).cast::<c_void>(),
+        );
+        encoder.set_buffer(5, Some(&output_buffer), 0);
         let threads = MTLSize {
             width: input.len() as u64,
             height: 1,

@@ -27,9 +27,8 @@ pub(super) async fn rms_norm_f32_with_matvec_in_place(
             "input and weight must have the same length".to_owned(),
         ));
     }
-    let qwen_weight = weight.iter().map(|value| value - 1.0).collect::<Vec<_>>();
     matvec
-        .rms_norm_one_centered_f32_in_place(input, &qwen_weight, eps, output)
+        .rms_norm_f32_in_place(input, weight, eps, output)
         .await
 }
 
@@ -78,6 +77,261 @@ pub(super) async fn l2_normalize_f32_with_matvec_and_weight_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{
+        LayerKvCache, LinearAttentionCache, NativeKvCacheTensor, SafeTensorShardStore,
+        TensorLoadError, TopKLogit, TopKWeight,
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Default)]
+    struct RecordingRmsNormBackend {
+        raw_calls: AtomicUsize,
+        one_centered_calls: AtomicUsize,
+        observed_weight: Mutex<Vec<f32>>,
+    }
+
+    impl NativeMatvecBackend for RecordingRmsNormBackend {
+        async fn bf16_matvec_row_major_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+                .await
+        }
+
+        async fn bf16_matvec_rows_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            chunk_rows: usize,
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+                .await
+        }
+
+        async fn bf16_matvec_top_k_rows_f32(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            top_k: usize,
+            chunk_rows: usize,
+        ) -> Result<Vec<TopKLogit>, TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows)
+                .await
+        }
+
+        async fn matvec_row_major_f32_in_place(
+            &self,
+            input: &[f32],
+            weights: &[f32],
+            rows: usize,
+            columns: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+                .await
+        }
+
+        async fn rms_norm_f32_in_place(
+            &self,
+            input: &[f32],
+            weight: &[f32],
+            eps: f32,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            self.raw_calls.fetch_add(1, Ordering::Relaxed);
+            *self.observed_weight.lock().expect("observed weight lock") = weight.to_vec();
+            CpuNativeMatvecBackend
+                .rms_norm_f32_in_place(input, weight, eps, output)
+                .await
+        }
+
+        async fn rms_norm_one_centered_f32_in_place(
+            &self,
+            input: &[f32],
+            weight: &[f32],
+            eps: f32,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            self.one_centered_calls.fetch_add(1, Ordering::Relaxed);
+            CpuNativeMatvecBackend
+                .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+                .await
+        }
+
+        async fn softmax_f32_in_place(
+            &self,
+            scores: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .softmax_f32_in_place(scores, output)
+                .await
+        }
+
+        async fn linear_attention_conv1d_silu_f32_in_place(
+            &self,
+            window: &[f32],
+            weights: &[f32],
+            conv_dim: usize,
+            kernel_size: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_conv1d_silu_f32_in_place(
+                    window,
+                    weights,
+                    conv_dim,
+                    kernel_size,
+                    output,
+                )
+                .await
+        }
+
+        async fn weighted_sum_f32_in_place(
+            &self,
+            values: &[f32],
+            weights: &[f32],
+            vector_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .weighted_sum_f32_in_place(values, weights, vector_len, output)
+                .await
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn linear_attention_recurrent_update_f32_in_place(
+            &self,
+            state: &[f32],
+            key: &[f32],
+            value: &[f32],
+            memory: &[f32],
+            beta: f32,
+            decay: f32,
+            key_head_dim: usize,
+            value_head_dim: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_recurrent_update_f32_in_place(
+                    state,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                    output,
+                )
+                .await
+        }
+
+        async fn select_head_rows_f32_in_place(
+            &self,
+            values: &[f32],
+            row_count: usize,
+            row_len: usize,
+            head_start: usize,
+            head_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .select_head_rows_f32_in_place(
+                    values, row_count, row_len, head_start, head_len, output,
+                )
+                .await
+        }
+
+        async fn select_kv_cache_head_rows_f32_in_place(
+            &self,
+            cache: &LayerKvCache,
+            tensor: NativeKvCacheTensor,
+            row_count: usize,
+            head_start: usize,
+            head_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .select_kv_cache_head_rows_f32_in_place(
+                    cache, tensor, row_count, head_start, head_len, output,
+                )
+                .await
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn linear_attention_recurrent_cache_update_f32_in_place(
+            &self,
+            cache: &LinearAttentionCache,
+            state_start: usize,
+            key: &[f32],
+            value: &[f32],
+            memory: &[f32],
+            beta: f32,
+            decay: f32,
+            key_head_dim: usize,
+            value_head_dim: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_recurrent_cache_update_f32_in_place(
+                    cache,
+                    state_start,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                    output,
+                )
+                .await
+        }
+
+        async fn softmax_top_k_f32(
+            &self,
+            logits: &[f32],
+            top_k: usize,
+        ) -> Result<Vec<TopKWeight>, MathError> {
+            CpuNativeMatvecBackend
+                .softmax_top_k_f32(logits, top_k)
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn rms_norm_f32_with_matvec_forwards_raw_weight_without_one_center_scratch() {
+        let matvec = RecordingRmsNormBackend::default();
+        let mut output = vec![0.0; 2];
+
+        rms_norm_f32_with_matvec_in_place(&[3.0, 4.0], &[1.5, 2.5], 0.0, &matvec, &mut output)
+            .await
+            .expect("rms norm succeeds");
+
+        assert_eq!(matvec.raw_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(matvec.one_centered_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            *matvec.observed_weight.lock().expect("observed weight lock"),
+            vec![1.5, 2.5]
+        );
+        assert!((output[0] - 1.2727922).abs() < 1e-5);
+        assert!((output[1] - 2.828427).abs() < 1e-5);
+    }
 
     #[tokio::test]
     async fn l2_normalize_f32_with_matvec_reuses_weight_scratch() {

@@ -36,6 +36,23 @@ async fn metal_qwen_rms_norm_matches_cpu_reference() {
 }
 
 #[tokio::test]
+async fn metal_rms_norm_matches_cpu_reference() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let mut output = vec![0.0; 2];
+    device
+        .rms_norm_f32(&[3.0, 4.0], &[1.5, 2.5], 0.0, &mut output)
+        .await
+        .expect("metal rms norm succeeds");
+
+    assert_close(&output, &[1.2727922, 2.828427], 1e-6);
+}
+
+#[tokio::test]
 async fn metal_softmax_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

@@ -1,8 +1,8 @@
 use super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight, linear_attention_conv1d_silu_f32,
     linear_attention_recurrent_update_f32, matvec_row_major_f32_in_place,
-    rms_norm_one_centered_f32_in_place, select_head_rows_f32, silu_f32, softmax_f32,
-    softmax_top_k_f32, weighted_sum_f32,
+    rms_norm_f32_in_place as math_rms_norm_f32_in_place, rms_norm_one_centered_f32_in_place,
+    select_head_rows_f32, silu_f32, softmax_f32, softmax_top_k_f32, weighted_sum_f32,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
@@ -175,6 +175,28 @@ pub trait NativeMatvecBackend {
         columns: usize,
         output: &mut [f32],
     ) -> Result<(), MathError>;
+
+    async fn rms_norm_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, MathError> {
+        let mut output = vec![0.0; input.len()];
+        self.rms_norm_f32_in_place(input, weight, eps, &mut output)
+            .await?;
+        Ok(output)
+    }
+
+    async fn rms_norm_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        math_rms_norm_f32_in_place(input, weight, eps, output)
+    }
 
     async fn rms_norm_one_centered_f32(
         &self,

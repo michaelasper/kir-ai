@@ -1818,6 +1818,36 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         }
     }
 
+    async fn rms_norm_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu()
+                    .rms_norm_f32_in_place(input, weight, eps, output)
+                    .await
+            }
+            Self::Metal(metal) => {
+                if !Self::run_metal_math_in_place(
+                    "rms_norm",
+                    format!("len={},weight_len={}", input.len(), weight.len()),
+                    || metal.device.rms_norm_f32(input, weight, eps, output),
+                )
+                .await?
+                {
+                    Self::cpu()
+                        .rms_norm_f32_in_place(input, weight, eps, output)
+                        .await?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     async fn rms_norm_one_centered_f32(
         &self,
         input: &[f32],
