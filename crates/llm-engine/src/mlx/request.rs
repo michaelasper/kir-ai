@@ -17,6 +17,7 @@ pub(super) fn build_upstream_request(
     upstream_model: &str,
     metadata: &BackendModelMetadata,
     request: &BackendRequest,
+    stream: bool,
 ) -> Result<(MlxUpstreamProtocol, reqwest::RequestBuilder), BackendError> {
     let protocol = mlx_upstream_protocol_for_request(metadata, request);
     let (temperature, top_p) = match request.sampling {
@@ -31,7 +32,7 @@ pub(super) fn build_upstream_request(
             max_tokens: request.max_tokens,
             temperature,
             top_p,
-            stream: true,
+            stream,
         }),
         MlxUpstreamProtocol::ChatCompletions => {
             let messages = mlx_chat_messages(request);
@@ -49,7 +50,7 @@ pub(super) fn build_upstream_request(
                 max_tokens: request.max_tokens,
                 temperature,
                 top_p,
-                stream: true,
+                stream,
             })
         }
     };

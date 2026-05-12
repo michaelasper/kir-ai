@@ -95,7 +95,7 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     assert_eq!(request["max_tokens"], 12);
     assert_eq!(request["temperature"], 0.7);
     assert_eq!(request["top_p"], 0.9);
-    assert_eq!(request["stream"], true);
+    assert_eq!(request["stream"], false);
 
     let metrics = metrics.snapshot();
     assert_eq!(metrics["requests_total"], 1);
@@ -114,6 +114,60 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
                 .as_f64()
                 .expect("MLX latency min is numeric")
     );
+}
+
+#[tokio::test]
+async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
+    let server = FakeMlxServer::start(
+        r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}"#,
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let output = backend
+        .generate(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "read a file".to_owned(),
+            chat_context: Some(BackendChatContext {
+                messages: vec![ChatMessage::user("read Cargo.toml")],
+            }),
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+                "read_file".to_owned(),
+            )),
+            json_object_mode: false,
+            conversation_mode: true,
+            cache_context: BackendCacheContext::chat_template(
+                "chatml/qwen/v1",
+                Some(r#"[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]"#.to_owned()),
+            ),
+        })
+        .await
+        .expect("mlx generation succeeds");
+
+    assert_eq!(server.received_path(), "/v1/chat/completions");
+    let request = server.received_body();
+    assert_eq!(request["stream"], false);
+    assert_eq!(
+        request["tool_choice"],
+        serde_json::json!({"type":"function","function":{"name":"read_file"}})
+    );
+    assert!(output.text.starts_with("<tool_call>"));
+    assert!(output.text.contains(r#""name":"read_file""#));
+    assert!(output.text.contains(r#""path":"Cargo.toml""#));
+    assert_eq!(output.prompt_tokens, 4);
+    assert_eq!(output.completion_tokens, 5);
+    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
 }
 
 #[tokio::test]
@@ -336,6 +390,7 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
     assert_eq!(chunk.finish_reason, Some(llm_api::FinishReason::Stop));
     drop(stream);
 
+    assert_eq!(server.received_body()["stream"], true);
     let metrics = metrics.snapshot();
     assert_eq!(metrics["requests_total"], 1);
     assert_eq!(metrics["successful_requests"], 1);
@@ -446,7 +501,7 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
     assert_eq!(request["messages"][0]["content"], "You are Kir.");
     assert_eq!(request["messages"][1]["role"], "user");
     assert_eq!(request["messages"][1]["content"], "hello gemma");
-    assert_eq!(request["stream"], true);
+    assert_eq!(request["stream"], false);
     assert!(request.get("chat_template_kwargs").is_none());
 }
 

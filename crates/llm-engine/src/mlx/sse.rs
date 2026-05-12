@@ -1,5 +1,5 @@
 use super::protocol::MlxToolMarkup;
-use llm_backend::{BackendError, BackendStreamChunk};
+use llm_backend::{BackendError, BackendOutput, BackendStreamChunk};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -106,17 +106,25 @@ impl MlxSseParser {
     }
 
     pub(super) fn finish(&mut self) -> Result<Vec<BackendStreamChunk>, BackendError> {
+        if !self.saw_done {
+            return Err(BackendError::Other(
+                "MLX SSE completion ended before data: [DONE]".to_owned(),
+            ));
+        }
+        self.flush_pending()
+    }
+
+    fn finish_non_streaming(&mut self) -> Result<Vec<BackendStreamChunk>, BackendError> {
+        self.flush_pending()
+    }
+
+    fn flush_pending(&mut self) -> Result<Vec<BackendStreamChunk>, BackendError> {
         let mut chunks = Vec::new();
         if !self.line_buffer.is_empty() {
             let line = std::mem::take(&mut self.line_buffer);
             if let Some(chunk) = self.parse_line(line.trim_end_matches('\r'))? {
                 chunks.push(chunk);
             }
-        }
-        if !self.saw_done {
-            return Err(BackendError::Other(
-                "MLX SSE completion ended before data: [DONE]".to_owned(),
-            ));
         }
         let text = self.stop_filter.finish();
         if !text.is_empty() {
@@ -143,6 +151,13 @@ impl MlxSseParser {
         let completion = serde_json::from_str::<MlxCompletionResponse>(data).map_err(|err| {
             BackendError::Other(format!("invalid MLX SSE completion JSON: {err}"))
         })?;
+        self.parse_completion(completion)
+    }
+
+    fn parse_completion(
+        &mut self,
+        completion: MlxCompletionResponse,
+    ) -> Result<Option<BackendStreamChunk>, BackendError> {
         if let Some(prompt_tokens) = completion
             .usage
             .as_ref()
@@ -441,6 +456,58 @@ fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
         }
         _ => serde_json::to_string(value)
             .map_err(|err| BackendError::Other(format!("Gemma tool value render failed: {err}"))),
+    }
+}
+
+pub(super) fn parse_mlx_completion_body(
+    body: &str,
+    prompt: &str,
+    stop_tokens: &'static [&'static str],
+    tool_markup: MlxToolMarkup,
+) -> Result<(BackendOutput, usize), BackendError> {
+    let mut parser = MlxSseParser::new(prompt, stop_tokens, tool_markup);
+    let chunks = if body.trim_start().starts_with("data:") {
+        let mut chunks = parser.push_str(body)?;
+        chunks.extend(parser.finish()?);
+        chunks
+    } else {
+        let completion = serde_json::from_str::<MlxCompletionResponse>(body)
+            .map_err(|err| BackendError::Other(format!("invalid MLX completion JSON: {err}")))?;
+        let mut chunks = Vec::new();
+        if let Some(chunk) = parser.parse_completion(completion)? {
+            chunks.push(chunk);
+        }
+        chunks.extend(parser.finish_non_streaming()?);
+        chunks
+    };
+    let chunk_count = chunks.len();
+    Ok((fold_mlx_chunks(chunks, prompt), chunk_count))
+}
+
+pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> BackendOutput {
+    let mut text = String::new();
+    let mut prompt_tokens = 0;
+    let mut completion_tokens = 0;
+    let mut finish_reason = llm_api::FinishReason::Stop;
+    for chunk in chunks {
+        prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+        completion_tokens += chunk.completion_tokens;
+        text.push_str(&chunk.text);
+        if let Some(reason) = chunk.finish_reason {
+            finish_reason = reason;
+        }
+    }
+    if prompt_tokens == 0 {
+        prompt_tokens = count_whitespace_tokens(prompt);
+    }
+    if completion_tokens == 0 && !text.is_empty() {
+        completion_tokens = count_whitespace_tokens(&text);
+    }
+    BackendOutput {
+        prompt_tokens,
+        completion_tokens,
+        text,
+        finish_reason,
     }
 }
 

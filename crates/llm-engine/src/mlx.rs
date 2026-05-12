@@ -24,7 +24,7 @@ pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};
 use protocol::{mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata};
 use request::build_upstream_request;
-use sse::{MlxSseParser, count_whitespace_tokens};
+use sse::{MlxSseParser, parse_mlx_completion_body};
 
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
@@ -98,32 +98,110 @@ impl MlxBackend {
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        let mut stream = self.stream_completion(request.clone(), cancellation);
-        let mut text = String::new();
-        let mut prompt_tokens = 0;
-        let mut completion_tokens = 0;
-        let mut finish_reason = llm_api::FinishReason::Stop;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
-            completion_tokens += chunk.completion_tokens;
-            text.push_str(&chunk.text);
-            if let Some(reason) = chunk.finish_reason {
-                finish_reason = reason;
+        if cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.validate_model(&request)?;
+        let (upstream_protocol, upstream_request) = build_upstream_request(
+            &self.client,
+            &self.endpoint,
+            &self.upstream_model,
+            &self.metadata,
+            &request,
+            false,
+        )?;
+        let mut request_metrics = self.metrics.start_request(upstream_protocol);
+        let response = tokio::select! {
+            response = upstream_request.send() => response
+                .map_err(|err| mlx_request_error(err, self.timeouts.request)),
+            _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                return Err(err);
             }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
+            let body = tokio::select! {
+                body = response.text() => body
+                    .map_err(|err| BackendError::Other(format!("MLX response read failed: {err}"))),
+                _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+            };
+            let body = match body {
+                Ok(body) => body,
+                Err(err) => {
+                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                    return Err(err);
+                }
+            };
+            return Err(BackendError::Other(format!(
+                "MLX server returned HTTP {status}: {body}"
+            )));
         }
-        if prompt_tokens == 0 {
-            prompt_tokens = count_whitespace_tokens(&request.prompt);
+
+        let mut bytes = response.bytes_stream();
+        let mut body = Vec::new();
+        loop {
+            let item = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                    result.map_err(|_| BackendError::Other(format!(
+                        "{MLX_STALL_PREFIX} stream stalled for {} without data",
+                        format_duration(self.timeouts.read)
+                    )))
+                }
+            };
+            let item = match item {
+                Ok(item) => item,
+                Err(err) => {
+                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
+                    return Err(err);
+                }
+            };
+            let Some(item) = item else {
+                break;
+            };
+            let bytes = match item {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
+                    return Err(BackendError::Other(format!(
+                        "MLX response read failed: {err}"
+                    )));
+                }
+            };
+            request_metrics.record_response_bytes(bytes.len());
+            body.extend_from_slice(&bytes);
         }
-        if completion_tokens == 0 && !text.is_empty() {
-            completion_tokens = count_whitespace_tokens(&text);
-        }
-        Ok(BackendOutput {
-            prompt_tokens,
-            completion_tokens,
-            text,
-            finish_reason,
-        })
+        let body = match std::str::from_utf8(&body) {
+            Ok(body) => body,
+            Err(err) => {
+                request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
+                return Err(BackendError::Other(format!(
+                    "MLX response was not UTF-8: {err}"
+                )));
+            }
+        };
+        let (output, chunk_count) = match parse_mlx_completion_body(
+            body,
+            &request.prompt,
+            self.control_stop_tokens,
+            mlx_tool_markup_for_metadata(&self.metadata),
+        ) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                return Err(err);
+            }
+        };
+        request_metrics.record_stream_chunks(chunk_count);
+        request_metrics.finish_success();
+        Ok(output)
     }
 
     fn stream_completion<'a>(
@@ -142,6 +220,7 @@ impl MlxBackend {
                 &self.upstream_model,
                 &self.metadata,
                 &request,
+                true,
             )?;
             let mut request_metrics = self.metrics.start_request(upstream_protocol);
             let response = tokio::select! {
