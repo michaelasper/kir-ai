@@ -663,7 +663,10 @@ fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
         .ok_or_else(|| ParserError::malformed_tool("qwen tool JSON missing name"))?;
     let arguments = value
         .get("arguments")
-        .cloned()
+        .or_else(|| value.get("parameters"))
+        .or_else(|| value.get("args"))
+        .map(parse_json_tool_arguments)
+        .transpose()?
         .unwrap_or_else(|| serde_json::json!({}));
     Ok(ToolCall {
         id: format!("call_{index}"),

@@ -31,7 +31,7 @@ fn renders_llama3_chat_with_tools() {
     assert!(rendered.starts_with("<|begin_of_text|><|start_header_id|>system"));
     assert!(rendered.contains("You are Kir."));
     assert!(rendered.contains("\"name\":\"lookup\""));
-    assert!(rendered.contains(r#"{"name":"function_name","parameters":{"argument":"value"}}"#));
+    assert!(rendered.contains(r#"{"name":"function_name","arguments":{"argument":"value"}}"#));
     assert!(rendered.contains("<|start_header_id|>user<|end_header_id|>\n\nlookup rust<|eot_id|>"));
     assert!(rendered.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
 }
@@ -47,7 +47,7 @@ fn renders_prior_llama_tool_call_and_tool_response() {
         .expect("template renders");
 
     assert!(rendered.contains("<|start_header_id|>assistant<|end_header_id|>"));
-    assert!(rendered.contains(r#"{"name":"lookup","parameters":{"query":"rust"}}"#));
+    assert!(rendered.contains(r#"{"name":"lookup","arguments":{"query":"rust"}}"#));
     assert!(rendered.contains("<|start_header_id|>ipython<|end_header_id|>"));
     assert!(rendered.contains("{\"answer\":\"systems\"}<|eot_id|>"));
 }
@@ -83,7 +83,7 @@ fn separates_multiple_prior_llama_tool_calls() {
         .expect("template renders");
 
     assert!(rendered.contains(
-        "{\"name\":\"lookup\",\"parameters\":{\"query\":\"rust\"}}\n{\"name\":\"summarize\",\"parameters\":{\"topic\":\"metal\"}}"
+        "{\"name\":\"lookup\",\"arguments\":{\"query\":\"rust\"}}\n{\"name\":\"summarize\",\"arguments\":{\"topic\":\"metal\"}}"
     ));
     assert!(!rendered.contains("}}{"));
 }

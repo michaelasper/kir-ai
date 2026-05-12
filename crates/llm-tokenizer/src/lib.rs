@@ -287,7 +287,7 @@ pub fn render_llama3_chat_template(
             let tools_json = serde_json::to_string(tools)?;
             reject_llama3_prompt_controls(&tools_json)?;
             out.push_str("Tools are available. To call a function, respond with JSON in the form ");
-            out.push_str(r#"{"name":"function_name","parameters":{"argument":"value"}}"#);
+            out.push_str(r#"{"name":"function_name","arguments":{"argument":"value"}}"#);
             out.push_str(". Do not use variables.\n");
             out.push_str(&tools_json);
         }
@@ -419,7 +419,7 @@ fn render_llama3_assistant_turn(
         }
         let payload = serde_json::json!({
             "name": call.function.name,
-            "parameters": call.function.arguments,
+            "arguments": call.function.arguments,
         });
         let payload_json = serde_json::to_string(&payload)?;
         reject_llama3_prompt_controls(&payload_json)?;

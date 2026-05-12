@@ -19,6 +19,22 @@ fn parses_reasoning_content_and_hermes_tool_call() {
 }
 
 #[test]
+fn parses_parameters_alias_in_hermes_tool_call() {
+    let parsed = QwenParser
+        .parse_complete(
+            "<tool_call>{\"name\":\"read_file\",\"parameters\":{\"path\":\"Cargo.toml\",\"_i\":0}}</tool_call>",
+        )
+        .expect("parameters alias parses");
+
+    assert_eq!(parsed.tool_calls.len(), 1);
+    assert_eq!(parsed.tool_calls[0].function.name, "read_file");
+    assert_eq!(
+        parsed.tool_calls[0].function.arguments,
+        serde_json::json!({"path": "Cargo.toml", "_i": 0})
+    );
+}
+
+#[test]
 fn parses_qwen_coder_xml_tool_call() {
     let parsed = QwenParser
         .parse_complete(
