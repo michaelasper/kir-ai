@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.27](https://github.com/michaelasper/kir-ai/compare/v1.4.26...v1.4.27) (2026-05-12)
+
+### Bug Fixes
+
+* **runtime:** fill missing omp intent argument ([e6aa2c8](https://github.com/michaelasper/kir-ai/commit/e6aa2c84e5474439c04699d5bb538f272f79e11e)), closes [#215](https://github.com/michaelasper/kir-ai/issues/215)
+
 ## [1.4.26](https://github.com/michaelasper/kir-ai/compare/v1.4.25...v1.4.26) (2026-05-12)
 
 ### Bug Fixes
