@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.15](https://github.com/michaelasper/kir-ai/compare/v1.4.14...v1.4.15) (2026-05-12)
+
+### Bug Fixes
+
+* **hub:** require weight sha256 verification ([1ed93a0](https://github.com/michaelasper/kir-ai/commit/1ed93a007a1cc08485f1f4b6775573cd29092c68)), closes [#177](https://github.com/michaelasper/kir-ai/issues/177)
+
 ## [1.4.14](https://github.com/michaelasper/kir-ai/compare/v1.4.13...v1.4.14) (2026-05-12)
 
 ### Performance Improvements
