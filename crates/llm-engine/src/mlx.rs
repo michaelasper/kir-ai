@@ -146,7 +146,7 @@ impl MlxBackend {
             let mut request_metrics = self.metrics.start_request(upstream_protocol);
             let response = tokio::select! {
                 response = upstream_request.send() => response
-                    .map_err(|err| BackendError::Other(format!("MLX request failed: {err}"))),
+                    .map_err(|err| mlx_request_error(err, self.timeouts.request)),
                 _ = cancellation.cancelled() => Err(BackendError::Cancelled),
             };
             let response = match response {
@@ -264,6 +264,17 @@ fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKi
         }
     } else {
         MlxBackendFailureKind::Transport
+    }
+}
+
+fn mlx_request_error(err: reqwest::Error, request_timeout: std::time::Duration) -> BackendError {
+    if err.is_timeout() {
+        BackendError::Other(format!(
+            "{MLX_STALL_PREFIX} request timed out after {}",
+            format_duration(request_timeout)
+        ))
+    } else {
+        BackendError::Other(format!("MLX request failed: {err}"))
     }
 }
 

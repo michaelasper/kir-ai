@@ -1503,6 +1503,7 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
             family: Some(ModelFamily::Qwen),
             timeouts: MlxTimeouts {
                 connect: Duration::from_secs(5),
+                request: Duration::from_secs(5),
                 read: Duration::from_millis(100),
             },
         },
@@ -1530,6 +1531,54 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
     assert!(
         err.to_string().contains("stalled"),
         "expected stall error, got: {err}"
+    );
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics["failed_requests"], 1);
+    assert_eq!(metrics["stall_failures"], 1);
+}
+
+#[tokio::test]
+async fn mlx_backend_request_timeout_detects_delayed_response_headers() {
+    let server = FakeMlxServer::start_with_response_delay(
+        "data:{\"choices\":[{\"text\":\"late\",\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+        Duration::from_millis(300),
+    );
+    let mut backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            timeouts: MlxTimeouts {
+                connect: Duration::from_secs(5),
+                request: Duration::from_millis(100),
+                read: Duration::from_secs(5),
+            },
+        },
+    )
+    .await
+    .expect("backend opens");
+    backend.metrics = Arc::new(MlxBackendMetrics::default());
+    let metrics = backend.metrics.clone();
+
+    let err = backend
+        .generate(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .await
+        .expect_err("delayed response headers produce timeout error");
+
+    assert!(
+        err.to_string().contains("timed out"),
+        "expected timeout error, got: {err}"
     );
     let metrics = metrics.snapshot();
     assert_eq!(metrics["failed_requests"], 1);
