@@ -17,15 +17,10 @@ pub(crate) async fn finish_command_buffer_async(
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = std::sync::Mutex::new(Some(tx));
         let in_flight = std::sync::Mutex::new(Some(synchronization.begin_command()));
+        let kernel_name = kernel_name.to_owned();
         let block = block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
-            if let Ok(mut guard) = tx.lock()
-                && let Some(tx) = guard.take()
-            {
-                let _ = tx.send(cb.status());
-            }
-            if let Ok(mut guard) = in_flight.lock() {
-                guard.take();
-            }
+            report_command_buffer_status(&tx, cb.status(), &kernel_name);
+            finish_in_flight_command(&in_flight, &kernel_name);
         })
         .copy();
         command_buffer.add_completed_handler(&block);
@@ -33,6 +28,65 @@ pub(crate) async fn finish_command_buffer_async(
         rx
     };
     command_buffer_completion_result(rx, kernel_name, command_buffer_timeout()).await
+}
+
+fn report_command_buffer_status(
+    tx: &Mutex<Option<tokio::sync::oneshot::Sender<MTLCommandBufferStatus>>>,
+    status: MTLCommandBufferStatus,
+    kernel_name: &str,
+) {
+    if !matches!(status, MTLCommandBufferStatus::Completed) {
+        tracing::warn!(
+            kernel = %kernel_name,
+            ?status,
+            "Metal command buffer completed with non-success status"
+        );
+    }
+
+    let mut guard = match tx.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!(
+                kernel = %kernel_name,
+                "Metal command buffer status sender lock was poisoned; recovering status sender"
+            );
+            poisoned.into_inner()
+        }
+    };
+    let Some(tx) = guard.take() else {
+        tracing::warn!(
+            kernel = %kernel_name,
+            ?status,
+            "Metal command buffer status was reported after sender was already consumed"
+        );
+        return;
+    };
+    if let Err(status) = tx.send(status) {
+        tracing::warn!(
+            kernel = %kernel_name,
+            ?status,
+            "Metal command buffer status receiver was dropped before status could be reported"
+        );
+    }
+}
+
+fn finish_in_flight_command(in_flight: &Mutex<Option<MetalCommandInFlight>>, kernel_name: &str) {
+    let mut guard = match in_flight.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!(
+                kernel = %kernel_name,
+                "Metal command in-flight lock was poisoned; recovering synchronization guard"
+            );
+            poisoned.into_inner()
+        }
+    };
+    if guard.take().is_none() {
+        tracing::warn!(
+            kernel = %kernel_name,
+            "Metal command in-flight guard was already released before completion callback"
+        );
+    }
 }
 
 #[derive(Debug, Default)]
@@ -219,6 +273,17 @@ mod tests {
         assert!(matches!(err, MetalError::Execution(_)));
         assert!(err.to_string().contains("hung_kernel"));
         assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn report_command_buffer_status_clears_sender_when_receiver_is_dropped() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(rx);
+        let tx = Mutex::new(Some(tx));
+
+        report_command_buffer_status(&tx, MTLCommandBufferStatus::Error, "failed_kernel");
+
+        assert!(tx.lock().expect("status sender lock").is_none());
     }
 
     #[test]
