@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.25](https://github.com/michaelasper/kir-ai/compare/v1.4.24...v1.4.25) (2026-05-12)
+
+### Bug Fixes
+
+* **parser:** narrow auto xlam detection ([5ac7e49](https://github.com/michaelasper/kir-ai/commit/5ac7e49cbd7c9513063826d8ab3146cb0be1ddfb)), closes [#204](https://github.com/michaelasper/kir-ai/issues/204)
+
 ## [1.4.24](https://github.com/michaelasper/kir-ai/compare/v1.4.23...v1.4.24) (2026-05-12)
 
 ### Performance Improvements
