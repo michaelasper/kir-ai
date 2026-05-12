@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0](https://github.com/michaelasper/kir-ai/compare/v1.4.37...v1.5.0) (2026-05-12)
+
+### Features
+
+* **metrics:** split mlx sidecar latency ([5b9d4bb](https://github.com/michaelasper/kir-ai/commit/5b9d4bba2daad2cd1fe30bfd041c133c9aa10ca7))
+
 ## [1.4.37](https://github.com/michaelasper/kir-ai/compare/v1.4.36...v1.4.37) (2026-05-12)
 
 ### Bug Fixes
