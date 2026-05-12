@@ -573,6 +573,22 @@ async fn native_full_attention_mix_from_cache(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
     let mut attended = vec![0.0; shape.attention_dim];
+    if matvec
+        .full_attention_cache_mix_f32_in_place(
+            source.cache,
+            input.query,
+            source.count,
+            dims.num_attention_heads,
+            dims.num_key_value_heads,
+            dims.head_dim,
+            input.score_scale,
+            &mut attended,
+        )
+        .await?
+    {
+        apply_attention_gate(input.gate, &mut attended);
+        return Ok(attended);
+    }
     for head in 0..dims.num_attention_heads {
         let kv_head = head / shape.groups;
         let q_start = head * dims.head_dim;
@@ -615,6 +631,14 @@ async fn native_full_attention_mix_from_cache(
         }
     }
     Ok(attended)
+}
+
+fn apply_attention_gate(gate: Option<&[f32]>, attended: &mut [f32]) {
+    if let Some(gate) = gate {
+        for (value, gate) in attended.iter_mut().zip(gate) {
+            *value *= sigmoid_f32(*gate);
+        }
+    }
 }
 
 async fn native_full_attention_mix_from_inline(
@@ -1060,5 +1084,211 @@ mod tests {
             output[1][0] > 27.0,
             "second token should read the larger source window"
         );
+    }
+
+    #[derive(Debug, Default)]
+    struct FusedCacheMixBackend {
+        fused_calls: AtomicUsize,
+        per_head_calls: AtomicUsize,
+    }
+
+    impl NativeMatvecBackend for FusedCacheMixBackend {
+        async fn bf16_matvec_row_major_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+                .await
+        }
+
+        async fn bf16_matvec_rows_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            chunk_rows: usize,
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+                .await
+        }
+
+        async fn matvec_row_major_f32_in_place(
+            &self,
+            input: &[f32],
+            weights: &[f32],
+            rows: usize,
+            columns: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+                .await
+        }
+
+        async fn rms_norm_one_centered_f32_in_place(
+            &self,
+            input: &[f32],
+            weight: &[f32],
+            eps: f32,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+                .await
+        }
+
+        async fn softmax_f32_in_place(
+            &self,
+            scores: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            self.per_head_calls.fetch_add(1, Ordering::SeqCst);
+            CpuNativeMatvecBackend
+                .softmax_f32_in_place(scores, output)
+                .await
+        }
+
+        async fn linear_attention_conv1d_silu_f32_in_place(
+            &self,
+            window: &[f32],
+            weights: &[f32],
+            conv_dim: usize,
+            kernel_size: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_conv1d_silu_f32_in_place(
+                    window,
+                    weights,
+                    conv_dim,
+                    kernel_size,
+                    output,
+                )
+                .await
+        }
+
+        async fn weighted_sum_f32_in_place(
+            &self,
+            values: &[f32],
+            weights: &[f32],
+            vector_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            self.per_head_calls.fetch_add(1, Ordering::SeqCst);
+            CpuNativeMatvecBackend
+                .weighted_sum_f32_in_place(values, weights, vector_len, output)
+                .await
+        }
+
+        async fn linear_attention_recurrent_update_f32_in_place(
+            &self,
+            state: &[f32],
+            key: &[f32],
+            value: &[f32],
+            memory: &[f32],
+            beta: f32,
+            decay: f32,
+            key_head_dim: usize,
+            value_head_dim: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_recurrent_update_f32_in_place(
+                    state,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                    output,
+                )
+                .await
+        }
+
+        async fn select_head_rows_f32_in_place(
+            &self,
+            values: &[f32],
+            row_count: usize,
+            row_len: usize,
+            head_start: usize,
+            head_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            self.per_head_calls.fetch_add(1, Ordering::SeqCst);
+            CpuNativeMatvecBackend
+                .select_head_rows_f32_in_place(
+                    values, row_count, row_len, head_start, head_len, output,
+                )
+                .await
+        }
+
+        async fn full_attention_cache_mix_f32_in_place(
+            &self,
+            _cache: &LayerKvCache,
+            _query: &[f32],
+            row_count: usize,
+            num_attention_heads: usize,
+            num_key_value_heads: usize,
+            head_dim: usize,
+            _score_scale: f32,
+            output: &mut [f32],
+        ) -> Result<bool, MathError> {
+            assert_eq!(row_count, 2);
+            assert_eq!(num_attention_heads, 2);
+            assert_eq!(num_key_value_heads, 1);
+            assert_eq!(head_dim, 1);
+            self.fused_calls.fetch_add(1, Ordering::SeqCst);
+            output[..2].copy_from_slice(&[11.0, 22.0]);
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn native_full_attention_cache_mix_uses_backend_fused_path() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
+        cache
+            .append_sliding(&[1.0], &[10.0])
+            .expect("first cache append");
+        cache
+            .append_sliding(&[2.0], &[20.0])
+            .expect("second cache append");
+        let queries = vec![vec![1.0, 2.0]];
+        let source_counts = vec![2];
+        let output_projection = vec![1.0, 0.0, 0.0, 1.0];
+        let backend = FusedCacheMixBackend::default();
+
+        let output = native_full_attention_sequence_from_cache_parts_with_matvec(
+            dims,
+            &NativeFullAttentionCacheSequenceParts {
+                queries: &queries,
+                gates: None,
+                source_counts: &source_counts,
+                output_projection: NativeOutputProjection::F32(&output_projection),
+                score_scale: 1.0,
+            },
+            &cache,
+            &backend,
+        )
+        .await
+        .expect("cache-only attention succeeds");
+
+        assert_eq!(backend.fused_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.per_head_calls.load(Ordering::SeqCst), 0);
+        assert_close(output[0][0], 11.0);
+        assert_close(output[0][1], 22.0);
     }
 }

@@ -29,6 +29,10 @@ impl MetalDevice {
         let vector_add = Self::kernel(&device, &library, "vector_add")?;
         let qwen_rms_norm = Self::kernel(&device, &library, "qwen_rms_norm")?;
         let softmax_f32 = Self::kernel(&device, &library, "softmax_f32")?;
+        let attention_scores_f32 = Self::kernel(&device, &library, "attention_scores_f32")?;
+        let softmax_rows_f32 = Self::kernel(&device, &library, "softmax_rows_f32")?;
+        let attention_weighted_sum_f32 =
+            Self::kernel(&device, &library, "attention_weighted_sum_f32")?;
         let linear_attention_conv1d_silu_f32 =
             Self::kernel(&device, &library, "linear_attention_conv1d_silu_f32")?;
         let weighted_sum_f32 = Self::kernel(&device, &library, "weighted_sum_f32")?;
@@ -54,6 +58,9 @@ impl MetalDevice {
             vector_add,
             qwen_rms_norm,
             softmax_f32,
+            attention_scores_f32,
+            softmax_rows_f32,
+            attention_weighted_sum_f32,
             linear_attention_conv1d_silu_f32,
             weighted_sum_f32,
             linear_attention_recurrent_update_f32,

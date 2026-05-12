@@ -409,6 +409,44 @@ impl NativeTextMetalState {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn full_attention_cache_mix(
+        &self,
+        cache: &LayerKvCache,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        output: &mut [f32],
+    ) -> Result<(), llm_metal::MetalError> {
+        self.sync_kv_cache(cache)?;
+        let (keys, values) = {
+            let caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
+            let mirror = caches.get(&cache.id()).ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(format!(
+                    "missing Metal KV cache mirror for cache {}",
+                    cache.id()
+                ))
+            })?;
+            (mirror.keys.clone(), mirror.values.clone())
+        };
+        self.device
+            .full_attention_cache_mix_f32_buffered(
+                &keys,
+                &values,
+                query,
+                row_count,
+                num_attention_heads,
+                num_key_value_heads,
+                head_dim,
+                score_scale,
+                output,
+            )
+            .await
+    }
+
     fn sync_linear_cache(&self, cache: &LinearAttentionCache) -> Result<(), llm_metal::MetalError> {
         let byte_len = cache_resident_byte_len(cache.recurrent_state().len())?;
         let mut caches = self
@@ -2306,6 +2344,59 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                     ).await;
                 }
                 Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn full_attention_cache_mix_f32_in_place(
+        &self,
+        cache: &LayerKvCache,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        output: &mut [f32],
+    ) -> Result<bool, MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu()
+                    .full_attention_cache_mix_f32_in_place(
+                        cache,
+                        query,
+                        row_count,
+                        num_attention_heads,
+                        num_key_value_heads,
+                        head_dim,
+                        score_scale,
+                        output,
+                    )
+                    .await
+            }
+            Self::Metal(metal) => {
+                let handled = Self::run_metal_math_in_place(
+                    "full_attention_cache_mix_f32",
+                    format!(
+                        "cache_id={},row_count={row_count},heads={num_attention_heads},kv_heads={num_key_value_heads},head_dim={head_dim}",
+                        cache.id()
+                    ),
+                    || {
+                        metal.full_attention_cache_mix(
+                            cache,
+                            query,
+                            row_count,
+                            num_attention_heads,
+                            num_key_value_heads,
+                            head_dim,
+                            score_scale,
+                            output,
+                        )
+                    },
+                )
+                .await?;
+                Ok(handled)
             }
         }
     }
