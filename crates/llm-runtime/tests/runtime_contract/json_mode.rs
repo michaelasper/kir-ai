@@ -21,6 +21,52 @@ async fn json_object_response_format_accepts_object_content() {
 }
 
 #[tokio::test]
+async fn json_object_response_format_accepts_markdown_fenced_object_content() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        "```json\n{\"answer\":\"rust\",\"ok\":true}\n```",
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("fenced json object content is normalized");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some(r#"{"answer":"rust","ok":true}"#)
+    );
+}
+
+#[tokio::test]
+async fn json_object_response_format_accepts_leading_text_before_object_content() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        "Here is the JSON object:\n{\"answer\":\"rust\",\"token\":\"private\"}",
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("leading text with embedded json object is normalized");
+
+    assert_eq!(
+        response.choices[0].message.content.as_deref(),
+        Some(r#"{"answer":"rust","token":"private"}"#)
+    );
+}
+
+#[tokio::test]
 async fn protocol_test_backend_returns_json_object_for_json_mode() {
     let backend =
         ProtocolTestBackend::new("local-qwen36", "plain text").with_json_object_protocol();

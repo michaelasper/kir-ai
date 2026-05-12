@@ -111,6 +111,37 @@ async fn chat_completions_rejects_invalid_json_object_mode_output() {
 }
 
 #[tokio::test]
+async fn chat_completions_normalizes_fenced_json_object_mode_output() {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: "```json\n{\"status\":\"ok\",\"value\":\"salted\"}\n```".to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [{"role": "user", "content": "return json"}],
+                    "response_format": {"type": "json_object"}
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        r#"{"status":"ok","value":"salted"}"#
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_returns_json_object_in_protocol_mode() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(
