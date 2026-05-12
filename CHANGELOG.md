@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.20](https://github.com/michaelasper/kir-ai/compare/v1.4.19...v1.4.20) (2026-05-12)
+
+### Performance Improvements
+
+* **metal:** reduce rms norm in one threadgroup ([18aebea](https://github.com/michaelasper/kir-ai/commit/18aebeaf756dbe663b1defea3a0d993fdace09d3)), closes [#174](https://github.com/michaelasper/kir-ai/issues/174)
+
 ## [1.4.19](https://github.com/michaelasper/kir-ai/compare/v1.4.18...v1.4.19) (2026-05-12)
 
 ### Bug Fixes
