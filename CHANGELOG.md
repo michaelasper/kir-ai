@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.12](https://github.com/michaelasper/kir-ai/compare/v1.4.11...v1.4.12) (2026-05-12)
+
+### Bug Fixes
+
+* **models:** align backend execution capabilities ([a912139](https://github.com/michaelasper/kir-ai/commit/a91213996f7c5d3d8408b55dde35296161c271dd)), closes [#184](https://github.com/michaelasper/kir-ai/issues/184)
+
 ## [1.4.11](https://github.com/michaelasper/kir-ai/compare/v1.4.10...v1.4.11) (2026-05-12)
 
 ### Bug Fixes
