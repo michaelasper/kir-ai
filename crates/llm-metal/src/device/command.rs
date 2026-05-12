@@ -1,6 +1,12 @@
 use super::MetalError;
 use metal::{CommandBufferRef, MTLCommandBufferStatus};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::{
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+    time::Duration,
+};
+
+const DEFAULT_COMMAND_BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMAND_BUFFER_TIMEOUT_MS_ENV: &str = "LLM_ENGINE_METAL_COMMAND_BUFFER_TIMEOUT_MS";
 
 pub(crate) async fn finish_command_buffer_async(
     synchronization: &Arc<MetalSynchronization>,
@@ -26,8 +32,7 @@ pub(crate) async fn finish_command_buffer_async(
         command_buffer.commit();
         rx
     };
-    let status = rx.await.unwrap_or(MTLCommandBufferStatus::Error);
-    command_buffer_status_result(status, kernel_name)
+    command_buffer_completion_result(rx, kernel_name, command_buffer_timeout()).await
 }
 
 #[derive(Debug, Default)]
@@ -143,6 +148,34 @@ pub(crate) fn command_buffer_status_result(
     }
 }
 
+async fn command_buffer_completion_result(
+    rx: tokio::sync::oneshot::Receiver<MTLCommandBufferStatus>,
+    kernel_name: &str,
+    timeout: Duration,
+) -> Result<(), MetalError> {
+    let status = tokio::time::timeout(timeout, rx)
+        .await
+        .map_err(|_| {
+            MetalError::Execution(format!(
+                "{kernel_name} command buffer timed out after {timeout:?}"
+            ))
+        })?
+        .unwrap_or(MTLCommandBufferStatus::Error);
+    command_buffer_status_result(status, kernel_name)
+}
+
+fn command_buffer_timeout() -> Duration {
+    std::env::var(COMMAND_BUFFER_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|value| parse_command_buffer_timeout_ms(&value))
+        .unwrap_or(DEFAULT_COMMAND_BUFFER_TIMEOUT)
+}
+
+fn parse_command_buffer_timeout_ms(value: &str) -> Option<Duration> {
+    let millis = value.trim().parse::<u64>().ok()?;
+    (millis > 0).then(|| Duration::from_millis(millis))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +206,33 @@ mod tests {
 
         assert!(matches!(err, MetalError::Execution(_)));
         assert!(err.to_string().contains("unexpected status"));
+    }
+
+    #[tokio::test]
+    async fn command_buffer_completion_times_out_when_handler_never_reports_status() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+
+        let err = command_buffer_completion_result(rx, "hung_kernel", Duration::from_millis(1))
+            .await
+            .expect_err("missing completion status should time out");
+
+        assert!(matches!(err, MetalError::Execution(_)));
+        assert!(err.to_string().contains("hung_kernel"));
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn command_buffer_timeout_parser_accepts_positive_milliseconds() {
+        assert_eq!(
+            parse_command_buffer_timeout_ms("250"),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn command_buffer_timeout_parser_rejects_zero_or_invalid_values() {
+        assert_eq!(parse_command_buffer_timeout_ms("0"), None);
+        assert_eq!(parse_command_buffer_timeout_ms("not-a-number"), None);
     }
 
     #[test]
