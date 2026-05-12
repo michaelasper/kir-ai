@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.26](https://github.com/michaelasper/kir-ai/compare/v1.4.25...v1.4.26) (2026-05-12)
+
+### Bug Fixes
+
+* **runtime:** stream safe unmarked llama text ([f611f54](https://github.com/michaelasper/kir-ai/commit/f611f54e4ec527ba05c5875ce6a4b9514155c4b9)), closes [#188](https://github.com/michaelasper/kir-ai/issues/188)
+
 ## [1.4.25](https://github.com/michaelasper/kir-ai/compare/v1.4.24...v1.4.25) (2026-05-12)
 
 ### Bug Fixes
