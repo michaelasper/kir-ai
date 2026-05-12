@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.5](https://github.com/michaelasper/kir-ai/compare/v1.4.4...v1.4.5) (2026-05-12)
+
+### Bug Fixes
+
+* **metal:** synchronize shared buffer access ([edeae67](https://github.com/michaelasper/kir-ai/commit/edeae67fb5b269cc21e4bd78065f8de23815db08)), closes [#175](https://github.com/michaelasper/kir-ai/issues/175)
+
 ## [1.4.4](https://github.com/michaelasper/kir-ai/compare/v1.4.3...v1.4.4) (2026-05-12)
 
 ### Bug Fixes
