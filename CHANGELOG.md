@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.32](https://github.com/michaelasper/kir-ai/compare/v1.4.31...v1.4.32) (2026-05-12)
+
+### Bug Fixes
+
+* **native-text:** decode streaming tokens incrementally ([e7c3586](https://github.com/michaelasper/kir-ai/commit/e7c3586135d5efdb221066598119b1ecc542970b)), closes [#221](https://github.com/michaelasper/kir-ai/issues/221)
+
 ## [1.4.31](https://github.com/michaelasper/kir-ai/compare/v1.4.30...v1.4.31) (2026-05-12)
 
 ### Bug Fixes
