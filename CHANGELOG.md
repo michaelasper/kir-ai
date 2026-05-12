@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.14](https://github.com/michaelasper/kir-ai/compare/v1.4.13...v1.4.14) (2026-05-12)
+
+### Performance Improvements
+
+* **models:** avoid reparsing inferred native configs ([7251374](https://github.com/michaelasper/kir-ai/commit/72513743e77f9e799b3aaf1c63dafc2705988f19)), closes [#186](https://github.com/michaelasper/kir-ai/issues/186)
+
 ## [1.4.13](https://github.com/michaelasper/kir-ai/compare/v1.4.12...v1.4.13) (2026-05-12)
 
 ### Bug Fixes
