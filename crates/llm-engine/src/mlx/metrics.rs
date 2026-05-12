@@ -1,5 +1,5 @@
 use super::protocol::MlxUpstreamProtocol;
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use llm_telemetry::LatencyMetrics;
 use serde_json::{Value, json};
 use std::{
@@ -57,7 +57,7 @@ impl MlxBackendMetrics {
         protocol: MlxUpstreamProtocol,
     ) -> MlxBackendRequestMetrics {
         {
-            let mut counters = self.counters.lock_or_recover("MLX backend metrics");
+            let mut counters = self.counters.lock_or_panic("MLX backend metrics");
             counters.requests_total += 1;
             match protocol {
                 MlxUpstreamProtocol::Completions => counters.completion_requests += 1,
@@ -73,7 +73,7 @@ impl MlxBackendMetrics {
     }
 
     pub(super) fn snapshot(&self) -> Value {
-        let counters = *self.counters.lock_or_recover("MLX backend metrics");
+        let counters = *self.counters.lock_or_panic("MLX backend metrics");
         json!({
             "requests_total": counters.requests_total,
             "successful_requests": counters.successful_requests,
@@ -96,24 +96,24 @@ impl MlxBackendMetrics {
 
     fn record_stream_chunks(&self, chunks: u64) {
         self.counters
-            .lock_or_recover("MLX backend metrics")
+            .lock_or_panic("MLX backend metrics")
             .stream_chunks += chunks;
     }
 
     fn record_response_bytes(&self, bytes: u64) {
         self.counters
-            .lock_or_recover("MLX backend metrics")
+            .lock_or_panic("MLX backend metrics")
             .response_bytes += bytes;
     }
 
     fn record_success(&self, latency: Duration) {
-        let mut counters = self.counters.lock_or_recover("MLX backend metrics");
+        let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.successful_requests += 1;
         counters.request_latency.record(latency);
     }
 
     fn record_failure(&self, kind: MlxBackendFailureKind, latency: Duration) {
-        let mut counters = self.counters.lock_or_recover("MLX backend metrics");
+        let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.failed_requests += 1;
         counters.request_latency.record(latency);
         match kind {
@@ -128,7 +128,7 @@ impl MlxBackendMetrics {
     }
 
     fn record_dropped(&self, latency: Duration) {
-        let mut counters = self.counters.lock_or_recover("MLX backend metrics");
+        let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.failed_requests += 1;
         counters.dropped_requests += 1;
         counters.request_latency.record(latency);

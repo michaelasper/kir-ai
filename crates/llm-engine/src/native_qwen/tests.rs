@@ -9,7 +9,7 @@ use crate::native_text::{
     native_text_cache_token_capacity, native_text_prefill_context_with_cache,
     native_text_worker_stream, sample_token_id_with_draw,
 };
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
     BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
@@ -213,7 +213,7 @@ fn native_qwen_prefix_cache_evicts_lru_entries_to_fit_budget() {
         cache.lookup(&namespace, &[2], &metrics).is_some(),
         "newest entry should remain resident"
     );
-    let inner = cache.inner.lock_or_recover("native Qwen prefix cache");
+    let inner = cache.inner.lock_or_panic("native Qwen prefix cache");
     assert_eq!(inner.entries.len(), 1);
     assert_eq!(inner.used_bytes, 32);
 }

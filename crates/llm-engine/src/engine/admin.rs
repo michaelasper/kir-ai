@@ -10,7 +10,7 @@ use crate::{
     mlx::mlx_backend_metrics_snapshot,
     native_qwen::native_qwen_prefix_cache_metrics_snapshot,
     native_text::{native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot},
-    sync_ext::RecoverPoisonedMutex,
+    sync_ext::FailPoisonedMutex,
 };
 use axum::{
     Json,
@@ -310,7 +310,7 @@ pub(super) async fn admin_metrics(
     headers: HeaderMap,
 ) -> Result<Json<AdminMetricsResponse>, EngineError> {
     require_admin(&state, &headers)?;
-    let metrics = *state.metrics.lock_or_recover("metrics");
+    let metrics = *state.metrics.lock_or_panic("metrics");
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
     let time_to_first_token = metrics.time_to_first_token();
@@ -487,7 +487,7 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
     let now = Instant::now();
     if let Some(usage) = state
         .model_store_usage
-        .lock_or_recover("model store usage cache")
+        .lock_or_panic("model store usage cache")
         .current(now)
     {
         return Ok(usage);
@@ -495,7 +495,7 @@ async fn model_store_usage(state: &AppState) -> Result<ModelStoreUsage, EngineEr
     let usage = scan_model_store_usage(&state.model_home).await?;
     state
         .model_store_usage
-        .lock_or_recover("model store usage cache")
+        .lock_or_panic("model store usage cache")
         .store(usage, Instant::now());
     Ok(usage)
 }
@@ -526,7 +526,7 @@ async fn scan_model_store_usage(model_home: &Path) -> Result<ModelStoreUsage, En
 fn invalidate_model_store_usage_cache(state: &AppState) {
     state
         .model_store_usage
-        .lock_or_recover("model store usage cache")
+        .lock_or_panic("model store usage cache")
         .invalidate();
 }
 

@@ -1,4 +1,4 @@
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{BackendCacheContext, BackendModelMetadata, BackendRequest};
 use std::{collections::HashMap, sync::Mutex};
 
@@ -151,7 +151,7 @@ where
         tokens: &[usize],
         metrics: &NativeTextPrefixCacheMetrics,
     ) -> Option<NativeTextPrefixCacheHit<C>> {
-        let mut inner = self.inner.lock_or_recover("native text prefix cache");
+        let mut inner = self.inner.lock_or_panic("native text prefix cache");
         let mut best_key = None;
         let mut best_len = 0;
         for key in inner.entries.keys() {
@@ -198,7 +198,7 @@ where
             namespace,
             tokens: tokens.to_vec(),
         };
-        let mut inner = self.inner.lock_or_recover("native text prefix cache");
+        let mut inner = self.inner.lock_or_panic("native text prefix cache");
         if let Some(existing) = inner.entries.remove(&key) {
             inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
         }
@@ -281,7 +281,7 @@ impl NativeTextPrefixCacheMetrics {
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         let counters = *self
             .counters
-            .lock_or_recover("native text prefix cache metrics");
+            .lock_or_panic("native text prefix cache metrics");
         serde_json::json!({
             "hits": counters.hits,
             "misses": counters.misses,
@@ -299,7 +299,7 @@ impl NativeTextPrefixCacheMetrics {
     fn update(&self, update: impl FnOnce(&mut NativeTextPrefixCacheCounters)) {
         let mut counters = self
             .counters
-            .lock_or_recover("native text prefix cache metrics");
+            .lock_or_panic("native text prefix cache metrics");
         update(&mut counters);
     }
 }

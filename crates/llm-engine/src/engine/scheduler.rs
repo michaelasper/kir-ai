@@ -1,4 +1,4 @@
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use llm_api::{ChatCompletionRequest, CompletionRequest};
 use std::{
     collections::VecDeque,
@@ -228,7 +228,7 @@ impl SchedulerPermit {
         }
         self.scheduler
             .state
-            .lock_or_recover("scheduler")
+            .lock_or_panic("scheduler")
             .transition_to_decode();
         self.phase = GenerationPhase::Decode;
     }
@@ -246,7 +246,7 @@ impl Drop for SchedulerPermit {
     fn drop(&mut self) {
         self.scheduler
             .state
-            .lock_or_recover("scheduler")
+            .lock_or_panic("scheduler")
             .finish_active(self.phase, self.outcome);
         self.scheduler.notify.notify_waiters();
     }
@@ -276,7 +276,7 @@ impl Drop for QueuedSchedulerTicket {
         if self.admitted {
             return;
         }
-        let mut state = self.scheduler.state.lock_or_recover("scheduler");
+        let mut state = self.scheduler.state.lock_or_panic("scheduler");
         let queue = state.queue_mut(self.class);
         if let Some(index) = queue.iter().position(|ticket| *ticket == self.id) {
             queue.remove(index);
@@ -420,7 +420,7 @@ impl ModelScheduler {
         admission_class: SchedulerClass,
         initial_phase: GenerationPhase,
     ) -> Option<SchedulerPermit> {
-        let mut state = self.state.lock_or_recover("scheduler");
+        let mut state = self.state.lock_or_panic("scheduler");
         if state.active_total() >= self.options.concurrency_limit || state.queued_total() > 0 {
             return None;
         }
@@ -436,7 +436,7 @@ impl ModelScheduler {
         self: &Arc<Self>,
         class: SchedulerClass,
     ) -> Result<QueuedSchedulerTicket, SchedulerAcquireError> {
-        let mut state = self.state.lock_or_recover("scheduler");
+        let mut state = self.state.lock_or_panic("scheduler");
         if state.queued_total() >= self.options.queue_limit {
             return Err(SchedulerAcquireError::QueueFull);
         }
@@ -460,7 +460,7 @@ impl ModelScheduler {
         admission_class: SchedulerClass,
         initial_phase: GenerationPhase,
     ) -> Option<SchedulerPermit> {
-        let mut state = self.state.lock_or_recover("scheduler");
+        let mut state = self.state.lock_or_panic("scheduler");
         if state.active_total() >= self.options.concurrency_limit {
             return None;
         }
@@ -480,7 +480,7 @@ impl ModelScheduler {
     }
 
     pub(super) fn snapshot(&self) -> ModelSchedulerSnapshot {
-        let state = self.state.lock_or_recover("scheduler");
+        let state = self.state.lock_or_panic("scheduler");
         ModelSchedulerSnapshot {
             queued_prefill: state.queued_prefill.len(),
             queued_decode: state.queued_decode.len(),

@@ -1,4 +1,4 @@
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use std::{
     collections::HashMap,
     sync::{
@@ -32,7 +32,7 @@ impl ActiveRequestRegistry {
 
     pub(super) fn register(&self, id: String) -> Result<ActiveRequest, RequestRegistrationError> {
         let cancellation = CancellationToken::new();
-        let mut active = self.active.lock_or_recover("active request");
+        let mut active = self.active.lock_or_panic("active request");
         if active.contains_key(&id) {
             return Err(RequestRegistrationError::Conflict(id));
         }
@@ -54,14 +54,14 @@ impl ActiveRequestRegistry {
 
     pub(super) fn active_count(&self) -> usize {
         self.active
-            .lock_or_recover("active request")
+            .lock_or_panic("active request")
             .values()
             .filter(|entry| entry.state.is_active())
             .count()
     }
 
     pub(super) fn cancel(&self, request_id: &str) -> CancelRequestResult {
-        let mut active = self.active.lock_or_recover("active request");
+        let mut active = self.active.lock_or_panic("active request");
         let Some(entry) = active.get_mut(request_id) else {
             return CancelRequestResult::NotFound;
         };
@@ -87,7 +87,7 @@ pub(super) struct ActiveRequest {
 
 impl ActiveRequest {
     pub(super) fn mark_running(&self) -> RequestStartResult {
-        let mut active = self.active.lock_or_recover("active request");
+        let mut active = self.active.lock_or_panic("active request");
         let Some(entry) = active.get_mut(&self.id) else {
             return RequestStartResult::Missing;
         };
@@ -103,7 +103,7 @@ impl ActiveRequest {
     }
 
     pub(super) fn mark_finished(&self) -> RequestFinishResult {
-        let mut active = self.active.lock_or_recover("active request");
+        let mut active = self.active.lock_or_panic("active request");
         let Some(entry) = active.get_mut(&self.id) else {
             return RequestFinishResult::Missing;
         };
@@ -120,9 +120,7 @@ impl ActiveRequest {
 
 impl Drop for ActiveRequest {
     fn drop(&mut self) {
-        self.active
-            .lock_or_recover("active request")
-            .remove(&self.id);
+        self.active.lock_or_panic("active request").remove(&self.id);
     }
 }
 

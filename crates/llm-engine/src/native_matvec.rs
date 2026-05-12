@@ -1,4 +1,4 @@
-use crate::sync_ext::RecoverPoisonedMutex;
+use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{
     CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError, NativeKvCacheTensor,
     NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
@@ -269,7 +269,7 @@ impl NativeTextMetalState {
         };
         if let Some(buffer) = self
             .bf16_matrices
-            .lock_or_recover("BF16 matrix buffer cache")
+            .lock_or_panic("BF16 matrix buffer cache")
             .get(&key)
         {
             native_text_metal_metrics().record_bf16_matrix_cache_hit();
@@ -287,9 +287,7 @@ impl NativeTextMetalState {
                 .new_bf16_matrix_buffer(&weights, rows, columns)
                 .map_err(NativeTextMetalBufferError::Metal)?,
         );
-        let mut matrices = self
-            .bf16_matrices
-            .lock_or_recover("BF16 matrix buffer cache");
+        let mut matrices = self.bf16_matrices.lock_or_panic("BF16 matrix buffer cache");
         if let Some(existing) = matrices.get(&key) {
             native_text_metal_metrics().record_bf16_matrix_cache_hit();
             return Ok(existing);
@@ -327,9 +325,7 @@ impl NativeTextMetalState {
                 columns: tensor.columns,
             };
             {
-                let mut matrices = self
-                    .bf16_matrices
-                    .lock_or_recover("BF16 matrix buffer cache");
+                let mut matrices = self.bf16_matrices.lock_or_panic("BF16 matrix buffer cache");
                 if matrices.get(&key).is_some() {
                     warmup.already_resident += 1;
                     continue;
@@ -348,7 +344,7 @@ impl NativeTextMetalState {
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
         let byte_len =
             cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())?;
-        let mut caches = self.kv_caches.lock_or_recover("Metal KV cache mirror");
+        let mut caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror) if mirror.revision == cache.revision() => Ok(()),
             Some(mirror) => {
@@ -389,7 +385,7 @@ impl NativeTextMetalState {
     ) -> Result<(), llm_metal::MetalError> {
         self.sync_kv_cache(cache)?;
         let values = {
-            let caches = self.kv_caches.lock_or_recover("Metal KV cache mirror");
+            let caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
             let mirror = caches.get(&cache.id()).ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(format!(
                     "missing Metal KV cache mirror for cache {}",
@@ -417,7 +413,7 @@ impl NativeTextMetalState {
         let byte_len = cache_resident_byte_len(cache.recurrent_state().len())?;
         let mut caches = self
             .linear_caches
-            .lock_or_recover("Metal linear attention cache mirror");
+            .lock_or_panic("Metal linear attention cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror) if mirror.revision == cache.revision() => Ok(()),
             Some(mirror) => {
@@ -461,7 +457,7 @@ impl NativeTextMetalState {
         let recurrent_state = {
             let caches = self
                 .linear_caches
-                .lock_or_recover("Metal linear attention cache mirror");
+                .lock_or_panic("Metal linear attention cache mirror");
             let mirror = caches.get(&cache.id()).ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(format!(
                     "missing Metal linear attention cache mirror for cache {}",
@@ -487,7 +483,7 @@ impl NativeTextMetalState {
         {
             let mut caches = self
                 .linear_caches
-                .lock_or_recover("Metal linear attention cache mirror");
+                .lock_or_panic("Metal linear attention cache mirror");
             if let Some(mirror) = caches.get_mut(&cache.id()) {
                 mirror.revision = cache.revision().saturating_add(1);
             }
@@ -510,7 +506,7 @@ impl NativeTextMetalState {
             cache.append_cache_mirror_ids(&mut removed);
         }
         if !removed.kv.is_empty() {
-            let mut mirrors = self.kv_caches.lock_or_recover("Metal KV cache mirror");
+            let mut mirrors = self.kv_caches.lock_or_panic("Metal KV cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
             for id in removed.kv {
@@ -528,7 +524,7 @@ impl NativeTextMetalState {
         if !removed.linear.is_empty() {
             let mut mirrors = self
                 .linear_caches
-                .lock_or_recover("Metal linear attention cache mirror");
+                .lock_or_panic("Metal linear attention cache mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
             for id in removed.linear {
@@ -638,7 +634,7 @@ impl MetalBackendMetrics {
         let warning_key = format!("{kernel}:{bucket}");
         let should_warn = self
             .warned_fallbacks
-            .lock_or_recover("Metal fallback warning")
+            .lock_or_panic("Metal fallback warning")
             .insert(warning_key);
         if should_warn {
             tracing::warn!(
@@ -662,21 +658,21 @@ impl MetalBackendMetrics {
     pub(crate) fn record_bf16_matrix_cache_hit(&self) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
         cache.hits += 1;
     }
 
     pub(crate) fn record_bf16_matrix_cache_miss(&self) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
         cache.misses += 1;
     }
 
     pub(crate) fn record_bf16_matrix_cache_upload(&self, byte_len: u64) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
         cache.uploads += 1;
         cache.bytes_uploaded += byte_len;
     }
@@ -684,7 +680,7 @@ impl MetalBackendMetrics {
     pub(crate) fn record_bf16_matrix_cache_eviction(&self, count: u64, byte_len: u64) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
         cache.evictions += count;
         cache.bytes_evicted += byte_len;
     }
@@ -697,7 +693,7 @@ impl MetalBackendMetrics {
     ) {
         let mut cache = self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
         cache.resident_bytes = resident_bytes;
         cache.resident_buffers = resident_buffers;
         cache.budget_bytes = budget_bytes;
@@ -760,14 +756,14 @@ impl MetalBackendMetrics {
     }
 
     pub(crate) fn snapshot(&self) -> Value {
-        let counters = self.counters.lock_or_recover("Metal metrics");
+        let counters = self.counters.lock_or_panic("Metal metrics");
         let bf16_matrix_cache = *self
             .bf16_matrix_cache
-            .lock_or_recover("Metal BF16 matrix cache metrics");
-        let kv_cache = *self.kv_cache.lock_or_recover("Metal KV cache metrics");
+            .lock_or_panic("Metal BF16 matrix cache metrics");
+        let kv_cache = *self.kv_cache.lock_or_panic("Metal KV cache metrics");
         let linear_cache = *self
             .linear_cache
-            .lock_or_recover("Metal linear cache metrics");
+            .lock_or_panic("Metal linear cache metrics");
         let mut kernels = serde_json::Map::new();
         let mut kernel_names = counters.keys().copied().collect::<Vec<_>>();
         kernel_names.sort_unstable();
@@ -809,12 +805,12 @@ impl MetalBackendMetrics {
             CacheMetricKind::Kv => &self.kv_cache,
             CacheMetricKind::Linear => &self.linear_cache,
         };
-        let mut cache = cache.lock_or_recover("Metal resident cache metrics");
+        let mut cache = cache.lock_or_panic("Metal resident cache metrics");
         update(&mut cache);
     }
 
     fn update_counter(&self, kernel: &'static str, update: impl FnOnce(&mut MetalKernelCounters)) {
-        let mut counters = self.counters.lock_or_recover("Metal metrics");
+        let mut counters = self.counters.lock_or_panic("Metal metrics");
         update(counters.entry(kernel).or_default());
     }
 }
@@ -857,7 +853,7 @@ fn native_text_shared_metal_state(
     };
     let registry = native_text_metal_state_registry();
     if let Some(state) = registry
-        .lock_or_recover("native text Metal state registry")
+        .lock_or_panic("native text Metal state registry")
         .get(&key)
         .cloned()
     {
@@ -866,7 +862,7 @@ fn native_text_shared_metal_state(
     let Some(device) = llm_metal::MetalDevice::system_default_result()? else {
         return Ok(None);
     };
-    let mut states = registry.lock_or_recover("native text Metal state registry");
+    let mut states = registry.lock_or_panic("native text Metal state registry");
     if let Some(state) = states.get(&key).cloned() {
         return Ok(Some(state));
     }

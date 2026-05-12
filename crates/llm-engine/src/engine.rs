@@ -32,20 +32,28 @@ use state::AppState;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync_ext::RecoverPoisonedMutex;
+    use crate::sync_ext::FailPoisonedMutex;
     use std::sync::Mutex;
 
     #[test]
-    fn poisoned_mutex_lock_recovers_inner_state() {
+    fn poisoned_mutex_lock_panics_instead_of_recovering_inner_state() {
         let mutex = Mutex::new(7_u32);
         let _ = std::panic::catch_unwind(|| {
             let _guard = mutex.lock().expect("test lock");
             panic!("poison test mutex");
         });
 
-        *mutex.lock_or_recover("test") += 1;
+        let result = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock_or_panic("test");
+        })
+        .expect_err("poisoned locks must not expose protected state");
 
-        assert_eq!(*mutex.lock_or_recover("test"), 8);
+        let message = result
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| result.downcast_ref::<&'static str>().copied())
+            .expect("panic message is text");
+        assert!(message.contains("test"));
     }
 
     #[test]
