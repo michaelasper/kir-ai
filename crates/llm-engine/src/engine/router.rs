@@ -15,7 +15,7 @@ use super::{
 use axum::{
     Router,
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{Request, header::HeaderName},
     middleware::{self, Next},
     response::Response,
@@ -121,6 +121,7 @@ fn router_for_state(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(llm_api::MAX_JSON_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
             request_id_state,
             attach_request_id_header,

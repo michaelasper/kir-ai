@@ -29,6 +29,40 @@ async fn chat_completions_rejects_zero_max_tokens() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_body_above_json_body_limit() {
+    let oversized_content = "x".repeat(llm_api::MAX_JSON_BODY_BYTES);
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": oversized_content}]
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("length limit"),
+        "body limit rejection should happen before deserializing the JSON body"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_multiple_choices() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(

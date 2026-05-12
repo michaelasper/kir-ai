@@ -1,8 +1,24 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    io::{self, Write},
+};
 use thiserror::Error;
+
+pub const MAX_JSON_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_CHAT_MESSAGES: usize = 128;
+pub const MAX_MESSAGE_CONTENT_BYTES: usize = 1024 * 1024;
+pub const MAX_COMPLETION_PROMPT_BYTES: usize = 1024 * 1024;
+pub const MAX_NAME_BYTES: usize = 1024;
+pub const MAX_TOOLS: usize = 128;
+pub const MAX_TOOL_DESCRIPTION_BYTES: usize = 1024 * 1024;
+pub const MAX_TOOL_SCHEMA_BYTES: usize = 1024 * 1024;
+pub const MAX_TOOL_CALLS_PER_MESSAGE: usize = 128;
+pub const MAX_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_STOP_SEQUENCES: usize = 4;
+pub const MAX_STOP_SEQUENCE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -425,6 +441,11 @@ impl ValidateRequest for ChatCompletionRequest {
         if self.messages.is_empty() {
             return Err(ApiError::invalid_request("messages must not be empty"));
         }
+        validate_len_at_most("messages", self.messages.len(), MAX_CHAT_MESSAGES)?;
+        validate_chat_messages(&self.messages)?;
+        validate_len_at_most("tools", self.tools.len(), MAX_TOOLS)?;
+        validate_tools(&self.tools)?;
+        validate_stop_sequences(&self.stop)?;
         if matches!(
             self.response_format,
             Some(ResponseFormat::JsonSchema { .. })
@@ -487,11 +508,6 @@ impl ValidateRequest for ChatCompletionRequest {
             ));
         }
         validate_choice_count(self.n)?;
-        if self.stop.iter().any(String::is_empty) {
-            return Err(ApiError::invalid_request(
-                "stop sequences must not be empty",
-            ));
-        }
         Ok(())
     }
 }
@@ -504,6 +520,8 @@ impl ValidateRequest for CompletionRequest {
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
         }
+        validate_string_bytes("prompt", &self.prompt, MAX_COMPLETION_PROMPT_BYTES)?;
+        validate_stop_sequences(&self.stop)?;
         validate_sampling_controls(self.temperature, self.top_p)?;
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;
         validate_neutral_penalty("frequency_penalty", self.frequency_penalty)?;
@@ -518,11 +536,145 @@ impl ValidateRequest for CompletionRequest {
             ));
         }
         validate_choice_count(self.n)?;
-        if self.stop.iter().any(String::is_empty) {
+        Ok(())
+    }
+}
+
+fn validate_chat_messages(messages: &[ChatMessage]) -> Result<(), ApiError> {
+    for (index, message) in messages.iter().enumerate() {
+        let label = format!("messages[{index}].content");
+        if let Some(content) = &message.content {
+            validate_string_bytes(&label, content, MAX_MESSAGE_CONTENT_BYTES)?;
+        }
+        if let Some(name) = &message.name {
+            validate_string_bytes(&format!("messages[{index}].name"), name, MAX_NAME_BYTES)?;
+        }
+        if let Some(tool_call_id) = &message.tool_call_id {
+            validate_string_bytes(
+                &format!("messages[{index}].tool_call_id"),
+                tool_call_id,
+                MAX_NAME_BYTES,
+            )?;
+        }
+        let tool_calls_label = format!("messages[{index}].tool_calls");
+        validate_len_at_most(
+            &tool_calls_label,
+            message.tool_calls.len(),
+            MAX_TOOL_CALLS_PER_MESSAGE,
+        )?;
+        for (tool_call_index, tool_call) in message.tool_calls.iter().enumerate() {
+            validate_string_bytes(
+                &format!("messages[{index}].tool_calls[{tool_call_index}].id"),
+                &tool_call.id,
+                MAX_NAME_BYTES,
+            )?;
+            validate_string_bytes(
+                &format!("messages[{index}].tool_calls[{tool_call_index}].function.name"),
+                &tool_call.function.name,
+                MAX_NAME_BYTES,
+            )?;
+            validate_json_bytes_at_most(
+                &format!("messages[{index}].tool_calls[{tool_call_index}].function.arguments"),
+                &tool_call.function.arguments,
+                MAX_TOOL_ARGUMENT_BYTES,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_tools(tools: &[ToolDefinition]) -> Result<(), ApiError> {
+    for (index, tool) in tools.iter().enumerate() {
+        validate_string_bytes(
+            &format!("tools[{index}].function.name"),
+            &tool.function.name,
+            MAX_NAME_BYTES,
+        )?;
+        if let Some(description) = &tool.function.description {
+            validate_string_bytes(
+                &format!("tools[{index}].function.description"),
+                description,
+                MAX_TOOL_DESCRIPTION_BYTES,
+            )?;
+        }
+        validate_json_bytes_at_most(
+            &format!("tools[{index}].function.parameters"),
+            &tool.function.parameters,
+            MAX_TOOL_SCHEMA_BYTES,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_stop_sequences(stop: &[String]) -> Result<(), ApiError> {
+    validate_len_at_most("stop", stop.len(), MAX_STOP_SEQUENCES)?;
+    for (index, sequence) in stop.iter().enumerate() {
+        if sequence.is_empty() {
             return Err(ApiError::invalid_request(
                 "stop sequences must not be empty",
             ));
         }
+        validate_string_bytes(&format!("stop[{index}]"), sequence, MAX_STOP_SEQUENCE_BYTES)?;
+    }
+    Ok(())
+}
+
+fn validate_len_at_most(label: &str, actual: usize, max: usize) -> Result<(), ApiError> {
+    if actual > max {
+        return Err(ApiError::invalid_request(format!(
+            "{label} must contain at most {max} entries"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_string_bytes(label: &str, value: &str, max: usize) -> Result<(), ApiError> {
+    if value.len() > max {
+        return Err(ApiError::invalid_request(format!(
+            "{label} must be at most {max} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_json_bytes_at_most(label: &str, value: &Value, max: usize) -> Result<(), ApiError> {
+    let mut counter = JsonByteCounter::new(max);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(()),
+        Err(_) if counter.exceeded() => Err(ApiError::invalid_request(format!(
+            "{label} must serialize to at most {max} bytes"
+        ))),
+        Err(err) => Err(ApiError::invalid_request(format!(
+            "{label} must serialize as JSON: {err}"
+        ))),
+    }
+}
+
+struct JsonByteCounter {
+    written: usize,
+    max: usize,
+}
+
+impl JsonByteCounter {
+    fn new(max: usize) -> Self {
+        Self { written: 0, max }
+    }
+
+    fn exceeded(&self) -> bool {
+        self.written > self.max
+    }
+}
+
+impl Write for JsonByteCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.written = self.written.saturating_add(buf.len());
+        if self.exceeded() {
+            return Err(io::Error::other("JSON byte limit exceeded"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }

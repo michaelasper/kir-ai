@@ -1,7 +1,10 @@
 use llm_api::{
     ChatCompletionDelta, ChatCompletionRequest, ChatCompletionStreamChoice,
     ChatCompletionStreamResponse, ChatMessage, ChatRole, CompletionRequest, CompletionResponse,
-    CompletionStreamResponse, FinishReason, ResponseFormat, ToolChoice, ValidateRequest,
+    CompletionStreamResponse, FinishReason, MAX_CHAT_MESSAGES, MAX_COMPLETION_PROMPT_BYTES,
+    MAX_MESSAGE_CONTENT_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
+    MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_SCHEMA_BYTES, MAX_TOOLS,
+    ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
 };
 use serde_json::json;
 
@@ -30,6 +33,171 @@ fn validates_required_tool_choice_against_declared_tools() {
     .expect("request json should parse");
 
     request.validate().expect("declared required tool is valid");
+}
+
+#[test]
+fn request_limits_reject_too_many_chat_messages() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello"); MAX_CHAT_MESSAGES + 1],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("chat message count must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages"));
+}
+
+#[test]
+fn request_limits_reject_oversized_chat_message_content() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("x".repeat(MAX_MESSAGE_CONTENT_BYTES + 1))],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("message content bytes must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].content"));
+}
+
+#[test]
+fn request_limits_reject_too_many_tools() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![
+            ToolDefinition::function("lookup", "lookup docs", json!({"type": "object"}));
+            MAX_TOOLS + 1
+        ],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("declared tool count must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("tools"));
+}
+
+#[test]
+fn request_limits_reject_oversized_tool_schema() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "description": "x".repeat(MAX_TOOL_SCHEMA_BYTES),
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("tool schemas must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("parameters"));
+}
+
+#[test]
+fn request_limits_reject_oversized_tool_description() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "x".repeat(MAX_TOOL_DESCRIPTION_BYTES + 1),
+            json!({"type": "object"}),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("tool descriptions must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("description"));
+}
+
+#[test]
+fn request_limits_reject_oversized_tool_call_arguments() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::assistant_tool_call(
+            "call_1",
+            "lookup",
+            json!({"query": "x".repeat(MAX_TOOL_ARGUMENT_BYTES)}),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("tool call argument bytes must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("arguments"));
+}
+
+#[test]
+fn request_limits_reject_too_many_stop_sequences() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        stop: vec!["END".to_owned(); MAX_STOP_SEQUENCES + 1],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("stop sequence count must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("stop"));
+}
+
+#[test]
+fn request_limits_reject_oversized_stop_sequence() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        stop: vec!["x".repeat(MAX_STOP_SEQUENCE_BYTES + 1)],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("stop sequence bytes must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("stop[0]"));
+}
+
+#[test]
+fn request_limits_reject_oversized_completion_prompt() {
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "x".repeat(MAX_COMPLETION_PROMPT_BYTES + 1),
+        ..CompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("completion prompt bytes must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("prompt"));
 }
 
 #[test]
