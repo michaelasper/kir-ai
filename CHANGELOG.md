@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.24](https://github.com/michaelasper/kir-ai/compare/v1.4.23...v1.4.24) (2026-05-12)
+
+### Performance Improvements
+
+* **backend:** make cpu in-place ops allocation-free ([3f1cf1e](https://github.com/michaelasper/kir-ai/commit/3f1cf1e2b1c97a979fb04865479968789d5edef1)), closes [#202](https://github.com/michaelasper/kir-ai/issues/202)
+
 ## [1.4.23](https://github.com/michaelasper/kir-ai/compare/v1.4.22...v1.4.23) (2026-05-12)
 
 ### Performance Improvements
