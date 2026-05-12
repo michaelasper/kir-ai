@@ -70,3 +70,27 @@ tail"#,
     assert_eq!(fenced.tool_calls[0].function.name, "search");
     assert_eq!(fenced.tool_calls[0].function.arguments["q"], "mlx");
 }
+
+#[test]
+fn auto_parser_does_not_treat_plain_json_code_fences_as_xlam_tools() {
+    let text = "Here is config:\n```json\n{\"enabled\":true}\n```";
+
+    let parsed = parse_assistant_for_parser_family(ToolParserFamily::Auto, text)
+        .expect("plain fenced JSON is ordinary content in auto mode");
+
+    assert_eq!(parsed.content, text);
+    assert!(parsed.tool_calls.is_empty());
+}
+
+#[test]
+fn auto_parser_still_detects_xlam_tool_call_marker() {
+    let parsed = parse_assistant_for_parser_family(
+        ToolParserFamily::Auto,
+        r#"[TOOL_CALLS][{"name":"lookup","arguments":{"query":"rust"}}]"#,
+    )
+    .expect("xlam marker parser succeeds");
+
+    assert!(parsed.content.is_empty());
+    assert_eq!(parsed.tool_calls[0].function.name, "lookup");
+    assert_eq!(parsed.tool_calls[0].function.arguments["query"], "rust");
+}

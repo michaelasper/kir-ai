@@ -224,7 +224,7 @@ fn parse_assistant_auto(text: &str) -> Result<ParsedAssistant, ParserError> {
     if text.contains("<tool_call>") || text.contains("<think>") {
         return QwenParser.parse_complete(text);
     }
-    if text.contains("[TOOL_CALLS]") || text.contains("```json") {
+    if text.contains("[TOOL_CALLS]") {
         return parse_xlam_tool_output(text);
     }
     Ok(ParsedAssistant::content(text))
