@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.13](https://github.com/michaelasper/kir-ai/compare/v1.4.12...v1.4.13) (2026-05-12)
+
+### Bug Fixes
+
+* **models:** remove qwen-specific promotion stage ([58cbff4](https://github.com/michaelasper/kir-ai/commit/58cbff4651c16915db2c5d1f5a93345881f2b1b6)), closes [#182](https://github.com/michaelasper/kir-ai/issues/182)
+
 ## [1.4.12](https://github.com/michaelasper/kir-ai/compare/v1.4.11...v1.4.12) (2026-05-12)
 
 ### Bug Fixes
