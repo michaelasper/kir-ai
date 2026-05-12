@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.16](https://github.com/michaelasper/kir-ai/compare/v1.4.15...v1.4.16) (2026-05-12)
+
+### Bug Fixes
+
+* **runtime:** scope unmarked JSON truncation tokens ([191f50e](https://github.com/michaelasper/kir-ai/commit/191f50e165c2a286607ae2bda1f281365770cc2b)), closes [#178](https://github.com/michaelasper/kir-ai/issues/178)
+
 ## [1.4.15](https://github.com/michaelasper/kir-ai/compare/v1.4.14...v1.4.15) (2026-05-12)
 
 ### Bug Fixes
