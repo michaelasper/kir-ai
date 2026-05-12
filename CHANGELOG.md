@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.6](https://github.com/michaelasper/kir-ai/compare/v1.4.5...v1.4.6) (2026-05-12)
+
+### Bug Fixes
+
+* **mlx:** bound sidecar request timeouts ([f1630c8](https://github.com/michaelasper/kir-ai/commit/f1630c8c0ca64160f0c69e6e2637dd91944be86c)), closes [#134](https://github.com/michaelasper/kir-ai/issues/134)
+
 ## [1.4.5](https://github.com/michaelasper/kir-ai/compare/v1.4.4...v1.4.5) (2026-05-12)
 
 ### Bug Fixes
