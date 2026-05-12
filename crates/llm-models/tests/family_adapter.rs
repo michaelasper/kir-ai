@@ -195,6 +195,15 @@ fn backend_execution_capability_matches_native_text_spec_support() {
     }
 }
 
+#[test]
+fn promotion_stage_rejects_qwen_specific_deferral_slug() {
+    let err =
+        serde_json::from_value::<PromotionStage>(serde_json::json!("deferred_until_qwen_parity"))
+            .expect_err("promotion stages must not expose qwen-specific deferral states");
+
+    assert!(err.to_string().contains("unknown variant"));
+}
+
 fn native_qwen_config() -> String {
     r#"{
       "architectures": ["Qwen3ForCausalLM"],
