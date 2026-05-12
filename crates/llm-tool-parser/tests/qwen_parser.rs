@@ -73,6 +73,17 @@ fn preserves_content_around_reasoning_and_tool_tags() {
 }
 
 #[test]
+fn parses_truncated_reasoning_as_partial_reasoning() {
+    let parsed = QwenParser
+        .parse_complete("visible prefix\n<think>Need more tokens")
+        .expect("truncated reasoning parses as partial output");
+
+    assert_eq!(parsed.reasoning.as_deref(), Some("Need more tokens"));
+    assert_eq!(parsed.content, "visible prefix\n");
+    assert!(parsed.tool_calls.is_empty());
+}
+
+#[test]
 fn fails_when_tool_markup_is_malformed() {
     let err = QwenParser
         .parse_complete("<tool_call>{\"name\":\"read_file\",\"arguments\":")

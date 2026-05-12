@@ -244,8 +244,9 @@ fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> 
     };
     let body_start = start + "<think>".len();
     let Some(end_rel) = text[body_start..].find("</think>") else {
-        return Err(ParserError::malformed_tool(
-            "unterminated qwen reasoning tag",
+        return Ok((
+            Some(text[body_start..].to_owned()),
+            text[..start].to_owned(),
         ));
     };
     let end = body_start + end_rel;
