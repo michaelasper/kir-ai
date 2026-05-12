@@ -631,6 +631,101 @@ async fn runtime_streams_llama_text_after_buffering_unmarked_tool_candidate() {
 }
 
 #[tokio::test]
+async fn runtime_streams_llama_text_with_stop_after_buffering_unmarked_tool_candidate() {
+    let backend = FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text: "plain answer STOP ignored",
+        finish_reason: FinishReason::Stop,
+    };
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            stop: vec![" STOP".to_owned()],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Auto),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming starts");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let emitted_content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    let emitted_tool_calls = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .map(|choice| choice.delta.tool_calls.len())
+        .sum::<usize>();
+    assert_eq!(emitted_content, "plain answer");
+    assert_eq!(emitted_tool_calls, 0);
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .next_back()
+            .and_then(|choice| choice.finish_reason.as_ref()),
+        Some(&FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
+async fn runtime_streams_long_llama_text_before_unmarked_tool_buffer_finishes() {
+    const LONG_LLAMA_TEXT: &str = "This is a long plain-text answer with tools declared but no tool call. This is a long plain-text answer with tools declared but no tool call. This is a long plain-text answer with tools declared but no tool call. This is a long plain-text answer with tools declared but no tool call. This is a long plain-text answer with tools declared but no tool call. ";
+    let first = Arc::new(Semaphore::new(0));
+    let finish = Arc::new(Semaphore::new(0));
+    let backend = ToolBoundaryStreamBackend {
+        first: first.clone(),
+        finish,
+        model_id: "local-llama",
+        family: "llama",
+        text: LONG_LLAMA_TEXT,
+    };
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("explain without tools")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Auto),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming starts");
+    let mut events = stream.into_events();
+
+    events
+        .next()
+        .await
+        .expect("seed event")
+        .expect("seed event succeeds");
+    first.add_permits(1);
+    let event = tokio::time::timeout(std::time::Duration::from_millis(200), events.next())
+        .await
+        .expect("long non-tool text should stream before backend finish")
+        .expect("content event")
+        .expect("content event succeeds");
+
+    let ChatCompletionStreamEvent::Chunk(chunk) = event else {
+        panic!("expected content chunk");
+    };
+    let content = chunk.choices[0]
+        .delta
+        .content
+        .as_deref()
+        .expect("content delta");
+    assert!(content.starts_with("This is a long plain-text answer"));
+    assert!(chunk.choices[0].delta.tool_calls.is_empty());
+}
+
+#[tokio::test]
 async fn runtime_streams_llama_json_object_with_tools_emits_content_once() {
     let backend = FamilyStreamBackend {
         model_id: "local-llama",

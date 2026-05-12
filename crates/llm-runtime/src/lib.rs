@@ -25,7 +25,7 @@ mod adapters;
 mod error;
 mod no_progress;
 
-use adapters::{ChatAdapter, SelectedChatAdapter, chat_adapter_for_metadata};
+use adapters::{ChatAdapter, SelectedChatAdapter, ToolMarkupPolicy, chat_adapter_for_metadata};
 pub use error::RuntimeError;
 use no_progress::classify_chat_no_progress;
 pub use no_progress::{NoProgressClass, classify_no_progress};
@@ -642,6 +642,8 @@ enum DeferredEmission {
     UnmarkedToolBuffer,
 }
 
+const UNMARKED_TOOL_BUFFER_FLUSH_THRESHOLD: usize = 256;
+
 fn deferred_emission_strategy(
     json_object_mode: bool,
     requires_tool_choice: bool,
@@ -660,6 +662,22 @@ fn deferred_emission_strategy(
     } else {
         DeferredEmission::None
     }
+}
+
+fn unmarked_tool_buffer_can_stream_text(
+    raw_text: &str,
+    tool_markup_policy: ToolMarkupPolicy,
+) -> bool {
+    !tool_markup_policy.contains_start(raw_text)
+        && !looks_like_unmarked_tool_json_candidate(raw_text)
+}
+
+fn looks_like_unmarked_tool_json_candidate(raw_text: &str) -> bool {
+    let trimmed = raw_text.trim_start();
+    trimmed.is_empty()
+        || trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with("```")
 }
 
 fn streaming_chat_stream<'a>(
@@ -691,6 +709,7 @@ fn streaming_chat_stream<'a>(
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
         let mut stopped_by_sequence = false;
+        let mut stop_at_len = None;
         let deferred = deferred_emission_strategy(
             matches!(request.response_format, Some(ResponseFormat::JsonObject)),
             request_requires_tool_choice(&request),
@@ -716,8 +735,9 @@ fn streaming_chat_stream<'a>(
                             None,
                             None,
                         ));
+                        emitted_len = stop_at;
                     }
-                    emitted_len = stop_at;
+                    stop_at_len = Some(stop_at);
                     finish_reason = llm_api::FinishReason::Stop;
                     stopped_by_sequence = true;
                     break;
@@ -764,17 +784,33 @@ fn streaming_chat_stream<'a>(
                     emitted_tool_calls = parsed_prefix.tool_calls.len();
                     emitted_len = emitted_len.max(tool_prefix_len);
                 }
+                if matches!(deferred, DeferredEmission::UnmarkedToolBuffer)
+                    && unmarked_tool_buffer_can_stream_text(&raw_text, tool_markup_policy)
+                {
+                    let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
+                        .min(tool_markup_policy.safe_emit_len(&raw_text));
+                    if safe_len.saturating_sub(emitted_len)
+                        >= UNMARKED_TOOL_BUFFER_FLUSH_THRESHOLD
+                    {
+                        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                            &completion,
+                            ChatCompletionDelta {
+                                content: Some(raw_text[emitted_len..safe_len].to_owned()),
+                                ..ChatCompletionDelta::default()
+                            },
+                            None,
+                            None,
+                        ));
+                        emitted_len = safe_len;
+                    }
+                }
             }
             if let Some(reason) = chunk.finish_reason {
                 finish_reason = reason;
                 break;
             }
         }
-        let visible_len = if stopped_by_sequence {
-            emitted_len
-        } else {
-            raw_text.len()
-        };
+        let visible_len = stop_at_len.unwrap_or(raw_text.len());
         if !stopped_by_sequence
             && emitted_len < visible_len
             && matches!(deferred, DeferredEmission::None)
@@ -831,17 +867,21 @@ fn streaming_chat_stream<'a>(
                 ));
             }
             DeferredEmission::UnmarkedToolBuffer
-                if parsed.tool_calls.is_empty() && !parsed.content.is_empty() =>
+                if parsed.tool_calls.is_empty() =>
             {
-                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                    &completion,
-                    ChatCompletionDelta {
-                        content: Some(parsed.content.clone()),
-                        ..ChatCompletionDelta::default()
-                    },
-                    None,
-                    None,
-                ));
+                if let Some(remaining_content) = parsed.content.get(emitted_len..)
+                    && !remaining_content.is_empty()
+                {
+                    yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                        &completion,
+                        ChatCompletionDelta {
+                            content: Some(remaining_content.to_owned()),
+                            ..ChatCompletionDelta::default()
+                        },
+                        None,
+                        None,
+                    ));
+                }
             }
             _ => {}
         }
