@@ -7,6 +7,7 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
+use llm_models::ModelFamily;
 use llm_runtime::{ChatCompletionStreamEvent, NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};

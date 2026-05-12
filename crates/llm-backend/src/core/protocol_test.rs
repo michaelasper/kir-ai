@@ -3,13 +3,15 @@ use super::{
     ModelBackend,
 };
 use async_trait::async_trait;
-use llm_api::{FinishReason, ToolDefinition};
+use llm_api::{ChatRole, FinishReason, ToolDefinition};
+use llm_models::ModelFamily;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ProtocolTestBackend {
     model_id: String,
     text: String,
+    family: ModelFamily,
     required_tool_protocol: bool,
     json_object_protocol: bool,
 }
@@ -19,9 +21,15 @@ impl ProtocolTestBackend {
         Self {
             model_id: model_id.into(),
             text: text.into(),
+            family: ModelFamily::Qwen,
             required_tool_protocol: false,
             json_object_protocol: false,
         }
+    }
+
+    pub fn with_family(mut self, family: ModelFamily) -> Self {
+        self.family = family;
+        self
     }
 
     pub fn with_required_tool_protocol(mut self) -> Self {
@@ -42,7 +50,8 @@ impl ModelBackend for ProtocolTestBackend {
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata::new(self.model_id.clone(), "protocol-test").with_family("qwen")
+        BackendModelMetadata::new(self.model_id.clone(), "protocol-test")
+            .with_family(self.family.canonical_slug())
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -58,15 +67,10 @@ impl ModelBackend for ProtocolTestBackend {
             ));
         }
         let (text, finish_reason) = if self.required_tool_protocol
-            && let Some((name, arguments)) =
-                protocol_test_tool_call(&request.prompt, request.required_tool_choice.as_ref())
+            && let Some((name, arguments)) = protocol_test_tool_call(self.family, &request)
         {
             (
-                serde_json::json!({
-                    "name": name,
-                    "arguments": arguments,
-                })
-                .to_string(),
+                render_tool_call(self.family, &name, &arguments),
                 FinishReason::ToolCalls,
             )
         } else if self.json_object_protocol && request.json_object_mode {
@@ -80,15 +84,10 @@ impl ModelBackend for ProtocolTestBackend {
         } else {
             (self.text.clone(), FinishReason::Stop)
         };
-        let text = if matches!(finish_reason, FinishReason::ToolCalls) {
-            format!("<tool_call>{text}</tool_call>")
-        } else {
-            text
-        };
         Ok(BackendOutput {
-            completion_tokens: count_tokens(&text),
+            completion_tokens: count_tokens(self.family, &text),
             text,
-            prompt_tokens: count_tokens(&request.prompt),
+            prompt_tokens: count_tokens(self.family, &request.prompt),
             finish_reason,
         })
     }
@@ -106,28 +105,94 @@ impl ModelBackend for ProtocolTestBackend {
 }
 
 fn protocol_test_tool_call(
-    prompt: &str,
+    family: ModelFamily,
+    request: &BackendRequest,
+) -> Option<(String, serde_json::Value)> {
+    let tools = request_tool_definitions(family, request)?;
+    let user = request_last_user_message(family, request);
+    protocol_test_tool_call_from_tools(&user, &tools, request.required_tool_choice.as_ref())
+}
+
+fn request_tool_definitions(
+    family: ModelFamily,
+    request: &BackendRequest,
+) -> Option<Vec<ToolDefinition>> {
+    request
+        .cache_context
+        .tool_schema
+        .as_deref()
+        .and_then(|tool_schema| serde_json::from_str(tool_schema).ok())
+        .or_else(|| rendered_tool_definitions(family, &request.prompt))
+}
+
+fn request_last_user_message(family: ModelFamily, request: &BackendRequest) -> String {
+    if let Some(content) = request
+        .chat_context
+        .as_ref()
+        .and_then(|context| {
+            context
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == ChatRole::User)
+        })
+        .and_then(|message| message.content.as_deref())
+    {
+        return content.to_owned();
+    }
+    last_user_message(family, &request.prompt)
+}
+
+fn protocol_test_tool_call_from_tools(
+    user: &str,
+    tools: &[ToolDefinition],
     required_choice: Option<&BackendToolChoice>,
 ) -> Option<(String, serde_json::Value)> {
-    let tools = rendered_tool_definitions(prompt)?;
     let tool = match required_choice {
         Some(BackendToolChoice::RequiredFunction(name)) => {
             tools.iter().find(|tool| tool.function.name == *name)?
         }
-        Some(BackendToolChoice::RequiredAny) => select_required_any_tool(prompt, &tools)?,
-        None => select_auto_tool(prompt, &tools)?,
+        Some(BackendToolChoice::RequiredAny) => select_required_any_tool(user, tools)?,
+        None => select_auto_tool(user, tools)?,
     };
     Some((
         tool.function.name.clone(),
-        protocol_test_tool_arguments(prompt, tool),
+        protocol_test_tool_arguments(user, tool),
     ))
 }
 
-fn rendered_tool_definitions(prompt: &str) -> Option<Vec<ToolDefinition>> {
-    const TOOL_PREAMBLE: &str =
-        "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n";
-    let (_, rest) = prompt.split_once(TOOL_PREAMBLE)?;
-    let (tools_json, _) = rest.split_once("<|im_end|>")?;
+fn rendered_tool_definitions(family: ModelFamily, prompt: &str) -> Option<Vec<ToolDefinition>> {
+    match family {
+        ModelFamily::Qwen => rendered_tool_definitions_between(
+            prompt,
+            "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n",
+            "<|im_end|>",
+        ),
+        ModelFamily::DeepSeek => rendered_tool_definitions_between(
+            prompt,
+            "You may call tools by emitting DeepSeek tool call blocks with exact tool names.\n",
+            "\n\n",
+        ),
+        ModelFamily::Llama => rendered_tool_definitions_between(
+            prompt,
+            concat!(
+                "Tools are available. To call a function, respond with JSON in the form ",
+                r#"{"name":"function_name","arguments":{"argument":"value"}}"#,
+                ". Do not use variables.\n"
+            ),
+            "<|eot_id|>",
+        ),
+        ModelFamily::Gemma => None,
+    }
+}
+
+fn rendered_tool_definitions_between(
+    prompt: &str,
+    preamble: &str,
+    terminator: &str,
+) -> Option<Vec<ToolDefinition>> {
+    let (_, rest) = prompt.split_once(preamble)?;
+    let (tools_json, _) = rest.split_once(terminator)?;
     serde_json::from_str(tools_json).ok()
 }
 
@@ -164,9 +229,8 @@ fn select_scored_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&
 }
 
 fn lexical_user_terms(prompt: &str) -> Vec<String> {
-    let user = last_user_message(prompt);
-    let mut terms = lexical_terms(&user);
-    if argument_tokens(&user)
+    let mut terms = lexical_terms(prompt);
+    if argument_tokens(prompt)
         .iter()
         .any(|token| token.contains('.') || token.contains('/'))
     {
@@ -265,11 +329,10 @@ fn is_lexical_stop_word(term: &str) -> bool {
     )
 }
 
-fn protocol_test_tool_arguments(prompt: &str, tool: &ToolDefinition) -> serde_json::Value {
-    let user = last_user_message(prompt);
+fn protocol_test_tool_arguments(user: &str, tool: &ToolDefinition) -> serde_json::Value {
     let mut arguments = serde_json::Map::new();
     for name in required_parameter_names(&tool.function.parameters) {
-        if let Some(value) = argument_value_for_parameter(&user, &name) {
+        if let Some(value) = argument_value_for_parameter(user, &name) {
             arguments.insert(name, serde_json::Value::String(value));
         }
     }
@@ -354,26 +417,162 @@ fn is_argument_stop_word(token: &str) -> bool {
     )
 }
 
-fn last_user_message(prompt: &str) -> String {
-    const USER_START: &str = "<|im_start|>user\n";
-    let Some(start) = prompt.rfind(USER_START) else {
-        return prompt.to_owned();
-    };
-    let body_start = start + USER_START.len();
-    let Some(end_rel) = prompt[body_start..].find("<|im_end|>") else {
-        return prompt[body_start..].to_owned();
-    };
-    prompt[body_start..body_start + end_rel].to_owned()
+fn render_tool_call(family: ModelFamily, name: &str, arguments: &serde_json::Value) -> String {
+    match family {
+        ModelFamily::Qwen => format!(
+            "<tool_call>{}</tool_call>",
+            serde_json::json!({
+                "name": name,
+                "arguments": arguments,
+            })
+        ),
+        ModelFamily::DeepSeek => format!(
+            concat!(
+                "<｜tool▁calls▁begin｜>",
+                "<｜tool▁call▁begin｜>function<｜tool▁sep｜>{name}\n",
+                "```json\n{arguments}\n```",
+                "<｜tool▁call▁end｜>",
+                "<｜tool▁calls▁end｜>",
+                "<｜end▁of▁sentence｜>"
+            ),
+            name = name,
+            arguments = arguments,
+        ),
+        ModelFamily::Gemma => format!(
+            "<|tool_call>call:{name}{}<tool_call|>",
+            render_gemma_argument(arguments)
+        ),
+        ModelFamily::Llama => serde_json::json!({
+            "name": name,
+            "arguments": arguments,
+        })
+        .to_string(),
+    }
 }
 
-fn count_tokens(text: &str) -> u64 {
-    let normalized = text
-        .replace("<|im_start|>system", " ")
-        .replace("<|im_start|>user", " ")
-        .replace("<|im_start|>assistant", " ")
-        .replace("<|im_start|>tool", " ")
-        .replace("<|im_end|>", " ")
-        .replace("<think>", " ")
-        .replace("</think>", " ");
+fn render_gemma_argument(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_owned(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => render_gemma_string(value),
+        serde_json::Value::Array(items) => {
+            let inner = items
+                .iter()
+                .map(render_gemma_argument)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{inner}]")
+        }
+        serde_json::Value::Object(map) => {
+            let inner = map
+                .iter()
+                .map(|(key, value)| format!("{key}:{}", render_gemma_argument(value)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{inner}}}")
+        }
+    }
+}
+
+fn render_gemma_string(value: &str) -> String {
+    format!("<|\"|>{}<|\"|>", value.replace("<|\"|>", ""))
+}
+
+fn last_user_message(family: ModelFamily, prompt: &str) -> String {
+    match family {
+        ModelFamily::Qwen => last_prompt_body(prompt, "<|im_start|>user\n", &["<|im_end|>"]),
+        ModelFamily::Gemma => last_prompt_body(prompt, "<|turn>user\n", &["<turn|>"]),
+        ModelFamily::DeepSeek => last_prompt_body(
+            prompt,
+            "<｜User｜>",
+            &["<｜Assistant｜>", "<｜tool▁outputs▁begin｜>"],
+        ),
+        ModelFamily::Llama => last_prompt_body(
+            prompt,
+            "<|start_header_id|>user<|end_header_id|>\n\n",
+            &["<|eot_id|>"],
+        ),
+    }
+}
+
+fn last_prompt_body(prompt: &str, start_marker: &str, end_markers: &[&str]) -> String {
+    let Some(start) = prompt.rfind(start_marker) else {
+        return prompt.to_owned();
+    };
+    let body_start = start + start_marker.len();
+    let rest = &prompt[body_start..];
+    let body_end = end_markers
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .unwrap_or(rest.len());
+    rest[..body_end].to_owned()
+}
+
+fn count_tokens(family: ModelFamily, text: &str) -> u64 {
+    let mut normalized = text.to_owned();
+    for token in prompt_control_tokens(family) {
+        normalized = normalized.replace(token, " ");
+    }
     normalized.split_whitespace().count().max(1) as u64
+}
+
+fn prompt_control_tokens(family: ModelFamily) -> &'static [&'static str] {
+    match family {
+        ModelFamily::Qwen => &[
+            "<|im_start|>system",
+            "<|im_start|>user",
+            "<|im_start|>assistant",
+            "<|im_start|>tool",
+            "<|im_end|>",
+            "<tool_call>",
+            "</tool_call>",
+            "<think>",
+            "</think>",
+        ],
+        ModelFamily::DeepSeek => &[
+            "<｜begin▁of▁sentence｜>",
+            "<｜end▁of▁sentence｜>",
+            "<｜User｜>",
+            "<｜Assistant｜>",
+            "<｜tool▁calls▁begin｜>",
+            "<｜tool▁calls▁end｜>",
+            "<｜tool▁call▁begin｜>",
+            "<｜tool▁call▁end｜>",
+            "<｜tool▁sep｜>",
+            "<｜tool▁outputs▁begin｜>",
+            "<｜tool▁outputs▁end｜>",
+            "<｜tool▁output▁begin｜>",
+            "<｜tool▁output▁end｜>",
+            "<think>",
+            "</think>",
+        ],
+        ModelFamily::Gemma => &[
+            "<bos>",
+            "<|turn>system",
+            "<|turn>user",
+            "<|turn>model",
+            "<turn|>",
+            "<|channel>thought",
+            "<channel|>",
+            "<|tool_call>",
+            "<tool_call|>",
+            "<|tool_response>",
+            "<tool_response|>",
+            "<|tool>",
+            "<tool|>",
+            "<|think|>",
+        ],
+        ModelFamily::Llama => &[
+            "<|begin_of_text|>",
+            "<|end_of_text|>",
+            "<|start_header_id|>system<|end_header_id|>",
+            "<|start_header_id|>user<|end_header_id|>",
+            "<|start_header_id|>assistant<|end_header_id|>",
+            "<|start_header_id|>ipython<|end_header_id|>",
+            "<|eot_id|>",
+            "<|eom_id|>",
+        ],
+    }
 }
