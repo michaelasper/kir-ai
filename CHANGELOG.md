@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.35](https://github.com/michaelasper/kir-ai/compare/v1.4.34...v1.4.35) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** accept legacy deterministic backend flag ([52a060a](https://github.com/michaelasper/kir-ai/commit/52a060a39f7502b7bc1e22b660acbb4157eb3d94))
+
 ## [1.4.34](https://github.com/michaelasper/kir-ai/compare/v1.4.33...v1.4.34) (2026-05-12)
 
 ### Bug Fixes
