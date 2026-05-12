@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.8](https://github.com/michaelasper/kir-ai/compare/v1.4.7...v1.4.8) (2026-05-12)
+
+### Bug Fixes
+
+* **tools:** align tool argument keys ([468c95f](https://github.com/michaelasper/kir-ai/commit/468c95f8e2798d6875ebcfa32d3dd30b8c2554d3)), closes [#180](https://github.com/michaelasper/kir-ai/issues/180)
+
 ## [1.4.7](https://github.com/michaelasper/kir-ai/compare/v1.4.6...v1.4.7) (2026-05-12)
 
 ### Bug Fixes
