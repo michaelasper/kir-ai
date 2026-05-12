@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.22](https://github.com/michaelasper/kir-ai/compare/v1.4.21...v1.4.22) (2026-05-12)
+
+### Performance Improvements
+
+* **metal:** reuse matvec scratch buffers ([c1cb493](https://github.com/michaelasper/kir-ai/commit/c1cb4930ad4a1af7a0d2f4090a818084085a3245)), closes [#141](https://github.com/michaelasper/kir-ai/issues/141)
+
 ## [1.4.21](https://github.com/michaelasper/kir-ai/compare/v1.4.20...v1.4.21) (2026-05-12)
 
 ### Performance Improvements
