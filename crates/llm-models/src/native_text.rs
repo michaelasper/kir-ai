@@ -18,16 +18,35 @@ impl NativeTextModelSpec {
         }
     }
 
+    pub fn from_config_value(
+        family: ModelFamily,
+        value: serde_json::Value,
+    ) -> Result<Self, ModelSpecError> {
+        match family {
+            ModelFamily::Qwen => Ok(Self::Qwen(QwenModelSpec::from_config_value(value)?)),
+            ModelFamily::Gemma => Ok(Self::Gemma(GemmaModelSpec::from_config_value(value)?)),
+            family => Err(ModelSpecError::unsupported(format!(
+                "native text execution for family `{}` is deferred until native tensor support exists",
+                family.canonical_slug()
+            ))),
+        }
+    }
+
     pub fn infer_from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        Self::infer_from_config_value(value)
+    }
+
+    pub fn infer_from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
         let model_type = value
             .get("model_type")
             .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
             .ok_or_else(|| ModelSpecError::unsupported("native text config missing model_type"))?;
-        match model_type {
-            "qwen3" | "qwen3_5_moe" => Self::from_config_json(ModelFamily::Qwen, json),
-            "gemma4" | "gemma4_text" => Self::from_config_json(ModelFamily::Gemma, json),
+        match model_type.as_str() {
+            "qwen3" | "qwen3_5_moe" => Self::from_config_value(ModelFamily::Qwen, value),
+            "gemma4" | "gemma4_text" => Self::from_config_value(ModelFamily::Gemma, value),
             other => Err(ModelSpecError::unsupported(format!(
                 "native text config model_type `{other}` is not supported for native tensor execution"
             ))),

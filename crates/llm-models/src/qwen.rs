@@ -189,6 +189,16 @@ impl QwenModelSpec {
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let config: RawQwenConfig = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        Self::from_raw_config(config)
+    }
+
+    pub fn from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
+        let config: RawQwenConfig = serde_json::from_value(value)
+            .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        Self::from_raw_config(config)
+    }
+
+    fn from_raw_config(config: RawQwenConfig) -> Result<Self, ModelSpecError> {
         let architecture = config
             .architectures
             .first()

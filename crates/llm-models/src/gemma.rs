@@ -54,6 +54,10 @@ impl GemmaModelSpec {
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
+        Self::from_config_value(value)
+    }
+
+    pub fn from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
         let model_type = value
             .get("model_type")
             .and_then(serde_json::Value::as_str)

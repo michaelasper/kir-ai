@@ -99,6 +99,21 @@ fn native_text_model_spec_routes_qwen_config_through_family_contract() {
 }
 
 #[test]
+fn native_text_model_spec_accepts_preparsed_config_values() {
+    let qwen_config = serde_json::from_str(&native_qwen_config()).expect("qwen config value");
+    let qwen = NativeTextModelSpec::infer_from_config_value(qwen_config)
+        .expect("native Qwen text spec infers from parsed config");
+
+    assert_eq!(qwen.family(), ModelFamily::Qwen);
+
+    let gemma_config = serde_json::from_str(&native_gemma_config()).expect("gemma config value");
+    let gemma = NativeTextModelSpec::from_config_value(ModelFamily::Gemma, gemma_config)
+        .expect("native Gemma text spec parses from parsed config");
+
+    assert_eq!(gemma.family(), ModelFamily::Gemma);
+}
+
+#[test]
 fn native_text_model_spec_rejects_families_without_native_tensor_support() {
     let err = NativeTextModelSpec::from_config_json(
         ModelFamily::DeepSeek,
