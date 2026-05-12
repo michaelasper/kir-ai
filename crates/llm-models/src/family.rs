@@ -228,7 +228,7 @@ impl ModelFamilyAdapter for DeepSeekFamilyAdapter {
             raw_completion: true,
             reasoning_channels: false,
             multimodal_artifacts: false,
-            backend_execution: true,
+            backend_execution: false,
         }
     }
 
@@ -308,7 +308,7 @@ impl ModelFamilyAdapter for LlamaFamilyAdapter {
             raw_completion: true,
             reasoning_channels: false,
             multimodal_artifacts: false,
-            backend_execution: true,
+            backend_execution: false,
         }
     }
 
