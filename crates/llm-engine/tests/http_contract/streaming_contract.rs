@@ -245,6 +245,49 @@ async fn chat_stream_stall_cancels_backend_work() {
 }
 
 #[tokio::test]
+async fn chat_stream_stall_detects_slow_drip_output() {
+    let cancelled = Arc::new(Notify::new());
+    let response = build_router_with_backend_and_options(
+        Box::new(SlowDripStreamBackend {
+            delay: Duration::from_millis(40),
+            cancelled: cancelled.clone(),
+        }),
+        EngineOptions {
+            stream_stall_timeout: Some(Duration::from_millis(50)),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(Duration::from_millis(250), body_text(response.into_body()))
+        .await
+        .expect("slow drip should trip stream stall timeout");
+    assert!(body.contains("\"code\":\"stream_stalled\""), "body: {body}");
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+        .await
+        .expect("stream stall cancels slow drip backend");
+}
+
+#[tokio::test]
 async fn chat_stream_runtime_errors_include_stable_metadata() {
     let response = build_router_with_backend(Box::new(FailingStreamBackend))
         .oneshot(
@@ -642,6 +685,63 @@ async fn dropping_admin_cancelled_stream_does_not_count_as_client_disconnect() {
     .await;
     assert_eq!(metrics["stream_client_disconnected_requests"], 0);
     assert_eq!(metrics["scheduler_completed_requests"], 0);
+}
+
+struct SlowDripStreamBackend {
+    delay: Duration,
+    cancelled: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for SlowDripStreamBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "slow-drip-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_stream_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "generate_stream_with_cancel should be used".to_owned(),
+        ))
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let delay = self.delay;
+        let cancelled = self.cancelled.clone();
+        tokio::spawn(async move {
+            cancellation.cancelled().await;
+            cancelled.notify_waiters();
+        });
+        async_stream::try_stream! {
+            loop {
+                tokio::time::sleep(delay).await;
+                yield BackendStreamChunk {
+                    text: "x".to_owned(),
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    finish_reason: None,
+                };
+            }
+        }
+        .boxed()
+    }
 }
 
 struct PendingCancellableStreamBackend {

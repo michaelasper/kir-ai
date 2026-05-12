@@ -20,6 +20,11 @@ use std::{
     convert::Infallible,
     time::{Duration, Instant},
 };
+use tokio::time::Instant as TokioInstant;
+
+// After the first real delta, require more than a one-byte drip before
+// extending the stream stall deadline again.
+const MIN_STREAM_STALL_PROGRESS_BYTES: usize = 2;
 
 pub(super) fn stream_runtime_events<'a, E, S>(
     lifecycle: StreamRunLifecycle,
@@ -35,10 +40,11 @@ where
         let mut lifecycle = lifecycle;
         let mut events = events;
         let mut ttft_recorded = false;
+        let mut stall_deadline = StreamStallDeadline::new(lifecycle.stream_stall_timeout());
         loop {
             match next_stream_event(
                 &mut events,
-                lifecycle.stream_stall_timeout(),
+                stall_deadline.deadline(),
                 &lifecycle.active_request.cancellation,
             )
             .await
@@ -62,6 +68,7 @@ where
                             );
                             ttft_recorded = true;
                         }
+                        stall_deadline.record_chunk(&chunk);
                         yield sse_json_event(chunk);
                     }
                     EngineStreamStep::Complete(usage) => {
@@ -150,10 +157,10 @@ fn request_cancelled_stream_events(
 fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, Infallible>> {
     let message = match timeout {
         Some(timeout) => format!(
-            "stream stalled for {} ms without backend output",
+            "stream stalled for {} ms without meaningful backend output",
             timeout.as_millis()
         ),
-        None => "stream stalled without backend output".to_owned(),
+        None => "stream stalled without meaningful backend output".to_owned(),
     };
     vec![
         sse_json_event(json!({
@@ -420,9 +427,58 @@ enum StreamWaitError {
     Cancelled,
 }
 
+#[derive(Debug)]
+struct StreamStallDeadline {
+    timeout: Option<Duration>,
+    deadline: Option<TokioInstant>,
+    seen_progress: bool,
+    bytes_since_deadline_reset: usize,
+}
+
+impl StreamStallDeadline {
+    fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            timeout,
+            deadline: timeout.map(|timeout| TokioInstant::now() + timeout),
+            seen_progress: false,
+            bytes_since_deadline_reset: 0,
+        }
+    }
+
+    fn deadline(&self) -> Option<TokioInstant> {
+        self.deadline
+    }
+
+    fn record_chunk(&mut self, chunk: &impl StreamChunkProgress) {
+        let progress_bytes = chunk.real_delta_bytes();
+        if progress_bytes == 0 || self.timeout.is_none() {
+            return;
+        }
+        if !self.seen_progress {
+            self.seen_progress = true;
+            self.bytes_since_deadline_reset = 0;
+            self.reset_deadline();
+            return;
+        }
+        self.bytes_since_deadline_reset = self
+            .bytes_since_deadline_reset
+            .saturating_add(progress_bytes);
+        if self.bytes_since_deadline_reset >= MIN_STREAM_STALL_PROGRESS_BYTES {
+            self.bytes_since_deadline_reset = 0;
+            self.reset_deadline();
+        }
+    }
+
+    fn reset_deadline(&mut self) {
+        if let Some(timeout) = self.timeout {
+            self.deadline = Some(TokioInstant::now() + timeout);
+        }
+    }
+}
+
 async fn next_stream_event<S, T>(
     events: &mut S,
-    timeout: Option<Duration>,
+    deadline: Option<TokioInstant>,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Option<Result<T, RuntimeError>>, StreamWaitError>
 where
@@ -433,13 +489,18 @@ where
     }
     let next = events.next();
     tokio::pin!(next);
-    match timeout {
-        Some(timeout) => {
+    match deadline {
+        Some(deadline) => {
+            if TokioInstant::now() >= deadline {
+                return Err(StreamWaitError::Stalled);
+            }
+            let sleep = tokio::time::sleep_until(deadline);
+            tokio::pin!(sleep);
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => Err(StreamWaitError::Cancelled),
                 result = &mut next => Ok(result),
-                () = tokio::time::sleep(timeout) => Err(StreamWaitError::Stalled),
+                () = &mut sleep => Err(StreamWaitError::Stalled),
             }
         }
         None => {
@@ -465,6 +526,7 @@ pub(super) enum EngineStreamStep<C> {
 
 pub(super) trait StreamChunkProgress {
     fn has_real_delta(&self) -> bool;
+    fn real_delta_bytes(&self) -> usize;
 }
 
 impl EngineStreamEvent for ChatCompletionStreamEvent {
@@ -502,10 +564,36 @@ impl StreamChunkProgress for ChatCompletionStreamResponse {
                 || !choice.delta.tool_calls.is_empty()
         })
     }
+
+    fn real_delta_bytes(&self) -> usize {
+        self.choices
+            .iter()
+            .map(|choice| {
+                choice.delta.content.as_ref().map_or(0, String::len)
+                    + choice
+                        .delta
+                        .tool_calls
+                        .iter()
+                        .map(|tool_call| {
+                            let bytes = tool_call.id.as_ref().map_or(0, String::len)
+                                + tool_call.function.as_ref().map_or(0, |function| {
+                                    function.name.as_ref().map_or(0, String::len)
+                                        + function.arguments.as_ref().map_or(0, String::len)
+                                });
+                            bytes.max(1)
+                        })
+                        .sum::<usize>()
+            })
+            .sum()
+    }
 }
 
 impl StreamChunkProgress for CompletionStreamResponse {
     fn has_real_delta(&self) -> bool {
-        self.choices.iter().any(|choice| !choice.text.is_empty())
+        self.real_delta_bytes() > 0
+    }
+
+    fn real_delta_bytes(&self) -> usize {
+        self.choices.iter().map(|choice| choice.text.len()).sum()
     }
 }
