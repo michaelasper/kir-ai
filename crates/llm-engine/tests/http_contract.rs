@@ -10,7 +10,7 @@ use llm_backend::{
     ModelBackend,
 };
 use llm_engine::{
-    EngineOptions, build_router, build_router_with_backend, build_router_with_backend_and_options,
+    EngineOptions, build_router, build_router_with_backend_and_options,
     build_router_with_backend_and_options_allowing_unauthenticated_admin,
     build_router_with_protocol_test_backend,
 };
@@ -66,6 +66,10 @@ fn build_router_with_unauthenticated_admin(backend: Box<dyn ModelBackend>) -> Ro
         .expect("unauthenticated admin test router builds")
 }
 
+fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
+    llm_engine::build_router_with_backend(backend).expect("test router builds")
+}
+
 fn build_router_with_unauthenticated_admin_and_options(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
@@ -94,6 +98,14 @@ impl ModelBackend for FailingBackend {
     ) -> Result<BackendOutput, BackendError> {
         generate_after_pre_cancel(self, request, cancellation).await
     }
+}
+
+#[test]
+fn public_router_builders_with_backend_return_config_results() {
+    let _: Result<Router, llm_engine::EngineConfigError> =
+        llm_engine::build_router_with_backend(Box::new(FailingBackend));
+    let _: Result<Router, llm_engine::EngineConfigError> =
+        llm_engine::build_router_with_backend_and_concurrency(Box::new(FailingBackend), 1);
 }
 
 struct StaticBackend {

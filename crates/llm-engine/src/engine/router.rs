@@ -50,14 +50,16 @@ pub fn build_router_with_protocol_test_backend() -> Router {
     .unwrap_or_else(|err| unreachable!("protocol test backend options are valid: {err}"))
 }
 
-pub fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
+pub fn build_router_with_backend(
+    backend: Box<dyn ModelBackend>,
+) -> Result<Router, EngineConfigError> {
     build_router_with_backend_and_concurrency(backend, 1)
 }
 
 pub fn build_router_with_backend_and_concurrency(
     backend: Box<dyn ModelBackend>,
     concurrency_limit: usize,
-) -> Router {
+) -> Result<Router, EngineConfigError> {
     build_router_with_backend_and_options(
         backend,
         EngineOptions {
@@ -65,9 +67,6 @@ pub fn build_router_with_backend_and_concurrency(
             ..EngineOptions::default()
         },
     )
-    .unwrap_or_else(|err| {
-        unreachable!("EngineOptions with valid concurrency_limit cannot fail: {err}")
-    })
 }
 
 pub fn build_router_with_backend_and_options(
