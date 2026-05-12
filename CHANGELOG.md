@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.3](https://github.com/michaelasper/kir-ai/compare/v1.4.2...v1.4.3) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** require explicit admin auth opt-in ([77c166e](https://github.com/michaelasper/kir-ai/commit/77c166e116516b370d27e457982013311eeeddc6)), closes [#145](https://github.com/michaelasper/kir-ai/issues/145) [#146](https://github.com/michaelasper/kir-ai/issues/146)
+
 ## [1.4.2](https://github.com/michaelasper/kir-ai/compare/v1.4.1...v1.4.2) (2026-05-12)
 
 ### Bug Fixes
