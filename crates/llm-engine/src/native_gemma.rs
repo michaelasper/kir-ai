@@ -16,7 +16,8 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     GemmaLayerCache, InferenceScratchpad, ModelBackend, NativeMatvecBackend,
     NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec,
-    gemma_layer_caches_for_spec, native_decode_token_with_cache_for_spec_ref_with_matvec,
+    gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
+    native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec,
 };
 use llm_hub::SnapshotManifest;
@@ -118,6 +119,15 @@ impl NativeGemmaBackend {
                 anyhow::anyhow!("native Gemma safetensors materialization failed: {err}")
             })?;
         }
+        let static_f32_tensors = gemma_static_f32_tensors_for_spec(&spec);
+        let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
+        tracing::info!(
+            candidates = static_f32_warmup.candidates,
+            loaded = static_f32_warmup.loaded,
+            resident_bytes = static_f32_warmup.resident_bytes,
+            already_resident = static_f32_warmup.already_resident,
+            "native Gemma static f32 tensor cache warm-up complete"
+        );
         let matvec = NativeTextMatvecBackend::system_default(
             native_text_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
             &cache_namespace,

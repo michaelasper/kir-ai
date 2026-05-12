@@ -17,6 +17,7 @@ use llm_backend::{
     QwenLayerCache, SafeTensorShardStore, SamplingConfig,
     native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
+    qwen_static_f32_tensors_for_spec,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
@@ -126,6 +127,15 @@ impl NativeQwenBackend {
                 "materialized native Qwen safetensors shards"
             );
         }
+        let static_f32_tensors = qwen_static_f32_tensors_for_spec(&spec);
+        let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
+        tracing::info!(
+            candidates = static_f32_warmup.candidates,
+            loaded = static_f32_warmup.loaded,
+            resident_bytes = static_f32_warmup.resident_bytes,
+            already_resident = static_f32_warmup.already_resident,
+            "native Qwen static f32 tensor cache warm-up complete"
+        );
         let matvec = NativeTextMatvecBackend::system_default(
             native_qwen_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
             &cache_namespace,

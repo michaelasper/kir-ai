@@ -1,7 +1,7 @@
 use llm_backend::{
-    BackendCacheContext, QwenFullAttentionDims, QwenFullAttentionSequenceConfig,
-    QwenFullAttentionSequenceParts, QwenFullAttentionStepParts, QwenLinearAttentionDims,
-    QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
+    BackendCacheContext, NativeOutputProjection, QwenFullAttentionDims,
+    QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts, QwenFullAttentionStepParts,
+    QwenLinearAttentionDims, QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
     qwen_full_attention_sequence_with_cache_from_parts,
     qwen_full_attention_step_with_cache_from_parts, qwen_linear_attention_first_token_from_parts,
@@ -135,7 +135,7 @@ async fn qwen_linear_attention_sequence_updates_recurrent_state() {
             a_log: &a_log,
             conv1d_weight: &conv1d_weight,
             norm_weight: &norm_weight,
-            out_proj_weight: &out_proj_weight,
+            out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
     )
     .await
@@ -195,7 +195,7 @@ async fn qwen_linear_attention_sequence_updates_linear_cache() {
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
         norm_weight: &norm_weight,
-        out_proj_weight: &out_proj_weight,
+        out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
 
@@ -260,7 +260,7 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
         norm_weight: &norm_weight,
-        out_proj_weight: &out_proj_weight,
+        out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut expected_cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
     let expected_output = qwen_linear_attention_sequence_with_cache_from_parts(
@@ -283,7 +283,7 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
         norm_weight: &norm_weight,
-        out_proj_weight: &out_proj_weight,
+        out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
     qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
@@ -301,7 +301,7 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
             a_log: &a_log,
             conv1d_weight: &conv1d_weight,
             norm_weight: &norm_weight,
-            out_proj_weight: &out_proj_weight,
+            out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
         &mut cache,
     )
@@ -357,7 +357,7 @@ async fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
             v_proj: &v_proj,
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         QwenFullAttentionSequenceConfig {
             rms_norm_eps: 0.0,
@@ -414,7 +414,7 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
             v_proj: &v_proj,
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -430,7 +430,7 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
             v_proj: &v_proj,
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
     )
@@ -478,7 +478,7 @@ async fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
             v_proj: &v_proj,
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -522,7 +522,7 @@ async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
             v_proj: &prefill_v_proj,
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -538,7 +538,7 @@ async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
             v_proj: &[8.0, 0.0],
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -583,7 +583,7 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         v_proj: &v_proj,
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
-        o_proj_weight: &o_proj_weight,
+        o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let expected_output = qwen_full_attention_sequence_with_cache_from_parts(
@@ -603,7 +603,7 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         v_proj: &prefill_v_proj,
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
-        o_proj_weight: &o_proj_weight,
+        o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
@@ -618,7 +618,7 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
             v_proj: &v_proj[2],
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -663,7 +663,7 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         v_proj: &v_proj,
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
-        o_proj_weight: &o_proj_weight,
+        o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut expected_cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let expected_output = qwen_full_attention_sequence_with_cache_from_parts(
@@ -683,7 +683,7 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         v_proj: &prefill_v_proj,
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
-        o_proj_weight: &o_proj_weight,
+        o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
@@ -698,7 +698,7 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
             v_proj: &v_proj[2],
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
-            o_proj_weight: &o_proj_weight,
+            o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
         &mut cache,
@@ -750,7 +750,7 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
         norm_weight: &norm_weight,
-        out_proj_weight: &out_proj_weight,
+        out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut expected_cache = LinearAttentionCache::new(1, 6, 1, 2, 2).expect("cache shape");
     let expected_output = qwen_linear_attention_sequence_with_cache_from_parts(
@@ -773,7 +773,7 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
         norm_weight: &norm_weight,
-        out_proj_weight: &out_proj_weight,
+        out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut cache = LinearAttentionCache::new(1, 6, 1, 2, 2).expect("cache shape");
     qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
@@ -791,7 +791,7 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
             a_log: &a_log,
             conv1d_weight: &conv1d_weight,
             norm_weight: &norm_weight,
-            out_proj_weight: &out_proj_weight,
+            out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
         &mut cache,
     )

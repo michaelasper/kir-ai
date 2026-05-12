@@ -14,7 +14,7 @@ use futures::StreamExt;
 use llm_backend::{
     BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
     NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
-    qwen_prefill_sequence_with_cache_with_matvec,
+    qwen_prefill_sequence_with_cache_with_matvec, qwen_static_f32_tensors_for_spec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -22,6 +22,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+
+type TinyBf16Tensor = (String, Vec<usize>, Vec<f32>);
+type TinyBf16ShardMap = std::collections::BTreeMap<String, Vec<TinyBf16Tensor>>;
 
 fn test_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -1272,7 +1275,69 @@ fn copy_fixture(name: &str, destination: impl AsRef<Path>) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/qwen36")
         .join(name);
+    let destination = destination.as_ref();
     std::fs::copy(&source, destination).expect("copy fixture");
+    if name == "model.safetensors.index.json"
+        && let Some(root) = destination.parent()
+    {
+        write_qwen36_static_f32_fixture_shards(root);
+    }
+}
+
+fn write_qwen36_static_f32_fixture_shards(root: &Path) {
+    let config_json = std::fs::read_to_string(root.join("config.json")).expect("Qwen config");
+    let spec = QwenModelSpec::from_config_json(&config_json).expect("Qwen spec");
+    let index_json =
+        std::fs::read_to_string(root.join("model.safetensors.index.json")).expect("Qwen index");
+    let index = llm_models::SafetensorsIndex::from_json(&index_json).expect("Qwen index parses");
+    let mut shards: TinyBf16ShardMap = std::collections::BTreeMap::new();
+    for tensor in qwen_static_f32_tensors_for_spec(&spec) {
+        let Some(shard) = index.shard_for(&tensor) else {
+            continue;
+        };
+        let shape = qwen_static_f32_tensor_shape(&spec, &tensor);
+        let element_count = shape.iter().product();
+        shards
+            .entry(shard.to_owned())
+            .or_default()
+            .push((tensor, shape, vec![0.0; element_count]));
+    }
+    for (shard, tensors) in shards {
+        let path = root.join(shard);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Qwen shard parent");
+        }
+        std::fs::write(path, tiny_owned_named_safetensors_bf16(&tensors))
+            .expect("Qwen static f32 fixture shard");
+    }
+}
+
+fn qwen_static_f32_tensor_shape(spec: &QwenModelSpec, tensor: &str) -> Vec<usize> {
+    if tensor == spec.final_norm_weight()
+        || tensor.ends_with("input_layernorm.weight")
+        || tensor.ends_with("post_attention_layernorm.weight")
+    {
+        return vec![spec.hidden_size as usize];
+    }
+    if tensor.ends_with("self_attn.q_norm.weight") || tensor.ends_with("self_attn.k_norm.weight") {
+        return vec![spec.head_dim as usize];
+    }
+    if tensor.ends_with("linear_attn.dt_bias") || tensor.ends_with("linear_attn.A_log") {
+        return vec![spec.linear_num_value_heads as usize];
+    }
+    if tensor.ends_with("linear_attn.norm.weight") {
+        return vec![spec.linear_value_head_dim as usize];
+    }
+    if tensor.ends_with("linear_attn.conv1d.weight") {
+        let key_dim = (spec.linear_num_key_heads as usize) * (spec.linear_key_head_dim as usize);
+        let value_dim =
+            (spec.linear_num_value_heads as usize) * (spec.linear_value_head_dim as usize);
+        return vec![
+            key_dim * 2 + value_dim,
+            spec.linear_conv_kernel_dim as usize,
+        ];
+    }
+    panic!("unknown Qwen static f32 tensor `{tensor}`");
 }
 
 fn write_tiny_qwen3_dense_single_file_decoder_snapshot(root: &Path) {
@@ -1388,6 +1453,32 @@ fn tiny_multi_safetensors_bf16(tensors: &[(&str, &[usize], &[f32])]) -> Vec<u8> 
         let end = data.len();
         header.insert(
             (*name).to_owned(),
+            serde_json::json!({
+                "dtype": "BF16",
+                "shape": shape,
+                "data_offsets": [start, end]
+            }),
+        );
+    }
+    let header = serde_json::Value::Object(header).to_string();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(header.as_bytes());
+    bytes.extend_from_slice(&data);
+    bytes
+}
+
+fn tiny_owned_named_safetensors_bf16(tensors: &[TinyBf16Tensor]) -> Vec<u8> {
+    let mut header = serde_json::Map::new();
+    let mut data = Vec::new();
+    for (name, shape, values) in tensors {
+        let start = data.len();
+        for value in values {
+            data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+        }
+        let end = data.len();
+        header.insert(
+            name.clone(),
             serde_json::json!({
                 "dtype": "BF16",
                 "shape": shape,

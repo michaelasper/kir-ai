@@ -1,5 +1,8 @@
 use super::math::{MathError, require_len, sigmoid_f32};
-use super::{CpuNativeMatvecBackend, LayerKvCache, NativeKvCacheTensor, NativeMatvecBackend};
+use super::{
+    CpuNativeMatvecBackend, LayerKvCache, NativeKvCacheTensor, NativeMatvecBackend,
+    SafeTensorShardStore,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeFullAttentionDims {
@@ -35,7 +38,7 @@ pub struct NativeFullAttentionSequenceParts<'a> {
     pub keys: &'a [Vec<f32>],
     pub values: &'a [Vec<f32>],
     pub gates: Option<&'a [Vec<f32>]>,
-    pub output_projection: &'a [f32],
+    pub output_projection: NativeOutputProjection<'a>,
     pub score_scale: f32,
 }
 
@@ -44,7 +47,7 @@ pub struct NativeFullAttentionStepParts<'a> {
     pub key: &'a [f32],
     pub value: &'a [f32],
     pub gate: Option<&'a [f32]>,
-    pub output_projection: &'a [f32],
+    pub output_projection: NativeOutputProjection<'a>,
     pub score_scale: f32,
 }
 
@@ -52,8 +55,17 @@ pub struct NativeFullAttentionCacheSequenceParts<'a> {
     pub queries: &'a [Vec<f32>],
     pub gates: Option<&'a [Vec<f32>]>,
     pub source_counts: &'a [usize],
-    pub output_projection: &'a [f32],
+    pub output_projection: NativeOutputProjection<'a>,
     pub score_scale: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum NativeOutputProjection<'a> {
+    F32(&'a [f32]),
+    Bf16Tensor {
+        store: &'a SafeTensorShardStore,
+        tensor: &'a str,
+    },
 }
 
 struct NativeFullAttentionInlineSource<'a> {
@@ -152,14 +164,10 @@ pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
             "full attention gate sequence length must match queries".to_owned(),
         ));
     }
-    require_len(
-        "output projection weight",
-        parts.output_projection.len(),
-        dims.hidden_size
-            .checked_mul(shape.attention_dim)
-            .ok_or_else(|| {
-                MathError::InvalidShape("output projection shape overflow".to_owned())
-            })?,
+    require_native_output_projection_shape(
+        parts.output_projection,
+        dims.hidden_size,
+        shape.attention_dim,
     )?;
     for token_idx in 0..seq_len {
         require_len(
@@ -201,14 +209,14 @@ pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
         )
         .await?;
         outputs.push(
-            matvec
-                .matvec_row_major_f32(
-                    &attended,
-                    parts.output_projection,
-                    dims.hidden_size,
-                    shape.attention_dim,
-                )
-                .await?,
+            native_output_projection_with_matvec_unchecked(
+                matvec,
+                parts.output_projection,
+                &attended,
+                dims.hidden_size,
+                shape.attention_dim,
+            )
+            .await?,
         );
     }
     Ok(outputs)
@@ -249,14 +257,10 @@ pub async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_pla
         parts.value,
         parts.gate,
     )?;
-    require_len(
-        "output projection weight",
-        parts.output_projection.len(),
-        dims.hidden_size
-            .checked_mul(shape.attention_dim)
-            .ok_or_else(|| {
-                MathError::InvalidShape("output projection shape overflow".to_owned())
-            })?,
+    require_native_output_projection_shape(
+        parts.output_projection,
+        dims.hidden_size,
+        shape.attention_dim,
     )?;
 
     cache
@@ -277,16 +281,15 @@ pub async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_pla
         matvec,
     )
     .await?;
-    matvec
-        .matvec_row_major_f32_in_place(
-            &attended,
-            parts.output_projection,
-            dims.hidden_size,
-            shape.attention_dim,
-            output,
-        )
-        .await
-        .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}")))
+    native_output_projection_with_matvec_in_place_unchecked(
+        matvec,
+        parts.output_projection,
+        &attended,
+        dims.hidden_size,
+        shape.attention_dim,
+        output,
+    )
+    .await
 }
 
 async fn native_full_attention_sequence_impl(
@@ -316,14 +319,10 @@ async fn native_full_attention_sequence_impl(
     if let Some(cache) = cache.as_ref() {
         require_full_attention_cache_shape(dims, cache)?;
     }
-    require_len(
-        "output projection weight",
-        parts.output_projection.len(),
-        dims.hidden_size
-            .checked_mul(shape.attention_dim)
-            .ok_or_else(|| {
-                MathError::InvalidShape("output projection shape overflow".to_owned())
-            })?,
+    require_native_output_projection_shape(
+        parts.output_projection,
+        dims.hidden_size,
+        shape.attention_dim,
     )?;
     for token_idx in 0..seq_len {
         require_full_attention_token_parts(
@@ -378,18 +377,127 @@ async fn native_full_attention_sequence_impl(
             .await?
         };
         outputs.push(
-            matvec
-                .matvec_row_major_f32(
-                    &attended,
-                    parts.output_projection,
-                    dims.hidden_size,
-                    shape.attention_dim,
-                )
-                .await?,
+            native_output_projection_with_matvec_unchecked(
+                matvec,
+                parts.output_projection,
+                &attended,
+                dims.hidden_size,
+                shape.attention_dim,
+            )
+            .await?,
         );
     }
 
     Ok(outputs)
+}
+
+pub async fn native_output_projection_with_matvec(
+    matvec: &impl NativeMatvecBackend,
+    projection: NativeOutputProjection<'_>,
+    input: &[f32],
+    rows: usize,
+    columns: usize,
+) -> Result<Vec<f32>, MathError> {
+    let mut output = vec![0.0; rows];
+    native_output_projection_with_matvec_in_place(
+        matvec,
+        projection,
+        input,
+        rows,
+        columns,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
+pub async fn native_output_projection_with_matvec_in_place(
+    matvec: &impl NativeMatvecBackend,
+    projection: NativeOutputProjection<'_>,
+    input: &[f32],
+    rows: usize,
+    columns: usize,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    require_native_output_projection_shape(projection, rows, columns)?;
+    native_output_projection_with_matvec_in_place_unchecked(
+        matvec, projection, input, rows, columns, output,
+    )
+    .await
+}
+
+pub(crate) async fn native_output_projection_with_matvec_unchecked(
+    matvec: &impl NativeMatvecBackend,
+    projection: NativeOutputProjection<'_>,
+    input: &[f32],
+    rows: usize,
+    columns: usize,
+) -> Result<Vec<f32>, MathError> {
+    let mut output = vec![0.0; rows];
+    native_output_projection_with_matvec_in_place_unchecked(
+        matvec,
+        projection,
+        input,
+        rows,
+        columns,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
+pub(crate) async fn native_output_projection_with_matvec_in_place_unchecked(
+    matvec: &impl NativeMatvecBackend,
+    projection: NativeOutputProjection<'_>,
+    input: &[f32],
+    rows: usize,
+    columns: usize,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    match projection {
+        NativeOutputProjection::F32(weights) => matvec
+            .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+            .await
+            .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}"))),
+        NativeOutputProjection::Bf16Tensor { store, tensor } => matvec
+            .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+            .await
+            .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}"))),
+    }
+}
+
+pub(crate) fn require_native_output_projection_shape(
+    projection: NativeOutputProjection<'_>,
+    rows: usize,
+    columns: usize,
+) -> Result<(), MathError> {
+    match projection {
+        NativeOutputProjection::F32(weights) => require_len(
+            "output projection weight",
+            weights.len(),
+            rows.checked_mul(columns).ok_or_else(|| {
+                MathError::InvalidShape("output projection shape overflow".to_owned())
+            })?,
+        ),
+        NativeOutputProjection::Bf16Tensor { store, tensor } => {
+            let metadata = store.tensor_metadata(tensor).map_err(|err| {
+                MathError::InvalidShape(format!("output projection failed: {err}"))
+            })?;
+            if metadata.dtype != "BF16" {
+                return Err(MathError::InvalidShape(format!(
+                    "output projection failed: tensor `{tensor}` has dtype {}, expected BF16",
+                    metadata.dtype
+                )));
+            }
+            if metadata.shape.as_slice() != [rows, columns] {
+                return Err(MathError::InvalidShape(format!(
+                    "output projection failed: tensor `{tensor}` shape {:?} must be [{rows}, {columns}]",
+                    metadata.shape
+                )));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn validate_full_attention_shape(
@@ -569,13 +677,231 @@ async fn scaled_full_attention_scores_with_matvec(
 
 #[cfg(test)]
 mod tests {
+    use super::super::TensorLoadError;
     use super::*;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     fn assert_close(left: f32, right: f32) {
         assert!(
             (left - right).abs() < 1e-5,
             "expected {left} to be close to {right}"
         );
+    }
+
+    #[derive(Debug)]
+    struct DeletingBf16ProjectionBackend {
+        root: PathBuf,
+        calls: AtomicUsize,
+    }
+
+    impl NativeMatvecBackend for DeletingBf16ProjectionBackend {
+        async fn bf16_matvec_row_major_f32_in_place(
+            &self,
+            _store: &SafeTensorShardStore,
+            _tensor: &str,
+            input: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            output[..input.len()].copy_from_slice(input);
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::fs::remove_dir_all(&self.root).expect("remove snapshot root");
+            }
+            Ok(())
+        }
+
+        async fn bf16_matvec_rows_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            chunk_rows: usize,
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+                .await
+        }
+
+        async fn matvec_row_major_f32_in_place(
+            &self,
+            input: &[f32],
+            weights: &[f32],
+            rows: usize,
+            columns: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+                .await
+        }
+
+        async fn rms_norm_one_centered_f32_in_place(
+            &self,
+            input: &[f32],
+            weight: &[f32],
+            eps: f32,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+                .await
+        }
+
+        async fn softmax_f32_in_place(
+            &self,
+            scores: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .softmax_f32_in_place(scores, output)
+                .await
+        }
+
+        async fn linear_attention_conv1d_silu_f32_in_place(
+            &self,
+            window: &[f32],
+            weights: &[f32],
+            conv_dim: usize,
+            kernel_size: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_conv1d_silu_f32_in_place(
+                    window,
+                    weights,
+                    conv_dim,
+                    kernel_size,
+                    output,
+                )
+                .await
+        }
+
+        async fn weighted_sum_f32_in_place(
+            &self,
+            values: &[f32],
+            weights: &[f32],
+            vector_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .weighted_sum_f32_in_place(values, weights, vector_len, output)
+                .await
+        }
+
+        async fn linear_attention_recurrent_update_f32_in_place(
+            &self,
+            state: &[f32],
+            key: &[f32],
+            value: &[f32],
+            memory: &[f32],
+            beta: f32,
+            decay: f32,
+            key_head_dim: usize,
+            value_head_dim: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_recurrent_update_f32_in_place(
+                    state,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                    output,
+                )
+                .await
+        }
+
+        async fn select_head_rows_f32_in_place(
+            &self,
+            values: &[f32],
+            row_count: usize,
+            row_len: usize,
+            head_start: usize,
+            head_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .select_head_rows_f32_in_place(
+                    values, row_count, row_len, head_start, head_len, output,
+                )
+                .await
+        }
+    }
+
+    fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+        }
+        let header = serde_json::json!({
+            name: {
+                "dtype": "BF16",
+                "shape": shape,
+                "data_offsets": [0, data.len()]
+            }
+        })
+        .to_string();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn bf16_output_projection_sequence_validates_shape_once_before_hot_loop() {
+        let root =
+            std::env::temp_dir().join(format!("kir-ai-native-attn-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("tempdir");
+        std::fs::write(
+            root.join("model.safetensors"),
+            tiny_safetensors_bf16("o_proj.weight", &[1, 1], &[1.0]),
+        )
+        .expect("write projection tensor");
+        let store = SafeTensorShardStore::open(&root).expect("store opens");
+        let dims = NativeFullAttentionDims {
+            hidden_size: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let queries = vec![vec![1.0], vec![1.0]];
+        let keys = vec![vec![1.0], vec![1.0]];
+        let values = vec![vec![10.0], vec![20.0]];
+        let backend = DeletingBf16ProjectionBackend {
+            root,
+            calls: AtomicUsize::new(0),
+        };
+
+        let output = native_full_attention_sequence_from_parts_with_matvec(
+            dims,
+            &NativeFullAttentionSequenceParts {
+                queries: &queries,
+                keys: &keys,
+                values: &values,
+                gates: None,
+                output_projection: NativeOutputProjection::Bf16Tensor {
+                    store: &store,
+                    tensor: "o_proj.weight",
+                },
+                score_scale: 0.0,
+            },
+            &backend,
+        )
+        .await
+        .expect("sequence should not re-read projection metadata after upfront validation");
+
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_close(output[0][0], 10.0);
+        assert_close(output[1][0], 15.0);
     }
 
     #[tokio::test]
@@ -598,7 +924,7 @@ mod tests {
                 keys: &keys,
                 values: &values,
                 gates: None,
-                output_projection: &output_projection,
+                output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
         )
@@ -627,7 +953,7 @@ mod tests {
             keys: &keys,
             values: &values,
             gates: Some(&gates),
-            output_projection: &output_projection,
+            output_projection: NativeOutputProjection::F32(&output_projection),
             score_scale: 1.0,
         };
 
@@ -667,7 +993,7 @@ mod tests {
                 keys: &keys,
                 values: &values,
                 gates: None,
-                output_projection: &output_projection,
+                output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 0.0,
             },
         )
@@ -680,7 +1006,7 @@ mod tests {
                 keys: &keys,
                 values: &values,
                 gates: None,
-                output_projection: &output_projection,
+                output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
         )
@@ -719,7 +1045,7 @@ mod tests {
                 queries: &queries,
                 gates: None,
                 source_counts: &source_counts,
-                output_projection: &output_projection,
+                output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
             &cache,

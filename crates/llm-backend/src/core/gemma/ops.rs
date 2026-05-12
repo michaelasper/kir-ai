@@ -5,7 +5,7 @@ use super::super::math::{
 use super::super::{
     CpuNativeMatvecBackend, LayerKvCache, NativeFullAttentionCacheSequenceParts,
     NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
-    SafeTensorShardStore, TensorLoadError,
+    NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
     native_full_attention_sequence_from_cache_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
 };
@@ -85,6 +85,36 @@ pub fn gemma_layer_caches_for_spec(
 
 pub fn gemma_cache_count_for_spec(spec: &GemmaModelSpec) -> Result<usize, TensorLoadError> {
     gemma_concrete_cache_count(spec)
+}
+
+pub fn gemma_static_f32_tensors_for_spec(spec: &GemmaModelSpec) -> Vec<String> {
+    let mut tensors = Vec::new();
+    tensors.push(spec.final_norm_weight());
+    if spec.uses_per_layer_input() {
+        tensors.push(spec.per_layer_projection_norm_weight());
+    }
+    for layer_idx in 0..spec.num_hidden_layers as usize {
+        tensors.push(spec.layer_tensor(layer_idx, "input_layernorm.weight"));
+        tensors.push(spec.layer_tensor(layer_idx, "layer_scalar"));
+        tensors.push(spec.layer_tensor(layer_idx, "post_attention_layernorm.weight"));
+        tensors.push(spec.layer_tensor(layer_idx, "pre_feedforward_layernorm.weight"));
+        tensors.push(spec.layer_tensor(layer_idx, "post_feedforward_layernorm.weight"));
+        tensors.push(spec.self_attn_tensor(layer_idx, "q_norm.weight"));
+        if spec.requires_key_value_projection(layer_idx) {
+            tensors.push(spec.self_attn_tensor(layer_idx, "k_norm.weight"));
+        }
+        if spec.uses_per_layer_input() {
+            tensors.push(spec.layer_tensor(layer_idx, "post_per_layer_input_norm.weight"));
+        }
+        if spec.uses_moe() {
+            tensors.push(spec.layer_tensor(layer_idx, "router.per_expert_scale"));
+            tensors.push(spec.layer_tensor(layer_idx, "router.scale"));
+            tensors.push(spec.layer_tensor(layer_idx, "pre_feedforward_layernorm_2.weight"));
+            tensors.push(spec.layer_tensor(layer_idx, "post_feedforward_layernorm_1.weight"));
+            tensors.push(spec.layer_tensor(layer_idx, "post_feedforward_layernorm_2.weight"));
+        }
+    }
+    tensors
 }
 
 fn gemma_layer_cache_for_spec(
@@ -268,11 +298,8 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
     let total_per_token = layer_count
         .checked_mul(per_layer_size)
         .ok_or_else(|| TensorLoadError::integrity("Gemma PLE shape overflow"))?;
-    let projection_norm_weight = store.bf16_tensor_f32_range_cached(
-        &spec.per_layer_projection_norm_weight(),
-        0,
-        per_layer_size,
-    )?;
+    let projection_norm_weight =
+        store.bf16_tensor_f32_cached_arc(&spec.per_layer_projection_norm_weight())?;
     let projected = matvec
         .bf16_matvecs_row_major_f32(
             store,
@@ -323,7 +350,7 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
             let mut normalized_projection = vec![0.0; per_layer_size];
             rms_norm_f32_in_place(
                 &projected_slice,
-                &projection_norm_weight,
+                projection_norm_weight.as_ref(),
                 spec.rms_norm_eps,
                 &mut normalized_projection,
             )
@@ -445,10 +472,8 @@ async fn gemma_apply_per_layer_input_sequence_with_matvec(
             hidden_states.len()
         )));
     }
-    let norm_weight = store.bf16_tensor_f32_range_cached(
+    let norm_weight = store.bf16_tensor_f32_cached_arc(
         &spec.layer_tensor(layer_idx, "post_per_layer_input_norm.weight"),
-        0,
-        hidden_size,
     )?;
     let mut results = Vec::with_capacity(hidden_states.len());
     for (hidden, per_layer_input) in hidden_states.iter().zip(per_layer_inputs) {
@@ -490,13 +515,15 @@ async fn gemma_apply_per_layer_input_sequence_with_matvec(
             .await?;
 
         let normalized = InferenceScratchpad::get_mut(&mut scratch.buf3, hidden_size);
-        rms_norm_f32_in_place(projected, &norm_weight, spec.rms_norm_eps, normalized).map_err(
-            |err| {
-                TensorLoadError::integrity(format!(
-                    "Gemma layer{layer_idx} PLE RMSNorm failed: {err}"
-                ))
-            },
-        )?;
+        rms_norm_f32_in_place(
+            projected,
+            norm_weight.as_ref(),
+            spec.rms_norm_eps,
+            normalized,
+        )
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Gemma layer{layer_idx} PLE RMSNorm failed: {err}"))
+        })?;
 
         results.push(
             hidden
@@ -570,14 +597,13 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
             .await?
     };
     let q_norm_weight =
-        store.bf16_tensor_f32_cached(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
+        store.bf16_tensor_f32_cached_arc(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
     let k_norm_weight = if is_shared_layer {
-        Vec::new()
+        None
     } else {
-        store.bf16_tensor_f32_cached(&spec.self_attn_tensor(layer_idx, "k_norm.weight"))?
+        Some(store.bf16_tensor_f32_cached_arc(&spec.self_attn_tensor(layer_idx, "k_norm.weight"))?)
     };
-    let o_proj_weight =
-        store.bf16_tensor_f32_cached(&spec.self_attn_tensor(layer_idx, "o_proj.weight"))?;
+    let o_proj_tensor = spec.self_attn_tensor(layer_idx, "o_proj.weight");
     let position_offset = if is_shared_layer {
         cache.next_position().saturating_sub(hidden_states.len())
     } else {
@@ -610,7 +636,7 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
             &q_proj[token_idx],
             dims.num_attention_heads,
             dims.head_dim,
-            &q_norm_weight,
+            q_norm_weight.as_ref(),
             spec.rms_norm_eps,
             position,
             rotary,
@@ -624,7 +650,10 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 &k_proj[token_idx],
                 dims.num_key_value_heads,
                 dims.head_dim,
-                &k_norm_weight,
+                k_norm_weight
+                    .as_ref()
+                    .expect("non-shared Gemma attention has k norm")
+                    .as_ref(),
                 spec.rms_norm_eps,
                 position,
                 rotary,
@@ -661,7 +690,10 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 queries: &queries,
                 gates: None,
                 source_counts: &source_counts,
-                output_projection: &o_proj_weight,
+                output_projection: NativeOutputProjection::Bf16Tensor {
+                    store,
+                    tensor: &o_proj_tensor,
+                },
                 score_scale: 1.0,
             },
             cache,
@@ -676,7 +708,10 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 keys: &keys,
                 values: &values,
                 gates: None,
-                output_projection: &o_proj_weight,
+                output_projection: NativeOutputProjection::Bf16Tensor {
+                    store,
+                    tensor: &o_proj_tensor,
+                },
                 score_scale: 1.0,
             },
             cache,
@@ -771,10 +806,14 @@ pub async fn gemma_final_norm_for_spec(
             hidden_states.len()
         )));
     }
-    let norm_weight =
-        store.bf16_tensor_f32_range_cached(&spec.final_norm_weight(), 0, hidden_size)?;
-    rms_norm_f32_in_place(hidden_states, &norm_weight, spec.rms_norm_eps, output)
-        .map_err(|err| TensorLoadError::integrity(format!("Gemma final RMSNorm failed: {err}")))
+    let norm_weight = store.bf16_tensor_f32_cached_arc(&spec.final_norm_weight())?;
+    rms_norm_f32_in_place(
+        hidden_states,
+        norm_weight.as_ref(),
+        spec.rms_norm_eps,
+        output,
+    )
+    .map_err(|err| TensorLoadError::integrity(format!("Gemma final RMSNorm failed: {err}")))
 }
 
 pub async fn gemma_lm_head_top_k_for_spec(
@@ -851,11 +890,7 @@ fn gemma_norm_sequence_after_projection(
     hidden_states: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
-    let norm_weight = store.bf16_tensor_f32_range_cached(
-        &spec.layer_tensor(layer_idx, suffix),
-        0,
-        hidden_size,
-    )?;
+    let norm_weight = store.bf16_tensor_f32_cached_arc(&spec.layer_tensor(layer_idx, suffix))?;
     hidden_states
         .iter()
         .map(|hidden| {
@@ -866,9 +901,10 @@ fn gemma_norm_sequence_after_projection(
                 )));
             }
             let mut output = vec![0.0; hidden_size];
-            rms_norm_f32_in_place(hidden, &norm_weight, spec.rms_norm_eps, &mut output).map_err(
-                |err| TensorLoadError::integrity(format!("Gemma layer RMSNorm failed: {err}")),
-            )?;
+            rms_norm_f32_in_place(hidden, norm_weight.as_ref(), spec.rms_norm_eps, &mut output)
+                .map_err(|err| {
+                    TensorLoadError::integrity(format!("Gemma layer RMSNorm failed: {err}"))
+                })?;
             Ok(output)
         })
         .collect()
@@ -909,8 +945,8 @@ fn apply_gemma_layer_scalar(
     layer_idx: usize,
     hidden_states: &mut [Vec<f32>],
 ) -> Result<(), TensorLoadError> {
-    let scalar = store.bf16_tensor_f32_cached(&spec.layer_tensor(layer_idx, "layer_scalar"))?;
-    match scalar.as_slice() {
+    let scalar = store.bf16_tensor_f32_cached_arc(&spec.layer_tensor(layer_idx, "layer_scalar"))?;
+    match scalar.as_ref() {
         [value] => {
             for hidden in hidden_states {
                 for item in hidden {

@@ -219,6 +219,9 @@ async fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<Snapsh
 mod tests {
     use super::*;
 
+    type TinyBf16Tensor = (String, Vec<usize>, Vec<f32>);
+    type TinyBf16ShardMap = std::collections::BTreeMap<String, Vec<TinyBf16Tensor>>;
+
     fn open_blocking(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
@@ -670,7 +673,13 @@ mod tests {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/qwen36")
             .join(name);
+        let destination = destination.as_ref();
         std::fs::copy(&source, destination).expect("copy Qwen fixture");
+        if name == "model.safetensors.index.json"
+            && let Some(root) = destination.parent()
+        {
+            write_qwen36_static_f32_fixture_shards(root);
+        }
     }
 
     fn write_manifest_with_family(root: &Path, loader: &str, family: &str) {
@@ -834,6 +843,147 @@ mod tests {
             .to_string(),
         )
         .expect("Gemma safetensors index");
+        if include_key_projection {
+            write_gemma4_static_f32_fixture_shard(root);
+        }
+    }
+
+    fn write_qwen36_static_f32_fixture_shards(root: &Path) {
+        let config_json = std::fs::read_to_string(root.join("config.json")).expect("Qwen config");
+        let spec = llm_models::QwenModelSpec::from_config_json(&config_json).expect("Qwen spec");
+        let index_json =
+            std::fs::read_to_string(root.join("model.safetensors.index.json")).expect("Qwen index");
+        let index =
+            llm_models::SafetensorsIndex::from_json(&index_json).expect("Qwen index parses");
+        let mut shards: TinyBf16ShardMap = std::collections::BTreeMap::new();
+        for tensor in llm_backend::qwen_static_f32_tensors_for_spec(&spec) {
+            let Some(shard) = index.shard_for(&tensor) else {
+                continue;
+            };
+            let shape = qwen_static_f32_tensor_shape(&spec, &tensor);
+            let element_count = shape.iter().product();
+            shards.entry(shard.to_owned()).or_default().push((
+                tensor,
+                shape,
+                vec![0.0; element_count],
+            ));
+        }
+        for (shard, tensors) in shards {
+            let path = root.join(shard);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("Qwen shard parent");
+            }
+            std::fs::write(path, tiny_named_safetensors_bf16(&tensors))
+                .expect("Qwen static f32 fixture shard");
+        }
+    }
+
+    fn qwen_static_f32_tensor_shape(spec: &llm_models::QwenModelSpec, tensor: &str) -> Vec<usize> {
+        if tensor == spec.final_norm_weight()
+            || tensor.ends_with("input_layernorm.weight")
+            || tensor.ends_with("post_attention_layernorm.weight")
+        {
+            return vec![spec.hidden_size as usize];
+        }
+        if tensor.ends_with("self_attn.q_norm.weight")
+            || tensor.ends_with("self_attn.k_norm.weight")
+        {
+            return vec![spec.head_dim as usize];
+        }
+        if tensor.ends_with("linear_attn.dt_bias") || tensor.ends_with("linear_attn.A_log") {
+            return vec![spec.linear_num_value_heads as usize];
+        }
+        if tensor.ends_with("linear_attn.norm.weight") {
+            return vec![spec.linear_value_head_dim as usize];
+        }
+        if tensor.ends_with("linear_attn.conv1d.weight") {
+            let key_dim =
+                (spec.linear_num_key_heads as usize) * (spec.linear_key_head_dim as usize);
+            let value_dim =
+                (spec.linear_num_value_heads as usize) * (spec.linear_value_head_dim as usize);
+            return vec![
+                key_dim * 2 + value_dim,
+                spec.linear_conv_kernel_dim as usize,
+            ];
+        }
+        panic!("unknown Qwen static f32 tensor `{tensor}`");
+    }
+
+    fn write_gemma4_static_f32_fixture_shard(root: &Path) {
+        let config_json = std::fs::read_to_string(root.join("config.json")).expect("Gemma config");
+        let spec = llm_models::GemmaModelSpec::from_config_json(&config_json).expect("Gemma spec");
+        let tensors = llm_backend::gemma_static_f32_tensors_for_spec(&spec)
+            .into_iter()
+            .map(|tensor| {
+                let shape = gemma_static_f32_tensor_shape(&spec, &tensor);
+                let element_count = shape.iter().product();
+                (tensor, shape, vec![0.0; element_count])
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            root.join("model.safetensors"),
+            tiny_named_safetensors_bf16(&tensors),
+        )
+        .expect("Gemma static f32 fixture shard");
+    }
+
+    fn gemma_static_f32_tensor_shape(
+        spec: &llm_models::GemmaModelSpec,
+        tensor: &str,
+    ) -> Vec<usize> {
+        if tensor == spec.final_norm_weight()
+            || tensor.ends_with("input_layernorm.weight")
+            || tensor.ends_with("post_attention_layernorm.weight")
+            || tensor.ends_with("pre_feedforward_layernorm.weight")
+            || tensor.ends_with("post_feedforward_layernorm.weight")
+            || tensor.ends_with("post_per_layer_input_norm.weight")
+            || tensor.ends_with("pre_feedforward_layernorm_2.weight")
+            || tensor.ends_with("post_feedforward_layernorm_1.weight")
+            || tensor.ends_with("post_feedforward_layernorm_2.weight")
+        {
+            return vec![spec.hidden_size as usize];
+        }
+        if tensor == spec.per_layer_projection_norm_weight() {
+            return vec![spec.hidden_size_per_layer_input as usize];
+        }
+        if tensor.ends_with("self_attn.q_norm.weight")
+            || tensor.ends_with("self_attn.k_norm.weight")
+        {
+            return vec![spec.head_dim as usize];
+        }
+        if tensor.ends_with("layer_scalar") || tensor.ends_with("router.scale") {
+            return vec![1];
+        }
+        if tensor.ends_with("router.per_expert_scale") {
+            return vec![spec.num_experts.unwrap_or(1) as usize];
+        }
+        panic!("unknown Gemma static f32 tensor `{tensor}`");
+    }
+
+    fn tiny_named_safetensors_bf16(tensors: &[TinyBf16Tensor]) -> Vec<u8> {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, shape, values) in tensors {
+            let start = data.len();
+            for value in values {
+                data.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+            }
+            let end = data.len();
+            header.insert(
+                name.clone(),
+                serde_json::json!({
+                    "dtype": "BF16",
+                    "shape": shape,
+                    "data_offsets": [start, end]
+                }),
+            );
+        }
+        let header = serde_json::Value::Object(header).to_string();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
     }
 
     fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {

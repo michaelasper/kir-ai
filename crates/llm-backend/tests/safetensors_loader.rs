@@ -3,12 +3,18 @@
 use llm_backend::{
     CpuNativeMatvecBackend, MathError, NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache,
     SafeTensorShardStore, TensorLoadError, qwen_final_norm, qwen_final_norm_for_spec,
-    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec, qwen_lm_head_logits,
+    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
+    qwen_layer_full_attention_sequence_with_cache_with_matvec,
+    qwen_layer_linear_attention_sequence_with_cache_with_matvec, qwen_lm_head_logits,
     qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
     qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence_with_cache,
+    qwen_static_f32_tensors_for_spec,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 // #[path = "safetensors_loader/metadata.rs"]
 // mod metadata;
@@ -32,6 +38,8 @@ struct RecordingMatvecBackend {
     rows_bf16_calls: AtomicUsize,
     range_bf16_calls: AtomicUsize,
     top_k_bf16_calls: AtomicUsize,
+    bf16_output_projection_calls: AtomicUsize,
+    dense_output_projection_calls: AtomicUsize,
     dense_f32_calls: AtomicUsize,
     rms_norm_calls: AtomicUsize,
     softmax_calls: AtomicUsize,
@@ -53,6 +61,12 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
         self.single_bf16_calls.fetch_add(1, Ordering::Relaxed);
+        if tensor.ends_with("self_attn.o_proj.weight")
+            || tensor.ends_with("linear_attn.out_proj.weight")
+        {
+            self.bf16_output_projection_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         CpuNativeMatvecBackend
             .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
             .await
@@ -81,6 +95,10 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
         output: &mut [f32],
     ) -> Result<(), MathError> {
         self.dense_f32_calls.fetch_add(1, Ordering::Relaxed);
+        if rows == 2 && columns == 2 {
+            self.dense_output_projection_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         CpuNativeMatvecBackend
             .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
             .await
@@ -190,6 +208,108 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
 
 fn caches_for_spec(spec: &QwenModelSpec, capacity: usize) -> Vec<QwenLayerCache> {
     qwen_layer_caches_for_spec(spec, capacity).expect("temporary caches")
+}
+
+#[test]
+fn qwen_static_f32_tensor_list_excludes_output_projections() {
+    let spec = QwenModelSpec {
+        num_hidden_layers: 2,
+        layer_kinds: vec![AttentionKind::LinearAttention, AttentionKind::FullAttention],
+        ..tiny_qwen_spec(AttentionKind::LinearAttention)
+    };
+
+    let tensors = qwen_static_f32_tensors_for_spec(&spec);
+
+    assert!(tensors.contains(&"model.language_model.norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.input_layernorm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.linear_attn.dt_bias".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.linear_attn.A_log".to_owned()));
+    assert!(
+        tensors.contains(&"model.language_model.layers.0.linear_attn.conv1d.weight".to_owned())
+    );
+    assert!(tensors.contains(&"model.language_model.layers.0.linear_attn.norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.1.self_attn.q_norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.1.self_attn.k_norm.weight".to_owned()));
+    assert!(
+        !tensors
+            .iter()
+            .any(|tensor| tensor.ends_with("self_attn.o_proj.weight"))
+    );
+    assert!(
+        !tensors
+            .iter()
+            .any(|tensor| tensor.ends_with("linear_attn.out_proj.weight"))
+    );
+}
+
+#[tokio::test]
+async fn qwen_full_attention_output_projection_uses_bf16_matvec() {
+    let root = temp_snapshot_dir("qwen-full-output-projection-bf16");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_full_attention_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::FullAttention);
+    let mut caches = caches_for_spec(&spec, 4);
+    let QwenLayerCache::Full(cache) = &mut caches[0] else {
+        panic!("full attention cache");
+    };
+    let matvec = RecordingMatvecBackend::default();
+
+    qwen_layer_full_attention_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &[vec![1.0, 0.0]],
+        cache,
+        &matvec,
+    )
+    .await
+    .expect("full attention succeeds");
+
+    assert_eq!(
+        matvec.bf16_output_projection_calls.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        matvec.dense_output_projection_calls.load(Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn qwen_linear_attention_output_projection_uses_bf16_matvec() {
+    let root = temp_snapshot_dir("qwen-linear-output-projection-bf16");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let mut caches = caches_for_spec(&spec, 4);
+    let QwenLayerCache::Linear(cache) = &mut caches[0] else {
+        panic!("linear attention cache");
+    };
+    let matvec = RecordingMatvecBackend::default();
+
+    qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        0,
+        &[vec![1.0, 0.0]],
+        cache,
+        &matvec,
+    )
+    .await
+    .expect("linear attention succeeds");
+
+    assert_eq!(
+        matvec.bf16_output_projection_calls.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        matvec.dense_output_projection_calls.load(Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 fn write_tiny_moe_forward_snapshot(root: &std::path::Path) {

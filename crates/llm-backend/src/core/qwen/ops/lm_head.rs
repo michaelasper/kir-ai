@@ -61,9 +61,14 @@ pub async fn qwen_final_norm_with_matvec_in_place(
             hidden_states.len()
         )));
     }
-    let norm_weight = store.bf16_tensor_f32_range_cached(QWEN_FINAL_NORM_WEIGHT, 0, hidden_size)?;
+    let norm_weight = store.bf16_tensor_f32_cached_arc(QWEN_FINAL_NORM_WEIGHT)?;
     matvec
-        .rms_norm_one_centered_f32_in_place(hidden_states, &norm_weight, rms_norm_eps, output)
+        .rms_norm_one_centered_f32_in_place(
+            hidden_states,
+            norm_weight.as_ref(),
+            rms_norm_eps,
+            output,
+        )
         .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
@@ -111,11 +116,16 @@ pub async fn qwen_final_norm_for_spec_with_matvec_in_place(
             hidden_states.len()
         )));
     }
-    let norm_weight =
-        store.bf16_tensor_f32_range_cached(&spec.final_norm_weight(), 0, hidden_size)?;
-    qwen_rms_norm_for_spec_with_matvec_in_place(spec, hidden_states, &norm_weight, matvec, output)
-        .await
-        .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
+    let norm_weight = store.bf16_tensor_f32_cached_arc(&spec.final_norm_weight())?;
+    qwen_rms_norm_for_spec_with_matvec_in_place(
+        spec,
+        hidden_states,
+        norm_weight.as_ref(),
+        matvec,
+        output,
+    )
+    .await
+    .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 
 pub async fn qwen_lm_head_top_k(

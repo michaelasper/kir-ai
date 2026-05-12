@@ -3,7 +3,7 @@ use llm_models::SafetensorsIndex;
 use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     ops::Range,
@@ -457,10 +457,23 @@ impl SafeTensorFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct F32TensorCacheKey {
-    tensor: String,
-    element_offset: usize,
-    element_count: usize,
+enum F32TensorCacheKey {
+    Full {
+        tensor: String,
+    },
+    Range {
+        tensor: String,
+        element_offset: usize,
+        element_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct F32TensorCacheWarmup {
+    pub candidates: u64,
+    pub loaded: u64,
+    pub already_resident: u64,
+    pub resident_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -468,7 +481,7 @@ pub struct SafeTensorShardStore {
     root: PathBuf,
     index: SafetensorsIndex,
     shards: Arc<Mutex<BTreeMap<PathBuf, Arc<SafeTensorFile>>>>,
-    f32_cache: Arc<Mutex<HashMap<F32TensorCacheKey, Arc<Vec<f32>>>>>,
+    f32_cache: Arc<Mutex<HashMap<F32TensorCacheKey, Arc<[f32]>>>>,
 }
 
 impl SafeTensorShardStore {
@@ -595,7 +608,18 @@ impl SafeTensorShardStore {
         element_offset: usize,
         element_count: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let key = F32TensorCacheKey {
+        Ok(self
+            .bf16_tensor_f32_range_cached_arc(tensor, element_offset, element_count)?
+            .to_vec())
+    }
+
+    pub fn bf16_tensor_f32_range_cached_arc(
+        &self,
+        tensor: &str,
+        element_offset: usize,
+        element_count: usize,
+    ) -> Result<Arc<[f32]>, TensorLoadError> {
+        let key = F32TensorCacheKey::Range {
             tensor: tensor.to_owned(),
             element_offset,
             element_count,
@@ -605,30 +629,109 @@ impl SafeTensorShardStore {
                 TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}"))
             })?;
             if let Some(cached) = cache.get(&key) {
-                return Ok((**cached).clone());
+                return Ok(Arc::clone(cached));
             }
         }
         let values = self.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-        // Intentionally re-acquire the lock after the expensive bf16→f32 conversion.
-        // A concurrent miss for the same key may do redundant work, but `or_insert_with`
-        // ensures only one Arc is stored. After the first access, all subsequent reads
-        // hit the cache and never reach this path.
-        {
-            let mut cache = self.f32_cache.lock().map_err(|err| {
-                TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}"))
-            })?;
-            cache.entry(key).or_insert_with(|| Arc::new(values.clone()));
-        }
-        Ok(values)
+        Ok(self.insert_f32_cache_entry(key, values)?.0)
     }
 
     pub fn bf16_tensor_f32_cached(&self, tensor: &str) -> Result<Vec<f32>, TensorLoadError> {
-        let metadata = self.tensor_metadata(tensor)?;
+        Ok(self.bf16_tensor_f32_cached_arc(tensor)?.to_vec())
+    }
+
+    pub fn bf16_tensor_f32_cached_arc(&self, tensor: &str) -> Result<Arc<[f32]>, TensorLoadError> {
+        let key = F32TensorCacheKey::Full {
+            tensor: tensor.to_owned(),
+        };
+        {
+            let cache = self.f32_cache.lock().map_err(|err| {
+                TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}"))
+            })?;
+            if let Some(cached) = cache.get(&key) {
+                return Ok(Arc::clone(cached));
+            }
+        }
+        let file = self.open_tensor_file(tensor)?;
+        let metadata = file.tensor_metadata(tensor)?;
         let element_count = metadata.shape.iter().try_fold(1_usize, |acc, dim| {
             acc.checked_mul(*dim)
                 .ok_or_else(|| TensorLoadError::integrity("tensor shape overflows usize"))
         })?;
-        self.bf16_tensor_f32_range_cached(tensor, 0, element_count)
+        let values = file.bf16_tensor_f32_range(tensor, 0, element_count)?;
+        Ok(self.insert_f32_cache_entry(key, values)?.0)
+    }
+
+    pub fn preload_bf16_f32_tensors(
+        &self,
+        tensors: &[String],
+    ) -> Result<F32TensorCacheWarmup, TensorLoadError> {
+        let mut seen = BTreeSet::new();
+        let mut warmup = F32TensorCacheWarmup::default();
+        for tensor in tensors {
+            if !seen.insert(tensor.as_str()) {
+                continue;
+            }
+            warmup.candidates += 1;
+            let key = F32TensorCacheKey::Full {
+                tensor: tensor.clone(),
+            };
+            if let Some(cached) = self.f32_cache_entry(&key)? {
+                warmup.already_resident += 1;
+                warmup.resident_bytes = warmup
+                    .resident_bytes
+                    .saturating_add(f32_slice_bytes(cached.len()));
+                continue;
+            }
+            let file = self.open_tensor_file(tensor)?;
+            let metadata = file.tensor_metadata(tensor)?;
+            let element_count = metadata.shape.iter().try_fold(1_usize, |acc, dim| {
+                acc.checked_mul(*dim)
+                    .ok_or_else(|| TensorLoadError::integrity("tensor shape overflows usize"))
+            })?;
+            let values = file.bf16_tensor_f32_range(tensor, 0, element_count)?;
+            let (cached, inserted) = self.insert_f32_cache_entry(key, values)?;
+            if inserted {
+                warmup.loaded += 1;
+            } else {
+                warmup.already_resident += 1;
+            }
+            warmup.resident_bytes = warmup
+                .resident_bytes
+                .saturating_add(f32_slice_bytes(cached.len()));
+        }
+        Ok(warmup)
+    }
+
+    fn f32_cache_entry(
+        &self,
+        key: &F32TensorCacheKey,
+    ) -> Result<Option<Arc<[f32]>>, TensorLoadError> {
+        self.f32_cache
+            .lock()
+            .map(|cache| cache.get(key).map(Arc::clone))
+            .map_err(|err| TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}")))
+    }
+
+    fn insert_f32_cache_entry(
+        &self,
+        key: F32TensorCacheKey,
+        values: Vec<f32>,
+    ) -> Result<(Arc<[f32]>, bool), TensorLoadError> {
+        let candidate: Arc<[f32]> = values.into_boxed_slice().into();
+        // Intentionally re-acquire the lock after the expensive bf16→f32 conversion.
+        // A concurrent miss for the same key may do redundant work, but `or_insert_with`
+        // ensures only one Arc is stored. After the first access, subsequent reads hit
+        // the cache and never reach this path.
+        let mut cache = self
+            .f32_cache
+            .lock()
+            .map_err(|err| TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}")))?;
+        if let Some(cached) = cache.get(&key) {
+            return Ok((Arc::clone(cached), false));
+        }
+        cache.insert(key, Arc::clone(&candidate));
+        Ok((candidate, true))
     }
 
     pub fn cached_f32_count(&self) -> usize {
@@ -638,12 +741,7 @@ impl SafeTensorShardStore {
     pub fn cached_f32_bytes(&self) -> u64 {
         self.f32_cache
             .lock()
-            .map(|cache| {
-                cache
-                    .values()
-                    .map(|v| (v.len() * std::mem::size_of::<f32>()) as u64)
-                    .sum()
-            })
+            .map(|cache| cache.values().map(|v| f32_slice_bytes(v.len())).sum())
             .unwrap_or(0)
     }
 
@@ -882,6 +980,10 @@ fn bf16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, TensorLoadError> {
                 .map_err(|_| TensorLoadError::integrity("BF16 chunk is not 2 bytes"))
         })
         .collect::<Result<_, _>>()
+}
+
+fn f32_slice_bytes(len: usize) -> u64 {
+    (len * std::mem::size_of::<f32>()) as u64
 }
 
 fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {

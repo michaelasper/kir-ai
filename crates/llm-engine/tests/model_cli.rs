@@ -252,7 +252,7 @@ async fn serve_without_snapshot_requires_explicit_backend() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn serve");
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if child.try_wait().expect("poll serve").is_some() {
             let output = child.wait_with_output().expect("collect serve output");

@@ -3,7 +3,7 @@ use llm_backend::{
     NativeTextLayerCaches, NativeTextLayerCachesMut, NativeTextModelSpec, SafeTensorShardStore,
     TensorLoadError, gemma_decode_token_with_cache, gemma_final_norm_for_spec,
     gemma_layer_caches_for_spec, gemma_lm_head_top_k_for_spec, gemma_prefill_sequence_with_cache,
-    gemma_prefill_sequence_with_cache_with_matvec,
+    gemma_prefill_sequence_with_cache_with_matvec, gemma_static_f32_tensors_for_spec,
     native_decode_token_with_cache as native_text_decode_token_with_cache,
     native_decode_token_with_cache_for_spec_ref_with_matvec,
     native_final_norm_for_spec as native_text_final_norm_for_spec,
@@ -22,6 +22,8 @@ use std::{
 
 #[derive(Default)]
 struct RecordingGemmaMatvecBackend {
+    bf16_output_projection_calls: AtomicUsize,
+    dense_output_projection_calls: AtomicUsize,
     dense_f32_calls: AtomicUsize,
     softmax_calls: AtomicUsize,
     weighted_sum_calls: AtomicUsize,
@@ -36,6 +38,10 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
+        if tensor.ends_with("self_attn.o_proj.weight") {
+            self.bf16_output_projection_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         CpuNativeMatvecBackend
             .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
             .await
@@ -63,6 +69,10 @@ impl NativeMatvecBackend for RecordingGemmaMatvecBackend {
         output: &mut [f32],
     ) -> Result<(), MathError> {
         self.dense_f32_calls.fetch_add(1, Ordering::Relaxed);
+        if rows == 2 && columns == 2 {
+            self.dense_output_projection_calls
+                .fetch_add(1, Ordering::Relaxed);
+        }
         CpuNativeMatvecBackend
             .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
             .await
@@ -182,6 +192,97 @@ async fn gemma_layer_caches_cap_sliding_layers_to_sliding_window() {
             assert_eq!(cache.head_dim(), 2);
         }
     }
+}
+
+#[test]
+fn gemma_static_f32_tensor_list_includes_optional_norms_and_excludes_output_projection() {
+    let mut config: serde_json::Value = serde_json::from_str(&tiny_gemma4_config_with_options(
+        1,
+        8,
+        &["sliding_attention"],
+        true,
+        0,
+    ))
+    .expect("config json");
+    let text = config
+        .get_mut("text_config")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("text config object");
+    text.insert("enable_moe_block".to_owned(), json!(true));
+    text.insert("num_experts".to_owned(), json!(2));
+    text.insert("top_k_experts".to_owned(), json!(1));
+    text.insert("moe_intermediate_size".to_owned(), json!(1));
+    let spec = GemmaModelSpec::from_config_json(&config.to_string()).expect("Gemma config parses");
+
+    let tensors = gemma_static_f32_tensors_for_spec(&spec);
+
+    assert!(tensors.contains(&"model.language_model.norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.per_layer_projection_norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.input_layernorm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.layer_scalar".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.self_attn.q_norm.weight".to_owned()));
+    assert!(tensors.contains(&"model.language_model.layers.0.self_attn.k_norm.weight".to_owned()));
+    assert!(
+        tensors
+            .contains(&"model.language_model.layers.0.post_per_layer_input_norm.weight".to_owned())
+    );
+    assert!(
+        tensors.contains(
+            &"model.language_model.layers.0.pre_feedforward_layernorm_2.weight".to_owned()
+        )
+    );
+    assert!(
+        tensors.contains(
+            &"model.language_model.layers.0.post_feedforward_layernorm_1.weight".to_owned()
+        )
+    );
+    assert!(
+        tensors.contains(
+            &"model.language_model.layers.0.post_feedforward_layernorm_2.weight".to_owned()
+        )
+    );
+    assert!(
+        !tensors
+            .iter()
+            .any(|tensor| tensor.ends_with("self_attn.o_proj.weight"))
+    );
+}
+
+#[tokio::test]
+async fn gemma_attention_output_projection_uses_bf16_matvec() {
+    let root = temp_snapshot_dir("gemma-output-projection-bf16");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    write_tiny_gemma4_decoder_snapshot(&root);
+    let spec = GemmaModelSpec::from_config_json(
+        &std::fs::read_to_string(root.join("config.json")).expect("config"),
+    )
+    .expect("tiny Gemma config parses");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
+    let matvec = RecordingGemmaMatvecBackend::default();
+
+    let mut scratch = InferenceScratchpad::default();
+    gemma_prefill_sequence_with_cache_with_matvec(
+        &store,
+        &spec,
+        &[0],
+        &mut caches,
+        &matvec,
+        &mut scratch,
+    )
+    .await
+    .expect("prefill succeeds");
+
+    assert_eq!(
+        matvec.bf16_output_projection_calls.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        matvec.dense_output_projection_calls.load(Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[tokio::test]
@@ -315,7 +416,11 @@ async fn gemma_attention_uses_configured_matvec_backend_for_shared_and_concrete_
     assert_eq!(matvec.softmax_calls.load(Ordering::Relaxed), 4);
     assert_eq!(matvec.weighted_sum_calls.load(Ordering::Relaxed), 4);
     assert_eq!(matvec.kv_cache_head_row_calls.load(Ordering::Relaxed), 8);
-    assert_eq!(matvec.dense_f32_calls.load(Ordering::Relaxed), 8);
+    assert_eq!(matvec.dense_f32_calls.load(Ordering::Relaxed), 4);
+    assert_eq!(
+        matvec.bf16_output_projection_calls.load(Ordering::Relaxed),
+        4
+    );
     std::fs::remove_dir_all(root).ok();
 }
 
