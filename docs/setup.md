@@ -152,12 +152,14 @@ cargo run -p llm-engine -- model list --model-home /Volumes/models/kir-ai
 The fastest server path does not require a model:
 
 ```sh
-cargo run -p llm-engine -- serve \
+cargo run -p llm-engine --features test-utils -- serve \
   --addr 127.0.0.1:3000 \
-  --protocol-test-backend
+  --protocol-test-backend \
+  --i-understand-this-is-not-real-inference
 ```
 
-This starts the protocol test backend explicitly. Use it for HTTP contract
+The protocol test backend serves hardcoded fixtures, so it requires both the
+`test-utils` feature and the acknowledgement flag. Use it for HTTP contract
 work, client integration, and API shape checks.
 
 ## Common Setup Problems

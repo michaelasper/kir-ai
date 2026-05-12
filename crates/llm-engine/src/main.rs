@@ -28,6 +28,7 @@ use std::{collections::HashMap, net::SocketAddr, path::Path};
 mod bench;
 
 const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
+const DETERMINISTIC_TEST_BACKEND_FLAG: &str = "--deterministic-test-backend";
 const PROTOCOL_TEST_BACKEND_ACK_FLAG: &str = "--i-understand-this-is-not-real-inference";
 const PROTOCOL_TEST_BACKEND_WARNING: &str =
     "WARNING: SERVING WITH HARDCODED PROTOCOL TEST BACKEND - NOT REAL INFERENCE";
@@ -45,11 +46,11 @@ async fn main() -> anyhow::Result<()> {
                 print_serve_help();
                 return Ok(());
             }
-            if has_flag(&serve_args, PROTOCOL_TEST_BACKEND_FLAG)
+            if let Some(protocol_backend_flag) = protocol_test_backend_flag(&serve_args)
                 && !has_flag(&serve_args, PROTOCOL_TEST_BACKEND_ACK_FLAG)
             {
                 anyhow::bail!(
-                    "{PROTOCOL_TEST_BACKEND_FLAG} serves hardcoded protocol fixtures and requires {PROTOCOL_TEST_BACKEND_ACK_FLAG}"
+                    "{protocol_backend_flag} serves hardcoded protocol fixtures and requires {PROTOCOL_TEST_BACKEND_ACK_FLAG}"
                 );
             }
             let addr = flag_value(&serve_args, "--addr")
@@ -201,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     build_router_with_backend_and_options(backend, options)?
                 }
-            } else if has_flag(&serve_args, PROTOCOL_TEST_BACKEND_FLAG) {
+            } else if protocol_test_backend_flag(&serve_args).is_some() {
                 #[cfg(feature = "test-utils")]
                 {
                     tracing::warn!("{}", PROTOCOL_TEST_BACKEND_WARNING);
@@ -823,6 +824,16 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
+}
+
+fn protocol_test_backend_flag(args: &[String]) -> Option<&'static str> {
+    if has_flag(args, PROTOCOL_TEST_BACKEND_FLAG) {
+        Some(PROTOCOL_TEST_BACKEND_FLAG)
+    } else if has_flag(args, DETERMINISTIC_TEST_BACKEND_FLAG) {
+        Some(DETERMINISTIC_TEST_BACKEND_FLAG)
+    } else {
+        None
+    }
 }
 
 fn model_home_from_args(args: &[String]) -> std::path::PathBuf {

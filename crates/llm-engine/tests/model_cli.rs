@@ -372,6 +372,65 @@ async fn serve_protocol_test_backend_requires_explicit_fixture_ack() {
 }
 
 #[tokio::test]
+async fn serve_legacy_deterministic_test_backend_alias_requires_explicit_fixture_ack() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--deterministic-test-backend",
+            "--hub-endpoint",
+            "not a url",
+        ])
+        .output()
+        .expect("run serve with legacy deterministic backend alias but no acknowledgement");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--deterministic-test-backend"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--i-understand-this-is-not-real-inference"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "legacy deterministic backend alias must be recognized before snapshot validation: {stderr}"
+    );
+    assert!(
+        !stderr.contains("invalid hub endpoint"),
+        "protocol-test acknowledgement must be checked before unrelated config: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn serve_legacy_deterministic_test_backend_alias_accepts_explicit_fixture_ack() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--deterministic-test-backend",
+            "--i-understand-this-is-not-real-inference",
+            "--hub-endpoint",
+            "not a url",
+        ])
+        .output()
+        .expect("run serve with acknowledged legacy deterministic backend alias");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid hub endpoint"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "legacy deterministic backend alias should reach protocol backend setup: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
+
+#[tokio::test]
 async fn serve_rejects_invalid_hub_endpoint_without_panic() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args([

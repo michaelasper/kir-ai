@@ -7,18 +7,20 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine model <subcommand> ...
 ```
 
 If no command is provided, `llm-engine` defaults to `serve`, which still
-requires either `--snapshot <path>` or `--protocol-test-backend`.
+requires either `--snapshot <path>` or acknowledged protocol test mode.
 
 When running through Cargo:
 
 ```sh
-cargo run -p llm-engine -- serve --protocol-test-backend
+cargo run -p llm-engine --features test-utils -- serve \
+  --protocol-test-backend \
+  --i-understand-this-is-not-real-inference
 cargo run -p llm-engine -- model list
 ```
 
@@ -39,7 +41,8 @@ llm-engine serve \
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--addr <host:port>` | `127.0.0.1:3000` | Socket address to bind. |
-| `--protocol-test-backend` | absent | Enables protocol test mode without model artifacts. Intended for tests and client integration. |
+| `--protocol-test-backend` | absent | Enables protocol test mode without model artifacts. Intended for tests and client integration. Requires the `test-utils` feature and `--i-understand-this-is-not-real-inference`. |
+| `--deterministic-test-backend` | absent | Deprecated compatibility alias for `--protocol-test-backend`; it has the same feature and acknowledgement requirements. |
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native text execution for supported families; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
@@ -51,8 +54,8 @@ llm-engine serve \
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 
-Without `--snapshot`, `serve` exits unless `--protocol-test-backend` is
-present. Implicit no-snapshot stub serving was removed.
+Without `--snapshot`, `serve` exits unless protocol test mode is explicitly
+selected and acknowledged. Implicit no-snapshot stub serving was removed.
 
 With a native-metal snapshot, the directory must contain `config.json`,
 `tokenizer.json`, `model.safetensors.index.json`, and all referenced shard

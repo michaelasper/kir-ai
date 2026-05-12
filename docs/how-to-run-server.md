@@ -9,11 +9,15 @@ Use protocol mode when you want fast, repeatable OpenAI-compatible responses
 without model artefacts:
 
 ```sh
-kirai
+cargo run -p llm-engine --features test-utils -- serve \
+  --addr 127.0.0.1:3000 \
+  --protocol-test-backend \
+  --i-understand-this-is-not-real-inference
 ```
 
-`kirai` is installed by the one-command installer and starts the protocol backend
-on `127.0.0.1:3000` by default.
+The protocol backend is compiled only with the `test-utils` feature and requires
+the acknowledgement flag because it serves hardcoded fixtures, not real
+inference.
 
 With `--protocol-test-backend` and no `--snapshot`, the server uses a
 protocol test backend. It serves the model alias `local-qwen36` and returns
@@ -23,7 +27,7 @@ the fixed text:
 hello from rust native backend
 ```
 
-Omitting both `--snapshot` and `--protocol-test-backend` exits with an
+Omitting both `--snapshot` and an acknowledged protocol backend exits with an
 explicit backend requirement.
 
 Confirm the server:

@@ -86,15 +86,16 @@ if [[ ! -x "\$ENGINE_BIN" ]]; then
   exit 1
 fi
 if [[ "\$#" -eq 0 ]]; then
-  exec "\$ENGINE_BIN" serve --protocol-test-backend
+  exec "\$ENGINE_BIN" --help
 fi
 case "\$1" in
   -h|--help|help)
     exec "\$ENGINE_BIN" --help
     ;;
   protocol|run-protocol|protocol-backend)
-    shift
-    exec "\$ENGINE_BIN" serve --protocol-test-backend "\$@"
+    echo "kirai protocol backend is a source-only test fixture." >&2
+    echo "Run from the repo with: mise run run-protocol" >&2
+    exit 2
     ;;
   *)
     exec "\$ENGINE_BIN" "\$@"
@@ -105,8 +106,9 @@ chmod +x "$kirai_bin"
 
 echo -e "\n${BOLD}${GREEN}✓ kir-ai installed successfully!${RESET}"
 echo -e "\n${BOLD}Quick Start:${RESET}"
-echo -e "  • Run protocol backend: ${BLUE}kirai${RESET}"
-echo -e "  • Show help:           ${BLUE}kirai --help${RESET}"
+echo -e "  - Run inference server: ${BLUE}kirai serve --snapshot <path>${RESET}"
+echo -e "  - Run protocol backend from source: ${BLUE}mise run run-protocol${RESET}"
+echo -e "  - Show help:            ${BLUE}kirai --help${RESET}"
 
 if [[ ":$PATH:" != *":$install_bin_dir:"* ]]; then
   echo -e "\n${YELLOW}Note: Add ${install_bin_dir} to your PATH to run 'kirai' from anywhere:${RESET}"

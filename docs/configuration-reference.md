@@ -38,7 +38,7 @@ Mise tasks:
 | `mise run clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | `mise run check` | `fmt-check`, `test`, and `clippy` |
 | `mise run run` | Delegates to `mise run run-inference`; requires `LLM_ENGINE_SNAPSHOT` or `LLM_ENGINE_SNAPSHOT_ALIAS`. |
-| `mise run run-protocol` | `kirai` (or `cargo run -p llm-engine -- serve --protocol-test-backend`) |
+| `mise run run-protocol` | `cargo run -p llm-engine --features test-utils -- serve --protocol-test-backend --i-understand-this-is-not-real-inference` |
 
 ## Server Configuration
 
@@ -47,8 +47,9 @@ Mise tasks:
 | Flag | Type | Default | Behaviour |
 | --- | --- | --- | --- |
 | `--addr` | socket address | `127.0.0.1:3000` | Address bound by Axum. |
-| `--protocol-test-backend` | boolean | unset | Enables protocol test mode without model artifacts. |
-| `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires `--protocol-test-backend`. |
+| `--protocol-test-backend` | boolean | unset | Enables protocol test mode without model artifacts. Requires `test-utils` and `--i-understand-this-is-not-real-inference`. |
+| `--deterministic-test-backend` | boolean | unset | Deprecated compatibility alias for `--protocol-test-backend`; it has the same feature and acknowledgement requirements. |
+| `--snapshot` | path | unset | Enables manifest-selected serving. Without this flag, `serve` requires an acknowledged protocol backend. |
 | `--snapshot-alias` / `--model-alias` | string | unset | Resolves a promoted snapshot from the model store alias records. |
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
 | `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. Conflicting manifest metadata is rejected. |
