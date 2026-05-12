@@ -201,6 +201,44 @@ async fn rejects_generated_tool_call_missing_required_schema_argument() {
 }
 
 #[tokio::test]
+async fn fills_missing_required_omp_intent_argument() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read","arguments":{"path":"calculator.py"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read calculator.py")],
+            tools: vec![ToolDefinition::function(
+                "read",
+                "read file",
+                json!({
+                    "type": "object",
+                    "required": ["path", "_i"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "_i": { "type": "string" }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("missing OMP intent metadata is repaired");
+
+    let arguments = &response.choices[0].message.tool_calls[0].function.arguments;
+    assert_eq!(arguments["path"], "calculator.py");
+    assert!(
+        arguments["_i"]
+            .as_str()
+            .is_some_and(|intent| !intent.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn rejects_generated_tool_call_for_undeclared_tool() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",

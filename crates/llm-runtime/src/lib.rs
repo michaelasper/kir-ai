@@ -277,8 +277,9 @@ where
             .await?;
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
-        let parsed = parse_chat_text(adapter, &raw_text, &request)?;
+        let mut parsed = parse_chat_text(adapter, &raw_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
+        fill_missing_tool_intent_arguments(&mut parsed, &request);
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
             validate_json_object_response(&parsed)?;
@@ -761,8 +762,9 @@ fn streaming_chat_stream<'a>(
                 if let Some(tool_prefix_len) = tool_markup_policy.completed_prefix_len(&raw_text)
                     && tool_prefix_len > emitted_len
                 {
-                    let parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
+                    let mut parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
                     validate_tool_call_arguments(&parsed_prefix)?;
+                    fill_missing_tool_intent_arguments(&mut parsed_prefix, &request);
                     validate_tool_calls_against_request(&parsed_prefix, &request)?;
                     for (index, tool_call) in parsed_prefix
                         .tool_calls
@@ -828,8 +830,9 @@ fn streaming_chat_stream<'a>(
         }
 
         let visible_text = &raw_text[..visible_len];
-        let parsed = parse_chat_text(adapter, visible_text, &request)?;
+        let mut parsed = parse_chat_text(adapter, visible_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
+        fill_missing_tool_intent_arguments(&mut parsed, &request);
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(deferred, DeferredEmission::JsonObjectMode) {
             validate_json_object_response(&parsed)?;
@@ -1126,6 +1129,79 @@ fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeE
         }
     }
     Ok(())
+}
+
+fn fill_missing_tool_intent_arguments(
+    parsed: &mut ParsedAssistant,
+    request: &ChatCompletionRequest,
+) {
+    for tool_call in &mut parsed.tool_calls {
+        let Some(arguments) = tool_call.function.arguments.as_object_mut() else {
+            continue;
+        };
+        if arguments.contains_key("_i") {
+            continue;
+        }
+        let Some(tool) = request
+            .tools
+            .iter()
+            .find(|tool| tool.function.name == tool_call.function.name)
+        else {
+            continue;
+        };
+        if schema_requires_string_intent_argument(&tool.function.parameters) {
+            arguments.insert(
+                "_i".to_owned(),
+                serde_json::Value::String(default_tool_intent(&tool_call.function.name).to_owned()),
+            );
+        }
+    }
+}
+
+fn schema_requires_string_intent_argument(schema: &serde_json::Value) -> bool {
+    let Some(schema_object) = schema.as_object() else {
+        return false;
+    };
+    let Some(required) = schema_object
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    if !required.iter().any(|field| field.as_str() == Some("_i")) {
+        return false;
+    }
+    let Some(intent_schema) = schema_object
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|properties| properties.get("_i"))
+    else {
+        return false;
+    };
+    intent_schema
+        .get("type")
+        .is_some_and(schema_type_accepts_string)
+}
+
+fn schema_type_accepts_string(schema_type: &serde_json::Value) -> bool {
+    match schema_type {
+        serde_json::Value::String(type_name) => type_name == "string",
+        serde_json::Value::Array(types) => types
+            .iter()
+            .any(|type_name| type_name.as_str() == Some("string")),
+        _ => false,
+    }
+}
+
+fn default_tool_intent(tool_name: &str) -> &'static str {
+    match tool_name {
+        "read" => "Reading requested path",
+        "bash" => "Running requested command",
+        "edit" => "Editing requested file",
+        "find" => "Finding requested files",
+        name if name.contains("search") || name.contains("grep") => "Searching requested context",
+        _ => "Calling requested tool",
+    }
 }
 
 fn request_requires_tool_choice(request: &ChatCompletionRequest) -> bool {

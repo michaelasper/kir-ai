@@ -431,6 +431,57 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
 }
 
 #[tokio::test]
+async fn streaming_tool_call_fills_missing_required_omp_intent_argument() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read","arguments":{"path":"calculator.py"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read calculator.py")],
+            tools: vec![ToolDefinition::function(
+                "read",
+                "read file",
+                json!({
+                    "type": "object",
+                    "required": ["path", "_i"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "_i": { "type": "string" }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming tool call request starts");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let tool_call = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .flat_map(|choice| &choice.delta.tool_calls)
+        .next()
+        .expect("tool call delta is emitted");
+    let function = tool_call
+        .function
+        .as_ref()
+        .expect("tool call function delta");
+    let arguments = function.arguments.as_ref().expect("tool arguments");
+    let arguments: Value = serde_json::from_str(arguments).expect("arguments JSON object");
+    assert_eq!(arguments["path"], "calculator.py");
+    assert!(
+        arguments["_i"]
+            .as_str()
+            .is_some_and(|intent| !intent.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn runtime_appends_chat_stream_usage_when_requested() {
     let backend = ProtocolTestBackend::new("local-qwen36", "hello");
     let runtime = Runtime::new(backend);
