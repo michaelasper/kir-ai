@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.34](https://github.com/michaelasper/kir-ai/compare/v1.4.33...v1.4.34) (2026-05-12)
+
+### Bug Fixes
+
+* **metal:** batch full attention cache mix ([ee45c5b](https://github.com/michaelasper/kir-ai/commit/ee45c5b7b8abf8a38153f44fd2bd38dff7ec19d0)), closes [#225](https://github.com/michaelasper/kir-ai/issues/225)
+
 ## [1.4.33](https://github.com/michaelasper/kir-ai/compare/v1.4.32...v1.4.33) (2026-05-12)
 
 ### Bug Fixes
