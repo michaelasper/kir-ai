@@ -1,5 +1,5 @@
 use metal::Device;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod buffers;
 mod command;
@@ -15,7 +15,7 @@ pub use buffers::{Bf16MatrixBuffer, F32Buffer};
 pub use error::MetalError;
 pub use reductions::{ArgmaxResult, TopKResult};
 
-use self::{command::MetalSynchronization, pipeline::MetalKernel};
+use self::{buffers::MetalBufferPool, command::MetalSynchronization, pipeline::MetalKernel};
 
 pub(crate) fn power_of_two_at_most(value: u64) -> u64 {
     debug_assert!(value > 0);
@@ -26,6 +26,7 @@ pub(crate) fn power_of_two_at_most(value: u64) -> u64 {
 pub struct MetalDevice {
     pub(crate) device: Device,
     pub(crate) synchronization: Arc<MetalSynchronization>,
+    pub(crate) scratch_buffers: Arc<Mutex<MetalBufferPool>>,
     pub(crate) vector_add: Arc<MetalKernel>,
     pub(crate) qwen_rms_norm: Arc<MetalKernel>,
     pub(crate) softmax_f32: Arc<MetalKernel>,

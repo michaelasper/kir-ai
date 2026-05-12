@@ -52,19 +52,9 @@ impl MetalDevice {
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| MetalError::InvalidShape("output byte length overflow".to_owned()))?
             as u64;
-        let matrix_buffer = self.device.new_buffer_with_data(
-            matrix.as_ptr().cast::<c_void>(),
-            matrix_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let vector_buffer = self.device.new_buffer_with_data(
-            vector.as_ptr().cast::<c_void>(),
-            vector_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let matrix_buffer = self.take_scratch_f32_buffer(matrix);
+        let vector_buffer = self.take_scratch_f32_buffer(vector);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.matvec_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -108,6 +98,9 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, rows);
             output[..rows].copy_from_slice(values);
         };
+        self.return_scratch_buffer(matrix_byte_len, matrix_buffer);
+        self.return_scratch_buffer(vector_byte_len, vector_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 

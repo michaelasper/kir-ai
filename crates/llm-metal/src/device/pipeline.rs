@@ -48,6 +48,9 @@ impl MetalDevice {
         Ok(Self {
             device,
             synchronization: Arc::new(super::command::MetalSynchronization::new()),
+            scratch_buffers: Arc::new(std::sync::Mutex::new(
+                super::buffers::MetalBufferPool::default(),
+            )),
             vector_add,
             qwen_rms_norm,
             softmax_f32,
