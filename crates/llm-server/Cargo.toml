@@ -1,5 +1,5 @@
 [package]
-name = "llm-engine"
+name = "llm-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,33 +10,23 @@ default = []
 test-utils = ["llm-backend/test-utils"]
 
 [dependencies]
-anyhow.workspace = true
 async-stream.workspace = true
-async-trait.workspace = true
-chrono.workspace = true
+axum.workspace = true
 futures.workspace = true
+libc.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
-llm-metal = { path = "../llm-metal" }
-llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
-llm-sampler = { path = "../llm-sampler" }
-llm-server = { path = "../llm-server" }
 llm-telemetry = { path = "../llm-telemetry" }
-llm-tokenizer = { path = "../llm-tokenizer" }
-libc.workspace = true
-reqwest.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subtle.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
-tempfile.workspace = true
 tower.workspace = true

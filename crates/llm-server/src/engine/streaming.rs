@@ -1,3 +1,4 @@
+use super::scheduler::SchedulerPermit;
 use super::{
     AppState,
     lifecycle::StreamingGenerationRun,
@@ -9,7 +10,6 @@ use super::{
     runtime_error_metadata,
 };
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
-use crate::engine::scheduler::SchedulerPermit;
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::{ChatCompletionStreamResponse, CompletionStreamResponse, Usage};

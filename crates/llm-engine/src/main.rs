@@ -234,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
             tracing::info!(%addr, "llm-engine listening");
-            axum::serve(listener, router).await?;
+            llm_server::serve(listener, router).await?;
         }
         "bench" => bench::run_bench_command(std::env::args().skip(2).collect()).await?,
         "model" => run_model_command(std::env::args().skip(2).collect()).await?,

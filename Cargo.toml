@@ -9,6 +9,7 @@ members = [
   "crates/llm-models",
   "crates/llm-runtime",
   "crates/llm-sampler",
+  "crates/llm-server",
   "crates/llm-telemetry",
   "crates/llm-tokenizer",
   "crates/llm-tool-parser",

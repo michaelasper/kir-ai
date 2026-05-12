@@ -1075,13 +1075,12 @@ dependencies = [
  "llm-models",
  "llm-runtime",
  "llm-sampler",
+ "llm-server",
  "llm-telemetry",
  "llm-tokenizer",
  "reqwest",
- "schemars",
  "serde",
  "serde_json",
- "subtle",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -1160,6 +1159,30 @@ dependencies = [
 [[package]]
 name = "llm-sampler"
 version = "0.1.0"
+
+[[package]]
+name = "llm-server"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "futures",
+ "libc",
+ "llm-api",
+ "llm-backend",
+ "llm-hub",
+ "llm-runtime",
+ "llm-telemetry",
+ "schemars",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "url",
+]
 
 [[package]]
 name = "llm-telemetry"

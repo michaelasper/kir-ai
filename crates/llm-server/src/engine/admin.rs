@@ -6,12 +6,7 @@ use super::{
     },
     requests::CancelRequestResult,
 };
-use crate::{
-    mlx::mlx_backend_metrics_snapshot,
-    native_qwen::native_qwen_prefix_cache_metrics_snapshot,
-    native_text::{native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot},
-    sync_ext::FailPoisonedMutex,
-};
+use crate::sync_ext::FailPoisonedMutex;
 use axum::{
     Json,
     extract::{Path as AxumPath, State, rejection::JsonRejection},
@@ -317,11 +312,7 @@ pub(super) async fn admin_metrics(
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
-    let native_text_metal = native_text_metal_metrics_snapshot();
-    let mlx = mlx_backend_metrics_snapshot();
-    let native_qwen_prefix_cache = native_qwen_prefix_cache_metrics_snapshot();
-    let native_text_prefix_cache =
-        native_text_prefix_cache_metrics_snapshot(native_qwen_prefix_cache.clone());
+    let backend_metrics = state.backend_metrics.snapshot();
     let response = AdminMetricsResponse {
         requests_total: metrics.requests_total(),
         successful_requests: metrics.successful_requests(),
@@ -357,11 +348,11 @@ pub(super) async fn admin_metrics(
         artifact_verification_failures: metrics.artifact_verification_failures(),
         process_rss_bytes: process_rss_bytes(),
         tokens_per_second: metrics.tokens_per_second(),
-        mlx,
-        native_text_metal: native_text_metal.clone(),
-        native_text_prefix_cache,
-        native_qwen_metal: native_text_metal,
-        native_qwen_prefix_cache,
+        mlx: backend_metrics.mlx,
+        native_text_metal: backend_metrics.native_text_metal,
+        native_text_prefix_cache: backend_metrics.native_text_prefix_cache,
+        native_qwen_metal: backend_metrics.native_qwen_metal,
+        native_qwen_prefix_cache: backend_metrics.native_qwen_prefix_cache,
         request_latency_ms: LatencySummary::from_metrics(request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
         tokens: TokenSummary {

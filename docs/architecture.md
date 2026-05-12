@@ -18,13 +18,13 @@ parsing, model acquisition, tensor access, and future acceleration work.
 
 ```text
 HTTP client
-  -> llm-engine Axum route
+  -> llm-server Axum route
   -> llm-api request type
   -> llm-runtime validation and orchestration
   -> llm-tokenizer prompt rendering for chat
   -> llm-backend ModelBackend
   -> llm-runtime stop/tool/json/no-progress handling
-  -> llm-engine JSON or SSE response
+  -> llm-server JSON or SSE response
 ```
 
 For native text execution:
@@ -52,7 +52,8 @@ OpenAI-shaped responses.
 | Crate | Responsibility | Current status |
 | --- | --- | --- |
 | `llm-api` | OpenAI-compatible request and response structs, tool schema, finish reasons, usage, and validation. | Implements the supported API subset and fails closed for unsupported request features. |
-| `llm-engine` | HTTP and CLI edge. Owns routing, SSE framing, admin endpoints, error-to-HTTP mapping, and manifest-based backend selection. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend`, native Qwen/Gemma use the native text backend, and MLX manifests proxy through the MLX backend module. |
+| `llm-server` | HTTP service edge, routing, SSE framing, admin endpoints, request lifecycle, scheduler, and error-to-HTTP mapping. | Owns the OpenAI-compatible and admin routes. It can be tested without depending on `llm-engine`; `llm-engine` supplies backend-specific metrics through a narrow provider. |
+| `llm-engine` | Backend factory, native/MLX backend implementations, benchmark code, and the `llm-engine` CLI facade. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend`, native Qwen/Gemma use the native text backend, and MLX manifests proxy through the MLX backend module. The public router helpers delegate to `llm-server` for compatibility. |
 | `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
 | `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and native CPU tensor primitives. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen ChatML, DeepSeek chat/tool, Gemma 4 text/tool, and Llama 3 instruct chat templates. |

@@ -12,6 +12,7 @@ use super::{
     scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions},
     state::AppState,
 };
+use crate::{NoopServerBackendMetrics, ServerBackendMetrics};
 use axum::{
     Router,
     body::Body,
@@ -73,20 +74,47 @@ pub fn build_router_with_backend_and_options(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(backend, options, false)
+    build_router_with_backend_and_options_impl(
+        backend,
+        options,
+        false,
+        Arc::new(NoopServerBackendMetrics),
+    )
 }
 
 pub fn build_router_with_backend_and_options_allowing_unauthenticated_admin(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(backend, options, true)
+    build_router_with_backend_and_options_impl(
+        backend,
+        options,
+        true,
+        Arc::new(NoopServerBackendMetrics),
+    )
+}
+
+pub fn build_router_with_backend_and_options_and_backend_metrics(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+    backend_metrics: Arc<dyn ServerBackendMetrics>,
+) -> Result<Router, EngineConfigError> {
+    build_router_with_backend_and_options_impl(backend, options, false, backend_metrics)
+}
+
+pub fn build_router_with_backend_and_options_allowing_unauthenticated_admin_and_backend_metrics(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+    backend_metrics: Arc<dyn ServerBackendMetrics>,
+) -> Result<Router, EngineConfigError> {
+    build_router_with_backend_and_options_impl(backend, options, true, backend_metrics)
 }
 
 fn build_router_with_backend_and_options_impl(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
     allow_unauthenticated_admin: bool,
+    backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> Result<Router, EngineConfigError> {
     let hub_client = options
         .hub_endpoint
@@ -99,6 +127,7 @@ fn build_router_with_backend_and_options_impl(
         options,
         hub_client,
         allow_unauthenticated_admin,
+        backend_metrics,
     )))
 }
 
@@ -146,6 +175,7 @@ fn engine_state(
     options: EngineOptions,
     hub_client: HubClient,
     allow_unauthenticated_admin: bool,
+    backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> AppState {
     AppState {
         runtime: Arc::new(Runtime::new(backend)),
@@ -159,6 +189,7 @@ fn engine_state(
             prefill_burst: options.scheduler_prefill_burst.max(1),
         })),
         active_requests: ActiveRequestRegistry::default(),
+        backend_metrics,
         admin_token: options.admin_token.map(Arc::from),
         allow_unauthenticated_admin,
         model_home: options.model_home.unwrap_or_else(default_model_home),

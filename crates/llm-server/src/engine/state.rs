@@ -3,6 +3,7 @@ use super::{
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler},
 };
+use crate::ServerBackendMetrics;
 use llm_backend::ModelBackend;
 use llm_hub::HubClient;
 use llm_runtime::Runtime;
@@ -22,6 +23,7 @@ pub(super) struct AppState {
     pub(super) generation_phases: Arc<GenerationPhaseMetrics>,
     pub(super) model_scheduler: Arc<ModelScheduler>,
     pub(super) active_requests: ActiveRequestRegistry,
+    pub(super) backend_metrics: Arc<dyn ServerBackendMetrics>,
     pub(super) admin_token: Option<Arc<str>>,
     pub(super) allow_unauthenticated_admin: bool,
     pub(super) model_home: PathBuf,
