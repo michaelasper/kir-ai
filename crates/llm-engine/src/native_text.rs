@@ -322,6 +322,7 @@ mod tests {
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
         cleanup_calls: Arc<AtomicUsize>,
         next_token_calls: Arc<AtomicUsize>,
+        decoded_token_total: Arc<AtomicUsize>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
     }
@@ -336,6 +337,7 @@ mod tests {
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
                 cleanup_calls: Arc::new(AtomicUsize::new(0)),
                 next_token_calls: Arc::new(AtomicUsize::new(0)),
+                decoded_token_total: Arc::new(AtomicUsize::new(0)),
                 next_token_delay: None,
                 fail_prefill: false,
             }
@@ -362,6 +364,10 @@ mod tests {
 
         fn next_token_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.next_token_calls)
+        }
+
+        fn decoded_token_total(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.decoded_token_total)
         }
     }
 
@@ -395,6 +401,8 @@ mod tests {
             _tokenizer: &HuggingFaceTokenizer,
             output_ids: &[u32],
         ) -> Result<String, BackendError> {
+            self.decoded_token_total
+                .fetch_add(output_ids.len(), Ordering::SeqCst);
             Ok(output_ids
                 .iter()
                 .map(|token_id| format!("<{token_id}>"))
@@ -839,6 +847,27 @@ mod tests {
         assert_eq!(final_chunk.completion_tokens, 0);
         assert_eq!(final_chunk.finish_reason, Some(llm_api::FinishReason::Stop));
         assert!(rx.blocking_recv().is_none());
+    }
+
+    #[test]
+    fn streaming_generation_decodes_each_output_token_once() {
+        let adapter = TestAdapter::new([1_usize, 2, 3, 4]);
+        let decoded_token_total = adapter.decoded_token_total();
+        let driver = driver_for_test(adapter);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        driver
+            .generate_blocking_stream(driver_test_request(4), tx, CancellationToken::new())
+            .expect("streaming generation succeeds");
+
+        let mut text = String::new();
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk is ok");
+            text.push_str(&chunk.text);
+        }
+
+        assert_eq!(text, "<1><2><3><4>");
+        assert_eq!(decoded_token_total.load(Ordering::SeqCst), 4);
     }
 
     #[test]

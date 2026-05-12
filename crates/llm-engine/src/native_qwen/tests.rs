@@ -1241,6 +1241,22 @@ fn native_stream_text_deltas_emit_stable_prefix_with_one_token_delay() {
 }
 
 #[test]
+fn native_stream_text_deltas_emit_incremental_pieces_with_one_token_delay() {
+    let mut deltas = NativeStreamTextDeltas::default();
+
+    assert_eq!(deltas.observe_incremental("a".to_owned()), None);
+    assert_eq!(
+        deltas.observe_incremental("b".to_owned()),
+        Some("a".to_owned())
+    );
+    assert_eq!(
+        deltas.observe_incremental("c".to_owned()),
+        Some("b".to_owned())
+    );
+    assert_eq!(deltas.finish_incremental(), Some("c".to_owned()));
+}
+
+#[test]
 fn native_stream_text_deltas_fail_closed_after_emitted_prefix_changes() {
     let mut deltas = NativeStreamTextDeltas::default();
 

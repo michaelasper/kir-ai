@@ -8,6 +8,7 @@ pub(crate) struct NativeStreamTextDeltas {
 }
 
 impl NativeStreamTextDeltas {
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
         if !decoded.starts_with(&self.emitted) {
             return Err(non_prefix_stream_error());
@@ -27,6 +28,7 @@ impl NativeStreamTextDeltas {
         Ok(delta)
     }
 
+    #[cfg(test)]
     pub(crate) fn finish(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
         self.pending = None;
         if !decoded.starts_with(&self.emitted) {
@@ -36,12 +38,29 @@ impl NativeStreamTextDeltas {
         self.emitted = decoded;
         Ok(non_empty(delta))
     }
+
+    pub(crate) fn observe_incremental(&mut self, decoded_piece: String) -> Option<String> {
+        let delta = self.pending.replace(decoded_piece).and_then(non_empty);
+        if let Some(delta) = &delta {
+            self.emitted.push_str(delta);
+        }
+        delta
+    }
+
+    pub(crate) fn finish_incremental(&mut self) -> Option<String> {
+        let delta = self.pending.take().and_then(non_empty);
+        if let Some(delta) = &delta {
+            self.emitted.push_str(delta);
+        }
+        delta
+    }
 }
 
 fn non_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+#[cfg(test)]
 fn non_prefix_stream_error() -> BackendError {
     BackendError::Other(
         "native tokenizer streaming decode became non-prefix after emitted delta".to_owned(),

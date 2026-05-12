@@ -429,15 +429,16 @@ where
                         break;
                     }
                 };
-            output_ids.push(u32::try_from(token_id).map_err(|err| {
+            let output_id = u32::try_from(token_id).map_err(|err| {
                 BackendError::Other(format!(
                     "{} token id does not fit u32: {err}",
                     self.adapter.family_display_name()
                 ))
-            })?);
+            })?;
+            output_ids.push(output_id);
             unreported_completion_tokens += 1;
-            let next_decoded = self.adapter.decode_output(&self.tokenizer, &output_ids)?;
-            let delta = text_deltas.observe(next_decoded)?;
+            let token_decoded = self.adapter.decode_output(&self.tokenizer, &[output_id])?;
+            let delta = text_deltas.observe_incremental(token_decoded);
             if cancellation.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
@@ -467,8 +468,7 @@ where
         let final_text = if output_ids.is_empty() {
             None
         } else {
-            let final_decoded = self.adapter.decode_output(&self.tokenizer, &output_ids)?;
-            text_deltas.finish(final_decoded)?
+            text_deltas.finish_incremental()
         };
         tx.send(Ok(BackendStreamChunk {
             text: final_text.unwrap_or_default(),
