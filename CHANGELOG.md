@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.18](https://github.com/michaelasper/kir-ai/compare/v1.4.17...v1.4.18) (2026-05-12)
+
+### Bug Fixes
+
+* **metal:** time out command buffer waits ([253ed42](https://github.com/michaelasper/kir-ai/commit/253ed427958d39d29eec9ffed4bdda0f00291e87)), closes [#192](https://github.com/michaelasper/kir-ai/issues/192)
+
 ## [1.4.17](https://github.com/michaelasper/kir-ai/compare/v1.4.16...v1.4.17) (2026-05-12)
 
 ### Bug Fixes
