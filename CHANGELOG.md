@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.19](https://github.com/michaelasper/kir-ai/compare/v1.4.18...v1.4.19) (2026-05-12)
+
+### Bug Fixes
+
+* **qwen:** avoid transient rms norm weight allocation ([c26df7a](https://github.com/michaelasper/kir-ai/commit/c26df7a32d2b7ec6f86cadd1915bf12179b26892)), closes [#155](https://github.com/michaelasper/kir-ai/issues/155)
+
 ## [1.4.18](https://github.com/michaelasper/kir-ai/compare/v1.4.17...v1.4.18) (2026-05-12)
 
 ### Bug Fixes
