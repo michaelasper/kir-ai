@@ -2,8 +2,8 @@ use llm_hub::{
     HubFile, HubRepoId, ModelProfile, ModelStore, PrunePolicy, SnapshotManifest,
     build_download_plan,
 };
-use std::path::Path;
-use std::time::Duration;
+use std::{path::Path, sync::Arc, time::Duration};
+use tokio::sync::Barrier;
 
 fn runnable_qwen_files() -> Vec<HubFile> {
     vec![
@@ -129,6 +129,74 @@ async fn promoting_when_snapshot_exists_reuses_snapshot_and_cleans_staging() {
     assert_eq!(reused.path, promoted.path);
     assert!(!loser.exists());
     assert!(promoted.path.join("config.json").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_promotions_for_same_plan_reuse_single_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(ModelStore::new(temp.path()));
+    let plan = Arc::new(
+        build_download_plan(
+            HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+            "main",
+            "0123456789abcdef0123456789abcdef01234567",
+            ModelProfile::qwen36_mlx_4bit(),
+            vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+            &[],
+        )
+        .expect("plan builds"),
+    );
+
+    let first = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("first staging");
+    tokio::fs::write(first.join("config.json"), "{}")
+        .await
+        .expect("write first file");
+    let second = store
+        .create_staging_dir(&plan)
+        .await
+        .expect("second staging");
+    tokio::fs::write(second.join("config.json"), "{}")
+        .await
+        .expect("write second file");
+
+    let barrier = Arc::new(Barrier::new(3));
+    let first_task = tokio::spawn({
+        let store = Arc::clone(&store);
+        let plan = Arc::clone(&plan);
+        let barrier = Arc::clone(&barrier);
+        let staging = first.clone();
+        async move {
+            barrier.wait().await;
+            store.promote_staging(&plan, staging).await
+        }
+    });
+    let second_task = tokio::spawn({
+        let store = Arc::clone(&store);
+        let plan = Arc::clone(&plan);
+        let barrier = Arc::clone(&barrier);
+        let staging = second.clone();
+        async move {
+            barrier.wait().await;
+            store.promote_staging(&plan, staging).await
+        }
+    });
+
+    barrier.wait().await;
+    let (first_result, second_result) = tokio::join!(first_task, second_task);
+    let first_snapshot = first_result
+        .expect("first task joins")
+        .expect("first promotes");
+    let second_snapshot = second_result
+        .expect("second task joins")
+        .expect("second reuses");
+
+    assert_eq!(first_snapshot.path, second_snapshot.path);
+    assert!(first_snapshot.path.join("config.json").is_file());
+    assert!(!first.exists());
+    assert!(!second.exists());
 }
 
 #[tokio::test]

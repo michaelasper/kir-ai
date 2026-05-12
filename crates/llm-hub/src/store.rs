@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
+    fs::{File, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -23,6 +24,10 @@ const QUARANTINE_MANIFEST_FILE: &str = "llm-engine-quarantine.json";
 #[derive(Debug, Clone)]
 pub struct ModelStore {
     root: PathBuf,
+}
+
+struct RepoPullLock {
+    file: File,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +141,15 @@ impl ModelStore {
         plan: &DownloadPlan,
         staging: PathBuf,
     ) -> Result<PromotedSnapshot, HubError> {
+        let _pull_lock = self.acquire_repo_pull_lock(&plan.repo_id).await?;
+        self.promote_staging_locked(plan, staging).await
+    }
+
+    async fn promote_staging_locked(
+        &self,
+        plan: &DownloadPlan,
+        staging: PathBuf,
+    ) -> Result<PromotedSnapshot, HubError> {
         let snapshot = self.snapshot_path(plan);
         if tokio::fs::try_exists(&snapshot)
             .await
@@ -214,6 +228,7 @@ impl ModelStore {
         plan: &DownloadPlan,
         token: Option<&str>,
     ) -> Result<PromotedSnapshot, HubError> {
+        let _pull_lock = self.acquire_repo_pull_lock(&plan.repo_id).await?;
         if let Some(snapshot) = self.verify_existing_snapshot(plan).await? {
             return Ok(snapshot);
         }
@@ -233,7 +248,7 @@ impl ModelStore {
                     })
                     .await?;
             }
-            self.promote_staging(plan, staging.clone()).await
+            self.promote_staging_locked(plan, staging.clone()).await
         }
         .await;
         if let Err(err) = result {
@@ -709,8 +724,45 @@ impl ModelStore {
             .join(format!("models--{}", repo_id.as_str().replace('/', "--")))
     }
 
+    async fn acquire_repo_pull_lock(&self, repo_id: &HubRepoId) -> Result<RepoPullLock, HubError> {
+        let lock_dir = self.repo_root(repo_id).join("locks");
+        tokio::fs::create_dir_all(&lock_dir)
+            .await
+            .map_err(HubError::io)?;
+        let lock_path = lock_dir.join("pull.lock");
+        tokio::task::spawn_blocking(move || {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .map_err(|err| {
+                    HubError::io(format!(
+                        "could not open model pull lock `{}`: {err}",
+                        lock_path.display()
+                    ))
+                })?;
+            file.lock().map_err(|err| {
+                HubError::io(format!(
+                    "could not lock model pull lock `{}`: {err}",
+                    lock_path.display()
+                ))
+            })?;
+            Ok(RepoPullLock { file })
+        })
+        .await
+        .map_err(|err| HubError::io(format!("model pull lock task failed: {err}")))?
+    }
+
     fn aliases_root(&self) -> PathBuf {
         self.root.join("aliases")
+    }
+}
+
+impl Drop for RepoPullLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 
