@@ -3,6 +3,11 @@ use super::{F32Buffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
+fn power_of_two_at_most(value: u64) -> u64 {
+    debug_assert!(value > 0);
+    1_u64 << (u64::BITS - 1 - value.leading_zeros())
+}
+
 impl MetalDevice {
     pub async fn rms_norm_f32(
         &self,
@@ -62,6 +67,17 @@ impl MetalDevice {
         let len = u32::try_from(input.len()).map_err(|err| {
             MetalError::InvalidShape(format!("input length does not fit u32: {err}"))
         })?;
+        let max_threads = self
+            .qwen_rms_norm
+            .pipeline
+            .max_total_threads_per_threadgroup()
+            .max(1);
+        let group_width = power_of_two_at_most((input.len() as u64).min(max_threads));
+        let thread_count = u32::try_from(group_width).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "RMS norm threadgroup width does not fit u32: {err}"
+            ))
+        })?;
         let byte_len = std::mem::size_of_val(input) as u64;
         let input_buffer = self.device.new_buffer_with_data(
             input.as_ptr().cast::<c_void>(),
@@ -98,22 +114,23 @@ impl MetalDevice {
             (&weight_offset as *const f32).cast::<c_void>(),
         );
         encoder.set_buffer(5, Some(&output_buffer), 0);
-        let threads = MTLSize {
-            width: input.len() as u64,
+        encoder.set_bytes(
+            6,
+            std::mem::size_of_val(&thread_count) as u64,
+            (&thread_count as *const u32).cast::<c_void>(),
+        );
+        encoder.set_threadgroup_memory_length(0, group_width * std::mem::size_of::<f32>() as u64);
+        let threadgroups = MTLSize {
+            width: 1,
             height: 1,
             depth: 1,
         };
-        let group_width = self
-            .qwen_rms_norm
-            .pipeline
-            .thread_execution_width()
-            .min(input.len() as u64);
         let threads_per_group = MTLSize {
             width: group_width,
             height: 1,
             depth: 1,
         };
-        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
         finish_command_buffer_async(&self.synchronization, command_buffer, "qwen_rms_norm").await?;
 
@@ -546,5 +563,46 @@ impl MetalDevice {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::shaders::METAL_SOURCE;
+    use super::power_of_two_at_most;
+
+    fn qwen_rms_norm_shader_source() -> &'static str {
+        let start = METAL_SOURCE
+            .find("kernel void qwen_rms_norm")
+            .expect("qwen rms norm shader exists");
+        let rest = &METAL_SOURCE[start..];
+        let next_kernel = rest["kernel void qwen_rms_norm".len()..]
+            .find("kernel void ")
+            .map(|offset| "kernel void qwen_rms_norm".len() + offset)
+            .unwrap_or(rest.len());
+        &rest[..next_kernel]
+    }
+
+    #[test]
+    fn qwen_rms_norm_shader_uses_threadgroup_reduction_instead_of_per_output_full_scan() {
+        let shader = qwen_rms_norm_shader_source();
+
+        assert!(
+            shader.contains("threadgroup float"),
+            "RMS norm should reduce through threadgroup memory"
+        );
+        assert!(
+            !shader.contains("for (uint index = 0; index < len; index++)"),
+            "RMS norm must not rescan the full input vector from every output thread"
+        );
+    }
+
+    #[test]
+    fn rms_norm_threadgroup_width_is_power_of_two_at_or_below_limit() {
+        assert_eq!(power_of_two_at_most(1), 1);
+        assert_eq!(power_of_two_at_most(2), 2);
+        assert_eq!(power_of_two_at_most(3), 2);
+        assert_eq!(power_of_two_at_most(1023), 512);
+        assert_eq!(power_of_two_at_most(1024), 1024);
     }
 }

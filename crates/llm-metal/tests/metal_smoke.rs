@@ -53,6 +53,37 @@ async fn metal_rms_norm_matches_cpu_reference() {
 }
 
 #[tokio::test]
+async fn metal_rms_norm_handles_inputs_larger_than_one_threadgroup() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let input = (0..2053)
+        .map(|index| ((index % 23) as f32 - 11.0) / 7.0)
+        .collect::<Vec<_>>();
+    let weight = (0..input.len())
+        .map(|index| 0.75 + (index % 5) as f32 * 0.125)
+        .collect::<Vec<_>>();
+    let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
+    let inv_rms = (mean_square + 1e-6).sqrt().recip();
+    let expected = input
+        .iter()
+        .zip(&weight)
+        .map(|(input, weight)| input * inv_rms * weight)
+        .collect::<Vec<_>>();
+    let mut output = vec![0.0; input.len()];
+
+    device
+        .rms_norm_f32(&input, &weight, 1e-6, &mut output)
+        .await
+        .expect("metal rms norm succeeds");
+
+    assert_close(&output, &expected, 1e-5);
+}
+
+#[tokio::test]
 async fn metal_softmax_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

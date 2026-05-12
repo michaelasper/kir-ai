@@ -5,18 +5,29 @@ kernel void qwen_rms_norm(
     constant float& eps [[buffer(3)]],
     constant float& weight_offset [[buffer(4)]],
     device float* output [[buffer(5)]],
-    uint id [[thread_position_in_grid]]
+    constant uint& thread_count [[buffer(6)]],
+    threadgroup float* partial_sums [[threadgroup(0)]],
+    uint thread_id [[thread_index_in_threadgroup]]
 ) {
-    if (id >= len) {
-        return;
-    }
     float sum = 0.0;
-    for (uint index = 0; index < len; index++) {
+    for (uint index = thread_id; index < len; index += thread_count) {
         float value = input[index];
         sum += value * value;
     }
-    float inv_rms = rsqrt((sum / float(len)) + eps);
-    output[id] = input[id] * inv_rms * (weight[id] + weight_offset);
+    partial_sums[thread_id] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = thread_count >> 1; stride > 0; stride >>= 1) {
+        if (thread_id < stride) {
+            partial_sums[thread_id] += partial_sums[thread_id + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float inv_rms = rsqrt((partial_sums[0] / float(len)) + eps);
+    for (uint index = thread_id; index < len; index += thread_count) {
+        output[index] = input[index] * inv_rms * (weight[index] + weight_offset);
+    }
 }
 
 kernel void linear_attention_conv1d_silu_f32(
