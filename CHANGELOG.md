@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2](https://github.com/michaelasper/kir-ai/compare/v1.4.1...v1.4.2) (2026-05-12)
+
+### Bug Fixes
+
+* **mlx:** preserve lossless tool chat history ([fbd8305](https://github.com/michaelasper/kir-ai/commit/fbd8305c7903784b888df9a1fbcb3ca5d3489d00))
+
 ## [1.4.1](https://github.com/michaelasper/kir-ai/compare/v1.4.0...v1.4.1) (2026-05-11)
 
 ### Bug Fixes
