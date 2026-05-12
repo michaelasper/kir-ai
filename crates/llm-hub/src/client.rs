@@ -1,6 +1,8 @@
-use crate::manifest::verify_file_sha256;
+use crate::manifest::verify_file_sha256_for_artifact;
 use crate::plan::{is_commit_hash, validate_artifact_path};
-use crate::{DownloadPlan, HubError, HubFile, HubRepoId, ModelProfile, build_download_plan};
+use crate::{
+    ArtifactClass, DownloadPlan, HubError, HubFile, HubRepoId, ModelProfile, build_download_plan,
+};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -194,6 +196,7 @@ impl HubClient {
             destination,
             expected_size,
             expected_sha256,
+            artifact_class,
             token,
         } = request;
         validate_artifact_path(path)?;
@@ -204,7 +207,8 @@ impl HubClient {
         }
         let existing_len = match tokio::fs::metadata(destination).await {
             Ok(metadata) if metadata.len() == expected_size => {
-                verify_file_sha256(destination, expected_sha256).await?;
+                verify_file_sha256_for_artifact(destination, expected_sha256, artifact_class)
+                    .await?;
                 return Ok(());
             }
             Ok(metadata) if metadata.len() < expected_size => metadata.len(),
@@ -301,7 +305,7 @@ impl HubClient {
                 "downloaded `{path}` size {final_len} did not match expected {expected_size}"
             )));
         }
-        verify_file_sha256(destination, expected_sha256).await?;
+        verify_file_sha256_for_artifact(destination, expected_sha256, artifact_class).await?;
         Ok(())
     }
 }
@@ -399,6 +403,7 @@ pub(crate) struct HubDownloadFileRequest<'a> {
     pub(crate) destination: &'a Path,
     pub(crate) expected_size: u64,
     pub(crate) expected_sha256: Option<&'a str>,
+    pub(crate) artifact_class: ArtifactClass,
     pub(crate) token: Option<&'a str>,
 }
 
@@ -512,6 +517,37 @@ mod tests {
         server.join().expect("server exits");
     }
 
+    #[tokio::test]
+    async fn existing_weight_download_without_sha256_rejects_size_match_skip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let destination = temp.path().join("model.safetensors");
+        tokio::fs::write(&destination, b"data")
+            .await
+            .expect("existing weights");
+        let client = HubClient::with_timeouts(
+            Url::parse("http://127.0.0.1:9").expect("test endpoint"),
+            test_timeouts(),
+        );
+        let repo_id = test_repo_id();
+
+        let err = client
+            .download_file_to(HubDownloadFileRequest {
+                repo_id: &repo_id,
+                resolved_commit: "0123456789abcdef0123456789abcdef01234567",
+                path: "model.safetensors",
+                destination: &destination,
+                expected_size: 4,
+                expected_sha256: None,
+                artifact_class: ArtifactClass::Weights,
+                token: None,
+            })
+            .await
+            .expect_err("missing weight digest must fail before download skip");
+
+        assert_eq!(err.code(), "model_integrity_failed");
+        assert!(err.to_string().contains("missing sha256"), "err: {err}");
+    }
+
     fn test_repo_id() -> HubRepoId {
         HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id")
     }
@@ -528,6 +564,7 @@ mod tests {
             destination,
             expected_size,
             expected_sha256: None,
+            artifact_class: ArtifactClass::Config,
             token: None,
         }
     }

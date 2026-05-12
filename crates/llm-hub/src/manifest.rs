@@ -134,6 +134,7 @@ pub(crate) async fn verify_snapshot_file(
     relative_path: &str,
     expected_size: u64,
     expected_sha256: Option<&str>,
+    artifact_class: ArtifactClass,
 ) -> Result<(), HubError> {
     validate_artifact_path(relative_path)?;
     let path = snapshot_root.join(relative_path);
@@ -176,16 +177,10 @@ pub(crate) async fn verify_snapshot_file(
             expected_size
         )));
     }
-    verify_file_sha256(&canonical_path, expected_sha256).await
+    verify_file_sha256_for_artifact(&canonical_path, expected_sha256, artifact_class).await
 }
 
-pub(crate) async fn verify_file_sha256(
-    path: &Path,
-    expected_sha256: Option<&str>,
-) -> Result<(), HubError> {
-    let Some(expected_sha256) = expected_sha256 else {
-        return Ok(());
-    };
+pub(crate) async fn verify_file_sha256(path: &Path, expected_sha256: &str) -> Result<(), HubError> {
     let mut file = tokio::fs::File::open(path).await.map_err(HubError::io)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
@@ -204,4 +199,21 @@ pub(crate) async fn verify_file_sha256(
         )));
     }
     Ok(())
+}
+
+pub(crate) async fn verify_file_sha256_for_artifact(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    artifact_class: ArtifactClass,
+) -> Result<(), HubError> {
+    match expected_sha256 {
+        Some(expected_sha256) => verify_file_sha256(path, expected_sha256).await,
+        None if artifact_class == ArtifactClass::Weights => {
+            Err(HubError::integrity_failed(format!(
+                "snapshot weight file `{}` is missing sha256 digest",
+                path.display()
+            )))
+        }
+        None => Ok(()),
+    }
 }

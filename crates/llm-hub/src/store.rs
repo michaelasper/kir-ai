@@ -228,6 +228,7 @@ impl ModelStore {
                         destination: &staging.join(&file.path),
                         expected_size: file.size,
                         expected_sha256: file.sha256.as_deref(),
+                        artifact_class: file.class,
                         token,
                     })
                     .await?;
@@ -374,6 +375,7 @@ impl ModelStore {
                 &file.path,
                 file.size,
                 file.sha256.as_deref(),
+                file.class,
             )
             .await?;
             verified_files += 1;
@@ -657,6 +659,7 @@ impl ModelStore {
                 &file.path,
                 file.size,
                 file.sha256.as_deref(),
+                file.class,
             )
             .await?;
         }
@@ -807,6 +810,7 @@ async fn validate_manifest_files(snapshot: &PromotedSnapshot) -> Result<(), Stri
             &file.path,
             file.size,
             file.sha256.as_deref(),
+            file.class,
         )
         .await
         .map_err(|err| err.to_string())?;

@@ -9,7 +9,11 @@ fn runnable_qwen_files() -> Vec<HubFile> {
     vec![
         HubFile::new("config.json", 2, Some("\"cfg\"")),
         HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
-        HubFile::new("model.safetensors", 4, Some("\"weights\"")),
+        HubFile::new(
+            "model.safetensors",
+            4,
+            Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+        ),
     ]
 }
 
@@ -565,6 +569,46 @@ async fn rejects_existing_snapshot_with_wrong_sha256_digest() {
             .expect("quarantine list")
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn rejects_existing_weight_snapshot_without_sha256_digest() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("model.safetensors", 4, None)],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
+        .await
+        .expect("existing weights");
+
+    let snapshot = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("missing weight digest is quarantined");
+
+    assert!(snapshot.is_none());
+    assert!(!snapshot_path.exists());
+    let quarantined = store
+        .list_quarantined_snapshots()
+        .await
+        .expect("quarantine list");
+    assert_eq!(quarantined.len(), 1);
+    assert!(
+        quarantined[0].metadata.reason.contains("missing sha256"),
+        "reason: {}",
+        quarantined[0].metadata.reason
     );
 }
 
