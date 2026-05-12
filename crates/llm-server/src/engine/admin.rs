@@ -308,6 +308,8 @@ pub(super) async fn admin_metrics(
     let metrics = *state.metrics.lock_or_panic("metrics");
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
+    let non_streamed_request_latency = metrics.non_streamed_request_latency();
+    let streamed_request_latency = metrics.streamed_request_latency();
     let time_to_first_token = metrics.time_to_first_token();
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
@@ -354,6 +356,8 @@ pub(super) async fn admin_metrics(
         native_qwen_metal: backend_metrics.native_qwen_metal,
         native_qwen_prefix_cache: backend_metrics.native_qwen_prefix_cache,
         request_latency_ms: LatencySummary::from_metrics(request_latency),
+        non_streamed_request_latency_ms: LatencySummary::from_metrics(non_streamed_request_latency),
+        streamed_request_latency_ms: LatencySummary::from_metrics(streamed_request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
         tokens: TokenSummary {
             prompt_tokens: tokens.prompt_tokens(),
@@ -406,6 +410,8 @@ pub(super) struct AdminMetricsResponse {
     native_qwen_metal: Value,
     native_qwen_prefix_cache: Value,
     request_latency_ms: LatencySummary,
+    non_streamed_request_latency_ms: LatencySummary,
+    streamed_request_latency_ms: LatencySummary,
     time_to_first_token_ms: LatencySummary,
     tokens: TokenSummary,
 }

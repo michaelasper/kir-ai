@@ -106,6 +106,9 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     assert_eq!(metrics["stream_chunks"], 2);
     assert_eq!(metrics["http_error_responses"], 0);
     assert_eq!(metrics["request_latency_ms"]["count"], 1);
+    assert_eq!(metrics["upstream_request_latency_ms"]["count"], 1);
+    assert_eq!(metrics["blocking_upstream_request_latency_ms"]["count"], 1);
+    assert_eq!(metrics["streaming_upstream_request_latency_ms"]["count"], 0);
     assert!(
         metrics["request_latency_ms"]["max"]
             .as_f64()
@@ -396,6 +399,9 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
     assert_eq!(metrics["successful_requests"], 1);
     assert_eq!(metrics["failed_requests"], 0);
     assert_eq!(metrics["dropped_requests"], 0);
+    assert_eq!(metrics["upstream_request_latency_ms"]["count"], 1);
+    assert_eq!(metrics["blocking_upstream_request_latency_ms"]["count"], 0);
+    assert_eq!(metrics["streaming_upstream_request_latency_ms"]["count"], 1);
 }
 
 #[tokio::test]

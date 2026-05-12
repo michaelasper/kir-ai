@@ -128,6 +128,8 @@ pub struct ServerMetrics {
     model_pull_bytes: u64,
     artifact_verification_failures: u64,
     request_latency: LatencyMetrics,
+    non_streamed_request_latency: LatencyMetrics,
+    streamed_request_latency: LatencyMetrics,
     time_to_first_token: LatencyMetrics,
     tokens: TokenCounters,
 }
@@ -138,6 +140,9 @@ impl ServerMetrics {
         self.successful_requests += 1;
         if streamed {
             self.streamed_requests += 1;
+            self.streamed_request_latency.record(latency);
+        } else {
+            self.non_streamed_request_latency.record(latency);
         }
         self.request_latency.record(latency);
         self.tokens.record_prompt_tokens(tokens.prompt_tokens());
@@ -245,6 +250,14 @@ impl ServerMetrics {
         self.request_latency
     }
 
+    pub fn non_streamed_request_latency(&self) -> LatencyMetrics {
+        self.non_streamed_request_latency
+    }
+
+    pub fn streamed_request_latency(&self) -> LatencyMetrics {
+        self.streamed_request_latency
+    }
+
     pub fn time_to_first_token(&self) -> LatencyMetrics {
         self.time_to_first_token
     }
@@ -316,6 +329,10 @@ mod tests {
         assert_eq!(metrics.request_latency().min_ms(), 10.0);
         assert_eq!(metrics.request_latency().max_ms(), 30.0);
         assert_eq!(metrics.request_latency().avg_ms(), 20.0);
+        assert_eq!(metrics.non_streamed_request_latency().count(), 1);
+        assert_eq!(metrics.non_streamed_request_latency().avg_ms(), 10.0);
+        assert_eq!(metrics.streamed_request_latency().count(), 1);
+        assert_eq!(metrics.streamed_request_latency().avg_ms(), 30.0);
         assert_eq!(metrics.tokens_per_second(), 375.0);
         assert_eq!(metrics.time_to_first_token().count(), 0);
         metrics.record_time_to_first_token(Duration::from_millis(7));

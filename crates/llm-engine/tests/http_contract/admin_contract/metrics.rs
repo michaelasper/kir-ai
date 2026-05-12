@@ -304,6 +304,8 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(completion_tokens > 0);
     assert_eq!(body["tokens"]["total_tokens"], completion_tokens + 1);
     assert_eq!(body["request_latency_ms"]["count"], 1);
+    assert_eq!(body["non_streamed_request_latency_ms"]["count"], 1);
+    assert_eq!(body["streamed_request_latency_ms"]["count"], 0);
     assert!(
         body["request_latency_ms"]["max"]
             .as_f64()
@@ -340,6 +342,18 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["mlx"]["request_latency_ms"]["count"].is_number(),
         "MLX sidecar latency metrics are exposed"
+    );
+    assert!(
+        body["mlx"]["upstream_request_latency_ms"]["count"].is_number(),
+        "MLX upstream sidecar latency metrics are exposed"
+    );
+    assert!(
+        body["mlx"]["blocking_upstream_request_latency_ms"]["count"].is_number(),
+        "MLX blocking upstream sidecar latency metrics are exposed"
+    );
+    assert!(
+        body["mlx"]["streaming_upstream_request_latency_ms"]["count"].is_number(),
+        "MLX streaming upstream sidecar latency metrics are exposed"
     );
     assert!(
         body["native_qwen_metal"]["kernels"].is_object(),
@@ -454,6 +468,18 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
     assert_metric_incremented(&before, &after, &["mlx", "completion_requests"], 1);
     assert_metric_incremented(&before, &after, &["mlx", "stream_chunks"], 1);
     assert_metric_incremented(&before, &after, &["mlx", "request_latency_ms", "count"], 1);
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["mlx", "upstream_request_latency_ms", "count"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["mlx", "blocking_upstream_request_latency_ms", "count"],
+        1,
+    );
 }
 
 #[tokio::test]
@@ -527,6 +553,12 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     assert_metric_incremented(&before, &after, &["mlx", "successful_requests"], 1);
     assert_metric_incremented(&before, &after, &["mlx", "completion_requests"], 1);
     assert_metric_incremented(&before, &after, &["mlx", "stream_chunks"], 1);
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["mlx", "streaming_upstream_request_latency_ms", "count"],
+        1,
+    );
     assert_metric_unchanged(&before, &after, &["mlx", "failed_requests"]);
     assert_metric_unchanged(&before, &after, &["mlx", "dropped_requests"]);
 }
@@ -592,6 +624,8 @@ async fn admin_metrics_report_stream_time_to_first_token() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["time_to_first_token_ms"]["count"], 1);
+    assert_eq!(body["non_streamed_request_latency_ms"]["count"], 0);
+    assert_eq!(body["streamed_request_latency_ms"]["count"], 1);
     assert!(
         body["time_to_first_token_ms"]["max"]
             .as_f64()

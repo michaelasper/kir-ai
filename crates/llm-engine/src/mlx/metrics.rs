@@ -29,7 +29,9 @@ struct MlxBackendMetricCounters {
     stall_failures: u64,
     cancelled_requests: u64,
     dropped_requests: u64,
-    request_latency: LatencyMetrics,
+    upstream_request_latency: LatencyMetrics,
+    blocking_upstream_request_latency: LatencyMetrics,
+    streaming_upstream_request_latency: LatencyMetrics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +45,16 @@ pub(super) enum MlxBackendFailureKind {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MlxBackendRequestKind {
+    Blocking,
+    Streaming,
+}
+
 #[derive(Debug)]
 pub(super) struct MlxBackendRequestMetrics {
     metrics: Arc<MlxBackendMetrics>,
+    kind: MlxBackendRequestKind,
     started: Instant,
     finished: bool,
     observed_finish_chunk: bool,
@@ -55,6 +64,7 @@ impl MlxBackendMetrics {
     pub(super) fn start_request(
         self: &Arc<Self>,
         protocol: MlxUpstreamProtocol,
+        kind: MlxBackendRequestKind,
     ) -> MlxBackendRequestMetrics {
         {
             let mut counters = self.counters.lock_or_panic("MLX backend metrics");
@@ -66,6 +76,7 @@ impl MlxBackendMetrics {
         }
         MlxBackendRequestMetrics {
             metrics: Arc::clone(self),
+            kind,
             started: Instant::now(),
             finished: false,
             observed_finish_chunk: false,
@@ -90,7 +101,14 @@ impl MlxBackendMetrics {
             "stall_failures": counters.stall_failures,
             "cancelled_requests": counters.cancelled_requests,
             "dropped_requests": counters.dropped_requests,
-            "request_latency_ms": latency_summary(counters.request_latency),
+            "request_latency_ms": latency_summary(counters.upstream_request_latency),
+            "upstream_request_latency_ms": latency_summary(counters.upstream_request_latency),
+            "blocking_upstream_request_latency_ms": latency_summary(
+                counters.blocking_upstream_request_latency,
+            ),
+            "streaming_upstream_request_latency_ms": latency_summary(
+                counters.streaming_upstream_request_latency,
+            ),
         })
     }
 
@@ -106,17 +124,22 @@ impl MlxBackendMetrics {
             .response_bytes += bytes;
     }
 
-    fn record_success(&self, latency: Duration) {
+    fn record_success(&self, kind: MlxBackendRequestKind, latency: Duration) {
         let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.successful_requests += 1;
-        counters.request_latency.record(latency);
+        record_upstream_latency(&mut counters, kind, latency);
     }
 
-    fn record_failure(&self, kind: MlxBackendFailureKind, latency: Duration) {
+    fn record_failure(
+        &self,
+        request_kind: MlxBackendRequestKind,
+        failure_kind: MlxBackendFailureKind,
+        latency: Duration,
+    ) {
         let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.failed_requests += 1;
-        counters.request_latency.record(latency);
-        match kind {
+        record_upstream_latency(&mut counters, request_kind, latency);
+        match failure_kind {
             MlxBackendFailureKind::HttpStatus => counters.http_error_responses += 1,
             MlxBackendFailureKind::Transport => counters.transport_failures += 1,
             MlxBackendFailureKind::StreamRead => counters.stream_read_failures += 1,
@@ -127,11 +150,27 @@ impl MlxBackendMetrics {
         }
     }
 
-    fn record_dropped(&self, latency: Duration) {
+    fn record_dropped(&self, kind: MlxBackendRequestKind, latency: Duration) {
         let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.failed_requests += 1;
         counters.dropped_requests += 1;
-        counters.request_latency.record(latency);
+        record_upstream_latency(&mut counters, kind, latency);
+    }
+}
+
+fn record_upstream_latency(
+    counters: &mut MlxBackendMetricCounters,
+    kind: MlxBackendRequestKind,
+    latency: Duration,
+) {
+    counters.upstream_request_latency.record(latency);
+    match kind {
+        MlxBackendRequestKind::Blocking => {
+            counters.blocking_upstream_request_latency.record(latency)
+        }
+        MlxBackendRequestKind::Streaming => {
+            counters.streaming_upstream_request_latency.record(latency);
+        }
     }
 }
 
@@ -152,7 +191,8 @@ impl MlxBackendRequestMetrics {
         if self.finished {
             return;
         }
-        self.metrics.record_success(self.started.elapsed());
+        self.metrics
+            .record_success(self.kind, self.started.elapsed());
         self.finished = true;
     }
 
@@ -160,7 +200,8 @@ impl MlxBackendRequestMetrics {
         if self.finished {
             return;
         }
-        self.metrics.record_failure(kind, self.started.elapsed());
+        self.metrics
+            .record_failure(self.kind, kind, self.started.elapsed());
         self.finished = true;
     }
 }
@@ -169,9 +210,11 @@ impl Drop for MlxBackendRequestMetrics {
     fn drop(&mut self) {
         if !self.finished {
             if self.observed_finish_chunk {
-                self.metrics.record_success(self.started.elapsed());
+                self.metrics
+                    .record_success(self.kind, self.started.elapsed());
             } else {
-                self.metrics.record_dropped(self.started.elapsed());
+                self.metrics
+                    .record_dropped(self.kind, self.started.elapsed());
             }
             self.finished = true;
         }

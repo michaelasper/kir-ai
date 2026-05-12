@@ -180,6 +180,12 @@
     "request_latency_ms": {
       "$ref": "#/$defs/LatencySummary"
     },
+    "non_streamed_request_latency_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "streamed_request_latency_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
     "time_to_first_token_ms": {
       "$ref": "#/$defs/LatencySummary"
     },
@@ -228,6 +234,8 @@
     "native_qwen_metal",
     "native_qwen_prefix_cache",
     "request_latency_ms",
+    "non_streamed_request_latency_ms",
+    "streamed_request_latency_ms",
     "time_to_first_token_ms",
     "tokens"
   ],

@@ -149,10 +149,19 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `artifact_verification_failures`: Cumulative checksum/signature verification failures.
 - `process_rss_bytes`: Resident set size of the process (when supported).
 - `tokens_per_second`: Current aggregate throughput.
-- `mlx`: Platform-specific MLX backend metrics (e.g., memory usage).
+- `mlx`: Platform-specific MLX backend metrics. For MLX sidecar diagnostics,
+  `mlx.upstream_request_latency_ms` reports sidecar request duration,
+  while `mlx.blocking_upstream_request_latency_ms` and
+  `mlx.streaming_upstream_request_latency_ms` split that duration by kir-ai
+  blocking versus streaming generation path.
 - `native_text_metal`: Metal kernel performance counters (e.g., matvec_ns).
 - `native_text_prefix_cache`: Prefix cache hit/miss/eviction metrics.
-- `request_latency_ms`: Summary (count, min, max, avg) of total request duration.
+- `request_latency_ms`: Summary (count, min, max, avg) of total outer kir-ai
+  request duration.
+- `non_streamed_request_latency_ms`: Summary of outer kir-ai request duration
+  for non-streaming responses.
+- `streamed_request_latency_ms`: Summary of outer kir-ai request duration for
+  streaming responses.
 - `time_to_first_token_ms`: Summary of latency to the first token generated.
 - `tokens`: Token usage summary (`prompt_tokens`, `completion_tokens`, `total_tokens`).
 

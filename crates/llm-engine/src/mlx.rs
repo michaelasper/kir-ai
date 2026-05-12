@@ -21,7 +21,9 @@ mod sse;
 use client::{MLX_STALL_PREFIX, build_http_client, format_duration, is_loopback_endpoint};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
-use metrics::{MlxBackendFailureKind, MlxBackendMetrics, mlx_backend_metrics};
+use metrics::{
+    MlxBackendFailureKind, MlxBackendMetrics, MlxBackendRequestKind, mlx_backend_metrics,
+};
 use protocol::{mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata};
 use request::build_upstream_request;
 use sse::{MlxSseParser, parse_mlx_completion_body};
@@ -110,7 +112,9 @@ impl MlxBackend {
             &request,
             false,
         )?;
-        let mut request_metrics = self.metrics.start_request(upstream_protocol);
+        let mut request_metrics = self
+            .metrics
+            .start_request(upstream_protocol, MlxBackendRequestKind::Blocking);
         let response = tokio::select! {
             response = upstream_request.send() => response
                 .map_err(|err| mlx_request_error(err, self.timeouts.request)),
@@ -222,7 +226,9 @@ impl MlxBackend {
                 &request,
                 true,
             )?;
-            let mut request_metrics = self.metrics.start_request(upstream_protocol);
+            let mut request_metrics = self
+                .metrics
+                .start_request(upstream_protocol, MlxBackendRequestKind::Streaming);
             let response = tokio::select! {
                 response = upstream_request.send() => response
                     .map_err(|err| mlx_request_error(err, self.timeouts.request)),
