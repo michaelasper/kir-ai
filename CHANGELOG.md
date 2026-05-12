@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.23](https://github.com/michaelasper/kir-ai/compare/v1.4.22...v1.4.23) (2026-05-12)
+
+### Performance Improvements
+
+* **sampler:** reuse top-p sampling scratch ([e4ddda6](https://github.com/michaelasper/kir-ai/commit/e4ddda6cb236cec21ddbd86789396aa599516e2a)), closes [#196](https://github.com/michaelasper/kir-ai/issues/196)
+
 ## [1.4.22](https://github.com/michaelasper/kir-ai/compare/v1.4.21...v1.4.22) (2026-05-12)
 
 ### Performance Improvements
