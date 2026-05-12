@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.36](https://github.com/michaelasper/kir-ai/compare/v1.4.35...v1.4.36) (2026-05-12)
+
+### Bug Fixes
+
+* **runtime:** normalize json object responses ([336043a](https://github.com/michaelasper/kir-ai/commit/336043a101ef84e42c92bc67c2ea35f3bfc72c3b))
+
 ## [1.4.35](https://github.com/michaelasper/kir-ai/compare/v1.4.34...v1.4.35) (2026-05-12)
 
 ### Bug Fixes
