@@ -903,7 +903,8 @@ fn unmarked_tool_json_without_declared_tools(
     {
         return None;
     }
-    let content = unmarked_tool_json_candidate(text);
+    let content =
+        unmarked_tool_json_candidate(text, adapter.unmarked_tool_json_truncation_tokens());
     serde_json::from_str::<serde_json::Value>(content)
         .is_ok_and(|value| value.is_object() || value.is_array())
         .then(|| content.to_owned())
@@ -920,14 +921,18 @@ fn json_object_mode_without_tools(
     {
         return None;
     }
-    let content = unmarked_tool_json_candidate(text);
+    let content =
+        unmarked_tool_json_candidate(text, adapter.unmarked_tool_json_truncation_tokens());
     serde_json::from_str::<serde_json::Value>(content)
         .is_ok_and(|value| value.is_object())
         .then(|| content.to_owned())
 }
 
-fn unmarked_tool_json_candidate(text: &str) -> &str {
-    ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"]
+fn unmarked_tool_json_candidate<'a>(
+    text: &'a str,
+    truncation_tokens: &'static [&'static str],
+) -> &'a str {
+    truncation_tokens
         .iter()
         .filter_map(|token| text.find(token))
         .min()

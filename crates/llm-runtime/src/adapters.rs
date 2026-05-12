@@ -39,6 +39,8 @@ pub(crate) const DEEPSEEK_TOOL_MARKERS: [ToolMarkupMarkers; 2] = [
 ];
 pub(crate) const GEMMA_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
     [ToolMarkupMarkers::new("<|tool_call>", "<tool_call|>")];
+const LLAMA_UNMARKED_JSON_TRUNCATION_TOKENS: [&str; 3] =
+    ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"];
 
 impl ToolMarkupPolicy {
     pub(crate) const fn new(markers: &'static [ToolMarkupMarkers]) -> Self {
@@ -100,6 +102,7 @@ pub(crate) trait ChatAdapter {
     ) -> Result<String, RuntimeError>;
     fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError>;
     fn tool_markup_policy(self) -> ToolMarkupPolicy;
+    fn unmarked_tool_json_truncation_tokens(self) -> &'static [&'static str];
 }
 
 impl ChatAdapter for SelectedChatAdapter {
@@ -142,6 +145,13 @@ impl ChatAdapter for SelectedChatAdapter {
             ModelFamily::Qwen | ModelFamily::Llama => ToolMarkupPolicy::new(&JSON_TOOL_MARKERS),
             ModelFamily::DeepSeek => ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS),
             ModelFamily::Gemma => ToolMarkupPolicy::new(&GEMMA_TOOL_MARKERS),
+        }
+    }
+
+    fn unmarked_tool_json_truncation_tokens(self) -> &'static [&'static str] {
+        match self.family {
+            ModelFamily::Llama => &LLAMA_UNMARKED_JSON_TRUNCATION_TOKENS,
+            ModelFamily::Qwen | ModelFamily::DeepSeek | ModelFamily::Gemma => &[],
         }
     }
 }

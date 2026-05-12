@@ -48,6 +48,27 @@ async fn protocol_test_backend_returns_json_object_for_json_mode() {
 }
 
 #[tokio::test]
+async fn qwen_json_object_mode_rejects_llama_control_token_suffix_without_truncating() {
+    let runtime = Runtime::new(FamilyStreamBackend {
+        model_id: "local-qwen36",
+        family: "qwen",
+        text: r#"{"answer":"ok"}<|eot_id|>"#,
+        finish_reason: FinishReason::Stop,
+    });
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("return json")],
+            response_format: Some(ResponseFormat::JsonObject),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("qwen output must not be truncated at llama control tokens");
+
+    assert!(matches!(err, RuntimeError::JsonMode(_)));
+}
+
+#[tokio::test]
 async fn json_object_response_format_rejects_text_content() {
     let backend = ProtocolTestBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);
