@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.28](https://github.com/michaelasper/kir-ai/compare/v1.4.27...v1.4.28) (2026-05-12)
+
+### Bug Fixes
+
+* **parser:** tolerate truncated qwen reasoning ([7f23768](https://github.com/michaelasper/kir-ai/commit/7f237685aa5eeaa4097aad51bfcb811dc1ad75a8)), closes [#227](https://github.com/michaelasper/kir-ai/issues/227)
+
 ## [1.4.27](https://github.com/michaelasper/kir-ai/compare/v1.4.26...v1.4.27) (2026-05-12)
 
 ### Bug Fixes
