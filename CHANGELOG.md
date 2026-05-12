@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.37](https://github.com/michaelasper/kir-ai/compare/v1.4.36...v1.4.37) (2026-05-12)
+
+### Bug Fixes
+
+* **mlx:** use non-streaming upstream for blocking generate ([4d85734](https://github.com/michaelasper/kir-ai/commit/4d85734b354973650879896d8f7743bbbb5ff62a))
+
 ## [1.4.36](https://github.com/michaelasper/kir-ai/compare/v1.4.35...v1.4.36) (2026-05-12)
 
 ### Bug Fixes
