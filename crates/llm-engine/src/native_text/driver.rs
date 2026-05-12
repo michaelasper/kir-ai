@@ -10,6 +10,7 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     InferenceScratchpad, ModelBackend, SamplingConfig,
 };
+use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +82,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         hidden: &[f32],
         sampling: SamplingConfig,
         scratch: &mut InferenceScratchpad,
+        sampling_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError>;
 }
 
@@ -227,6 +229,7 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut scratch = InferenceScratchpad::new();
+        let mut sampling_scratch = TopPSamplerScratch::new();
         let mut decode = self
             .start_decode_session(
                 &context_tokens,
@@ -250,6 +253,7 @@ where
                     self.adapter.hidden(&decode),
                     request.sampling,
                     &mut scratch,
+                    &mut sampling_scratch,
                 )
                 .await?;
             if cancellation.is_cancelled() {
@@ -322,6 +326,7 @@ where
             self.adapter.family_display_name(),
         )?;
         let mut scratch = InferenceScratchpad::new();
+        let mut sampling_scratch = TopPSamplerScratch::new();
         let mut decode = match self
             .start_decode_session(
                 &context_tokens,
@@ -352,6 +357,7 @@ where
                     self.adapter.hidden(&decode),
                     request.sampling,
                     &mut scratch,
+                    &mut sampling_scratch,
                 )
                 .await?;
             if cancellation.is_cancelled() {

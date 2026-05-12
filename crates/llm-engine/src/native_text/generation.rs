@@ -3,6 +3,7 @@ use llm_backend::{
     SamplingConfig, native_final_norm_for_spec_ref_with_matvec,
     native_lm_head_logits_for_spec_ref_with_matvec, native_lm_head_top_k_for_spec_ref_with_matvec,
 };
+use llm_sampler::TopPSamplerScratch;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -104,11 +105,29 @@ where
     })
 }
 
+#[cfg(test)]
 pub(crate) fn sample_token_id_with_draw(
     logits: &[f32],
     sampling: SamplingConfig,
     draw: f32,
     family_display_name: &str,
+) -> Result<usize, BackendError> {
+    let mut scratch = TopPSamplerScratch::new();
+    sample_token_id_with_draw_with_scratch(
+        logits,
+        sampling,
+        draw,
+        family_display_name,
+        &mut scratch,
+    )
+}
+
+pub(crate) fn sample_token_id_with_draw_with_scratch(
+    logits: &[f32],
+    sampling: SamplingConfig,
+    draw: f32,
+    family_display_name: &str,
+    top_p_scratch: &mut TopPSamplerScratch,
 ) -> Result<usize, BackendError> {
     if logits.is_empty() {
         return Err(BackendError::Other(format!(
@@ -121,7 +140,7 @@ pub(crate) fn sample_token_id_with_draw(
             .map_err(|err| BackendError::Other(err.to_string())),
         SamplingConfig::TopP { temperature, top_p } => {
             llm_sampler::TopPSampler { temperature, top_p }
-                .sample(logits, draw)
+                .sample_with_scratch(logits, draw, top_p_scratch)
                 .map_err(|err| BackendError::Other(err.to_string()))
         }
     }
@@ -141,6 +160,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        top_p_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError> {
         let final_norm =
             native_final_norm_for_spec_ref_with_matvec(self.store, self.spec, hidden, self.matvec)
@@ -156,11 +176,12 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             )
             .await
             .map_err(|err| BackendError::Other(err.to_string()))?;
-            let sampled_token_id = sample_token_id_with_draw(
+            let sampled_token_id = sample_token_id_with_draw_with_scratch(
                 &logits,
                 sampling,
                 native_text_sampling_draw(),
                 self.family_display_name,
+                top_p_scratch,
             )?;
             ensure_token_id_fits_u32(sampled_token_id, self.family_display_name)?;
             return Ok(sampled_token_id);

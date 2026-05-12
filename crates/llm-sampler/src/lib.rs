@@ -15,8 +15,33 @@ pub struct TopPSampler {
     pub top_p: f32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TopPSamplerScratch {
+    ranked_probabilities: Vec<(usize, f32)>,
+}
+
+impl TopPSamplerScratch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.ranked_probabilities.capacity()
+    }
+}
+
 impl TopPSampler {
     pub fn sample(&self, logits: &[f32], draw: f32) -> Result<usize, SamplerError> {
+        let mut scratch = TopPSamplerScratch::new();
+        self.sample_with_scratch(logits, draw, &mut scratch)
+    }
+
+    pub fn sample_with_scratch(
+        &self,
+        logits: &[f32],
+        draw: f32,
+        scratch: &mut TopPSamplerScratch,
+    ) -> Result<usize, SamplerError> {
         if !self.temperature.is_finite() || self.temperature <= 0.0 {
             return Err(SamplerError::InvalidTemperature);
         }
@@ -30,7 +55,8 @@ impl TopPSampler {
             return Err(SamplerError::EmptyLogits);
         }
 
-        let mut scaled = Vec::with_capacity(logits.len());
+        scratch.ranked_probabilities.clear();
+        scratch.ranked_probabilities.reserve(logits.len());
         let mut max_scaled = f32::NEG_INFINITY;
         for (index, logit) in logits.iter().copied().enumerate() {
             if !logit.is_finite() {
@@ -38,52 +64,51 @@ impl TopPSampler {
             }
             let value = logit / self.temperature;
             max_scaled = max_scaled.max(value);
-            scaled.push((index, value));
+            scratch.ranked_probabilities.push((index, value));
         }
 
-        let mut probabilities = Vec::with_capacity(scaled.len());
         let mut sum = 0.0;
-        for (index, value) in scaled {
-            let probability = (value - max_scaled).exp();
-            sum += probability;
-            probabilities.push((index, probability));
+        for (_, value) in &mut scratch.ranked_probabilities {
+            *value = (*value - max_scaled).exp();
+            sum += *value;
         }
         if !sum.is_finite() || sum <= 0.0 {
             return Err(SamplerError::InvalidDistribution);
         }
-        for (_, probability) in &mut probabilities {
+        for (_, probability) in &mut scratch.ranked_probabilities {
             *probability /= sum;
         }
-        probabilities.sort_by(|left, right| {
+        scratch.ranked_probabilities.sort_by(|left, right| {
             right
                 .1
                 .total_cmp(&left.1)
                 .then_with(|| left.0.cmp(&right.0))
         });
 
-        let mut nucleus = Vec::new();
         let mut nucleus_total = 0.0;
-        for (index, probability) in probabilities {
-            nucleus_total += probability;
-            nucleus.push((index, probability));
+        let mut nucleus_len = 0;
+        for (_, probability) in &scratch.ranked_probabilities {
+            nucleus_total += *probability;
+            nucleus_len += 1;
             if nucleus_total >= self.top_p {
                 break;
             }
         }
-        if nucleus.is_empty() || !nucleus_total.is_finite() || nucleus_total <= 0.0 {
+        if nucleus_len == 0 || !nucleus_total.is_finite() || nucleus_total <= 0.0 {
             return Err(SamplerError::InvalidDistribution);
         }
 
         let threshold = draw * nucleus_total;
         let mut cumulative = 0.0;
-        for (index, probability) in &nucleus {
+        for (index, probability) in scratch.ranked_probabilities.iter().take(nucleus_len) {
             cumulative += *probability;
             if threshold <= cumulative {
                 return Ok(*index);
             }
         }
-        Ok(nucleus
-            .last()
+        Ok(scratch
+            .ranked_probabilities
+            .get(nucleus_len - 1)
             .map(|(index, _)| *index)
             .expect("nucleus is not empty"))
     }
@@ -215,6 +240,33 @@ mod tests {
             .expect("sample succeeds");
 
         assert_eq!(token, 0);
+    }
+
+    #[test]
+    fn top_p_sampler_reuses_scratch_capacity_across_samples() {
+        let sampler = TopPSampler {
+            temperature: 1.0,
+            top_p: 0.9,
+        };
+        let mut scratch = TopPSamplerScratch::new();
+
+        assert_eq!(
+            sampler
+                .sample_with_scratch(&[2.0, 1.0, 0.0], 0.0, &mut scratch)
+                .expect("first sample succeeds"),
+            0
+        );
+        let capacity = scratch.capacity();
+        assert!(capacity >= 3);
+
+        assert_eq!(
+            sampler
+                .sample_with_scratch(&[2.0, 1.0, 0.0], 0.8, &mut scratch)
+                .expect("second sample succeeds"),
+            1
+        );
+
+        assert_eq!(scratch.capacity(), capacity);
     }
 
     #[test]

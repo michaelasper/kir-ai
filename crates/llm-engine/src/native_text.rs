@@ -24,10 +24,11 @@ pub(crate) use driver::{
 };
 #[cfg(test)]
 pub(crate) use generation::native_text_prefill_context_with_cache;
+#[cfg(test)]
+pub(crate) use generation::sample_token_id_with_draw;
 #[allow(unused_imports)]
 pub(crate) use generation::{
     NativeTextNextTokenContext, native_text_cache_token_capacity, resolve_native_text_max_tokens,
-    sample_token_id_with_draw,
 };
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
@@ -488,6 +489,7 @@ mod tests {
             hidden: &[f32],
             _sampling: SamplingConfig,
             _scratch: &mut InferenceScratchpad,
+            _sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.next_token_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(delay) = self.next_token_delay {
@@ -639,9 +641,10 @@ mod tests {
             hidden: &[f32],
             sampling: SamplingConfig,
             scratch: &mut InferenceScratchpad,
+            sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.base
-                .next_token_from_hidden(hidden, sampling, scratch)
+                .next_token_from_hidden(hidden, sampling, scratch, sampling_scratch)
                 .await
         }
     }
