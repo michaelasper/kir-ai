@@ -27,6 +27,11 @@ use std::{collections::HashMap, net::SocketAddr, path::Path};
 
 mod bench;
 
+const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
+const PROTOCOL_TEST_BACKEND_ACK_FLAG: &str = "--i-understand-this-is-not-real-inference";
+const PROTOCOL_TEST_BACKEND_WARNING: &str =
+    "WARNING: SERVING WITH HARDCODED PROTOCOL TEST BACKEND - NOT REAL INFERENCE";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -39,6 +44,13 @@ async fn main() -> anyhow::Result<()> {
             if has_flag(&serve_args, "--help") || has_flag(&serve_args, "-h") {
                 print_serve_help();
                 return Ok(());
+            }
+            if has_flag(&serve_args, PROTOCOL_TEST_BACKEND_FLAG)
+                && !has_flag(&serve_args, PROTOCOL_TEST_BACKEND_ACK_FLAG)
+            {
+                anyhow::bail!(
+                    "{PROTOCOL_TEST_BACKEND_FLAG} serves hardcoded protocol fixtures and requires {PROTOCOL_TEST_BACKEND_ACK_FLAG}"
+                );
             }
             let addr = flag_value(&serve_args, "--addr")
                 .unwrap_or("127.0.0.1:3000")
@@ -189,9 +201,11 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     build_router_with_backend_and_options(backend, options)?
                 }
-            } else if has_flag(&serve_args, "--protocol-test-backend") {
+            } else if has_flag(&serve_args, PROTOCOL_TEST_BACKEND_FLAG) {
                 #[cfg(feature = "test-utils")]
                 {
+                    tracing::warn!("{}", PROTOCOL_TEST_BACKEND_WARNING);
+                    eprintln!("{PROTOCOL_TEST_BACKEND_WARNING}");
                     let backend = Box::new(
                         llm_backend::ProtocolTestBackend::new(
                             DEFAULT_MODEL_ID,
@@ -216,9 +230,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             } else {
-                anyhow::bail!(
-                    "llm-engine serve requires --snapshot <path> for inference serving; use --protocol-test-backend only for protocol tests"
-                );
+                anyhow::bail!("llm-engine serve requires --snapshot <path> for inference serving");
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
             tracing::info!(%addr, "llm-engine listening");
@@ -246,7 +258,6 @@ Options:
   --backend <native-metal|mlx>               Alias for --loader
   --family <qwen|deep_seek|gemma|llama>      Model family for raw snapshots without a Kir manifest
                                              Raw native snapshots infer Qwen/Gemma from config.json; raw MLX requires --family
-  --protocol-test-backend               Use protocol test backend
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text maximum prefill tokens
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]

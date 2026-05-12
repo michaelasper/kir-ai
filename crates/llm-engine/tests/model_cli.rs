@@ -229,8 +229,8 @@ fn serve_help_prints_without_backend_validation() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("--protocol-test-backend"),
-        "stdout: {stdout}"
+        !stdout.contains("--protocol-test-backend"),
+        "serve help should not advertise the hardcoded protocol backend as a normal serving option: {stdout}"
     );
     assert!(stdout.contains("--max-new-tokens <n>"), "stdout: {stdout}");
     assert!(
@@ -260,8 +260,8 @@ async fn serve_without_snapshot_requires_explicit_backend() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains("--snapshot"), "stderr: {stderr}");
             assert!(
-                stderr.contains("--protocol-test-backend"),
-                "stderr: {stderr}"
+                !stderr.contains("--protocol-test-backend"),
+                "missing snapshot error should not suggest a hardcoded backend for real serving: {stderr}"
             );
             return;
         }
@@ -346,6 +346,32 @@ async fn serve_rejects_deepseek_native_metal_family_before_binding() {
 }
 
 #[tokio::test]
+async fn serve_protocol_test_backend_requires_explicit_fixture_ack() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--protocol-test-backend",
+            "--hub-endpoint",
+            "not a url",
+        ])
+        .output()
+        .expect("run serve with protocol backend but no acknowledgement");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--i-understand-this-is-not-real-inference"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("invalid hub endpoint"),
+        "protocol-test acknowledgement must be checked before unrelated config: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn serve_rejects_invalid_hub_endpoint_without_panic() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args([
@@ -353,6 +379,7 @@ async fn serve_rejects_invalid_hub_endpoint_without_panic() {
             "--addr",
             "127.0.0.1:0",
             "--protocol-test-backend",
+            "--i-understand-this-is-not-real-inference",
             "--hub-endpoint",
             "not a url",
         ])
