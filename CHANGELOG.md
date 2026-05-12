@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.11](https://github.com/michaelasper/kir-ai/compare/v1.4.10...v1.4.11) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** fail closed on poisoned locks ([e38683e](https://github.com/michaelasper/kir-ai/commit/e38683ec78d19ff4f9455387d0ce5812d5e54c72)), closes [#149](https://github.com/michaelasper/kir-ai/issues/149)
+
 ## [1.4.10](https://github.com/michaelasper/kir-ai/compare/v1.4.9...v1.4.10) (2026-05-12)
 
 ### Bug Fixes
