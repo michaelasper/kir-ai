@@ -89,7 +89,7 @@ impl ToolMarkupPolicy {
 }
 
 pub(crate) trait ChatAdapter {
-    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError>;
+    fn cache_context(self, tool_schema: Option<String>) -> BackendCacheContext;
     fn backend_chat_context(
         self,
         messages: &[ChatMessage],
@@ -106,16 +106,8 @@ pub(crate) trait ChatAdapter {
 }
 
 impl ChatAdapter for SelectedChatAdapter {
-    fn cache_context(self, tools: &[ToolDefinition]) -> Result<BackendCacheContext, RuntimeError> {
-        let tool_schema = if tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(tools)?)
-        };
-        Ok(BackendCacheContext::chat_template(
-            self.family.adapter().cache_template_id(),
-            tool_schema,
-        ))
+    fn cache_context(self, tool_schema: Option<String>) -> BackendCacheContext {
+        BackendCacheContext::chat_template(self.family.adapter().cache_template_id(), tool_schema)
     }
 
     fn backend_chat_context(

@@ -160,6 +160,54 @@ impl ToolDefinition {
     }
 }
 
+pub fn canonicalize_tool_schemas(tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .cloned()
+        .map(|mut tool| {
+            tool.function.parameters = canonicalize_json_value(&tool.function.parameters);
+            tool
+        })
+        .collect()
+}
+
+pub fn canonical_tool_schema_json(tools: &[ToolDefinition]) -> serde_json::Result<String> {
+    let value = serde_json::to_value(tools)?;
+    serde_json::to_string(&canonicalize_json_value(&value))
+}
+
+pub fn canonicalize_json_value(value: &Value) -> Value {
+    canonicalize_json_member(None, value)
+}
+
+fn canonicalize_json_member(key: Option<&str>, value: &Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            let mut canonical_items = items
+                .iter()
+                .map(|item| canonicalize_json_member(None, item))
+                .collect::<Vec<_>>();
+            if key == Some("required") && canonical_items.iter().all(Value::is_string) {
+                canonical_items.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+            }
+            Value::Array(canonical_items)
+        }
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(
+                    key.clone(),
+                    canonicalize_json_member(Some(key), object.get(key).expect("key exists")),
+                );
+            }
+            Value::Object(canonical)
+        }
+        _ => value.clone(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionDefinition {
     pub name: String,

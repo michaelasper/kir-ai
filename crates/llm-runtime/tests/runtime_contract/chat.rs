@@ -195,6 +195,124 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
 }
 
 #[tokio::test]
+async fn runtime_preserves_tool_schema_serialization_by_default() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "qwen",
+    });
+    let tools = vec![ToolDefinition::function(
+        "lookup",
+        "Lookup docs.",
+        json!({
+            "type": "object",
+            "required": ["source", "query"],
+            "properties": {
+                "source": {"type": "string"},
+                "query": {"type": "string"}
+            }
+        }),
+    )];
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: tools.clone(),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    assert_eq!(
+        observed.cache_context.tool_schema.as_deref(),
+        Some(
+            serde_json::to_string(&tools)
+                .expect("tools serialize")
+                .as_str()
+        )
+    );
+}
+
+#[tokio::test]
+async fn runtime_canonicalizes_tool_schema_when_opted_in() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new_with_options(
+        RecordingChatContextBackend {
+            observed: observed.clone(),
+            family: "qwen",
+        },
+        RuntimeOptions {
+            tool_schema_normalization: ToolSchemaNormalization::Canonical,
+        },
+    );
+    let tools = vec![ToolDefinition::function(
+        "lookup",
+        "Lookup docs.",
+        json!({
+            "type": "object",
+            "required": ["source", "query"],
+            "properties": {
+                "source": {"type": "string"},
+                "query": {"type": "string"}
+            }
+        }),
+    )];
+
+    let _ = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: tools.clone(),
+            tool_choice: Some(ToolChoice::Function {
+                name: "lookup".to_owned(),
+            }),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("recording backend returns text while a tool call is required");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    let canonical_json =
+        llm_api::canonical_tool_schema_json(&tools).expect("canonical tool schema serializes");
+    let canonical_tools = llm_api::canonicalize_tool_schemas(&tools);
+    let rendered_canonical_tools =
+        serde_json::to_string(&canonical_tools).expect("canonical tools serialize");
+
+    assert_eq!(
+        observed.cache_context.tool_schema.as_deref(),
+        Some(canonical_json.as_str())
+    );
+    assert!(
+        observed.prompt.contains(&rendered_canonical_tools),
+        "rendered prompt should use canonicalized effective tools: {}",
+        observed.prompt
+    );
+    assert_eq!(
+        observed.required_tool_choice,
+        Some(BackendToolChoice::RequiredFunction("lookup".to_owned()))
+    );
+    assert_eq!(
+        observed
+            .chat_context
+            .expect("chat context is preserved")
+            .messages[0]
+            .content
+            .as_deref(),
+        Some("lookup rust")
+    );
+}
+
+#[tokio::test]
 async fn runtime_truncates_content_at_stop_sequence() {
     let backend = ProtocolTestBackend::new("local-qwen36", "hello END trailing");
     let runtime = Runtime::new(backend);

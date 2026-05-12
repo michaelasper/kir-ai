@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod cli;
+mod qwen_mlx_tool;
 
 use cli::{
     flag_values, normalize_endpoint, parse_f64_flag, parse_u32_flag, parse_u64_flag,
@@ -35,6 +36,9 @@ pub async fn run_bench_command(args: Vec<String>) -> anyhow::Result<()> {
     }
     match subcommand.as_str() {
         "qwen-long-context" => run_qwen_long_context_bench(&args[1..]).await,
+        "qwen-mlx-tool-normalized" => {
+            qwen_mlx_tool::run_qwen_mlx_tool_normalized_bench(&args[1..]).await
+        }
         other => anyhow::bail!("unknown bench subcommand `{other}`"),
     }
 }
@@ -501,11 +505,13 @@ fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
                     lane: lane.name.clone(),
                     status: lane_case.status.clone(),
                     latency_ms: lane_case.latency_ms,
-                    ttft_ms: lane_case.ttft_ms,
+                    stream_timing: lane_case.stream_timing,
                     tokens_per_second: lane_case.tokens_per_second,
                     prompt_tokens: lane_case.prompt_tokens,
                     completion_tokens: lane_case.completion_tokens,
                     total_tokens: lane_case.total_tokens,
+                    cached_tokens_status: lane_case.cached_tokens_status,
+                    cached_tokens: lane_case.cached_tokens,
                     classification: lane_case.classification.clone(),
                 });
             }
@@ -787,11 +793,16 @@ struct BenchLaneCaseMetricReport {
     lane: String,
     status: String,
     latency_ms: Option<u128>,
-    ttft_ms: Option<u128>,
+    #[serde(flatten)]
+    stream_timing: StreamTimingReport,
     tokens_per_second: Option<f64>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens: Option<u64>,
     classification: String,
 }
 
@@ -872,8 +883,8 @@ struct BenchCaseReport {
     planned_prompt_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latency_ms: Option<u128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ttft_ms: Option<u128>,
+    #[serde(flatten)]
+    stream_timing: StreamTimingReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     tokens_per_second: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -882,6 +893,10 @@ struct BenchCaseReport {
     completion_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -994,11 +1009,13 @@ struct CaseRun {
     classification: String,
     planned_prompt_tokens: usize,
     latency_ms: Option<u128>,
-    ttft_ms: Option<u128>,
+    stream_timing: StreamTimingReport,
     tokens_per_second: Option<f64>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    cached_tokens_status: Option<&'static str>,
+    cached_tokens: Option<u64>,
     http_status: Option<u16>,
     finish_reason: Option<String>,
     error: Option<String>,
@@ -1011,11 +1028,101 @@ struct PromptBuild {
     token_count: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct UsageMetrics {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    cached_tokens_status: Option<&'static str>,
+    cached_tokens: Option<u64>,
+}
+
+impl Default for UsageMetrics {
+    fn default() -> Self {
+        Self {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            cached_tokens_status: Some("missing"),
+            cached_tokens: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq)]
+struct StreamTimingReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_byte_latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_sse_data_latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_content_delta_latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_tool_delta_latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_semantic_delta_latency_ms: Option<u128>,
+}
+
+#[derive(Debug, Default)]
+struct StreamTimingTracker {
+    first_byte_latency: Option<Duration>,
+    first_sse_data_latency: Option<Duration>,
+    first_content_delta_latency: Option<Duration>,
+    first_tool_delta_latency: Option<Duration>,
+    first_semantic_delta_latency: Option<Duration>,
+}
+
+impl StreamTimingTracker {
+    fn record_first_byte(&mut self, elapsed: Duration) {
+        if self.first_byte_latency.is_none() {
+            self.first_byte_latency = Some(elapsed);
+        }
+    }
+
+    fn record_sse_frame(&mut self, elapsed: Duration, delta: StreamFrameDelta) {
+        if self.first_sse_data_latency.is_none() {
+            self.first_sse_data_latency = Some(elapsed);
+        }
+        if delta.content && self.first_content_delta_latency.is_none() {
+            self.first_content_delta_latency = Some(elapsed);
+        }
+        if delta.tool && self.first_tool_delta_latency.is_none() {
+            self.first_tool_delta_latency = Some(elapsed);
+        }
+        if delta.semantic() && self.first_semantic_delta_latency.is_none() {
+            self.first_semantic_delta_latency = Some(elapsed);
+        }
+    }
+
+    fn to_report(&self) -> StreamTimingReport {
+        StreamTimingReport {
+            first_byte_latency_ms: self.first_byte_latency.map(|duration| duration.as_millis()),
+            first_sse_data_latency_ms: self
+                .first_sse_data_latency
+                .map(|duration| duration.as_millis()),
+            first_content_delta_latency_ms: self
+                .first_content_delta_latency
+                .map(|duration| duration.as_millis()),
+            first_tool_delta_latency_ms: self
+                .first_tool_delta_latency
+                .map(|duration| duration.as_millis()),
+            first_semantic_delta_latency_ms: self
+                .first_semantic_delta_latency
+                .map(|duration| duration.as_millis()),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StreamFrameDelta {
+    content: bool,
+    tool: bool,
+}
+
+impl StreamFrameDelta {
+    fn semantic(&self) -> bool {
+        self.content || self.tool
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1057,11 +1164,13 @@ fn case_report(profile: BenchProfileKind, case: BenchCaseKind) -> BenchCaseRepor
         },
         planned_prompt_tokens: None,
         latency_ms: None,
-        ttft_ms: None,
+        stream_timing: StreamTimingReport::default(),
         tokens_per_second: None,
         prompt_tokens: None,
         completion_tokens: None,
         total_tokens: None,
+        cached_tokens_status: None,
+        cached_tokens: None,
         http_status: None,
         finish_reason: None,
         error: None,
@@ -1172,11 +1281,13 @@ async fn run_case(
                 classification: "prompt_build_failed".to_owned(),
                 planned_prompt_tokens: 0,
                 latency_ms: None,
-                ttft_ms: None,
+                stream_timing: StreamTimingReport::default(),
                 tokens_per_second: None,
                 prompt_tokens: None,
                 completion_tokens: None,
                 total_tokens: None,
+                cached_tokens_status: None,
+                cached_tokens: None,
                 http_status: None,
                 finish_reason: None,
                 error: Some(err.to_string()),
@@ -1259,7 +1370,7 @@ async fn run_buffered_case(
         validation,
         prompt.token_count,
         latency,
-        None,
+        StreamTimingReport::default(),
         http_status,
         finish_reason,
         usage,
@@ -1304,29 +1415,32 @@ async fn run_streaming_case(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut assembly = StreamAssembly::default();
-    let mut ttft = None;
+    let mut timings = StreamTimingTracker::default();
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(err) => {
-                return failed_case(
+                return failed_case_with_stream_timing(
                     "stream_body_failed",
                     prompt.token_count,
                     started.elapsed(),
                     http_status,
                     err.to_string(),
+                    timings.to_report(),
                 );
             }
         };
-        if ttft.is_none() {
-            ttft = Some(started.elapsed());
+        if chunk.is_empty() {
+            continue;
         }
+        let chunk_elapsed = started.elapsed();
+        timings.record_first_byte(chunk_elapsed);
         buffer.push_str(&String::from_utf8_lossy(&chunk));
-        consume_sse_buffer(&mut buffer, &mut assembly);
+        consume_sse_buffer(&mut buffer, &mut assembly, &mut timings, chunk_elapsed);
     }
     if !buffer.is_empty() {
         buffer.push('\n');
-        consume_sse_buffer(&mut buffer, &mut assembly);
+        consume_sse_buffer(&mut buffer, &mut assembly, &mut timings, started.elapsed());
     }
     let latency = started.elapsed();
     let validation = validate_streaming_case(profile, case, &prompt.marker, &assembly);
@@ -1334,7 +1448,7 @@ async fn run_streaming_case(
         validation,
         prompt.token_count,
         latency,
-        ttft,
+        timings.to_report(),
         http_status,
         assembly.finish_reason,
         assembly.usage,
@@ -1601,7 +1715,12 @@ fn validate_recall_argument(
     }
 }
 
-fn consume_sse_buffer(buffer: &mut String, assembly: &mut StreamAssembly) {
+fn consume_sse_buffer(
+    buffer: &mut String,
+    assembly: &mut StreamAssembly,
+    timings: &mut StreamTimingTracker,
+    elapsed: Duration,
+) {
     while let Some(index) = buffer.find('\n') {
         let mut line = buffer[..index].trim_end_matches('\r').to_owned();
         buffer.drain(..=index);
@@ -1616,39 +1735,61 @@ fn consume_sse_buffer(buffer: &mut String, assembly: &mut StreamAssembly) {
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             continue;
         };
-        if let Some(usage) = value.get("usage") {
-            assembly.usage = usage_from_value(Some(usage));
+        let delta = apply_sse_frame(&value, assembly);
+        timings.record_sse_frame(elapsed, delta);
+    }
+}
+
+fn apply_sse_frame(value: &Value, assembly: &mut StreamAssembly) -> StreamFrameDelta {
+    let mut delta = StreamFrameDelta::default();
+    if let Some(usage) = value.get("usage") {
+        assembly.usage = usage_from_value(Some(usage));
+    }
+    if let Some(choice) = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+    {
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            assembly.finish_reason = Some(reason.to_owned());
         }
-        if let Some(choice) = value
-            .get("choices")
+        if let Some(content) = choice.pointer("/delta/content").and_then(Value::as_str) {
+            if !content.is_empty() {
+                delta.content = true;
+            }
+            assembly.content.push_str(content);
+        }
+        if let Some(tool_calls) = choice
+            .pointer("/delta/tool_calls")
             .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
         {
-            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                assembly.finish_reason = Some(reason.to_owned());
-            }
-            if let Some(content) = choice.pointer("/delta/content").and_then(Value::as_str) {
-                assembly.content.push_str(content);
-            }
-            if let Some(tool_calls) = choice
-                .pointer("/delta/tool_calls")
-                .and_then(Value::as_array)
-            {
-                for tool_call in tool_calls {
-                    if let Some(name) = tool_call.pointer("/function/name").and_then(Value::as_str)
-                    {
-                        assembly.tool_name = Some(name.to_owned());
+            for tool_call in tool_calls {
+                if tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    delta.tool = true;
+                }
+                if let Some(name) = tool_call.pointer("/function/name").and_then(Value::as_str) {
+                    if !name.is_empty() {
+                        delta.tool = true;
                     }
-                    if let Some(arguments) = tool_call
-                        .pointer("/function/arguments")
-                        .and_then(Value::as_str)
-                    {
-                        assembly.tool_arguments.push_str(arguments);
+                    assembly.tool_name = Some(name.to_owned());
+                }
+                if let Some(arguments) = tool_call
+                    .pointer("/function/arguments")
+                    .and_then(Value::as_str)
+                {
+                    if !arguments.is_empty() {
+                        delta.tool = true;
                     }
+                    assembly.tool_arguments.push_str(arguments);
                 }
             }
         }
     }
+    delta
 }
 
 fn usage_from_value(value: Option<&Value>) -> UsageMetrics {
@@ -1659,6 +1800,19 @@ fn usage_from_value(value: Option<&Value>) -> UsageMetrics {
         prompt_tokens: value.get("prompt_tokens").and_then(Value::as_u64),
         completion_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
+        cached_tokens_status: cached_tokens_status(value),
+        cached_tokens: value
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(Value::as_u64),
+    }
+}
+
+fn cached_tokens_status(value: &Value) -> Option<&'static str> {
+    match value.pointer("/prompt_tokens_details/cached_tokens") {
+        Some(Value::Number(number)) if number.as_u64().is_some() => Some("present"),
+        Some(Value::Null) => Some("null"),
+        Some(_) => Some("invalid"),
+        None => Some("missing"),
     }
 }
 
@@ -1666,7 +1820,7 @@ fn case_from_validation(
     validation: Result<(), String>,
     planned_prompt_tokens: usize,
     latency: Duration,
-    ttft: Option<Duration>,
+    stream_timing: StreamTimingReport,
     http_status: Option<u16>,
     finish_reason: Option<String>,
     usage: UsageMetrics,
@@ -1681,11 +1835,13 @@ fn case_from_validation(
             classification: "passed".to_owned(),
             planned_prompt_tokens,
             latency_ms: Some(latency_ms),
-            ttft_ms: ttft.map(|duration| duration.as_millis()),
+            stream_timing,
             tokens_per_second,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cached_tokens_status: usage.cached_tokens_status,
+            cached_tokens: usage.cached_tokens,
             http_status,
             finish_reason,
             error: None,
@@ -1695,11 +1851,13 @@ fn case_from_validation(
             classification: "response_validation_failed".to_owned(),
             planned_prompt_tokens,
             latency_ms: Some(latency_ms),
-            ttft_ms: ttft.map(|duration| duration.as_millis()),
+            stream_timing,
             tokens_per_second,
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cached_tokens_status: usage.cached_tokens_status,
+            cached_tokens: usage.cached_tokens,
             http_status,
             finish_reason,
             error: Some(err),
@@ -1714,16 +1872,36 @@ fn failed_case(
     http_status: Option<u16>,
     error: String,
 ) -> CaseRun {
+    failed_case_with_stream_timing(
+        classification,
+        planned_prompt_tokens,
+        latency,
+        http_status,
+        error,
+        StreamTimingReport::default(),
+    )
+}
+
+fn failed_case_with_stream_timing(
+    classification: impl Into<String>,
+    planned_prompt_tokens: usize,
+    latency: Duration,
+    http_status: Option<u16>,
+    error: String,
+    stream_timing: StreamTimingReport,
+) -> CaseRun {
     CaseRun {
         status: "failed",
         classification: classification.into(),
         planned_prompt_tokens,
         latency_ms: Some(latency.as_millis()),
-        ttft_ms: None,
+        stream_timing,
         tokens_per_second: None,
         prompt_tokens: None,
         completion_tokens: None,
         total_tokens: None,
+        cached_tokens_status: None,
+        cached_tokens: None,
         http_status,
         finish_reason: None,
         error: Some(error),
@@ -1735,11 +1913,13 @@ fn apply_case_run(case: &mut BenchCaseReport, run: CaseRun) {
     case.classification = run.classification;
     case.planned_prompt_tokens = Some(run.planned_prompt_tokens);
     case.latency_ms = run.latency_ms;
-    case.ttft_ms = run.ttft_ms;
+    case.stream_timing = run.stream_timing;
     case.tokens_per_second = run.tokens_per_second;
     case.prompt_tokens = run.prompt_tokens;
     case.completion_tokens = run.completion_tokens;
     case.total_tokens = run.total_tokens;
+    case.cached_tokens_status = run.cached_tokens_status;
+    case.cached_tokens = run.cached_tokens;
     case.http_status = run.http_status;
     case.finish_reason = run.finish_reason;
     case.error = run.error;

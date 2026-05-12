@@ -1,7 +1,9 @@
 pub(super) fn print_bench_help() {
     println!(
         "\
-Usage: llm-engine bench qwen-long-context [OPTIONS]
+Usage:
+  llm-engine bench qwen-long-context [OPTIONS]
+  llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
   --endpoint <url>                    OpenAI-compatible server base URL
@@ -17,7 +19,15 @@ Options:
   --connect-timeout-ms <n>            HTTP connect timeout [default: 10000]
   --latency-regression-threshold <f>  Allowed latency increase over baseline [default: 0.20]
   --dry-run                           Print the exact gate plan without HTTP requests
-  -h, --help                          Print help",
+  -h, --help                          Print help
+
+qwen-mlx-tool-normalized:
+  --lane <spec>                       name=<id>,endpoint=<url>,model=<id>[,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
+  --warmups <n>                       Warmups for warm phases [default: 1]
+  --samples <n>                       Sequential measured samples per case and phase [default: 1]
+  --context-tokens <n>                Stable long-context prompt target [default: 135000]
+  --concurrent-requests <n>           Requests issued together during the concurrent pass [default: 1]
+  --concurrent-samples <n>            Concurrent sample batches per case and phase [default: 0]",
         crate::DEFAULT_MODEL_ID
     );
 }

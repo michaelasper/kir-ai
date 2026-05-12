@@ -5,10 +5,13 @@ use llm_api::{
 };
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend, ProtocolTestBackend, SamplingConfig,
+    BackendToolChoice, ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
 use llm_models::ModelFamily;
-use llm_runtime::{ChatCompletionStreamEvent, NoProgressClass, Runtime, RuntimeError};
+use llm_runtime::{
+    ChatCompletionStreamEvent, NoProgressClass, Runtime, RuntimeError, RuntimeOptions,
+    ToolSchemaNormalization,
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

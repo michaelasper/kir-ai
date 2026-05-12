@@ -15,6 +15,7 @@ pub struct EngineOptions {
     pub hub_endpoint: Option<String>,
     pub hf_token: Option<String>,
     pub stream_stall_timeout: Option<Duration>,
+    pub canonical_tool_schemas: bool,
 }
 
 impl Default for EngineOptions {
@@ -30,6 +31,7 @@ impl Default for EngineOptions {
             hub_endpoint: None,
             hf_token: None,
             stream_stall_timeout: Some(DEFAULT_STREAM_STALL_TIMEOUT),
+            canonical_tool_schemas: false,
         }
     }
 }

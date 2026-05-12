@@ -219,6 +219,184 @@ fn streamed_required_tool_recall_requires_tool_finish_reason_and_full_arguments(
     assert!(finish_err.contains("finish_reason"), "error: {finish_err}");
 }
 
+#[test]
+fn sse_comments_and_done_do_not_record_semantic_timings() {
+    let mut buffer = ": keepalive\n\ndata: [DONE]\n".to_owned();
+    let mut assembly = StreamAssembly::default();
+    let mut timings = StreamTimingTracker::default();
+
+    consume_sse_buffer(
+        &mut buffer,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(37),
+    );
+
+    let report = timings.to_report();
+    assert_eq!(report.first_sse_data_latency_ms, None);
+    assert_eq!(report.first_content_delta_latency_ms, None);
+    assert_eq!(report.first_tool_delta_latency_ms, None);
+    assert_eq!(report.first_semantic_delta_latency_ms, None);
+}
+
+#[test]
+fn sse_comments_before_text_delta_record_content_semantics_at_text_frame() {
+    let mut assembly = StreamAssembly::default();
+    let mut timings = StreamTimingTracker::default();
+    let mut comments = ": keepalive\n\n".to_owned();
+    consume_sse_buffer(
+        &mut comments,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(11),
+    );
+
+    let mut delta = format!("data: {}\n", streamed_content_delta("marker text"));
+    consume_sse_buffer(
+        &mut delta,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(29),
+    );
+
+    let report = timings.to_report();
+    assert_eq!(assembly.content, "marker text");
+    assert_eq!(report.first_sse_data_latency_ms, Some(29));
+    assert_eq!(report.first_content_delta_latency_ms, Some(29));
+    assert_eq!(report.first_tool_delta_latency_ms, None);
+    assert_eq!(report.first_semantic_delta_latency_ms, Some(29));
+}
+
+#[test]
+fn sse_comments_before_tool_delta_record_tool_semantics_at_tool_frame() {
+    let mut assembly = StreamAssembly::default();
+    let mut timings = StreamTimingTracker::default();
+    let mut comments = ": keepalive\n\n".to_owned();
+    consume_sse_buffer(
+        &mut comments,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(13),
+    );
+
+    let mut delta = format!("data: {}\n", streamed_tool_delta("call_1", "report", "{\""));
+    consume_sse_buffer(
+        &mut delta,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(41),
+    );
+
+    let report = timings.to_report();
+    assert_eq!(assembly.tool_name.as_deref(), Some("report"));
+    assert_eq!(assembly.tool_arguments, "{\"");
+    assert_eq!(report.first_sse_data_latency_ms, Some(41));
+    assert_eq!(report.first_content_delta_latency_ms, None);
+    assert_eq!(report.first_tool_delta_latency_ms, Some(41));
+    assert_eq!(report.first_semantic_delta_latency_ms, Some(41));
+}
+
+#[test]
+fn usage_only_sse_data_records_sse_latency_without_semantic_timing() {
+    let mut buffer = format!(
+        "data: {}\n",
+        serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12
+            }
+        })
+    );
+    let mut assembly = StreamAssembly::default();
+    let mut timings = StreamTimingTracker::default();
+
+    consume_sse_buffer(
+        &mut buffer,
+        &mut assembly,
+        &mut timings,
+        Duration::from_millis(53),
+    );
+
+    let report = timings.to_report();
+    assert_eq!(report.first_sse_data_latency_ms, Some(53));
+    assert_eq!(report.first_content_delta_latency_ms, None);
+    assert_eq!(report.first_tool_delta_latency_ms, None);
+    assert_eq!(report.first_semantic_delta_latency_ms, None);
+    assert_eq!(assembly.usage.prompt_tokens, Some(10));
+    assert_eq!(assembly.usage.completion_tokens, Some(2));
+    assert_eq!(assembly.usage.total_tokens, Some(12));
+    assert_eq!(assembly.usage.cached_tokens_status, Some("missing"));
+}
+
+#[test]
+fn lane_comparison_serializes_explicit_stream_timing_fields_without_ttft() {
+    let mut lane = passed_lane(
+        "native",
+        "michaelasper/qwen",
+        "commit-a",
+        "qwen3-bf16",
+        "bf16",
+    );
+    let stream_case = lane.profiles[0]
+        .cases
+        .iter_mut()
+        .find(|case| case.stream)
+        .expect("streaming case");
+    stream_case.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: Some(7),
+        first_sse_data_latency_ms: Some(13),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(21),
+        first_semantic_delta_latency_ms: Some(21),
+    };
+
+    let comparison = compare_bench_lanes(&[lane]);
+    let value = serde_json::to_value(&comparison).expect("serialize comparison");
+    let stream_case = value
+        .get("cases")
+        .and_then(Value::as_array)
+        .and_then(|cases| {
+            cases.iter().find(|case| {
+                case.get("case").and_then(Value::as_str) == Some("streamed-required-tool-recall")
+            })
+        })
+        .expect("streaming case comparison");
+    let lane_metrics = stream_case
+        .pointer("/lanes/0")
+        .expect("streaming lane metrics")
+        .as_object()
+        .expect("metrics object");
+
+    assert!(!lane_metrics.contains_key("ttft_ms"));
+    assert_eq!(
+        lane_metrics
+            .get("first_byte_latency_ms")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        lane_metrics
+            .get("first_sse_data_latency_ms")
+            .and_then(Value::as_u64),
+        Some(13)
+    );
+    assert_eq!(
+        lane_metrics
+            .get("first_tool_delta_latency_ms")
+            .and_then(Value::as_u64),
+        Some(21)
+    );
+    assert_eq!(
+        lane_metrics
+            .get("first_semantic_delta_latency_ms")
+            .and_then(Value::as_u64),
+        Some(21)
+    );
+    assert!(!lane_metrics.contains_key("first_content_delta_latency_ms"));
+}
+
 fn passed_lane(
     name: &str,
     repo_id: &str,
@@ -263,6 +441,33 @@ fn buffered_content_response(content: String) -> Value {
             "message": {
                 "role": "assistant",
                 "content": content
+            }
+        }]
+    })
+}
+
+fn streamed_content_delta(content: &str) -> Value {
+    serde_json::json!({
+        "choices": [{
+            "delta": {
+                "content": content
+            }
+        }]
+    })
+}
+
+fn streamed_tool_delta(id: &str, name: &str, arguments: &str) -> Value {
+    serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments
+                    }
+                }]
             }
         }]
     })

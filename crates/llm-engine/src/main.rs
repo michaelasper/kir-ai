@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
             let hub_endpoint = flag_value(&serve_args, "--hub-endpoint")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
+            let canonical_tool_schemas = canonical_tool_schemas_enabled(&serve_args)?;
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
@@ -84,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 model_home,
                 hub_endpoint,
                 hf_token: std::env::var("HF_TOKEN").ok(),
+                canonical_tool_schemas,
                 ..EngineOptions::default()
             };
             let snapshot_alias = flag_value(&serve_args, "--snapshot-alias")
@@ -272,9 +274,26 @@ Options:
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
+  --canonical-tool-schemas                   Canonicalize tool schemas before runtime prompt/cache use [env: LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1]
   -h, --help                                 Print help",
         DEFAULT_MODEL_ID
     );
+}
+
+fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {
+    if has_flag(args, "--canonical-tool-schemas") {
+        return Ok(true);
+    }
+    let Some(value) = std::env::var("LLM_ENGINE_CANONICAL_TOOL_SCHEMAS").ok() else {
+        return Ok(false);
+    };
+    match value.as_str() {
+        "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
+        "0" | "false" | "FALSE" | "no" | "NO" => Ok(false),
+        other => anyhow::bail!(
+            "LLM_ENGINE_CANONICAL_TOOL_SCHEMAS must be 1/0 or true/false, got `{other}`"
+        ),
+    }
 }
 
 async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {

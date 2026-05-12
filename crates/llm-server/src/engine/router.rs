@@ -24,7 +24,7 @@ use axum::{
 };
 use llm_backend::ModelBackend;
 use llm_hub::HubClient;
-use llm_runtime::Runtime;
+use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;
 use std::sync::{Arc, Mutex};
 
@@ -177,8 +177,15 @@ fn engine_state(
     allow_unauthenticated_admin: bool,
     backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> AppState {
+    let runtime_options = RuntimeOptions {
+        tool_schema_normalization: if options.canonical_tool_schemas {
+            ToolSchemaNormalization::Canonical
+        } else {
+            ToolSchemaNormalization::Preserve
+        },
+    };
     AppState {
-        runtime: Arc::new(Runtime::new(backend)),
+        runtime: Arc::new(Runtime::new_with_options(backend, runtime_options)),
         metrics: Arc::new(Mutex::new(ServerMetrics::default())),
         generation_phases: Arc::new(GenerationPhaseMetrics::default()),
         model_scheduler: Arc::new(ModelScheduler::new(ModelSchedulerOptions {

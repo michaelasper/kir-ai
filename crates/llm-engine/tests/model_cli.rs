@@ -199,6 +199,259 @@ fn long_context_bench_dry_run_accepts_named_backend_lanes() {
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let trace = temp.path().join("qwen-mlx-tool-normalized.json");
+    let snapshot = temp.path().join("snapshot");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--warmups",
+            "2",
+            "--samples",
+            "3",
+            "--context-tokens",
+            "2048",
+            "--concurrent-requests",
+            "2",
+            "--concurrent-samples",
+            "1",
+            "--output",
+        ])
+        .arg(&trace)
+        .args(["--lane"])
+        .arg(format!(
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,snapshot={},kind=direct_mlx,model_addressing=loaded_model_id,mlx_prompt_cache_size=4096,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=8192,mlx_prompt_concurrency=4,mlx_decode_concurrency=2",
+            snapshot.display()
+        ))
+        .args(["--lane"])
+        .arg(
+            "name=proxy,endpoint=http://127.0.0.1:3000,model=qwen-proxy,kind=kir_ai_proxy,model_addressing=default_model,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=1073741824,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default",
+        )
+        .output()
+        .expect("run qwen mlx tool normalized dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    let trace_value: Value =
+        serde_json::from_slice(&std::fs::read(&trace).expect("trace output file"))
+            .expect("trace JSON output");
+
+    assert_eq!(value["benchmark"], "qwen-mlx-tool-normalized");
+    assert_eq!(trace_value["benchmark"], "qwen-mlx-tool-normalized");
+    assert_eq!(value["status"], "dry_run");
+    assert_eq!(value["warmups"], 2);
+    assert_eq!(value["samples"], 3);
+    assert_eq!(value["context_tokens"], 2048);
+    assert_eq!(value["concurrent_requests"], 2);
+    assert_eq!(value["concurrent_samples"], 1);
+    assert_eq!(value["effective_concurrent_samples"], 1);
+    assert!(
+        value["repo_revision"]["commit_sha"]
+            .as_str()
+            .expect("repo commit sha")
+            .len()
+            >= 7
+    );
+    assert!(value["repo_revision"]["dirty"].is_boolean());
+    assert_eq!(
+        value["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .map(|case| case.as_str().expect("case"))
+            .collect::<Vec<_>>(),
+        [
+            "tool_required",
+            "tool_required_stream",
+            "json_object",
+            "omp_repeated_prefix"
+        ]
+    );
+    assert_eq!(
+        value["schema_variants"]
+            .as_array()
+            .expect("schema variants")
+            .iter()
+            .map(|variant| variant.as_str().expect("schema variant"))
+            .collect::<Vec<_>>(),
+        [
+            "baseline_current",
+            "canonical_current",
+            "baseline_permuted_equivalent",
+            "canonical_permuted_equivalent"
+        ]
+    );
+    assert_eq!(
+        value["tool_choice_variants"]
+            .as_array()
+            .expect("tool choice variants")
+            .iter()
+            .map(|variant| variant.as_str().expect("tool choice variant"))
+            .collect::<Vec<_>>(),
+        ["required", "function"]
+    );
+    assert_eq!(
+        value["cache_phases"]
+            .as_array()
+            .expect("cache phases")
+            .iter()
+            .map(|phase| phase.as_str().expect("phase"))
+            .collect::<Vec<_>>(),
+        ["cold", "warm_same_prompt", "warm_same_tool_schema"]
+    );
+
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(lanes.len(), 2, "lanes: {lanes:?}");
+    assert_eq!(lanes[0]["name"], "direct");
+    assert_eq!(lanes[0]["kind"], "direct_mlx");
+    assert_eq!(lanes[0]["declared_model_id"], "qwen-loaded");
+    assert_eq!(lanes[0]["effective_request_model_id"], "qwen-loaded");
+    assert_eq!(lanes[0]["model_addressing"], "loaded_model_id");
+    assert_eq!(lanes[0]["snapshot_path"], snapshot.display().to_string());
+    assert_eq!(lanes[0]["mlx_lm_settings"]["mlx_prompt_cache_size"], 4096);
+    assert_eq!(
+        lanes[0]["mlx_lm_settings"]["mlx_prompt_cache_bytes"],
+        "unset"
+    );
+    assert_eq!(lanes[0]["mlx_lm_settings"]["mlx_prefill_step_size"], 8192);
+    assert_eq!(lanes[0]["mlx_lm_settings"]["mlx_prompt_concurrency"], 4);
+    assert_eq!(lanes[0]["mlx_lm_settings"]["mlx_decode_concurrency"], 2);
+    assert_eq!(
+        lanes[0]["qwen_thinking_policy"]["template"],
+        "qwen-no-thinking"
+    );
+    assert_eq!(
+        lanes[0]["qwen_thinking_policy"]["request_chat_template_kwargs"]["enable_thinking"],
+        false
+    );
+
+    assert_eq!(lanes[1]["name"], "proxy");
+    assert_eq!(lanes[1]["kind"], "kir_ai_proxy");
+    assert_eq!(lanes[1]["declared_model_id"], "qwen-proxy");
+    assert_eq!(
+        lanes[1]["effective_request_model_id"],
+        llm_engine::DEFAULT_MODEL_ID
+    );
+    assert_eq!(lanes[1]["model_addressing"], "default_model");
+    assert_eq!(
+        lanes[1]["qwen_thinking_policy"]["template"],
+        "sidecar-chat-template-args"
+    );
+    assert!(
+        lanes[1]["qwen_thinking_policy"]
+            .get("request_chat_template_kwargs")
+            .is_none()
+    );
+    assert_eq!(
+        lanes[1]["mlx_lm_settings"]["mlx_prompt_cache_size"],
+        "default"
+    );
+    assert_eq!(
+        lanes[1]["mlx_lm_settings"]["mlx_prompt_cache_bytes"],
+        1073741824
+    );
+
+    let planned = lanes[0]["samples"].as_array().expect("planned samples");
+    assert_eq!(planned.len(), 225);
+    assert!(planned.iter().all(|sample| sample["status"] == "dry_run"));
+    assert!(
+        planned
+            .iter()
+            .all(|sample| sample["run_mode"] == "sequential")
+    );
+    assert!(
+        planned
+            .iter()
+            .all(|sample| sample["planned_prompt_tokens"] == 2048)
+    );
+    assert_eq!(planned[0]["case"], "tool_required");
+    assert_eq!(planned[0]["cache_phase"], "cold");
+    assert_eq!(planned[0]["schema_variant"], "baseline_current");
+    assert_eq!(planned[0]["tool_choice_variant"], "required");
+    assert_eq!(planned[0]["schema_canonicalized"], false);
+    assert_eq!(planned[0]["schema_permuted"], false);
+    assert_eq!(planned[0]["prewarmed"], false);
+    assert!(planned[0]["tool_schema_sha256"].as_str().is_some());
+    assert!(planned[0]["tool_schema_bytes"].as_u64().is_some());
+    assert_eq!(planned[0]["sample_index"], 0);
+    assert_eq!(planned[3]["cache_phase"], "warm_same_prompt");
+    assert_eq!(planned[3]["prewarmed"], true);
+    assert_eq!(planned[6]["cache_phase"], "warm_same_tool_schema");
+    assert_eq!(planned[6]["prewarmed"], true);
+    let canonical_current = planned
+        .iter()
+        .find(|sample| {
+            sample["case"] == "tool_required"
+                && sample["schema_variant"] == "canonical_current"
+                && sample["tool_choice_variant"] == "required"
+                && sample["cache_phase"] == "cold"
+                && sample["sample_index"] == 0
+        })
+        .expect("canonical current sample");
+    let canonical_permuted = planned
+        .iter()
+        .find(|sample| {
+            sample["case"] == "tool_required"
+                && sample["schema_variant"] == "canonical_permuted_equivalent"
+                && sample["tool_choice_variant"] == "required"
+                && sample["cache_phase"] == "cold"
+                && sample["sample_index"] == 0
+        })
+        .expect("canonical permuted sample");
+    assert_eq!(
+        canonical_current["tool_schema_sha256"],
+        canonical_permuted["tool_schema_sha256"]
+    );
+    let json_control = planned
+        .iter()
+        .find(|sample| sample["case"] == "json_object")
+        .expect("json control sample");
+    assert_eq!(json_control["schema_variant"], "none");
+    assert_eq!(json_control["tool_choice_variant"], "none");
+    assert!(json_control.get("tool_schema_sha256").is_none());
+
+    let concurrent = lanes[0]["concurrent_samples"]
+        .as_array()
+        .expect("planned concurrent samples");
+    assert_eq!(concurrent.len(), 150);
+    assert!(
+        concurrent
+            .iter()
+            .all(|sample| sample["run_mode"] == "concurrent")
+    );
+    assert_eq!(concurrent[0]["sample_index"], 0);
+    assert_eq!(concurrent[0]["request_index"], 0);
+    assert_eq!(concurrent[1]["sample_index"], 0);
+    assert_eq!(concurrent[1]["request_index"], 1);
+    assert!(
+        concurrent
+            .iter()
+            .any(|sample| sample["case"] == "omp_repeated_prefix")
+    );
+
+    let summary = value["summary"].as_array().expect("summary rows");
+    assert!(
+        summary.iter().any(|row| {
+            row["lane"] == "direct"
+                && row["case"] == "omp_repeated_prefix"
+                && row["schema_variant"] == "canonical_permuted_equivalent"
+                && row["tool_choice_variant"] == "function"
+                && row["cache_phase"] == "cold"
+                && row["run_mode"] == "concurrent"
+        }),
+        "summary rows: {summary:?}"
+    );
+}
+
+#[test]
 fn serve_help_prints_without_backend_validation() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args(["serve", "--help"])
@@ -236,6 +489,14 @@ fn serve_help_prints_without_backend_validation() {
     assert!(
         stdout.contains("[default: 256]"),
         "stdout should document the usable native generation default: {stdout}"
+    );
+    assert!(
+        stdout.contains("--canonical-tool-schemas"),
+        "serve help should document production opt-in tool schema canonicalization: {stdout}"
+    );
+    assert!(
+        stdout.contains("LLM_ENGINE_CANONICAL_TOOL_SCHEMAS"),
+        "serve help should document the canonicalization environment variable: {stdout}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

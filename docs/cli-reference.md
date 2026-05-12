@@ -7,8 +7,9 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
+llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine model <subcommand> ...
 ```
 
@@ -53,6 +54,11 @@ llm-engine serve \
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` or `mlx_vlm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
+| `--canonical-tool-schemas` | absent | Opts production serving into canonical tool schema rendering/cache keys. Equivalent JSON object key order and string-only `required` array order normalize to one minified schema. |
+
+Set `LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1` to enable the same tool-schema
+canonicalization without the flag. Omit the flag/env to preserve existing
+OpenAI-compatible request serialization.
 
 Without `--snapshot`, `serve` exits unless protocol test mode is explicitly
 selected and acknowledged. Implicit no-snapshot stub serving was removed.
@@ -110,16 +116,159 @@ llm-engine bench qwen-long-context \
 
 The trace keeps top-level `model` and `profiles` for compatibility with older
 single-lane consumers. New consumers should read `lanes[*].profiles` and
-`comparison`, which includes per-case latency, TTFT, token throughput, pass/fail
-classification, and fastest-lane summaries. When `/admin/metrics` is available,
-each lane also includes `cache_metrics` with prefix-cache hit rate/residency,
-Metal BF16 weight-cache hit rate/residency, KV-cache residency, recurrent
-linear-attention-cache residency, and eviction churn signals. Lane comparison reports
-`artifact_identity_mismatch` unless repo, commit, profile, and quantization are
-identical across lanes; that mismatch fails the promotion gate and is emitted as
+`comparison`, which includes per-case latency, token throughput, pass/fail
+classification, and fastest-lane summaries. Streaming cases also include explicit
+timing fields where observed: `first_byte_latency_ms` for the first non-empty HTTP
+body chunk, `first_sse_data_latency_ms` for the first valid non-empty SSE JSON
+`data:` frame, `first_content_delta_latency_ms` for the first non-empty content
+delta, `first_tool_delta_latency_ms` for the first non-empty tool-call delta, and
+`first_semantic_delta_latency_ms` for the first content or tool delta. SSE
+comments, blank data frames, `[DONE]`, and usage-only frames do not count as
+semantic output. When `/admin/metrics` is available, each lane also includes
+`cache_metrics` with prefix-cache hit rate/residency, Metal BF16 weight-cache hit
+rate/residency, KV-cache residency, recurrent linear-attention-cache residency, and
+eviction churn signals. Lane comparison reports `artifact_identity_mismatch` unless
+repo, commit, profile, and quantization are identical across lanes; that mismatch
+fails the promotion gate and is emitted as
 `failure_classification: "lane_artifact_identity_mismatch"`. JSON and tool-call
 recall cases validate the full benchmark contract: `marker`, `profile`, `case`,
 and `finish_reason: "tool_calls"` for tool responses.
+
+## `bench qwen-mlx-tool-normalized`
+
+Runs direct Qwen tool/JSON probes across comparable OpenAI-compatible lanes
+without changing the `qwen-long-context` promotion gate. The command does not
+start MLX sidecars; each lane records the endpoint, model addressing mode,
+template/thinking assumption, optional snapshot identity, declared MLX-LM sweep
+knobs, repo revision metadata, measured cache phase, and aggregate summary rows.
+
+Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
+disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an
+equivalent request-side `chat_template_kwargs` policy.
+
+Default prompt-cache size with unbounded prompt-cache bytes:
+
+```sh
+SNAPSHOT=.llm-models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<resolved-commit>
+mlx_lm.server \
+  --model "$SNAPSHOT" \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+Larger prompt-cache size:
+
+```sh
+mlx_lm.server \
+  --model "$SNAPSHOT" \
+  --host 127.0.0.1 \
+  --port 8081 \
+  --prompt-cache-size 4096 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+Bounded prompt-cache bytes:
+
+```sh
+mlx_lm.server \
+  --model "$SNAPSHOT" \
+  --host 127.0.0.1 \
+  --port 8082 \
+  --prompt-cache-bytes 1073741824 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+Prefill step-size sweep:
+
+```sh
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8083 --prefill-step-size 2048 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8084 --prefill-step-size 4096 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8085 --prefill-step-size 8192 --chat-template-args '{"enable_thinking":false}'
+```
+
+Prompt/decode concurrency:
+
+```sh
+mlx_lm.server \
+  --model "$SNAPSHOT" \
+  --host 127.0.0.1 \
+  --port 8086 \
+  --prompt-concurrency 4 \
+  --decode-concurrency 2 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+Kir proxy lanes are also externally started and should point at one of the MLX
+sidecars:
+
+```sh
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family qwen \
+  --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1
+```
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --lane name=mlx-default,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-cache-size-4096,endpoint=http://127.0.0.1:8081/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=4096,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-cache-bytes-1g,endpoint=http://127.0.0.1:8082/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=1073741824,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-prefill-2048,endpoint=http://127.0.0.1:8083/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=2048,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-prefill-4096,endpoint=http://127.0.0.1:8084/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=4096,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-prefill-8192,endpoint=http://127.0.0.1:8085/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=8192,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
+  --lane name=mlx-concurrent-4x2,endpoint=http://127.0.0.1:8086/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=4,mlx_decode_concurrency=2 \
+  --lane name=kir-proxy,endpoint=http://127.0.0.1:3000,model=local-qwen36-mlx,snapshot="$SNAPSHOT",kind=kir_ai_proxy,model_addressing=default_model,template=sidecar-chat-template-args \
+  --warmups 1 \
+  --samples 3 \
+  --context-tokens 135000 \
+  --concurrent-requests 4 \
+  --concurrent-samples 1 \
+  --output qwen-mlx-tool-sweep.json
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--lane <spec>` | required | Adds a lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. |
+| `--warmups <n>` | `1` | Warmup requests issued before measured samples for `warm_same_prompt` and `warm_same_tool_schema`. `cold` never performs command-issued warmups. |
+| `--samples <n>` | `1` | Sequential measured samples per lane, case, schema variant, tool-choice variant, and cache phase. |
+| `--context-tokens <n>` | `135000` | Stable long-context prompt target for all probes. |
+| `--concurrent-requests <n>` | `1` | Requests issued together for the separate concurrent pass. If this is greater than `1` and `--concurrent-samples` is `0`, the concurrent pass uses `--samples` batches. |
+| `--concurrent-samples <n>` | `0` | Concurrent sample batches per lane, case, schema variant, tool-choice variant, and cache phase. Values greater than `0` enable the concurrent pass even when `--concurrent-requests` is `1`. |
+| `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
+| `--timeout-ms <n>` | `1800000` | Whole request timeout. |
+| `--connect-timeout-ms <n>` | `10000` | HTTP connect timeout. |
+| `--dry-run` | absent | Emits the planned cases, phases, lanes, model/template assumptions, and sample grid without HTTP requests. |
+
+Cases are `tool_required`, `tool_required_stream`, `json_object`, and
+`omp_repeated_prefix`. Tool cases run the schema variants `baseline_current`,
+`canonical_current`, `baseline_permuted_equivalent`, and
+`canonical_permuted_equivalent` across `required` and function-specific
+`tool_choice` variants. `json_object` remains a control with `schema_variant:
+"none"` and `tool_choice_variant: "none"`. The OMP case uses a multi-turn
+history with stable system/user context, an assistant tool call, a tool result,
+and a small final user delta requiring `record_qwen_tool_probe`. Cache phases are
+`cold`, `warm_same_prompt`, and `warm_same_tool_schema`; warmups are excluded
+from measured `samples`, and concurrent measurements are reported in a separate
+`concurrent_samples` array. The default `template=qwen-no-thinking` injects
+`chat_template_kwargs: {"enable_thinking": false}` into requests.
+`template=sidecar-chat-template-args` records that the sidecar is expected to
+have been launched with equivalent chat-template args and does not inject
+request kwargs.
+
+Each measured sample reports `schema_variant`, `tool_choice_variant`,
+`schema_canonicalized`, `schema_permuted`, `tool_schema_sha256`,
+`tool_schema_bytes`, `cache_phase`, `prewarmed`, latency, HTTP status, finish
+reason, prompt/completion/total tokens, cached-token status/count when provided
+by upstream `usage.prompt_tokens_details.cached_tokens`, validation
+classification, and the stream timing fields when observed. The top-level
+`repo_revision` records the kir-ai branch, commit SHA, and dirty status. The
+top-level `summary` groups rows by lane, case, schema variant, tool-choice
+variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
+average cached/token usage, and the fastest lane for that group.
 
 ## `model list`
 
