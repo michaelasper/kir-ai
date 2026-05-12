@@ -282,9 +282,12 @@ mod tests {
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
     use llm_backend::SamplingConfig;
     use llm_tokenizer::HuggingFaceTokenizer;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +320,8 @@ mod tests {
         prefix_cache: std::sync::Arc<NativeTextPrefixCache<TestCache>>,
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
         cleanup_calls: Arc<AtomicUsize>,
+        next_token_calls: Arc<AtomicUsize>,
+        next_token_delay: Option<Duration>,
         fail_prefill: bool,
     }
 
@@ -329,6 +334,8 @@ mod tests {
                 prefix_cache: std::sync::Arc::new(NativeTextPrefixCache::new(1024)),
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
                 cleanup_calls: Arc::new(AtomicUsize::new(0)),
+                next_token_calls: Arc::new(AtomicUsize::new(0)),
+                next_token_delay: None,
                 fail_prefill: false,
             }
         }
@@ -343,8 +350,17 @@ mod tests {
             self
         }
 
+        fn with_next_token_delay(mut self, delay: Duration) -> Self {
+            self.next_token_delay = Some(delay);
+            self
+        }
+
         fn cleanup_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.cleanup_calls)
+        }
+
+        fn next_token_calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.next_token_calls)
         }
     }
 
@@ -473,6 +489,10 @@ mod tests {
             _sampling: SamplingConfig,
             _scratch: &mut InferenceScratchpad,
         ) -> Result<usize, BackendError> {
+            self.next_token_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.next_token_delay {
+                std::thread::sleep(delay);
+            }
             let script_index = hidden[0] as usize;
             Ok(*self
                 .script
@@ -848,6 +868,70 @@ mod tests {
             .expect("generation succeeds");
 
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn driver_generate_with_cancel_runs_native_work_off_async_runtime() {
+        let adapter = TestAdapter::new([1_usize]).with_next_token_delay(Duration::from_millis(750));
+        let next_token_calls = adapter.next_token_calls();
+        let driver = driver_for_test(adapter);
+
+        let generation = tokio::spawn(async move {
+            driver
+                .generate_with_cancel(driver_test_request(1), CancellationToken::new())
+                .await
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while next_token_calls.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(next_token_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            !generation.is_finished(),
+            "native generation should not block the async runtime while CPU work is running"
+        );
+        let output = generation
+            .await
+            .expect("generation task joins")
+            .expect("generation succeeds");
+        assert_eq!(output.completion_tokens, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn driver_generate_with_cancel_cancels_worker_when_future_is_dropped() {
+        let adapter = TestAdapter::new([1_usize]).with_next_token_delay(Duration::from_millis(750));
+        let next_token_calls = adapter.next_token_calls();
+        let driver = driver_for_test(adapter);
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+
+        let generation = tokio::spawn(async move {
+            driver
+                .generate_with_cancel(driver_test_request(1), worker_cancellation)
+                .await
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while next_token_calls.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(next_token_calls.load(Ordering::SeqCst), 1);
+
+        generation.abort();
+        assert!(
+            generation
+                .await
+                .expect_err("generation task is aborted")
+                .is_cancelled()
+        );
+        assert!(
+            cancellation.is_cancelled(),
+            "dropping the async request future should signal the blocking native worker"
+        );
     }
 
     #[test]

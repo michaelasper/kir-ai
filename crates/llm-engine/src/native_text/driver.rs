@@ -189,12 +189,11 @@ where
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn runtime(&self) -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("test tokio runtime")
+            .expect("native text worker runtime")
     }
 
     pub async fn generate_async(
@@ -560,7 +559,18 @@ where
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        self.generate_async(request, cancellation).await
+        let driver = self.clone();
+        let label = driver.adapter.worker_label();
+        let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            driver
+                .runtime()
+                .block_on(driver.generate_async(request, cancellation))
+        })
+        .await
+        .map_err(|err| BackendError::Other(format!("{label} generation worker failed: {err}")))?;
+        cancel_on_drop.disarm();
+        result
     }
 
     fn generate_stream<'a>(
@@ -578,15 +588,43 @@ where
         let driver = self.clone();
         let label = driver.adapter.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let worker = tokio::spawn(async move {
-            if let Err(err) = driver
-                .generate_stream_async(request, tx.clone(), cancellation)
-                .await
-            {
-                let _ = tx.send(Err(err)).await;
-            }
+        let worker = tokio::task::spawn_blocking(move || {
+            driver.runtime().block_on(async move {
+                if let Err(err) = driver
+                    .generate_stream_async(request, tx.clone(), cancellation)
+                    .await
+                {
+                    let _ = tx.send(Err(err)).await;
+                }
+            });
         });
         native_text_worker_stream(label, rx, worker)
+    }
+}
+
+struct CancelOnDrop {
+    cancellation: CancellationToken,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
     }
 }
 
