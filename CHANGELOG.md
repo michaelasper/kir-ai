@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.9](https://github.com/michaelasper/kir-ai/compare/v1.4.8...v1.4.9) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** return router config errors ([7adc7ec](https://github.com/michaelasper/kir-ai/commit/7adc7ecbf0140ace4eb84f229d8569e2c3ecd808)), closes [#148](https://github.com/michaelasper/kir-ai/issues/148)
+
 ## [1.4.8](https://github.com/michaelasper/kir-ai/compare/v1.4.7...v1.4.8) (2026-05-12)
 
 ### Bug Fixes
