@@ -80,9 +80,12 @@ impl MetalDevice {
                 "non-empty f32 buffer write requires a Metal buffer".to_owned(),
             ));
         };
+        let _cpu_access = self.synchronization.begin_cpu_access();
         // SAFETY: metal_buffer was allocated with byte_len bytes for len f32
-        // values. The caller provides exactly len f32 values above, and both
-        // pointers remain valid for the duration of this copy.
+        // values. The device synchronization guard above waits for in-flight
+        // GPU commands and prevents new command submissions during this copy.
+        // The caller provides exactly len f32 values above, and both pointers
+        // remain valid for the duration of this copy.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 values.as_ptr(),
@@ -138,8 +141,11 @@ impl MetalDevice {
                 "non-empty f32 buffer read requires a Metal buffer".to_owned(),
             ));
         };
+        let _cpu_access = self.synchronization.begin_cpu_access();
         // SAFETY: the requested range is bounds-checked above against the f32
-        // length used to allocate the StorageModeShared buffer.
+        // length used to allocate the StorageModeShared buffer. The device
+        // synchronization guard above waits for in-flight GPU commands and
+        // prevents new command submissions during this copy.
         unsafe {
             let ptr = metal_buffer.contents().cast::<f32>().add(start);
             let values = std::slice::from_raw_parts(ptr, len);

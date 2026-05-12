@@ -47,6 +47,7 @@ impl MetalDevice {
         let top_k_f32 = Self::kernel(&device, &library, "top_k_f32")?;
         Ok(Self {
             device,
+            synchronization: Arc::new(super::command::MetalSynchronization::new()),
             vector_add,
             qwen_rms_norm,
             softmax_f32,

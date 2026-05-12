@@ -15,11 +15,12 @@ pub use buffers::{Bf16MatrixBuffer, F32Buffer};
 pub use error::MetalError;
 pub use reductions::{ArgmaxResult, TopKResult};
 
-use self::pipeline::MetalKernel;
+use self::{command::MetalSynchronization, pipeline::MetalKernel};
 
 #[derive(Debug, Clone)]
 pub struct MetalDevice {
     pub(crate) device: Device,
+    pub(crate) synchronization: Arc<MetalSynchronization>,
     pub(crate) vector_add: Arc<MetalKernel>,
     pub(crate) qwen_rms_norm: Arc<MetalKernel>,
     pub(crate) softmax_f32: Arc<MetalKernel>,
