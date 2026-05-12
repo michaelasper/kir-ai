@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.7](https://github.com/michaelasper/kir-ai/compare/v1.4.6...v1.4.7) (2026-05-12)
+
+### Bug Fixes
+
+* **api:** bound inference request sizes ([7d5a055](https://github.com/michaelasper/kir-ai/commit/7d5a055123f64f97fdbf0bb776f20560cf44f49b)), closes [#153](https://github.com/michaelasper/kir-ai/issues/153)
+
 ## [1.4.6](https://github.com/michaelasper/kir-ai/compare/v1.4.5...v1.4.6) (2026-05-12)
 
 ### Bug Fixes
