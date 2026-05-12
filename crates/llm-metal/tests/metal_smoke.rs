@@ -113,6 +113,38 @@ async fn metal_softmax_f32_matches_cpu_reference() {
 }
 
 #[tokio::test]
+async fn metal_softmax_f32_handles_inputs_larger_than_one_threadgroup() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let scores = (0..4097)
+        .map(|index| ((index % 113) as f32 - 56.0) / 17.0)
+        .collect::<Vec<_>>();
+    let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exponentials = scores
+        .iter()
+        .map(|score| (score - max).exp())
+        .collect::<Vec<_>>();
+    let denominator = exponentials.iter().sum::<f32>();
+    let expected = exponentials
+        .iter()
+        .map(|value| value / denominator)
+        .collect::<Vec<_>>();
+
+    let mut output = vec![0.0; scores.len()];
+    device
+        .softmax_f32(&scores, &mut output)
+        .await
+        .expect("metal softmax succeeds");
+
+    assert_close(&output, &expected, 1e-5);
+    assert_close(&[output.iter().sum::<f32>()], &[1.0], 1e-5);
+}
+
+#[tokio::test]
 async fn metal_linear_attention_conv1d_silu_f32_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

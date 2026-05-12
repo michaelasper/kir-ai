@@ -17,6 +17,11 @@ pub use reductions::{ArgmaxResult, TopKResult};
 
 use self::{command::MetalSynchronization, pipeline::MetalKernel};
 
+pub(crate) fn power_of_two_at_most(value: u64) -> u64 {
+    debug_assert!(value > 0);
+    1_u64 << (u64::BITS - 1 - value.leading_zeros())
+}
+
 #[derive(Debug, Clone)]
 pub struct MetalDevice {
     pub(crate) device: Device,

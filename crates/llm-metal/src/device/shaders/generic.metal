@@ -14,21 +14,44 @@ kernel void softmax_f32(
     device const float* scores [[buffer(0)]],
     constant uint& len [[buffer(1)]],
     device float* output [[buffer(2)]],
-    uint id [[thread_position_in_grid]]
+    constant uint& thread_count [[buffer(3)]],
+    threadgroup float* scratch [[threadgroup(0)]],
+    uint thread_id [[thread_index_in_threadgroup]]
 ) {
-    if (id != 0 || len == 0) {
-        return;
+    float local_max = -INFINITY;
+    for (uint index = thread_id; index < len; index += thread_count) {
+        local_max = max(local_max, scores[index]);
     }
-    float max_score = scores[0];
-    for (uint index = 1; index < len; index++) {
-        max_score = max(max_score, scores[index]);
+    scratch[thread_id] = local_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = thread_count >> 1; stride > 0; stride >>= 1) {
+        if (thread_id < stride) {
+            scratch[thread_id] = max(scratch[thread_id], scratch[thread_id + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+
+    float max_score = scratch[0];
     float denominator = 0.0;
-    for (uint index = 0; index < len; index++) {
-        denominator += exp(scores[index] - max_score);
+    for (uint index = thread_id; index < len; index += thread_count) {
+        float probability = exp(scores[index] - max_score);
+        output[index] = probability;
+        denominator += probability;
     }
-    for (uint index = 0; index < len; index++) {
-        output[index] = exp(scores[index] - max_score) / denominator;
+    scratch[thread_id] = denominator;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = thread_count >> 1; stride > 0; stride >>= 1) {
+        if (thread_id < stride) {
+            scratch[thread_id] += scratch[thread_id + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float inv_denominator = 1.0 / scratch[0];
+    for (uint index = thread_id; index < len; index += thread_count) {
+        output[index] *= inv_denominator;
     }
 }
 
@@ -66,4 +89,3 @@ kernel void select_head_rows_f32(
     uint offset = index % head_len;
     output[index] = values[(row * row_len) + head_start + offset];
 }
-

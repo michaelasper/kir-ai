@@ -1,12 +1,7 @@
 use super::command::finish_command_buffer_async;
-use super::{F32Buffer, MetalDevice, MetalError};
+use super::{F32Buffer, MetalDevice, MetalError, power_of_two_at_most};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
-
-fn power_of_two_at_most(value: u64) -> u64 {
-    debug_assert!(value > 0);
-    1_u64 << (u64::BITS - 1 - value.leading_zeros())
-}
 
 impl MetalDevice {
     pub async fn rms_norm_f32(
@@ -568,8 +563,8 @@ impl MetalDevice {
 
 #[cfg(test)]
 mod tests {
+    use super::super::power_of_two_at_most;
     use super::super::shaders::METAL_SOURCE;
-    use super::power_of_two_at_most;
 
     fn qwen_rms_norm_shader_source() -> &'static str {
         let start = METAL_SOURCE

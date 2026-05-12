@@ -1,5 +1,5 @@
 use super::command::finish_command_buffer_async;
-use super::{F32Buffer, MetalDevice, MetalError};
+use super::{F32Buffer, MetalDevice, MetalError, power_of_two_at_most};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
@@ -101,6 +101,15 @@ impl MetalDevice {
         let len_u32 = u32::try_from(scores.len()).map_err(|err| {
             MetalError::InvalidShape(format!("softmax input length does not fit u32: {err}"))
         })?;
+        let max_threads = self
+            .softmax_f32
+            .pipeline
+            .max_total_threads_per_threadgroup()
+            .max(1);
+        let group_width = power_of_two_at_most((scores.len() as u64).min(max_threads));
+        let thread_count = u32::try_from(group_width).map_err(|err| {
+            MetalError::InvalidShape(format!("softmax threadgroup width does not fit u32: {err}"))
+        })?;
         let byte_len = std::mem::size_of_val(scores) as u64;
         let scores_buffer = self.device.new_buffer_with_data(
             scores.as_ptr().cast::<c_void>(),
@@ -121,18 +130,23 @@ impl MetalDevice {
             (&len_u32 as *const u32).cast::<c_void>(),
         );
         encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&thread_count) as u64,
+            (&thread_count as *const u32).cast::<c_void>(),
         );
+        encoder.set_threadgroup_memory_length(0, group_width * std::mem::size_of::<f32>() as u64);
+        let threadgroups = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
         finish_command_buffer_async(&self.synchronization, command_buffer, "softmax_f32").await?;
 
@@ -385,5 +399,36 @@ impl MetalDevice {
             output[..output_len].copy_from_slice(values);
         };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::shaders::METAL_SOURCE;
+
+    fn softmax_shader_source() -> &'static str {
+        let start = METAL_SOURCE
+            .find("kernel void softmax_f32")
+            .expect("softmax shader exists");
+        let rest = &METAL_SOURCE[start..];
+        let next_kernel = rest["kernel void softmax_f32".len()..]
+            .find("kernel void ")
+            .map(|offset| "kernel void softmax_f32".len() + offset)
+            .unwrap_or(rest.len());
+        &rest[..next_kernel]
+    }
+
+    #[test]
+    fn softmax_shader_uses_threadgroup_reductions_instead_of_single_worker_thread() {
+        let shader = softmax_shader_source();
+
+        assert!(
+            shader.contains("threadgroup float"),
+            "softmax should reduce through threadgroup memory"
+        );
+        assert!(
+            !shader.contains("if (id != 0"),
+            "softmax must not gate all work onto one GPU thread"
+        );
     }
 }
