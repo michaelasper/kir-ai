@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.30](https://github.com/michaelasper/kir-ai/compare/v1.4.29...v1.4.30) (2026-05-12)
+
+### Bug Fixes
+
+* **metal:** report dropped command buffer status ([24a8261](https://github.com/michaelasper/kir-ai/commit/24a8261608183b799d708af89303bd199c5dcbd4)), closes [#234](https://github.com/michaelasper/kir-ai/issues/234)
+
 ## [1.4.29](https://github.com/michaelasper/kir-ai/compare/v1.4.28...v1.4.29) (2026-05-12)
 
 ### Bug Fixes
