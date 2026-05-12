@@ -1,8 +1,5 @@
-use llm_api::{ApiError, ChatMessage, ChatRole, ToolDefinition};
-use llm_backend::{
-    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
-    BackendModelMetadata,
-};
+use llm_api::{ApiError, ChatMessage, ToolDefinition};
+use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata};
 use llm_models::ModelFamily;
 use llm_tokenizer::render_family_chat_template;
 use llm_tool_parser::{ParsedAssistant, parse_assistant_for_family};
@@ -123,20 +120,9 @@ impl ChatAdapter for SelectedChatAdapter {
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
     ) -> Option<BackendChatContext> {
-        let total = messages.len();
-        let messages: Vec<_> = messages.iter().filter_map(backend_chat_message).collect();
-        let filtered = total - messages.len();
-        if filtered > 0 {
-            tracing::debug!(
-                filtered_count = filtered,
-                remaining_count = messages.len(),
-                "filtered tool/tool-call messages from structured chat context"
-            );
-        }
-        if messages.is_empty() {
-            return None;
-        }
-        Some(BackendChatContext { messages })
+        (!messages.is_empty()).then(|| BackendChatContext {
+            messages: messages.to_vec(),
+        })
     }
 
     fn render_prompt(
@@ -164,22 +150,6 @@ impl SelectedChatAdapter {
     pub(crate) fn parses_unmarked_tool_calls(self) -> bool {
         matches!(self.family, ModelFamily::Llama)
     }
-}
-
-pub(crate) fn backend_chat_message(message: &ChatMessage) -> Option<BackendChatMessage> {
-    if !message.tool_calls.is_empty() {
-        return None;
-    }
-    let role = match message.role {
-        ChatRole::System => BackendChatRole::System,
-        ChatRole::User => BackendChatRole::User,
-        ChatRole::Assistant => BackendChatRole::Assistant,
-        ChatRole::Tool => return None,
-    };
-    Some(BackendChatMessage {
-        role,
-        content: message.content.clone().unwrap_or_default(),
-    })
 }
 
 pub(crate) fn chat_adapter_for_metadata(

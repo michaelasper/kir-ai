@@ -5,6 +5,7 @@ use super::{
         mlx_upstream_protocol_for_request,
     },
 };
+use llm_api::ChatMessage;
 use llm_backend::{BackendError, BackendModelMetadata, BackendRequest, SamplingConfig};
 use serde::Serialize;
 use serde_json::Value;
@@ -68,7 +69,7 @@ struct MlxCompletionRequest<'a> {
 #[derive(Debug, Serialize)]
 struct MlxChatCompletionRequest<'a> {
     model: &'a str,
-    messages: Vec<MlxChatMessage<'a>>,
+    messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,27 +84,11 @@ struct MlxChatCompletionRequest<'a> {
     stream: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct MlxChatMessage<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-fn mlx_chat_messages(request: &BackendRequest) -> Vec<MlxChatMessage<'_>> {
+fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {
     if let Some(chat_context) = &request.chat_context {
-        return chat_context
-            .messages
-            .iter()
-            .map(|message| MlxChatMessage {
-                role: message.role.as_str(),
-                content: &message.content,
-            })
-            .collect();
+        return chat_context.messages.clone();
     }
-    vec![MlxChatMessage {
-        role: "user",
-        content: &request.prompt,
-    }]
+    vec![ChatMessage::user(request.prompt.clone())]
 }
 
 fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendError> {

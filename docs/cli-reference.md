@@ -61,7 +61,7 @@ must include an `llm-engine-manifest.json` whose loader is `mlx`, and a
 compatible MLX sidecar must already be listening on the configured loopback
 endpoint. Chat requests for Qwen, DeepSeek, Gemma, and Llama use OpenAI-compatible
 `/v1/chat/completions` so the MLX sidecar owns model-specific chat templating
-and structured tool metadata; legacy text completion requests use a
+and receives lossless structured tool history; legacy text completion requests use a
 completions-capable sidecar endpoint when the selected family exposes one. Raw
 Hugging Face cache snapshots served through native-metal infer Qwen or Gemma
 from `config.json` when no manifest is present. Raw Hugging Face cache

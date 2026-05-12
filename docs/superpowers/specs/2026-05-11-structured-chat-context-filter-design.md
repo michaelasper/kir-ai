@@ -1,5 +1,13 @@
 # Issue #179: Structured Chat Context Dropped When Tool Messages Present
 
+> Superseded by the Issue #215 lossless chat context fix. The current backend
+> contract stores `llm_api::ChatMessage` directly in `BackendChatContext` and
+> forwards the structured OpenAI history to MLX `/v1/chat/completions`,
+> including assistant `tool_calls`, `tool` role messages, `tool_call_id`, and
+> optional `name` fields. Rendered prompts remain cache/fallback context, not
+> the source of truth for MLX chat requests when structured `chat_context` is
+> present.
+
 ## Problem
 
 `backend_chat_message()` in `crates/llm-runtime/src/adapters.rs:160-174` returns `None` for:

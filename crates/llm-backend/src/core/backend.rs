@@ -3,7 +3,7 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use llm_api::FinishReason;
+use llm_api::{ChatMessage, ChatRole, FinishReason};
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -21,35 +21,13 @@ pub struct BackendRequest {
     pub cache_context: BackendCacheContext,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackendChatContext {
-    pub messages: Vec<BackendChatMessage>,
+    pub messages: Vec<ChatMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendChatMessage {
-    pub role: BackendChatRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendChatRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-impl BackendChatRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::User => "user",
-            Self::Assistant => "assistant",
-            Self::Tool => "tool",
-        }
-    }
-}
+pub type BackendChatMessage = ChatMessage;
+pub type BackendChatRole = ChatRole;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {

@@ -2,9 +2,9 @@ use super::protocol::{
     MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxToolMarkup,
 };
 use super::*;
+use llm_api::ChatMessage;
 use llm_backend::{
-    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole, BackendRequest,
-    ModelBackend, SamplingConfig,
+    BackendCacheContext, BackendChatContext, BackendRequest, ModelBackend, SamplingConfig,
 };
 use serde_json::Value;
 use std::{
@@ -185,10 +185,7 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
             model: "local-mlx".to_owned(),
             prompt: "use lookup".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![BackendChatMessage {
-                    role: BackendChatRole::User,
-                    content: "use lookup".to_owned(),
-                }],
+                messages: vec![ChatMessage::user("use lookup")],
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -423,14 +420,8 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
             prompt: "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n".to_owned(),
             chat_context: Some(BackendChatContext {
                 messages: vec![
-                    BackendChatMessage {
-                        role: BackendChatRole::System,
-                        content: "You are Kir.".to_owned(),
-                    },
-                    BackendChatMessage {
-                        role: BackendChatRole::User,
-                        content: "hello gemma".to_owned(),
-                    },
+                    ChatMessage::system("You are Kir."),
+                    ChatMessage::user("hello gemma"),
                 ],
             }),
             max_tokens: Some(12),
@@ -481,10 +472,7 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
             model: "local-mlx".to_owned(),
             prompt: "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![BackendChatMessage {
-                    role: BackendChatRole::User,
-                    content: "use lookup".to_owned(),
-                }],
+                messages: vec![ChatMessage::user("use lookup")],
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -535,10 +523,7 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
             model: "local-mlx".to_owned(),
             prompt: "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![BackendChatMessage {
-                    role: BackendChatRole::User,
-                    content: "hello".to_owned(),
-                }],
+                messages: vec![ChatMessage::user("hello")],
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -593,10 +578,7 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
                 model: "local-mlx".to_owned(),
                 prompt: "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
                 chat_context: Some(BackendChatContext {
-                    messages: vec![BackendChatMessage {
-                        role: BackendChatRole::User,
-                        content: "hello".to_owned(),
-                    }],
+                    messages: vec![ChatMessage::user("hello")],
                 }),
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
@@ -678,10 +660,7 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
             model: "local-mlx".to_owned(),
             prompt: "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![BackendChatMessage {
-                    role: BackendChatRole::User,
-                    content: "return json".to_owned(),
-                }],
+                messages: vec![ChatMessage::user("return json")],
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1045,10 +1024,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
             model: "local-mlx".to_owned(),
             prompt: "read a file".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![BackendChatMessage {
-                    role: BackendChatRole::User,
-                    content: "read a file".to_owned(),
-                }],
+                messages: vec![ChatMessage::user("read a file")],
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1081,6 +1057,88 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
     assert!(output.text.starts_with("<tool_call>"));
     assert!(output.text.contains("\"name\":\"read_file\""));
     assert!(output.text.contains("\"path\":\"Cargo.toml\""));
+}
+
+#[tokio::test]
+async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoint() {
+    let server = FakeMlxServer::start(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"read complete\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    let mut tool_result = ChatMessage::tool("call_read_1", "{\"contents\":\"pub mod api;\"}");
+    tool_result.name = Some("read_file".to_owned());
+
+    let output = backend
+        .generate(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "rendered prompt fallback should not be used for structured MLX chat"
+                .to_owned(),
+            chat_context: Some(BackendChatContext {
+                messages: vec![
+                    ChatMessage::user("read src/lib.rs"),
+                    ChatMessage::assistant_tool_call(
+                        "call_read_1",
+                        "read_file",
+                        serde_json::json!({"path": "src/lib.rs", "_i": 2}),
+                    ),
+                    tool_result,
+                    ChatMessage::user("summarize what you read"),
+                ],
+            }),
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: true,
+            cache_context: BackendCacheContext::chat_template(
+                "chatml/qwen/v1",
+                Some(
+                    r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
+                        .to_owned(),
+                ),
+            ),
+        })
+        .await
+        .expect("mlx generation succeeds");
+
+    assert_eq!(output.text, "read complete");
+    assert_eq!(server.received_path(), "/v1/chat/completions");
+    let request = server.received_body();
+    let messages = request["messages"].as_array().expect("messages array");
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"], "read src/lib.rs");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert!(messages[1].get("content").is_none());
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_read_1");
+    assert_eq!(messages[1]["tool_calls"][0]["type"], "function");
+    assert_eq!(
+        messages[1]["tool_calls"][0]["function"]["name"],
+        "read_file"
+    );
+    let arguments = messages[1]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("tool arguments are serialized as an OpenAI JSON string");
+    assert_eq!(
+        serde_json::from_str::<Value>(arguments).expect("tool arguments JSON"),
+        serde_json::json!({"path": "src/lib.rs", "_i": 2})
+    );
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], "call_read_1");
+    assert_eq!(messages[2]["name"], "read_file");
+    assert_eq!(messages[2]["content"], "{\"contents\":\"pub mod api;\"}");
+    assert_eq!(messages[3]["role"], "user");
+    assert_eq!(messages[3]["content"], "summarize what you read");
 }
 
 #[tokio::test]

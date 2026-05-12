@@ -81,6 +81,13 @@ completions-capable sidecar endpoint when the selected family exposes one. Qwen,
 DeepSeek, and Llama run through `mlx_lm.server`; Gemma 4 runs through
 `mlx_vlm.server`.
 
+For chat requests, Kir forwards the structured OpenAI message history to MLX
+losslessly, including assistant `tool_calls`, `tool` role results,
+`tool_call_id`, and optional `name` fields. The rendered prompt is still kept
+for cache and fallback paths, but it is not the source of truth for MLX chat
+requests. The only rendered-prompt MLX chat fallback is Llama conversation mode
+when no structured `chat_context` is available.
+
 Start the Qwen MLX sidecar separately:
 
 ```sh

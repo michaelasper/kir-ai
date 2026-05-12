@@ -1,5 +1,10 @@
 # Structured Chat Context Filter Implementation Plan
 
+> Superseded by the Issue #215 lossless chat context implementation. The
+> runtime now preserves the full OpenAI message history in
+> `BackendChatContext`, and MLX chat requests use that structured context
+> directly instead of a filtered projection or rendered-prompt reconstruction.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix `backend_chat_context()` to preserve system/user/assistant messages when tool/tool-call messages are present, instead of silently dropping the entire structured context.

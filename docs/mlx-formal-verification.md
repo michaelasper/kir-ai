@@ -15,8 +15,14 @@ protocol-test backend or return prompt-specific fixtures.
    backend chunks as reading the stream in one pass.
 3. Structured `tool_calls` from OpenAI-compatible MLX responses survive both
    non-streaming and streaming delta paths.
-4. Control stop tokens are filtered without deleting non-stop prefixes.
-5. MLX metadata validation fails closed for missing family, unknown family,
+4. Structured OpenAI chat history sent to MLX is lossless. Assistant
+   `tool_calls`, `tool` role result messages, `tool_call_id`, and optional
+   `name` fields are forwarded to `/v1/chat/completions` instead of being
+   reconstructed from the rendered prompt.
+5. The rendered prompt remains cache/fallback context. It is not the source of
+   truth for MLX chat requests when `chat_context` is present.
+6. Control stop tokens are filtered without deleting non-stop prefixes.
+7. MLX metadata validation fails closed for missing family, unknown family,
    non-MLX manifests, and non-loopback endpoints.
 
 ## Automated Evidence
@@ -27,6 +33,7 @@ Run these checks before claiming MLX correctness:
 cargo test -p llm-engine mlx_ --lib
 cargo test -p llm-engine mlx_reference --test mlx_reference
 cargo test -p llm-runtime chat_accepts_mlx_backend --test runtime_contract
+cargo test -p llm-engine mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoint --all-features
 ```
 
 The bounded formal check is

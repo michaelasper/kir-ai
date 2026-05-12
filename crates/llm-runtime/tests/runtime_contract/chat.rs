@@ -176,12 +176,18 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
         .chat_context
         .expect("structured chat context is carried");
     assert_eq!(chat_context.messages.len(), 3);
-    assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
-    assert_eq!(chat_context.messages[0].content, "You are Kir.");
-    assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
-    assert_eq!(chat_context.messages[1].content, "say hi");
-    assert_eq!(chat_context.messages[2].role, BackendChatRole::Assistant);
-    assert_eq!(chat_context.messages[2].content, "previous answer");
+    assert_eq!(chat_context.messages[0].role, ChatRole::System);
+    assert_eq!(
+        chat_context.messages[0].content.as_deref(),
+        Some("You are Kir.")
+    );
+    assert_eq!(chat_context.messages[1].role, ChatRole::User);
+    assert_eq!(chat_context.messages[1].content.as_deref(), Some("say hi"));
+    assert_eq!(chat_context.messages[2].role, ChatRole::Assistant);
+    assert_eq!(
+        chat_context.messages[2].content.as_deref(),
+        Some("previous answer")
+    );
     assert!(
         observed.prompt.contains("<|turn>user\nsay hi"),
         "rendered prompt remains available for native/prompt backends"

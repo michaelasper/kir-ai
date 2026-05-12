@@ -1,11 +1,11 @@
 use futures::StreamExt;
 use llm_api::{
-    ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
+    ChatCompletionRequest, ChatMessage, ChatRole, CompletionRequest, FinishReason, ResponseFormat,
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendChatRole, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, ModelBackend, ProtocolTestBackend, SamplingConfig,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
 use llm_runtime::{NoProgressClass, Runtime, RuntimeError};
 use serde_json::{Value, json};
