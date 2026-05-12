@@ -194,13 +194,13 @@ impl NativeGemmaBackend {
     ) -> Result<NativeGemmaDecodeSession, BackendError> {
         let driver = &self.driver;
         tokio::task::block_in_place(|| {
-            driver.runtime().block_on(driver.start_decode_session(
+            driver.block_on_worker(driver.start_decode_session(
                 context_tokens,
                 max_new_tokens,
                 request,
                 cancellation,
                 &mut InferenceScratchpad::new(),
-            ))
+            ))?
         })
     }
 
@@ -212,13 +212,12 @@ impl NativeGemmaBackend {
     ) -> Result<usize, BackendError> {
         tokio::task::block_in_place(|| {
             self.driver
-                .runtime()
-                .block_on(self.driver.adapter.next_token_from_hidden(
+                .block_on_worker(self.driver.adapter.next_token_from_hidden(
                     hidden,
                     sampling,
                     &mut InferenceScratchpad::new(),
                     &mut llm_sampler::TopPSamplerScratch::new(),
-                ))
+                ))?
         })
     }
 }

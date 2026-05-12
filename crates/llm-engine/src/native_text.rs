@@ -703,6 +703,14 @@ mod tests {
     }
 
     #[test]
+    fn native_text_driver_clone_shares_inner_state() {
+        let driver = driver_for_test(TestAdapter::new([1_usize]));
+        let clone = driver.clone();
+
+        assert!(driver.shares_inner_state_with(&clone));
+    }
+
+    #[test]
     fn runtime_options_apply_to_supported_native_text_families() {
         let options = NativeTextLoadOptions::with_runtime_options(NativeTextRuntimeOptions {
             eager_materialize_shards: true,

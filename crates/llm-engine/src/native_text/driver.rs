@@ -12,7 +12,18 @@ use llm_backend::{
 };
 use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;
+use std::{
+    cell::RefCell,
+    future::Future,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
+
+thread_local! {
+    static NATIVE_TEXT_WORKER_RUNTIME: RefCell<Option<tokio::runtime::Runtime>> =
+        const { RefCell::new(None) };
+}
 
 #[async_trait]
 pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
@@ -123,8 +134,15 @@ pub(crate) fn native_text_candidate_decision_for_stop_tokens(
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct NativeTextDriver<A>
+where
+    A: NativeTextAdapter,
+{
+    inner: Arc<NativeTextDriverInner<A>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeTextDriverInner<A>
 where
     A: NativeTextAdapter,
 {
@@ -133,6 +151,37 @@ where
     pub(crate) tokenizer: HuggingFaceTokenizer,
     pub(crate) adapter: A,
     pub(crate) max_new_tokens: u32,
+}
+
+impl<A> Clone for NativeTextDriver<A>
+where
+    A: NativeTextAdapter,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<A> Deref for NativeTextDriver<A>
+where
+    A: NativeTextAdapter,
+{
+    type Target = NativeTextDriverInner<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<A> DerefMut for NativeTextDriver<A>
+where
+    A: NativeTextAdapter,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.inner)
+    }
 }
 
 impl<A> NativeTextDriver<A>
@@ -147,12 +196,19 @@ where
         max_new_tokens: u32,
     ) -> Self {
         Self {
-            model_id,
-            metadata,
-            tokenizer,
-            adapter,
-            max_new_tokens,
+            inner: Arc::new(NativeTextDriverInner {
+                model_id,
+                metadata,
+                tokenizer,
+                adapter,
+                max_new_tokens,
+            }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_inner_state_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     pub(crate) fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
@@ -173,8 +229,7 @@ where
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         tokio::task::block_in_place(|| {
-            self.runtime()
-                .block_on(self.generate_async(request, cancellation))
+            self.block_on_worker(self.generate_async(request, cancellation))?
         })
     }
 
@@ -186,16 +241,16 @@ where
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
         tokio::task::block_in_place(|| {
-            self.runtime()
-                .block_on(self.generate_stream_async(request, tx, cancellation))
+            self.block_on_worker(self.generate_stream_async(request, tx, cancellation))?
         })
     }
 
-    pub(crate) fn runtime(&self) -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("native text worker runtime")
+    #[cfg(test)]
+    pub(crate) fn block_on_worker<F>(&self, future: F) -> Result<F::Output, BackendError>
+    where
+        F: Future,
+    {
+        block_on_native_text_worker(future)
     }
 
     pub async fn generate_async(
@@ -542,6 +597,33 @@ where
     }
 }
 
+fn block_on_native_text_worker<F>(future: F) -> Result<F::Output, BackendError>
+where
+    F: Future,
+{
+    NATIVE_TEXT_WORKER_RUNTIME.with(|runtime| {
+        if runtime.borrow().is_none() {
+            *runtime.borrow_mut() = Some(build_native_text_worker_runtime()?);
+        }
+        let runtime = runtime.borrow();
+        let Some(runtime) = runtime.as_ref() else {
+            return Err(BackendError::Other(
+                "native text worker runtime was not initialized".to_owned(),
+            ));
+        };
+        Ok(runtime.block_on(future))
+    })
+}
+
+fn build_native_text_worker_runtime() -> Result<tokio::runtime::Runtime, BackendError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| {
+            BackendError::Other(format!("native text worker runtime build failed: {err}"))
+        })
+}
+
 #[async_trait]
 impl<A> ModelBackend for NativeTextDriver<A>
 where
@@ -569,9 +651,9 @@ where
         let label = driver.adapter.worker_label();
         let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let result = tokio::task::spawn_blocking(move || {
-            driver
-                .runtime()
-                .block_on(driver.generate_async(request, cancellation))
+            block_on_native_text_worker(async move {
+                driver.generate_async(request, cancellation).await
+            })?
         })
         .await
         .map_err(|err| BackendError::Other(format!("{label} generation worker failed: {err}")))?;
@@ -595,14 +677,17 @@ where
         let label = driver.adapter.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let worker = tokio::task::spawn_blocking(move || {
-            driver.runtime().block_on(async move {
+            let runtime_error_tx = tx.clone();
+            if let Err(err) = block_on_native_text_worker(async move {
                 if let Err(err) = driver
                     .generate_stream_async(request, tx.clone(), cancellation)
                     .await
                 {
                     let _ = tx.send(Err(err)).await;
                 }
-            });
+            }) {
+                let _ = runtime_error_tx.blocking_send(Err(err));
+            }
         });
         native_text_worker_stream(label, rx, worker)
     }
