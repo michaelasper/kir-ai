@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.4](https://github.com/michaelasper/kir-ai/compare/v1.4.3...v1.4.4) (2026-05-12)
+
+### Bug Fixes
+
+* **engine:** run native generation off async workers ([b67e339](https://github.com/michaelasper/kir-ai/commit/b67e3397220c7a0bf046cc2374aa36ea8915fedb)), closes [#144](https://github.com/michaelasper/kir-ai/issues/144)
+
 ## [1.4.3](https://github.com/michaelasper/kir-ai/compare/v1.4.2...v1.4.3) (2026-05-12)
 
 ### Bug Fixes
