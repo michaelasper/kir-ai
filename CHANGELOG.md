@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.21](https://github.com/michaelasper/kir-ai/compare/v1.4.20...v1.4.21) (2026-05-12)
+
+### Performance Improvements
+
+* **metal:** parallelize softmax reduction ([c6084f0](https://github.com/michaelasper/kir-ai/commit/c6084f0836722a2cbc394567278fda9e7ae83b9c)), closes [#172](https://github.com/michaelasper/kir-ai/issues/172)
+
 ## [1.4.20](https://github.com/michaelasper/kir-ai/compare/v1.4.19...v1.4.20) (2026-05-12)
 
 ### Performance Improvements
