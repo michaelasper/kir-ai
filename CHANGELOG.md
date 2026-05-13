@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1](https://github.com/michaelasper/kir-ai/compare/v1.8.0...v1.8.1) (2026-05-13)
+
+### Bug Fixes
+
+* **native-text:** reduce prefix cache lock contention ([4f1f2ea](https://github.com/michaelasper/kir-ai/commit/4f1f2ea8aef642c3bfa2af62beac1061137990d0)), closes [#133](https://github.com/michaelasper/kir-ai/issues/133)
+
 ## [1.8.0](https://github.com/michaelasper/kir-ai/compare/v1.7.1...v1.8.0) (2026-05-13)
 
 ### Features
