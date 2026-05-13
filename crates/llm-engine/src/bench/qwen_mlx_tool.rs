@@ -24,9 +24,12 @@ const DEFAULT_CONCURRENT_REQUESTS: usize = 1;
 const DEFAULT_CONCURRENT_SAMPLES: usize = 0;
 const DEFAULT_MAX_TOKENS: u32 = 96;
 const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
-const PROFILE_DIRECT_MODEL_ID: &str = "qwen-loaded";
 const PROFILE_PROXY_MODEL_ID: &str = "local-qwen36-mlx";
 const PROFILE_CACHE_BYTES_1G: u64 = 1_073_741_824;
+const BENCH_REPO_DIR_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIR";
+const BENCH_REPO_COMMIT_ENV: &str = "LLM_ENGINE_BENCH_REPO_COMMIT";
+const BENCH_REPO_BRANCH_ENV: &str = "LLM_ENGINE_BENCH_REPO_BRANCH";
+const BENCH_REPO_DIRTY_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIRTY";
 
 pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--help") || has_flag(args, "-h") {
@@ -151,7 +154,7 @@ Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 Options:
   --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill (requires --snapshot)
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
-  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
+  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                 Warmup requests for warm phases [default: 1]
   --samples <n>                 Measured samples per case and phase [default: 1]
   --context-tokens <n>          Stable long-context prompt target [default: 135000]
@@ -290,11 +293,11 @@ fn profile_direct_lane(
     NormalizedLaneConfig {
         name: name.to_owned(),
         endpoint: format!("http://127.0.0.1:{port}/v1"),
-        declared_model_id: PROFILE_DIRECT_MODEL_ID.to_owned(),
+        declared_model_id: snapshot.to_owned(),
         launched_model_id: Some(snapshot.to_owned()),
         snapshot_path: Some(PathBuf::from(snapshot)),
         kind: NormalizedLaneKind::DirectMlx,
-        model_addressing: NormalizedModelAddressing::LoadedModelId,
+        model_addressing: NormalizedModelAddressing::ServerDefault,
         template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
         mlx_lm_settings,
     }
@@ -849,12 +852,14 @@ fn probe_request_body(
     prompt: ProbePrompt,
 ) -> Value {
     let mut body = json!({
-        "model": lane.effective_request_model_id(),
         "max_tokens": DEFAULT_MAX_TOKENS,
         "temperature": 0,
         "top_p": 1,
         "messages": probe_messages(probe.case, prompt)
     });
+    if let Some(model_id) = lane.request_model_id() {
+        body["model"] = json!(model_id);
+    }
     match probe.case {
         NormalizedCaseKind::ToolRequired
         | NormalizedCaseKind::ToolRequiredStream
@@ -1325,7 +1330,7 @@ fn average_u64(values: impl Iterator<Item = u64>) -> Option<f64> {
 }
 
 fn benchmark_repo_dir() -> PathBuf {
-    std::env::var_os("LLM_ENGINE_BENCH_REPO_DIR")
+    std::env::var_os(BENCH_REPO_DIR_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1336,10 +1341,26 @@ fn benchmark_repo_dir() -> PathBuf {
         })
 }
 
-fn git_output(args: &[&str]) -> Option<String> {
+fn env_string(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    let value = env_string(name)?;
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "dirty" => Some(true),
+        "0" | "false" | "no" | "clean" => Some(false),
+        _ => None,
+    }
+}
+
+fn git_output_in_dir(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(benchmark_repo_dir())
+        .arg(dir)
         .args(args)
         .output()
         .ok()?;
@@ -1350,10 +1371,34 @@ fn git_output(args: &[&str]) -> Option<String> {
     Some(text.trim().to_owned())
 }
 
+fn benchmark_repo_git_root(dir: &Path) -> Option<PathBuf> {
+    let top_level = git_output_in_dir(dir, &["rev-parse", "--show-toplevel"])?;
+    PathBuf::from(top_level).canonicalize().ok()
+}
+
+fn is_benchmark_git_root(dir: &Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    benchmark_repo_git_root(&dir).is_some_and(|root| root == dir)
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let dir = benchmark_repo_dir();
+    if !is_benchmark_git_root(&dir) {
+        return None;
+    }
+    git_output_in_dir(&dir, args)
+}
+
 fn git_dirty() -> bool {
+    let dir = benchmark_repo_dir();
+    if !is_benchmark_git_root(&dir) {
+        return false;
+    }
     Command::new("git")
         .arg("-C")
-        .arg(benchmark_repo_dir())
+        .arg(dir)
         .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
         .ok()
@@ -1402,6 +1447,20 @@ impl NormalizedLaneConfig {
                 &self.declared_model_id
             }
             NormalizedModelAddressing::DefaultModel => DEFAULT_MODEL_ID,
+            NormalizedModelAddressing::ServerDefault => self
+                .launched_model_id
+                .as_deref()
+                .or_else(|| self.snapshot_path.as_deref().and_then(Path::to_str))
+                .unwrap_or(&self.declared_model_id),
+        }
+    }
+
+    fn request_model_id(&self) -> Option<&str> {
+        match self.model_addressing {
+            NormalizedModelAddressing::ServerDefault => None,
+            NormalizedModelAddressing::LoadedModelId
+            | NormalizedModelAddressing::DefaultModel
+            | NormalizedModelAddressing::Custom => Some(self.effective_request_model_id()),
         }
     }
 
@@ -1636,6 +1695,7 @@ impl NormalizedLaneKind {
 enum NormalizedModelAddressing {
     LoadedModelId,
     DefaultModel,
+    ServerDefault,
     Custom,
 }
 
@@ -1644,9 +1704,10 @@ impl NormalizedModelAddressing {
         match value {
             "loaded_model_id" => Ok(Self::LoadedModelId),
             "default_model" => Ok(Self::DefaultModel),
+            "server_default" => Ok(Self::ServerDefault),
             "custom" => Ok(Self::Custom),
             other => anyhow::bail!(
-                "unknown model_addressing `{other}`; expected loaded_model_id, default_model, or custom"
+                "unknown model_addressing `{other}`; expected loaded_model_id, default_model, server_default, or custom"
             ),
         }
     }
@@ -1655,6 +1716,7 @@ impl NormalizedModelAddressing {
         match self {
             Self::LoadedModelId => "loaded_model_id",
             Self::DefaultModel => "default_model",
+            Self::ServerDefault => "server_default",
             Self::Custom => "custom",
         }
     }
@@ -2107,11 +2169,28 @@ struct RepoRevisionReport {
 
 impl RepoRevisionReport {
     fn detect() -> Self {
+        if let Some(report) = Self::from_env() {
+            return report;
+        }
         Self {
             branch: git_output(&["branch", "--show-current"]).filter(|branch| !branch.is_empty()),
             commit_sha: git_output(&["rev-parse", "HEAD"]),
             dirty: git_dirty(),
         }
+    }
+
+    fn from_env() -> Option<Self> {
+        let branch = env_string(BENCH_REPO_BRANCH_ENV);
+        let commit_sha = env_string(BENCH_REPO_COMMIT_ENV);
+        let dirty = env_bool(BENCH_REPO_DIRTY_ENV);
+        if branch.is_none() && commit_sha.is_none() && dirty.is_none() {
+            return None;
+        }
+        Some(Self {
+            branch,
+            commit_sha,
+            dirty: dirty.unwrap_or(false),
+        })
     }
 }
 
@@ -2474,10 +2553,23 @@ mod tests {
 
         let default = &lanes[0];
         assert_eq!(default.kind, NormalizedLaneKind::DirectMlx);
-        assert_eq!(default.declared_model_id, "qwen-loaded");
+        assert_eq!(default.declared_model_id, snapshot);
         assert_eq!(
             default.model_addressing,
-            NormalizedModelAddressing::LoadedModelId
+            NormalizedModelAddressing::ServerDefault
+        );
+        let direct_body = probe_request_body(
+            default,
+            NormalizedProbePlan::new(
+                NormalizedCaseKind::JsonObject,
+                SchemaVariant::None,
+                ToolChoiceVariant::None,
+            ),
+            ProbePrompt::measured(128, 0, None),
+        );
+        assert!(
+            direct_body.get("model").is_none(),
+            "plain mlx_lm.server treats unknown model ids as Hugging Face repos"
         );
         assert_eq!(
             default.template,
@@ -2677,10 +2769,18 @@ mod tests {
         let custom = lane(
             "name=custom,endpoint=http://127.0.0.1:8082/v1,model=qwen-custom,model_addressing=custom",
         );
+        let server_default = lane(
+            "name=server-default,endpoint=http://127.0.0.1:8083/v1,model=qwen-loaded,snapshot=/models/qwen-snapshot,model_addressing=server_default",
+        );
 
         assert_eq!(loaded.effective_request_model_id(), "qwen-loaded");
         assert_eq!(default_model.effective_request_model_id(), DEFAULT_MODEL_ID);
         assert_eq!(custom.effective_request_model_id(), "qwen-custom");
+        assert_eq!(
+            server_default.effective_request_model_id(),
+            "/models/qwen-snapshot"
+        );
+        assert_eq!(server_default.request_model_id(), None);
 
         let report = NormalizedLaneReport::dry_run(
             &default_model,
@@ -2691,6 +2791,17 @@ mod tests {
         assert_eq!(value["declared_model_id"], "qwen-loaded");
         assert_eq!(value["effective_request_model_id"], DEFAULT_MODEL_ID);
         assert_eq!(value["model_addressing"], "default_model");
+
+        let body = probe_request_body(
+            &server_default,
+            NormalizedProbePlan::new(
+                NormalizedCaseKind::JsonObject,
+                SchemaVariant::None,
+                ToolChoiceVariant::None,
+            ),
+            ProbePrompt::measured(128, 0, None),
+        );
+        assert!(body.get("model").is_none());
     }
 
     #[test]

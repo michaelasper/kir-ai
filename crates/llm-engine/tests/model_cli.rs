@@ -532,6 +532,15 @@ fn qwen_mlx_tool_normalized_cache_prefill_profile_dry_run_emits_sweep_matrix() {
     assert_eq!(lanes[0]["endpoint"], "http://127.0.0.1:8080/v1");
     assert_eq!(lanes[7]["endpoint"], "http://127.0.0.1:3000");
     assert_eq!(
+        lanes[0]["declared_model_id"],
+        snapshot.display().to_string()
+    );
+    assert_eq!(
+        lanes[0]["effective_request_model_id"],
+        snapshot.display().to_string()
+    );
+    assert_eq!(lanes[0]["model_addressing"], "server_default");
+    assert_eq!(
         lanes[0]["launched_model_id"],
         snapshot.display().to_string()
     );
@@ -651,6 +660,202 @@ fn qwen_mlx_tool_normalized_repo_revision_uses_kir_ai_checkout_when_run_from_har
     );
     let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
     assert_eq!(value["repo_revision"]["commit_sha"], source_sha);
+    assert_ne!(value["repo_revision"]["commit_sha"], harness_sha);
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_repo_revision_accepts_exported_source_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let harness_repo = temp.path().join("llm-server");
+    std::fs::create_dir_all(&harness_repo).expect("harness repo dir");
+    std::fs::write(harness_repo.join("README.md"), "harness\n").expect("harness file");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .arg("init")
+            .status()
+            .expect("git init")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["add", "."])
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args([
+                "-c",
+                "user.name=Benchmark Test",
+                "-c",
+                "user.email=benchmark@example.com",
+                "commit",
+                "-m",
+                "init harness",
+            ])
+            .status()
+            .expect("git commit")
+            .success()
+    );
+    let harness_sha = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("harness rev-parse")
+            .stdout,
+    )
+    .expect("harness sha utf8")
+    .trim()
+    .to_owned();
+    let source_repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let source_sha = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(source_repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("source rev-parse")
+            .stdout,
+    )
+    .expect("source sha utf8")
+    .trim()
+    .to_owned();
+    let exported_workspace = harness_repo
+        .join(".cache")
+        .join("kir-ai-export")
+        .join("worktree");
+    std::fs::create_dir_all(&exported_workspace).expect("exported workspace dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .current_dir(&exported_workspace)
+        .env("LLM_ENGINE_BENCH_REPO_DIR", &exported_workspace)
+        .env("LLM_ENGINE_BENCH_REPO_COMMIT", &source_sha)
+        .env("LLM_ENGINE_BENCH_REPO_BRANCH", "main")
+        .env("LLM_ENGINE_BENCH_REPO_DIRTY", "false")
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--lane",
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,kind=direct_mlx",
+        ])
+        .output()
+        .expect("run qwen mlx tool normalized dry-run from exported workspace");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["repo_revision"]["commit_sha"], source_sha);
+    assert_ne!(value["repo_revision"]["commit_sha"], harness_sha);
+    assert_eq!(value["repo_revision"]["branch"], "main");
+    assert_eq!(value["repo_revision"]["dirty"], false);
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_repo_revision_does_not_walk_into_parent_harness_repo() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let harness_repo = temp.path().join("llm-server");
+    std::fs::create_dir_all(&harness_repo).expect("harness repo dir");
+    std::fs::write(harness_repo.join("README.md"), "harness\n").expect("harness file");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .arg("init")
+            .status()
+            .expect("git init")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["add", "."])
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args([
+                "-c",
+                "user.name=Benchmark Test",
+                "-c",
+                "user.email=benchmark@example.com",
+                "commit",
+                "-m",
+                "init harness",
+            ])
+            .status()
+            .expect("git commit")
+            .success()
+    );
+    let harness_sha = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("harness rev-parse")
+            .stdout,
+    )
+    .expect("harness sha utf8")
+    .trim()
+    .to_owned();
+    let exported_workspace = harness_repo
+        .join(".cache")
+        .join("kir-ai-export")
+        .join("worktree");
+    std::fs::create_dir_all(&exported_workspace).expect("exported workspace dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .current_dir(&exported_workspace)
+        .env("LLM_ENGINE_BENCH_REPO_DIR", &exported_workspace)
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--lane",
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,kind=direct_mlx",
+        ])
+        .output()
+        .expect("run qwen mlx tool normalized dry-run from exported workspace");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
     assert_ne!(value["repo_revision"]["commit_sha"], harness_sha);
 }
 
