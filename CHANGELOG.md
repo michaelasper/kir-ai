@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.12](https://github.com/michaelasper/kir-ai/compare/v1.8.11...v1.8.12) (2026-05-13)
+
+### Bug Fixes
+
+* **native:** seed sampling rng per request ([3db8a7c](https://github.com/michaelasper/kir-ai/commit/3db8a7c78935a6da1412506ab8d448efa8f9066f))
+
 ## [1.8.11](https://github.com/michaelasper/kir-ai/compare/v1.8.10...v1.8.11) (2026-05-13)
 
 ### Bug Fixes
