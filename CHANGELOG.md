@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.8](https://github.com/michaelasper/kir-ai/compare/v1.8.7...v1.8.8) (2026-05-13)
+
+### Bug Fixes
+
+* **metal:** share command queue across kernels ([a74bf8c](https://github.com/michaelasper/kir-ai/commit/a74bf8c7e9fc493400930bdbcf3119c4f8f32970))
+
 ## [1.8.7](https://github.com/michaelasper/kir-ai/compare/v1.8.6...v1.8.7) (2026-05-13)
 
 ### Bug Fixes
