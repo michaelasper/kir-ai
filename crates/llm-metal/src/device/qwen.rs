@@ -1,5 +1,5 @@
 use super::command::finish_command_buffer_async;
-use super::{F32Buffer, MetalDevice, MetalError, power_of_two_at_most};
+use super::{F32Buffer, MetalDevice, MetalError, metal_buffer_byte_len, power_of_two_at_most};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
@@ -182,7 +182,8 @@ impl MetalDevice {
             MetalError::InvalidShape(format!("kernel size does not fit u32: {err}"))
         })?;
         let input_byte_len = std::mem::size_of_val(window) as u64;
-        let output_byte_len = (conv_dim * std::mem::size_of::<f32>()) as u64;
+        let output_byte_len =
+            metal_buffer_byte_len::<f32>(conv_dim, "linear attention conv output")?;
         let window_buffer = self.device.new_buffer_with_data(
             window.as_ptr().cast::<c_void>(),
             input_byte_len,

@@ -22,6 +22,20 @@ pub(crate) fn power_of_two_at_most(value: u64) -> u64 {
     1_u64 << (u64::BITS - 1 - value.leading_zeros())
 }
 
+pub(crate) fn metal_buffer_byte_len<T>(
+    element_count: usize,
+    context: &str,
+) -> Result<u64, MetalError> {
+    let byte_len = element_count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            MetalError::InvalidShape(format!("{context} byte length overflows usize"))
+        })?;
+    u64::try_from(byte_len).map_err(|err| {
+        MetalError::InvalidShape(format!("{context} byte length does not fit u64: {err}"))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct MetalDevice {
     pub(crate) device: Device,
@@ -43,4 +57,28 @@ pub struct MetalDevice {
     pub(crate) batched_matvec_bf16_f32: Arc<MetalKernel>,
     pub(crate) argmax_f32: Arc<MetalKernel>,
     pub(crate) top_k_f32: Arc<MetalKernel>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metal_buffer_byte_len_accepts_representable_lengths() {
+        assert_eq!(
+            metal_buffer_byte_len::<f32>(3, "test buffer").expect("byte length fits"),
+            12
+        );
+    }
+
+    #[test]
+    fn metal_buffer_byte_len_rejects_overflowing_lengths() {
+        let element_count = usize::MAX / std::mem::size_of::<f32>() + 1;
+        let err = metal_buffer_byte_len::<f32>(element_count, "test buffer")
+            .expect_err("byte length should overflow");
+
+        assert!(matches!(err, MetalError::InvalidShape(_)));
+        assert!(err.to_string().contains("test buffer"));
+        assert!(err.to_string().contains("overflows"));
+    }
 }

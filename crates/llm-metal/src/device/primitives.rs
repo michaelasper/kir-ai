@@ -1,5 +1,5 @@
 use super::command::finish_command_buffer_async;
-use super::{F32Buffer, MetalDevice, MetalError, power_of_two_at_most};
+use super::{F32Buffer, MetalDevice, MetalError, metal_buffer_byte_len, power_of_two_at_most};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
@@ -200,7 +200,7 @@ impl MetalDevice {
         })?;
         let values_byte_len = std::mem::size_of_val(values) as u64;
         let weights_byte_len = std::mem::size_of_val(weights) as u64;
-        let output_byte_len = (vector_len * std::mem::size_of::<f32>()) as u64;
+        let output_byte_len = metal_buffer_byte_len::<f32>(vector_len, "weighted sum output")?;
         let values_buffer = self.device.new_buffer_with_data(
             values.as_ptr().cast::<c_void>(),
             values_byte_len,
@@ -349,8 +349,8 @@ impl MetalDevice {
                 "non-empty attention requires a query buffer".to_owned(),
             ));
         };
-        let score_byte_len = (score_len * std::mem::size_of::<f32>()) as u64;
-        let output_byte_len = (attention_dim * std::mem::size_of::<f32>()) as u64;
+        let score_byte_len = metal_buffer_byte_len::<f32>(score_len, "attention score")?;
+        let output_byte_len = metal_buffer_byte_len::<f32>(attention_dim, "attention output")?;
         let scores_buffer = self
             .device
             .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
@@ -594,7 +594,8 @@ impl MetalDevice {
         let output_len_u32 = u32::try_from(output_len).map_err(|err| {
             MetalError::InvalidShape(format!("head row output length does not fit u32: {err}"))
         })?;
-        let output_byte_len = (output_len * std::mem::size_of::<f32>()) as u64;
+        let output_byte_len =
+            metal_buffer_byte_len::<f32>(output_len, "head row selection output")?;
         let Some(values_buffer) = values.buffer.as_ref() else {
             return Err(MetalError::InvalidShape(
                 "non-empty head row selection requires a values buffer".to_owned(),

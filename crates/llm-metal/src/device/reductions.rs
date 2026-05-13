@@ -1,5 +1,5 @@
 use super::command::finish_command_buffer_async;
-use super::{MetalDevice, MetalError};
+use super::{MetalDevice, MetalError, metal_buffer_byte_len};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
@@ -38,8 +38,10 @@ impl MetalDevice {
             MetalError::InvalidShape(format!("argmax chunk count does not fit u32: {err}"))
         })?;
         let logits_byte_len = std::mem::size_of_val(logits) as u64;
-        let chunk_indices_byte_len = (chunk_count * std::mem::size_of::<u32>()) as u64;
-        let chunk_values_byte_len = (chunk_count * std::mem::size_of::<f32>()) as u64;
+        let chunk_indices_byte_len =
+            metal_buffer_byte_len::<u32>(chunk_count, "argmax chunk indices")?;
+        let chunk_values_byte_len =
+            metal_buffer_byte_len::<f32>(chunk_count, "argmax chunk values")?;
         let logits_buffer = self.device.new_buffer_with_data(
             logits.as_ptr().cast::<c_void>(),
             logits_byte_len,
@@ -157,8 +159,10 @@ impl MetalDevice {
             .checked_mul(k)
             .ok_or_else(|| MetalError::InvalidShape("top-k output shape overflows".to_owned()))?;
         let logits_byte_len = std::mem::size_of_val(logits) as u64;
-        let indices_byte_len = (candidate_count * std::mem::size_of::<u32>()) as u64;
-        let values_byte_len = (candidate_count * std::mem::size_of::<f32>()) as u64;
+        let indices_byte_len =
+            metal_buffer_byte_len::<u32>(candidate_count, "top-k candidate indices")?;
+        let values_byte_len =
+            metal_buffer_byte_len::<f32>(candidate_count, "top-k candidate values")?;
         let logits_buffer = self.device.new_buffer_with_data(
             logits.as_ptr().cast::<c_void>(),
             logits_byte_len,
