@@ -407,6 +407,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
         output: BackendOutput {
             text: "Patched Cargo.toml and added the regression test.".to_owned(),
             prompt_tokens: 4,
+            prompt_cached_tokens: None,
             completion_tokens: 8,
             finish_reason: FinishReason::Stop,
         },
@@ -429,6 +430,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
                 r#"<tool_call>{"name":"read_file","arguments":{"path":"Cargo.toml"}}</tool_call>"#
                     .to_owned(),
             prompt_tokens: 4,
+            prompt_cached_tokens: None,
             completion_tokens: 5,
             finish_reason: FinishReason::ToolCalls,
         },
@@ -456,6 +458,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
         output: BackendOutput {
             text: r#"{"answer":"ok"}"#.to_owned(),
             prompt_tokens: 4,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         },

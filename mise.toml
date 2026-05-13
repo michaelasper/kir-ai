@@ -81,6 +81,43 @@ run = "cargo run -p llm-engine --features test-utils -- serve --protocol-test-ba
 description = "Print the Qwen 135K/200K/256K long-context benchmark plan without running inference"
 run = "cargo run -p llm-engine -- bench qwen-long-context --dry-run --profile all --model \"${LLM_BENCH_MODEL:-local-qwen36}\" ${LLM_BENCH_SNAPSHOT:+--snapshot \"$LLM_BENCH_SNAPSHOT\"} ${LLM_BENCH_BASELINE:+--baseline \"$LLM_BENCH_BASELINE\"} ${LLM_BENCH_OUTPUT:+--output \"$LLM_BENCH_OUTPUT\"}"
 
+[tasks.bench-qwen-mlx-cache-prefill-plan]
+description = "Print the Qwen MLX cache/prefill sweep plan without running inference"
+run = """
+bash -lc '
+set -euo pipefail
+test -n "${LLM_BENCH_SNAPSHOT:-}" || (echo "LLM_BENCH_SNAPSHOT is required" >&2; exit 2)
+cargo run -p llm-engine -- bench qwen-mlx-tool-normalized \
+  --dry-run \
+  --sweep-profile qwen-mlx-cache-prefill \
+  --snapshot "$LLM_BENCH_SNAPSHOT" \
+  --warmups "${LLM_BENCH_WARMUPS:-1}" \
+  --samples "${LLM_BENCH_SAMPLES:-1}" \
+  --context-tokens "${LLM_BENCH_CONTEXT_TOKENS:-135000}" \
+  --concurrent-requests "${LLM_BENCH_CONCURRENT_REQUESTS:-4}" \
+  --concurrent-samples "${LLM_BENCH_CONCURRENT_SAMPLES:-1}" \
+  ${LLM_BENCH_OUTPUT:+--output "$LLM_BENCH_OUTPUT"}
+'
+"""
+
+[tasks.bench-qwen-mlx-cache-prefill]
+description = "Run the Qwen MLX cache/prefill sweep against externally launched sidecars"
+run = """
+bash -lc '
+set -euo pipefail
+test -n "${LLM_BENCH_SNAPSHOT:-}" || (echo "LLM_BENCH_SNAPSHOT is required" >&2; exit 2)
+cargo run -p llm-engine -- bench qwen-mlx-tool-normalized \
+  --sweep-profile qwen-mlx-cache-prefill \
+  --snapshot "$LLM_BENCH_SNAPSHOT" \
+  --warmups "${LLM_BENCH_WARMUPS:-1}" \
+  --samples "${LLM_BENCH_SAMPLES:-3}" \
+  --context-tokens "${LLM_BENCH_CONTEXT_TOKENS:-135000}" \
+  --concurrent-requests "${LLM_BENCH_CONCURRENT_REQUESTS:-4}" \
+  --concurrent-samples "${LLM_BENCH_CONCURRENT_SAMPLES:-1}" \
+  --output "${LLM_BENCH_OUTPUT:-.llm-bench/traces/qwen-mlx-cache-prefill.json}"
+'
+"""
+
 [tasks.bench-qwen-135k]
 description = "Run the release-blocking 135K Qwen long-context promotion gate"
 run = """

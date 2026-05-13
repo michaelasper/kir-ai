@@ -735,6 +735,7 @@ impl ModelBackend for SlowDripStreamBackend {
                 yield BackendStreamChunk {
                     text: "x".to_owned(),
                     prompt_tokens: 1,
+                    prompt_cached_tokens: None,
                     completion_tokens: 1,
                     finish_reason: None,
                 };

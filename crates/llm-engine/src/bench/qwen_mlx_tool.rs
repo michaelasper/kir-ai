@@ -23,6 +23,10 @@ const DEFAULT_CONTEXT_TOKENS: usize = 135_000;
 const DEFAULT_CONCURRENT_REQUESTS: usize = 1;
 const DEFAULT_CONCURRENT_SAMPLES: usize = 0;
 const DEFAULT_MAX_TOKENS: u32 = 96;
+const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
+const PROFILE_DIRECT_MODEL_ID: &str = "qwen-loaded";
+const PROFILE_PROXY_MODEL_ID: &str = "local-qwen36-mlx";
+const PROFILE_CACHE_BYTES_1G: u64 = 1_073_741_824;
 
 pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--help") || has_flag(args, "-h") {
@@ -57,6 +61,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let connect_timeout_ms =
         parse_millis_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
     let output_path = flag_value(args, "--output").map(PathBuf::from);
+    let sweep_profile = parse_sweep_profile_flag(args)?;
     let lanes = parse_lane_specs(args)?;
 
     let mut lane_reports = Vec::with_capacity(lanes.len());
@@ -76,6 +81,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
 
     let mut report = NormalizedBenchReport {
         benchmark: BENCHMARK_NAME,
+        sweep_profile: sweep_profile.map(NormalizedSweepProfile::as_str),
         status: if dry_run { "dry_run" } else { "running" }.to_owned(),
         generated_at_unix_ms: unix_now_ms(),
         trace_output_path: output_path.as_ref().map(|path| path.display().to_string()),
@@ -143,7 +149,9 @@ fn print_help() {
 Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
-  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
+  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill (requires --snapshot)
+  --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
+  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                 Warmup requests for warm phases [default: 1]
   --samples <n>                 Measured samples per case and phase [default: 1]
   --context-tokens <n>          Stable long-context prompt target [default: 135000]
@@ -159,10 +167,137 @@ Options:
 
 fn parse_lane_specs(args: &[String]) -> anyhow::Result<Vec<NormalizedLaneConfig>> {
     let lane_specs = flag_values(args, "--lane");
+    if let Some(profile) = parse_sweep_profile_flag(args)? {
+        if !lane_specs.is_empty() {
+            anyhow::bail!("--sweep-profile cannot be combined with explicit --lane specs");
+        }
+        return expand_sweep_profile(profile, args);
+    }
     if lane_specs.is_empty() {
         anyhow::bail!("qwen mlx tool normalized benchmark requires at least one --lane <spec>");
     }
     lane_specs.into_iter().map(parse_lane_spec).collect()
+}
+
+fn parse_sweep_profile_flag(args: &[String]) -> anyhow::Result<Option<NormalizedSweepProfile>> {
+    let profiles = flag_values(args, "--sweep-profile");
+    match profiles.as_slice() {
+        [] => Ok(None),
+        [profile] => NormalizedSweepProfile::parse(profile).map(Some),
+        _ => anyhow::bail!("--sweep-profile may only be provided once"),
+    }
+}
+
+fn expand_sweep_profile(
+    profile: NormalizedSweepProfile,
+    args: &[String],
+) -> anyhow::Result<Vec<NormalizedLaneConfig>> {
+    let snapshot = required_profile_snapshot(args)?;
+    Ok(match profile {
+        NormalizedSweepProfile::QwenMlxCachePrefill => qwen_mlx_cache_prefill_lanes(snapshot),
+    })
+}
+
+fn required_profile_snapshot(args: &[String]) -> anyhow::Result<&str> {
+    let snapshots = flag_values(args, "--snapshot");
+    match snapshots.as_slice() {
+        [snapshot] => Ok(snapshot),
+        [] => anyhow::bail!(
+            "--sweep-profile {QWEN_MLX_CACHE_PREFILL_PROFILE} requires --snapshot <path>"
+        ),
+        _ => anyhow::bail!("--snapshot may only be provided once for --sweep-profile"),
+    }
+}
+
+fn qwen_mlx_cache_prefill_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
+    vec![
+        profile_direct_lane("mlx-default", 8080, MlxLmSettings::default(), snapshot),
+        profile_direct_lane(
+            "mlx-cache-size-4096",
+            8081,
+            MlxLmSettings {
+                prompt_cache_size: DefaultOrU64::Value(4096),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        profile_direct_lane(
+            "mlx-cache-bytes-1g",
+            8082,
+            MlxLmSettings {
+                prompt_cache_bytes: UnsetOrU64::Value(PROFILE_CACHE_BYTES_1G),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        profile_direct_lane(
+            "mlx-prefill-2048",
+            8083,
+            MlxLmSettings {
+                prefill_step_size: DefaultOrU64::Value(2048),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        profile_direct_lane(
+            "mlx-prefill-4096",
+            8084,
+            MlxLmSettings {
+                prefill_step_size: DefaultOrU64::Value(4096),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        profile_direct_lane(
+            "mlx-prefill-8192",
+            8085,
+            MlxLmSettings {
+                prefill_step_size: DefaultOrU64::Value(8192),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        profile_direct_lane(
+            "mlx-concurrent-4x2",
+            8086,
+            MlxLmSettings {
+                prompt_concurrency: DefaultOrU32::Value(4),
+                decode_concurrency: DefaultOrU32::Value(2),
+                ..MlxLmSettings::default()
+            },
+            snapshot,
+        ),
+        NormalizedLaneConfig {
+            name: "kir-proxy".to_owned(),
+            endpoint: "http://127.0.0.1:3000".to_owned(),
+            declared_model_id: PROFILE_PROXY_MODEL_ID.to_owned(),
+            launched_model_id: Some(snapshot.to_owned()),
+            snapshot_path: Some(PathBuf::from(snapshot)),
+            kind: NormalizedLaneKind::KirAiProxy,
+            model_addressing: NormalizedModelAddressing::DefaultModel,
+            template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+            mlx_lm_settings: MlxLmSettings::default(),
+        },
+    ]
+}
+
+fn profile_direct_lane(
+    name: &str,
+    port: u16,
+    mlx_lm_settings: MlxLmSettings,
+    snapshot: &str,
+) -> NormalizedLaneConfig {
+    NormalizedLaneConfig {
+        name: name.to_owned(),
+        endpoint: format!("http://127.0.0.1:{port}/v1"),
+        declared_model_id: PROFILE_DIRECT_MODEL_ID.to_owned(),
+        launched_model_id: Some(snapshot.to_owned()),
+        snapshot_path: Some(PathBuf::from(snapshot)),
+        kind: NormalizedLaneKind::DirectMlx,
+        model_addressing: NormalizedModelAddressing::LoadedModelId,
+        template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+        mlx_lm_settings,
+    }
 }
 
 fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
@@ -190,6 +325,9 @@ fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
         .remove("model")
         .or_else(|| values.remove("model_id"))
         .ok_or_else(|| anyhow!("--lane spec `{spec}` is missing model=<id>"))?;
+    let launched_model_id = values
+        .remove("launched_model_id")
+        .or_else(|| values.remove("launch_model_id"));
     let snapshot_path = values.remove("snapshot").map(PathBuf::from);
     let kind = values
         .remove("kind")
@@ -217,6 +355,7 @@ fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
         name,
         endpoint,
         declared_model_id,
+        launched_model_id,
         snapshot_path,
         kind,
         model_addressing,
@@ -294,14 +433,83 @@ async fn load_lane_snapshot_identity(
     let Some(snapshot_path) = lane.snapshot_path.as_deref() else {
         return Ok(None);
     };
+    if !snapshot_path.join("llm-engine-manifest.json").is_file() {
+        return Ok(Some(raw_snapshot_identity(lane, snapshot_path)));
+    }
+    let identity_model_id = lane.identity_model_id();
     load_model_identity(
-        lane.effective_request_model_id(),
+        &identity_model_id,
         Some(&lane.endpoint),
         Some(snapshot_path),
         dry_run,
     )
     .await
     .map(Some)
+}
+
+fn raw_snapshot_identity(lane: &NormalizedLaneConfig, snapshot_path: &Path) -> ModelIdentityReport {
+    let mut report = ModelIdentityReport {
+        id: lane.identity_model_id(),
+        endpoint: Some(lane.endpoint.clone()),
+        snapshot_path: Some(snapshot_path.display().to_string()),
+        repo_id: None,
+        requested_revision: None,
+        resolved_commit: None,
+        profile: None,
+        family: Some("qwen".to_owned()),
+        loader: matches!(
+            lane.kind,
+            NormalizedLaneKind::DirectMlx | NormalizedLaneKind::KirAiProxy
+        )
+        .then(|| "mlx".to_owned()),
+        quantization: None,
+        manifest_digest: None,
+    };
+    let inferred = infer_huggingface_snapshot_identity(snapshot_path);
+    report.repo_id = inferred.repo_id;
+    report.resolved_commit = inferred.resolved_commit;
+    report
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InferredSnapshotIdentity {
+    repo_id: Option<String>,
+    resolved_commit: Option<String>,
+}
+
+fn infer_huggingface_snapshot_identity(snapshot_path: &Path) -> InferredSnapshotIdentity {
+    let Some(snapshot_dir_name) = snapshot_path.file_name().and_then(|name| name.to_str()) else {
+        return InferredSnapshotIdentity::default();
+    };
+    let Some(snapshots_dir_name) = snapshot_path
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+    else {
+        return InferredSnapshotIdentity::default();
+    };
+    if snapshots_dir_name != "snapshots" {
+        return InferredSnapshotIdentity::default();
+    }
+    let repo_id = snapshot_path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .and_then(huggingface_cache_repo_id);
+    InferredSnapshotIdentity {
+        repo_id,
+        resolved_commit: Some(snapshot_dir_name.to_owned()),
+    }
+}
+
+fn huggingface_cache_repo_id(directory_name: &str) -> Option<String> {
+    let encoded = directory_name.strip_prefix("models--")?;
+    let (owner, repo) = encoded.split_once("--")?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{}", repo.replace("--", "/")))
 }
 
 async fn run_lane(
@@ -1116,8 +1324,25 @@ fn average_u64(values: impl Iterator<Item = u64>) -> Option<f64> {
     (count > 0).then_some(total as f64 / count as f64)
 }
 
+fn benchmark_repo_dir() -> PathBuf {
+    std::env::var_os("LLM_ENGINE_BENCH_REPO_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+                .to_path_buf()
+        })
+}
+
 fn git_output(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(benchmark_repo_dir())
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1127,6 +1352,8 @@ fn git_output(args: &[&str]) -> Option<String> {
 
 fn git_dirty() -> bool {
     Command::new("git")
+        .arg("-C")
+        .arg(benchmark_repo_dir())
         .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
         .ok()
@@ -1160,6 +1387,7 @@ struct NormalizedLaneConfig {
     name: String,
     endpoint: String,
     declared_model_id: String,
+    launched_model_id: Option<String>,
     snapshot_path: Option<PathBuf>,
     kind: NormalizedLaneKind,
     model_addressing: NormalizedModelAddressing,
@@ -1177,8 +1405,51 @@ impl NormalizedLaneConfig {
         }
     }
 
+    fn identity_model_id(&self) -> String {
+        self.launched_model_id
+            .clone()
+            .or_else(|| {
+                self.snapshot_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+            })
+            .unwrap_or_else(|| self.effective_request_model_id().to_owned())
+    }
+
+    fn model_identity_source(&self) -> &'static str {
+        if self.launched_model_id.is_some() {
+            "lane_launched_model_id"
+        } else if self.snapshot_path.is_some() {
+            "lane_snapshot_path"
+        } else {
+            "effective_request_model_id"
+        }
+    }
+
     fn thinking_policy_report(&self) -> Value {
         self.template.thinking_policy_report()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizedSweepProfile {
+    QwenMlxCachePrefill,
+}
+
+impl NormalizedSweepProfile {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            QWEN_MLX_CACHE_PREFILL_PROFILE => Ok(Self::QwenMlxCachePrefill),
+            other => anyhow::bail!(
+                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE}"
+            ),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::QwenMlxCachePrefill => QWEN_MLX_CACHE_PREFILL_PROFILE,
+        }
     }
 }
 
@@ -1803,6 +2074,8 @@ For OMP repeated-prefix probes, only the final user delta changes after the shar
 #[derive(Debug, Serialize)]
 struct NormalizedBenchReport {
     benchmark: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sweep_profile: Option<&'static str>,
     status: String,
     generated_at_unix_ms: u128,
     trace_output_path: Option<String>,
@@ -1850,6 +2123,9 @@ struct NormalizedLaneReport {
     kind: &'static str,
     declared_model_id: String,
     effective_request_model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launched_model_id: Option<String>,
+    model_identity_source: &'static str,
     model_addressing: &'static str,
     mlx_lm_settings: MlxLmSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1880,6 +2156,8 @@ impl NormalizedLaneReport {
             kind: lane.kind.as_str(),
             declared_model_id: lane.declared_model_id.clone(),
             effective_request_model_id: lane.effective_request_model_id().to_owned(),
+            launched_model_id: lane.launched_model_id.clone(),
+            model_identity_source: lane.model_identity_source(),
             model_addressing: lane.model_addressing.as_str(),
             mlx_lm_settings: lane.mlx_lm_settings,
             snapshot_path: lane
@@ -2112,6 +2390,10 @@ mod tests {
         parse_lane_spec(spec).expect("lane spec parses")
     }
 
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
     #[test]
     fn qwen_mlx_tool_normalized_lane_spec_defaults_to_qwen_no_thinking_and_rejects_unknown_keys() {
         let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1/,model=qwen-loaded");
@@ -2134,6 +2416,143 @@ mod tests {
             err.to_string().contains("unknown keys: unknown"),
             "error: {err}"
         );
+    }
+
+    #[test]
+    fn qwen_mlx_tool_normalized_cache_prefill_profile_expands_default_lanes() {
+        let snapshot = "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
+        let lanes = parse_lane_specs(&args(&[
+            "--sweep-profile",
+            "qwen-mlx-cache-prefill",
+            "--snapshot",
+            snapshot,
+        ]))
+        .expect("profile expands");
+
+        assert_eq!(
+            lanes
+                .iter()
+                .map(|lane| lane.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "mlx-default",
+                "mlx-cache-size-4096",
+                "mlx-cache-bytes-1g",
+                "mlx-prefill-2048",
+                "mlx-prefill-4096",
+                "mlx-prefill-8192",
+                "mlx-concurrent-4x2",
+                "kir-proxy",
+            ]
+        );
+        assert_eq!(
+            lanes
+                .iter()
+                .map(|lane| lane.endpoint.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "http://127.0.0.1:8080/v1",
+                "http://127.0.0.1:8081/v1",
+                "http://127.0.0.1:8082/v1",
+                "http://127.0.0.1:8083/v1",
+                "http://127.0.0.1:8084/v1",
+                "http://127.0.0.1:8085/v1",
+                "http://127.0.0.1:8086/v1",
+                "http://127.0.0.1:3000",
+            ]
+        );
+        assert!(
+            lanes
+                .iter()
+                .all(|lane| lane.launched_model_id.as_deref() == Some(snapshot))
+        );
+        assert!(
+            lanes
+                .iter()
+                .all(|lane| lane.snapshot_path.as_deref() == Some(Path::new(snapshot)))
+        );
+
+        let default = &lanes[0];
+        assert_eq!(default.kind, NormalizedLaneKind::DirectMlx);
+        assert_eq!(default.declared_model_id, "qwen-loaded");
+        assert_eq!(
+            default.model_addressing,
+            NormalizedModelAddressing::LoadedModelId
+        );
+        assert_eq!(
+            default.template,
+            NormalizedTemplatePolicy::SidecarChatTemplateArgs
+        );
+        assert_eq!(
+            default.mlx_lm_settings.prompt_cache_size,
+            DefaultOrU64::Default
+        );
+        assert_eq!(
+            lanes[1].mlx_lm_settings.prompt_cache_size,
+            DefaultOrU64::Value(4096)
+        );
+        assert_eq!(
+            lanes[2].mlx_lm_settings.prompt_cache_bytes,
+            UnsetOrU64::Value(1_073_741_824)
+        );
+        assert_eq!(
+            lanes[3].mlx_lm_settings.prefill_step_size,
+            DefaultOrU64::Value(2048)
+        );
+        assert_eq!(
+            lanes[4].mlx_lm_settings.prefill_step_size,
+            DefaultOrU64::Value(4096)
+        );
+        assert_eq!(
+            lanes[5].mlx_lm_settings.prefill_step_size,
+            DefaultOrU64::Value(8192)
+        );
+        assert_eq!(
+            lanes[6].mlx_lm_settings.prompt_concurrency,
+            DefaultOrU32::Value(4)
+        );
+        assert_eq!(
+            lanes[6].mlx_lm_settings.decode_concurrency,
+            DefaultOrU32::Value(2)
+        );
+
+        let proxy = &lanes[7];
+        assert_eq!(proxy.kind, NormalizedLaneKind::KirAiProxy);
+        assert_eq!(proxy.declared_model_id, "local-qwen36-mlx");
+        assert_eq!(proxy.effective_request_model_id(), DEFAULT_MODEL_ID);
+        assert_eq!(
+            proxy.model_addressing,
+            NormalizedModelAddressing::DefaultModel
+        );
+        assert_eq!(
+            proxy.template,
+            NormalizedTemplatePolicy::SidecarChatTemplateArgs
+        );
+    }
+
+    #[test]
+    fn qwen_mlx_tool_normalized_cache_prefill_profile_requires_snapshot() {
+        let err = parse_lane_specs(&args(&["--sweep-profile", "qwen-mlx-cache-prefill"]))
+            .expect_err("profile requires snapshot");
+
+        assert!(
+            err.to_string().contains("--snapshot"),
+            "error should mention --snapshot: {err}"
+        );
+    }
+
+    #[test]
+    fn qwen_mlx_tool_normalized_explicit_lane_mode_remains_available() {
+        let lanes = parse_lane_specs(&args(&[
+            "--lane",
+            "name=custom,endpoint=http://127.0.0.1:9090/v1,model=qwen-custom,kind=direct_mlx",
+        ]))
+        .expect("explicit lane mode parses");
+
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].name, "custom");
+        assert_eq!(lanes[0].endpoint, "http://127.0.0.1:9090/v1");
+        assert_eq!(lanes[0].declared_model_id, "qwen-custom");
     }
 
     #[test]
@@ -2272,6 +2691,66 @@ mod tests {
         assert_eq!(value["declared_model_id"], "qwen-loaded");
         assert_eq!(value["effective_request_model_id"], DEFAULT_MODEL_ID);
         assert_eq!(value["model_addressing"], "default_model");
+    }
+
+    #[test]
+    fn qwen_mlx_tool_normalized_lane_can_pin_launched_model_identity() {
+        let lane = lane(
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=default_model,launched_model_id=/models/qwen-snapshot,kind=direct_mlx,model_addressing=loaded_model_id",
+        );
+
+        assert_eq!(lane.effective_request_model_id(), "default_model");
+        assert_eq!(lane.identity_model_id(), "/models/qwen-snapshot");
+
+        let report =
+            NormalizedLaneReport::dry_run(&lane, NormalizedRunConfig::new(0, 1, 128, 1, 0), None);
+        let value = serde_json::to_value(report).expect("lane report serializes");
+        assert_eq!(value["declared_model_id"], "default_model");
+        assert_eq!(value["effective_request_model_id"], "default_model");
+        assert_eq!(value["launched_model_id"], "/models/qwen-snapshot");
+        assert_eq!(value["model_identity_source"], "lane_launched_model_id");
+    }
+
+    #[tokio::test]
+    async fn qwen_mlx_tool_normalized_raw_hf_snapshot_identity_does_not_require_kir_manifest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = temp
+            .path()
+            .join("huggingface")
+            .join("models--mlx-community--Qwen3.6-35B-A3B-4bit")
+            .join("snapshots")
+            .join("abcdef1234567890");
+        tokio::fs::create_dir_all(&snapshot)
+            .await
+            .expect("raw snapshot dir");
+        tokio::fs::write(snapshot.join("config.json"), "{}")
+            .await
+            .expect("config");
+
+        let lane = lane(&format!(
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,snapshot={},kind=direct_mlx",
+            snapshot.display()
+        ));
+        let identity = load_lane_snapshot_identity(&lane, false)
+            .await
+            .expect("raw HF snapshot identity should not require llm-engine-manifest.json")
+            .expect("snapshot identity");
+
+        let snapshot_display = snapshot.display().to_string();
+        assert_eq!(identity.id, snapshot_display);
+        assert_eq!(
+            identity.snapshot_path.as_deref(),
+            Some(snapshot_display.as_str())
+        );
+        assert_eq!(
+            identity.repo_id.as_deref(),
+            Some("mlx-community/Qwen3.6-35B-A3B-4bit")
+        );
+        assert_eq!(
+            identity.resolved_commit.as_deref(),
+            Some("abcdef1234567890")
+        );
+        assert_eq!(identity.manifest_digest, None);
     }
 
     #[test]

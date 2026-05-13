@@ -224,7 +224,8 @@ fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
         .arg(&trace)
         .args(["--lane"])
         .arg(format!(
-            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,snapshot={},kind=direct_mlx,model_addressing=loaded_model_id,mlx_prompt_cache_size=4096,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=8192,mlx_prompt_concurrency=4,mlx_decode_concurrency=2",
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,launched_model_id={},snapshot={},kind=direct_mlx,model_addressing=loaded_model_id,mlx_prompt_cache_size=4096,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=8192,mlx_prompt_concurrency=4,mlx_decode_concurrency=2",
+            snapshot.display(),
             snapshot.display()
         ))
         .args(["--lane"])
@@ -314,6 +315,15 @@ fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
     assert_eq!(lanes[0]["kind"], "direct_mlx");
     assert_eq!(lanes[0]["declared_model_id"], "qwen-loaded");
     assert_eq!(lanes[0]["effective_request_model_id"], "qwen-loaded");
+    assert_eq!(
+        lanes[0]["launched_model_id"],
+        snapshot.display().to_string()
+    );
+    assert_eq!(lanes[0]["model_identity_source"], "lane_launched_model_id");
+    assert_eq!(
+        lanes[0]["snapshot_identity"]["id"],
+        snapshot.display().to_string()
+    );
     assert_eq!(lanes[0]["model_addressing"], "loaded_model_id");
     assert_eq!(lanes[0]["snapshot_path"], snapshot.display().to_string());
     assert_eq!(lanes[0]["mlx_lm_settings"]["mlx_prompt_cache_size"], 4096);
@@ -449,6 +459,199 @@ fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
         }),
         "summary rows: {summary:?}"
     );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_cache_prefill_profile_dry_run_emits_sweep_matrix() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp
+        .path()
+        .join("huggingface")
+        .join("models--mlx-community--Qwen3.6-35B-A3B-4bit")
+        .join("snapshots")
+        .join("abcdef1234567890");
+    std::fs::create_dir_all(&snapshot).expect("raw HF snapshot dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--sweep-profile",
+            "qwen-mlx-cache-prefill",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--concurrent-requests",
+            "2",
+            "--concurrent-samples",
+            "1",
+            "--snapshot",
+        ])
+        .arg(&snapshot)
+        .output()
+        .expect("run qwen mlx cache prefill profile dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["benchmark"], "qwen-mlx-tool-normalized");
+    assert_eq!(value["status"], "dry_run");
+    assert_eq!(value["sweep_profile"], "qwen-mlx-cache-prefill");
+    assert!(
+        value["repo_revision"]["commit_sha"]
+            .as_str()
+            .expect("repo commit sha")
+            .len()
+            >= 7
+    );
+
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane["name"].as_str().expect("lane name"))
+            .collect::<Vec<_>>(),
+        [
+            "mlx-default",
+            "mlx-cache-size-4096",
+            "mlx-cache-bytes-1g",
+            "mlx-prefill-2048",
+            "mlx-prefill-4096",
+            "mlx-prefill-8192",
+            "mlx-concurrent-4x2",
+            "kir-proxy",
+        ]
+    );
+    assert_eq!(lanes[0]["endpoint"], "http://127.0.0.1:8080/v1");
+    assert_eq!(lanes[7]["endpoint"], "http://127.0.0.1:3000");
+    assert_eq!(
+        lanes[0]["launched_model_id"],
+        snapshot.display().to_string()
+    );
+    assert_eq!(
+        lanes[0]["snapshot_identity"]["repo_id"],
+        "mlx-community/Qwen3.6-35B-A3B-4bit"
+    );
+    assert_eq!(lanes[7]["kind"], "kir_ai_proxy");
+    assert_eq!(
+        lanes[7]["effective_request_model_id"],
+        llm_engine::DEFAULT_MODEL_ID
+    );
+    assert_eq!(lanes[6]["mlx_lm_settings"]["mlx_prompt_concurrency"], 4);
+    assert_eq!(lanes[6]["mlx_lm_settings"]["mlx_decode_concurrency"], 2);
+    assert_eq!(lanes[0]["samples"].as_array().expect("samples").len(), 75);
+    assert_eq!(
+        lanes[0]["concurrent_samples"]
+            .as_array()
+            .expect("concurrent samples")
+            .len(),
+        150
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_repo_revision_uses_kir_ai_checkout_when_run_from_harness_repo() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let harness_repo = temp.path().join("llm-server");
+    std::fs::create_dir_all(&harness_repo).expect("harness repo dir");
+    std::fs::write(harness_repo.join("README.md"), "harness\n").expect("harness file");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .arg("init")
+            .status()
+            .expect("git init")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["add", "."])
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args([
+                "-c",
+                "user.name=Benchmark Test",
+                "-c",
+                "user.email=benchmark@example.com",
+                "commit",
+                "-m",
+                "init harness",
+            ])
+            .status()
+            .expect("git commit")
+            .success()
+    );
+    let harness_sha = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&harness_repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("harness rev-parse")
+            .stdout,
+    )
+    .expect("harness sha utf8")
+    .trim()
+    .to_owned();
+    let source_repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let source_sha = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(source_repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("source rev-parse")
+            .stdout,
+    )
+    .expect("source sha utf8")
+    .trim()
+    .to_owned();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .current_dir(&harness_repo)
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--lane",
+            "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,kind=direct_mlx",
+        ])
+        .output()
+        .expect("run qwen mlx tool normalized dry-run from harness repo");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["repo_revision"]["commit_sha"], source_sha);
+    assert_ne!(value["repo_revision"]["commit_sha"], harness_sha);
 }
 
 #[test]

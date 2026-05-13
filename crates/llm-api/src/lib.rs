@@ -784,6 +784,30 @@ pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: u64,
+}
+
+impl Usage {
+    pub fn new(prompt_tokens: u64, completion_tokens: u64) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            prompt_tokens_details: None,
+        }
+    }
+
+    pub fn with_prompt_cached_tokens(mut self, cached_tokens: Option<u64>) -> Self {
+        self.prompt_tokens_details =
+            cached_tokens.map(|cached_tokens| PromptTokensDetails { cached_tokens });
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

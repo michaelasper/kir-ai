@@ -320,11 +320,11 @@ where
         } else {
             output.finish_reason
         };
-        let usage = Usage {
-            prompt_tokens: output.prompt_tokens,
-            completion_tokens: output.completion_tokens,
-            total_tokens: output.prompt_tokens + output.completion_tokens,
-        };
+        let usage = usage_from_tokens(
+            output.prompt_tokens,
+            output.completion_tokens,
+            output.prompt_cached_tokens,
+        );
         Ok(RuntimeChatCompletion {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
@@ -404,11 +404,11 @@ where
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
         }
-        let usage = Usage {
-            prompt_tokens: output.prompt_tokens,
-            completion_tokens: output.completion_tokens,
-            total_tokens: output.prompt_tokens + output.completion_tokens,
-        };
+        let usage = usage_from_tokens(
+            output.prompt_tokens,
+            output.completion_tokens,
+            output.prompt_cached_tokens,
+        );
         Ok(RuntimeCompletion {
             id: format!("cmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
@@ -556,12 +556,14 @@ fn streaming_completion_stream<'a>(
         let mut raw_text = String::new();
         let mut emitted_len = 0;
         let mut prompt_tokens = 0;
+        let mut prompt_cached_tokens = None;
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
         let max_stop_len = max_stop_sequence_len(&stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+            prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
@@ -607,11 +609,7 @@ fn streaming_completion_stream<'a>(
         if let Some(class) = classify_no_progress(visible_text, completion_tokens) {
             Err(RuntimeError::NoProgress(class))?;
         }
-        let usage = Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-        };
+        let usage = usage_from_tokens(prompt_tokens, completion_tokens, prompt_cached_tokens);
         yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
             &completion,
             String::new(),
@@ -753,6 +751,7 @@ fn streaming_chat_stream<'a>(
         let mut raw_text = String::new();
         let mut emitted_len = 0;
         let mut prompt_tokens = 0;
+        let mut prompt_cached_tokens = None;
         let mut completion_tokens = 0;
         let mut finish_reason = llm_api::FinishReason::Length;
         let mut stopped_by_sequence = false;
@@ -767,6 +766,7 @@ fn streaming_chat_stream<'a>(
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+            prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
@@ -898,11 +898,7 @@ fn streaming_chat_stream<'a>(
         } else {
             finish_reason
         };
-        let usage = Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-        };
+        let usage = usage_from_tokens(prompt_tokens, completion_tokens, prompt_cached_tokens);
         match deferred {
             DeferredEmission::JsonObjectMode if !parsed.content.is_empty() => {
                 yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -1090,10 +1086,23 @@ fn unmarked_tool_json_candidate<'a>(
 }
 
 fn empty_usage() -> Usage {
-    Usage {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
+    Usage::new(0, 0)
+}
+
+fn usage_from_tokens(
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    prompt_cached_tokens: Option<u64>,
+) -> Usage {
+    Usage::new(prompt_tokens, completion_tokens).with_prompt_cached_tokens(prompt_cached_tokens)
+}
+
+fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Option<u64> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current.max(next)),
+        (Some(current), None) => Some(current),
+        (None, Some(next)) => Some(next),
+        (None, None) => None,
     }
 }
 

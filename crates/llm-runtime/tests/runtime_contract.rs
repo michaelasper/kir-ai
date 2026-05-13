@@ -88,6 +88,7 @@ impl ModelBackend for RecordingBackend {
         Ok(BackendOutput {
             text: "hello".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
@@ -120,6 +121,7 @@ impl ModelBackend for RecordingSamplingBackend {
         Ok(BackendOutput {
             text: "hello".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
@@ -179,6 +181,7 @@ impl ModelBackend for FamilyStreamBackend {
         Ok(BackendOutput {
             text: self.text.to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: self.finish_reason.clone(),
         })
@@ -215,6 +218,7 @@ impl ModelBackend for MlxQwenMetadataBackend {
         Ok(BackendOutput {
             text: "hello from mlx".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })
@@ -251,6 +255,7 @@ impl ModelBackend for MlxGemmaMetadataBackend {
         Ok(BackendOutput {
             text: "hello from gemma<turn|>".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })
@@ -287,6 +292,7 @@ impl ModelBackend for MlxDeepSeekMetadataBackend {
         Ok(BackendOutput {
             text: "hello from deepseek<｜end▁of▁sentence｜>".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })
@@ -325,6 +331,7 @@ impl ModelBackend for MlxLlamaMetadataBackend {
         Ok(BackendOutput {
             text: "hello from llama<|eot_id|>".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })
@@ -354,6 +361,7 @@ impl ModelBackend for RecordingChatContextBackend {
         Ok(BackendOutput {
             text: "hello from gemma".to_owned(),
             prompt_tokens: 4,
+            prompt_cached_tokens: None,
             completion_tokens: 3,
             finish_reason: FinishReason::Stop,
         })
@@ -406,6 +414,7 @@ fn fixture_backend_output(value: &Value) -> BackendOutput {
         prompt_tokens: value["prompt_tokens"]
             .as_u64()
             .expect("backend output has prompt_tokens"),
+        prompt_cached_tokens: value.get("prompt_cached_tokens").and_then(Value::as_u64),
         completion_tokens: value["completion_tokens"]
             .as_u64()
             .expect("backend output has completion_tokens"),
@@ -463,6 +472,7 @@ impl ModelBackend for CancellableStreamBackend {
         Ok(BackendOutput {
             text: "unused".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
@@ -508,6 +518,7 @@ impl ModelBackend for CancellableGenerateBackend {
         Ok(BackendOutput {
             text: "unused".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
@@ -545,6 +556,7 @@ impl ModelBackend for TwoChunkStreamBackend {
         Ok(BackendOutput {
             text: "first second".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 2,
             finish_reason: FinishReason::Stop,
         })
@@ -569,6 +581,7 @@ impl ModelBackend for TwoChunkStreamBackend {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
@@ -576,6 +589,7 @@ impl ModelBackend for TwoChunkStreamBackend {
             yield BackendStreamChunk {
                 text: " second".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(FinishReason::Stop),
             };
@@ -630,6 +644,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
             yield BackendStreamChunk {
                 text: self.text.to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
@@ -637,6 +652,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
             yield BackendStreamChunk {
                 text: String::new(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 0,
                 finish_reason: Some(FinishReason::ToolCalls),
             };
@@ -671,6 +687,7 @@ impl ModelBackend for BlockingTextBackend {
         Ok(BackendOutput {
             text: "released".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: FinishReason::Stop,
         })
@@ -717,12 +734,14 @@ impl ModelBackend for StopStreamingBackend {
             yield BackendStreamChunk {
                 text: "hello ST".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
             yield BackendStreamChunk {
                 text: "OP ignored".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(FinishReason::Stop),
             };

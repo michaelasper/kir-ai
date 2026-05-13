@@ -88,6 +88,7 @@ impl ModelBackend for ProtocolTestBackend {
             completion_tokens: count_tokens(self.family, &text),
             text,
             prompt_tokens: count_tokens(self.family, &request.prompt),
+            prompt_cached_tokens: None,
             finish_reason,
         })
     }

@@ -138,9 +138,10 @@ and `finish_reason: "tool_calls"` for tool responses.
 
 Runs direct Qwen tool/JSON probes across comparable OpenAI-compatible lanes
 without changing the `qwen-long-context` promotion gate. The command does not
-start MLX sidecars; each lane records the endpoint, model addressing mode,
-template/thinking assumption, optional snapshot identity, declared MLX-LM sweep
-knobs, repo revision metadata, measured cache phase, and aggregate summary rows.
+start MLX sidecars; each lane records the endpoint, request model, optional
+launch model identity, model addressing mode, template/thinking assumption,
+optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
+measured cache phase, and aggregate summary rows.
 
 Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
 disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an
@@ -214,14 +215,8 @@ cargo run -p llm-engine -- serve \
 
 ```sh
 llm-engine bench qwen-mlx-tool-normalized \
-  --lane name=mlx-default,endpoint=http://127.0.0.1:8080/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-cache-size-4096,endpoint=http://127.0.0.1:8081/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=4096,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-cache-bytes-1g,endpoint=http://127.0.0.1:8082/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=1073741824,mlx_prefill_step_size=default,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-prefill-2048,endpoint=http://127.0.0.1:8083/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=2048,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-prefill-4096,endpoint=http://127.0.0.1:8084/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=4096,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-prefill-8192,endpoint=http://127.0.0.1:8085/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=8192,mlx_prompt_concurrency=default,mlx_decode_concurrency=default \
-  --lane name=mlx-concurrent-4x2,endpoint=http://127.0.0.1:8086/v1,model=qwen-loaded,snapshot="$SNAPSHOT",kind=direct_mlx,template=sidecar-chat-template-args,mlx_prompt_cache_size=default,mlx_prompt_cache_bytes=unset,mlx_prefill_step_size=default,mlx_prompt_concurrency=4,mlx_decode_concurrency=2 \
-  --lane name=kir-proxy,endpoint=http://127.0.0.1:3000,model=local-qwen36-mlx,snapshot="$SNAPSHOT",kind=kir_ai_proxy,model_addressing=default_model,template=sidecar-chat-template-args \
+  --sweep-profile qwen-mlx-cache-prefill \
+  --snapshot "$SNAPSHOT" \
   --warmups 1 \
   --samples 3 \
   --context-tokens 135000 \
@@ -230,9 +225,19 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-tool-sweep.json
 ```
 
+Use `--dry-run` with the same profile to print the exact lane/sample matrix
+without issuing HTTP requests. The profile expands the eight fixed lanes
+`mlx-default`, `mlx-cache-size-4096`, `mlx-cache-bytes-1g`,
+`mlx-prefill-2048`, `mlx-prefill-4096`, `mlx-prefill-8192`,
+`mlx-concurrent-4x2`, and `kir-proxy` on ports `8080` through `8086` and
+`3000`. Use explicit `--lane` specs instead of `--sweep-profile` when a sidecar
+uses custom ports or experiment-specific knobs.
+
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--lane <spec>` | required | Adds a lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. |
+| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill` requires `--snapshot` and uses the default MLX/Kir proxy ports above. |
+| `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
+| `--lane <spec>` | none | Adds an explicit lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `launched_model_id`, `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. Do not combine explicit lanes with `--sweep-profile`. |
 | `--warmups <n>` | `1` | Warmup requests issued before measured samples for `warm_same_prompt` and `warm_same_tool_schema`. `cold` never performs command-issued warmups. |
 | `--samples <n>` | `1` | Sequential measured samples per lane, case, schema variant, tool-choice variant, and cache phase. |
 | `--context-tokens <n>` | `135000` | Stable long-context prompt target for all probes. |
@@ -265,7 +270,13 @@ Each measured sample reports `schema_variant`, `tool_choice_variant`,
 reason, prompt/completion/total tokens, cached-token status/count when provided
 by upstream `usage.prompt_tokens_details.cached_tokens`, validation
 classification, and the stream timing fields when observed. The top-level
-`repo_revision` records the kir-ai branch, commit SHA, and dirty status. The
+`repo_revision` records the kir-ai source checkout branch, commit SHA, and dirty
+status even when the benchmark is launched from a separate harness repo.
+Manifestless Hugging Face cache snapshots are recorded as raw snapshot identity
+with inferred `repo_id` and resolved commit when the path follows
+`models--<owner>--<repo>/snapshots/<commit>`. Use `launched_model_id` to pin the
+model identity from the sidecar launch command when `/v1/models` reports a
+generic or unrelated ID; `model` remains the request payload model field. The
 top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.

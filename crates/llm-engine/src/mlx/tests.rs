@@ -44,7 +44,7 @@ fn parse_mlx_sse_for_test(
 #[tokio::test]
 async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     let server = FakeMlxServer::start(
-        "data: {\"choices\":[{\"text\":\"MLX says \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":3}}\n\ndata: {\"choices\":[{\"text\":\"hi\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
+        "data: {\"choices\":[{\"text\":\"MLX says \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\ndata: {\"choices\":[{\"text\":\"hi\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":4}}\n\ndata: [DONE]\n\n",
     );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -80,6 +80,7 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
 
     assert_eq!(output.text, "MLX says hi");
     assert_eq!(output.prompt_tokens, 3);
+    assert_eq!(output.prompt_cached_tokens, Some(2));
     assert_eq!(output.completion_tokens, 4);
     let request = server.received_body();
     assert_eq!(
@@ -122,7 +123,7 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
 #[tokio::test]
 async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     let server = FakeMlxServer::start(
-        r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}"#,
+        r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":3}}}"#,
     );
     let backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -169,6 +170,7 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     assert!(output.text.contains(r#""name":"read_file""#));
     assert!(output.text.contains(r#""path":"Cargo.toml""#));
     assert_eq!(output.prompt_tokens, 4);
+    assert_eq!(output.prompt_cached_tokens, Some(3));
     assert_eq!(output.completion_tokens, 5);
     assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
 }
@@ -312,7 +314,7 @@ async fn mlx_backend_metrics_count_http_status_even_when_error_body_fails() {
 #[tokio::test]
 async fn mlx_backend_metrics_record_dropped_streams() {
     let server = FakeMlxServer::start(
-        "data:{\"choices\":[{\"text\":\"one \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\ndata: {\"choices\":[{\"text\":\"two\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+        "data:{\"choices\":[{\"text\":\"one \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\ndata: {\"choices\":[{\"text\":\"two\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
     );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -1016,7 +1018,7 @@ fn mlx_production_module_does_not_depend_on_protocol_test_backend() {
 #[tokio::test]
 async fn mlx_backend_streams_completion_chunks() {
     let server = FakeMlxServer::start(
-        "data:{\"choices\":[{\"text\":\"one \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\ndata: {\"choices\":[{\"text\":\"two\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+        "data:{\"choices\":[{\"text\":\"one \",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\ndata: {\"choices\":[{\"text\":\"two\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
     );
     let backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -1056,9 +1058,11 @@ async fn mlx_backend_streams_completion_chunks() {
 
     assert_eq!(first.text, "one ");
     assert_eq!(first.prompt_tokens, 2);
+    assert_eq!(first.prompt_cached_tokens, Some(1));
     assert_eq!(first.completion_tokens, 0);
     assert_eq!(first.finish_reason, None);
     assert_eq!(second.text, "two");
+    assert_eq!(second.prompt_cached_tokens, Some(1));
     assert_eq!(second.completion_tokens, 3);
     assert_eq!(second.finish_reason, Some(llm_api::FinishReason::Stop));
 }

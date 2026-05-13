@@ -46,6 +46,37 @@ async fn runtime_forwards_explicit_chat_max_tokens_to_backend() {
 }
 
 #[tokio::test]
+async fn runtime_non_streaming_chat_includes_backend_cached_prompt_tokens() {
+    let runtime = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: "cached response".to_owned(),
+            prompt_tokens: 10,
+            prompt_cached_tokens: Some(7),
+            completion_tokens: 2,
+            finish_reason: FinishReason::Stop,
+        },
+    });
+
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    assert_eq!(
+        response
+            .usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|details| details.cached_tokens),
+        Some(7)
+    );
+}
+
+#[tokio::test]
 async fn runtime_forwards_chat_sampling_controls_to_backend() {
     let observed = Arc::new(Mutex::new(None));
     let backend = RecordingSamplingBackend {

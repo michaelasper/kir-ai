@@ -342,6 +342,7 @@ where
         Ok(BackendOutput {
             text,
             prompt_tokens: prompt_tokens.len() as u64,
+            prompt_cached_tokens: None,
             completion_tokens: output_ids.len() as u64,
             finish_reason,
         })
@@ -446,6 +447,7 @@ where
                 tx.send(Ok(BackendStreamChunk {
                     text: delta,
                     prompt_tokens: prompt_tokens.len() as u64,
+                    prompt_cached_tokens: None,
                     completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                     finish_reason: None,
                 }))
@@ -473,6 +475,7 @@ where
         tx.send(Ok(BackendStreamChunk {
             text: final_text.unwrap_or_default(),
             prompt_tokens: prompt_tokens.len() as u64,
+            prompt_cached_tokens: None,
             completion_tokens: std::mem::take(&mut unreported_completion_tokens),
             finish_reason: Some(finish_reason),
         }))

@@ -41,6 +41,12 @@ struct MlxUsage {
     prompt_tokens: Option<u64>,
     #[serde(alias = "output_tokens")]
     completion_tokens: Option<u64>,
+    prompt_tokens_details: Option<MlxPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MlxPromptTokensDetails {
+    cached_tokens: Option<u64>,
 }
 
 impl MlxCompletionResponse {
@@ -55,6 +61,7 @@ impl MlxCompletionResponse {
 #[derive(Debug)]
 pub(super) struct MlxSseParser {
     prompt_tokens: u64,
+    prompt_cached_tokens: Option<u64>,
     estimated_completion_tokens: u64,
     emitted_completion_tokens: u64,
     uses_upstream_usage: bool,
@@ -73,6 +80,7 @@ impl MlxSseParser {
     ) -> Self {
         Self {
             prompt_tokens: count_whitespace_tokens(prompt),
+            prompt_cached_tokens: None,
             estimated_completion_tokens: 0,
             emitted_completion_tokens: 0,
             uses_upstream_usage: false,
@@ -133,6 +141,7 @@ impl MlxSseParser {
             chunks.push(BackendStreamChunk {
                 text,
                 prompt_tokens: self.prompt_tokens,
+                prompt_cached_tokens: self.prompt_cached_tokens,
                 completion_tokens,
                 finish_reason: None,
             });
@@ -164,6 +173,15 @@ impl MlxSseParser {
             .and_then(|usage| usage.prompt_tokens)
         {
             self.prompt_tokens = self.prompt_tokens.max(prompt_tokens);
+        }
+        if let Some(cached_tokens) = completion
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_tokens_details.as_ref())
+            .and_then(|details| details.cached_tokens)
+        {
+            self.prompt_cached_tokens =
+                max_optional_u64(self.prompt_cached_tokens, Some(cached_tokens));
         }
         let usage_completion_tokens = completion
             .usage
@@ -213,6 +231,7 @@ impl MlxSseParser {
         Ok(Some(BackendStreamChunk {
             text,
             prompt_tokens: self.prompt_tokens,
+            prompt_cached_tokens: self.prompt_cached_tokens,
             completion_tokens,
             finish_reason,
         }))
@@ -487,10 +506,12 @@ pub(super) fn parse_mlx_completion_body(
 pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> BackendOutput {
     let mut text = String::new();
     let mut prompt_tokens = 0;
+    let mut prompt_cached_tokens = None;
     let mut completion_tokens = 0;
     let mut finish_reason = llm_api::FinishReason::Stop;
     for chunk in chunks {
         prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
+        prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
         completion_tokens += chunk.completion_tokens;
         text.push_str(&chunk.text);
         if let Some(reason) = chunk.finish_reason {
@@ -505,9 +526,19 @@ pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> 
     }
     BackendOutput {
         prompt_tokens,
+        prompt_cached_tokens,
         completion_tokens,
         text,
         finish_reason,
+    }
+}
+
+fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Option<u64> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current.max(next)),
+        (Some(current), None) => Some(current),
+        (None, Some(next)) => Some(next),
+        (None, None) => None,
     }
 }
 

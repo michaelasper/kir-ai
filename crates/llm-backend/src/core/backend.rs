@@ -123,6 +123,7 @@ impl SamplingConfig {
 pub struct BackendOutput {
     pub text: String,
     pub prompt_tokens: u64,
+    pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
     pub finish_reason: FinishReason,
 }
@@ -131,6 +132,7 @@ pub struct BackendOutput {
 pub struct BackendStreamChunk {
     pub text: String,
     pub prompt_tokens: u64,
+    pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
     pub finish_reason: Option<FinishReason>,
 }
@@ -202,6 +204,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                 .map(|output| BackendStreamChunk {
                     text: output.text,
                     prompt_tokens: output.prompt_tokens,
+                    prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,
                     finish_reason: Some(output.finish_reason),
                 })
@@ -220,6 +223,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                 .map(|output| BackendStreamChunk {
                     text: output.text,
                     prompt_tokens: output.prompt_tokens,
+                    prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,
                     finish_reason: Some(output.finish_reason),
                 })
@@ -306,6 +310,7 @@ mod tests {
             Ok(BackendOutput {
                 text: "uncancelled".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: FinishReason::Stop,
             })

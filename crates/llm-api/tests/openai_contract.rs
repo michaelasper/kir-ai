@@ -935,6 +935,7 @@ fn text_completion_response_serializes_openai_shape() {
             prompt_tokens: 1,
             completion_tokens: 1,
             total_tokens: 2,
+            prompt_tokens_details: None,
         },
     };
 
@@ -943,6 +944,49 @@ fn text_completion_response_serializes_openai_shape() {
     assert_eq!(value["object"], "text_completion");
     assert_eq!(value["choices"][0]["text"], "hello");
     assert_eq!(value["choices"][0]["finish_reason"], "stop");
+}
+
+#[test]
+fn usage_serializes_cached_prompt_token_details_when_present() {
+    let usage = llm_api::Usage {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_tokens_details: Some(llm_api::PromptTokensDetails { cached_tokens: 7 }),
+    };
+
+    let value = serde_json::to_value(usage).expect("usage serializes");
+
+    assert_eq!(value["prompt_tokens"], 10);
+    assert_eq!(value["prompt_tokens_details"]["cached_tokens"], 7);
+}
+
+#[test]
+fn usage_omits_cached_prompt_token_details_when_missing_and_deserializes_openai_shape() {
+    let compact = llm_api::Usage {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_tokens_details: None,
+    };
+    let compact_value = serde_json::to_value(compact).expect("compact usage serializes");
+    assert!(compact_value.get("prompt_tokens_details").is_none());
+
+    let parsed: llm_api::Usage = serde_json::from_value(json!({
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+        "prompt_tokens_details": {"cached_tokens": 7}
+    }))
+    .expect("OpenAI usage shape deserializes");
+
+    assert_eq!(
+        parsed
+            .prompt_tokens_details
+            .as_ref()
+            .map(|details| details.cached_tokens),
+        Some(7)
+    );
 }
 
 #[test]

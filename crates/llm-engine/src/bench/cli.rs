@@ -22,7 +22,9 @@ Options:
   -h, --help                          Print help
 
 qwen-mlx-tool-normalized:
-  --lane <spec>                       name=<id>,endpoint=<url>,model=<id>[,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
+  --sweep-profile <name>              Built-in lane matrix: qwen-mlx-cache-prefill (requires --snapshot)
+  --snapshot <path>                   Raw Hugging Face snapshot path for built-in sweep profiles
+  --lane <spec>                       name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                       Warmups for warm phases [default: 1]
   --samples <n>                       Sequential measured samples per case and phase [default: 1]
   --context-tokens <n>                Stable long-context prompt target [default: 135000]

@@ -505,6 +505,41 @@ async fn runtime_appends_chat_stream_usage_when_requested() {
 }
 
 #[tokio::test]
+async fn runtime_chat_stream_usage_includes_backend_cached_prompt_tokens() {
+    let runtime = Runtime::new(CachedPromptTokenStreamBackend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            stream_options: llm_api::StreamOptions {
+                include_usage: true,
+            },
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming text succeeds");
+    let (chunks, final_usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let usage_chunk = chunks.last().expect("usage chunk");
+    assert_eq!(
+        usage_chunk
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_tokens_details.as_ref())
+            .map(|details| details.cached_tokens),
+        Some(6)
+    );
+    assert_eq!(
+        final_usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|details| details.cached_tokens),
+        Some(6)
+    );
+}
+
+#[tokio::test]
 async fn runtime_streams_generated_tool_call_delta() {
     let backend = FamilyStreamBackend {
         model_id: "local-qwen36",
@@ -529,6 +564,67 @@ async fn runtime_streams_deepseek_tool_call_delta_without_marker_content() {
         &["<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"],
     )
     .await;
+}
+
+struct CachedPromptTokenStreamBackend;
+
+#[async_trait::async_trait]
+impl ModelBackend for CachedPromptTokenStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cached-prompt-token-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "cached prompt token stream test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: "cached".to_owned(),
+                prompt_tokens: 10,
+                prompt_cached_tokens: Some(6),
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            yield BackendStreamChunk {
+                text: String::new(),
+                prompt_tokens: 10,
+                prompt_cached_tokens: Some(6),
+                completion_tokens: 1,
+                finish_reason: Some(FinishReason::Stop),
+            };
+        }
+        .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
 }
 
 #[tokio::test]

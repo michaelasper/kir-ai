@@ -132,6 +132,7 @@ impl ModelBackend for StaticBackend {
         Ok(BackendOutput {
             text: self.text.clone(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -160,6 +161,7 @@ impl ModelBackend for FamilyStaticBackend {
         Ok(BackendOutput {
             text: self.text.to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -196,6 +198,7 @@ impl ModelBackend for ScriptedChatBackend {
         let text = scripted_chat_response(&request.prompt);
         Ok(BackendOutput {
             prompt_tokens: test_token_count(&request.prompt),
+            prompt_cached_tokens: None,
             completion_tokens: test_token_count(&text),
             text,
             finish_reason: llm_api::FinishReason::Stop,
@@ -232,6 +235,7 @@ impl ModelBackend for BlockingBackend {
         Ok(BackendOutput {
             text: "released".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -285,6 +289,7 @@ impl ModelBackend for FairnessBackend {
         Ok(BackendOutput {
             text: label.to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -384,6 +389,7 @@ impl ModelBackend for NoProgressBackend {
         Ok(BackendOutput {
             text: String::new(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 4096,
             finish_reason: llm_api::FinishReason::Length,
         })
@@ -421,6 +427,7 @@ impl ModelBackend for DelayedStreamBackend {
         Ok(BackendOutput {
             text: "released".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -456,6 +463,7 @@ impl ModelBackend for TwoStageStreamBackend {
         Ok(BackendOutput {
             text: "first second".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 2,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -480,6 +488,7 @@ impl ModelBackend for TwoStageStreamBackend {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
@@ -487,6 +496,7 @@ impl ModelBackend for TwoStageStreamBackend {
             yield BackendStreamChunk {
                 text: " second".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(llm_api::FinishReason::Stop),
             };
@@ -524,6 +534,7 @@ impl ModelBackend for CancellableStreamBackend {
         Ok(BackendOutput {
             text: "first".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -551,6 +562,7 @@ impl ModelBackend for CancellableStreamBackend {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
@@ -576,6 +588,7 @@ impl ModelBackend for FailingStreamBackend {
         Ok(BackendOutput {
             text: "first".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -597,6 +610,7 @@ impl ModelBackend for FailingStreamBackend {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
                 prompt_tokens: 1,
+                prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
             };
@@ -649,6 +663,7 @@ impl ModelBackend for MetadataBackend {
         Ok(BackendOutput {
             text: "metadata".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -692,6 +707,7 @@ impl ModelBackend for MlxMetadataBackend {
         Ok(BackendOutput {
             text: "mlx metadata".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
@@ -735,6 +751,7 @@ impl ModelBackend for SnapshotMetadataBackend {
         Ok(BackendOutput {
             text: "metadata".to_owned(),
             prompt_tokens: 1,
+            prompt_cached_tokens: None,
             completion_tokens: 1,
             finish_reason: llm_api::FinishReason::Stop,
         })
