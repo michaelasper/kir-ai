@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.0](https://github.com/michaelasper/kir-ai/compare/v1.9.0...v1.10.0) (2026-05-13)
+
+### Features
+
+* **bench:** add structured qwen report metrics ([7f20d29](https://github.com/michaelasper/kir-ai/commit/7f20d29ef6d527dfc8e5fe70eee4f9a13631daed))
+
 ## [1.9.0](https://github.com/michaelasper/kir-ai/compare/v1.8.12...v1.9.0) (2026-05-13)
 
 ### Features
