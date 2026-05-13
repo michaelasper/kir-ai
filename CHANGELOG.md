@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0](https://github.com/michaelasper/kir-ai/compare/v1.8.12...v1.9.0) (2026-05-13)
+
+### Features
+
+* **native:** expose prefix cache reuse per request ([ed0aeaf](https://github.com/michaelasper/kir-ai/commit/ed0aeafec705028e96fd6407196fd03851be1137))
+
 ## [1.8.12](https://github.com/michaelasper/kir-ai/compare/v1.8.11...v1.8.12) (2026-05-13)
 
 ### Bug Fixes
