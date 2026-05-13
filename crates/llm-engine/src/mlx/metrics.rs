@@ -1,7 +1,9 @@
-use super::protocol::MlxUpstreamProtocol;
+use super::protocol::{MlxUpstreamProtocol, mlx_chat_template_kwargs_for_metadata};
 use crate::sync_ext::FailPoisonedMutex;
+use llm_backend::{BackendModelMetadata, BackendRequest, BackendToolChoice};
 use llm_telemetry::LatencyMetrics;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -12,7 +14,7 @@ pub(super) struct MlxBackendMetrics {
     counters: Mutex<MlxBackendMetricCounters>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct MlxBackendMetricCounters {
     requests_total: u64,
     successful_requests: u64,
@@ -32,6 +34,12 @@ struct MlxBackendMetricCounters {
     upstream_request_latency: LatencyMetrics,
     blocking_upstream_request_latency: LatencyMetrics,
     streaming_upstream_request_latency: LatencyMetrics,
+    stream_response_headers_latency: LatencyMetrics,
+    stream_first_upstream_byte_latency: LatencyMetrics,
+    stream_first_parsed_chunk_latency: LatencyMetrics,
+    stream_first_tool_delta_latency: LatencyMetrics,
+    stream_upstream_complete_latency: LatencyMetrics,
+    last_request_fingerprint: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +66,10 @@ pub(super) struct MlxBackendRequestMetrics {
     started: Instant,
     finished: bool,
     observed_finish_chunk: bool,
+    observed_first_upstream_byte: bool,
+    observed_first_parsed_chunk: bool,
+    observed_first_tool_delta: bool,
+    observed_stream_complete: bool,
 }
 
 impl MlxBackendMetrics {
@@ -80,11 +92,15 @@ impl MlxBackendMetrics {
             started: Instant::now(),
             finished: false,
             observed_finish_chunk: false,
+            observed_first_upstream_byte: false,
+            observed_first_parsed_chunk: false,
+            observed_first_tool_delta: false,
+            observed_stream_complete: false,
         }
     }
 
     pub(super) fn snapshot(&self) -> Value {
-        let counters = *self.counters.lock_or_panic("MLX backend metrics");
+        let counters = self.counters.lock_or_panic("MLX backend metrics").clone();
         json!({
             "requests_total": counters.requests_total,
             "successful_requests": counters.successful_requests,
@@ -109,6 +125,22 @@ impl MlxBackendMetrics {
             "streaming_upstream_request_latency_ms": latency_summary(
                 counters.streaming_upstream_request_latency,
             ),
+            "stream_response_headers_ms": latency_summary(
+                counters.stream_response_headers_latency,
+            ),
+            "stream_first_upstream_byte_ms": latency_summary(
+                counters.stream_first_upstream_byte_latency,
+            ),
+            "stream_first_parsed_chunk_ms": latency_summary(
+                counters.stream_first_parsed_chunk_latency,
+            ),
+            "stream_first_tool_delta_ms": latency_summary(
+                counters.stream_first_tool_delta_latency,
+            ),
+            "stream_upstream_complete_ms": latency_summary(
+                counters.stream_upstream_complete_latency,
+            ),
+            "last_request_fingerprint": counters.last_request_fingerprint,
         })
     }
 
@@ -128,6 +160,47 @@ impl MlxBackendMetrics {
         let mut counters = self.counters.lock_or_panic("MLX backend metrics");
         counters.successful_requests += 1;
         record_upstream_latency(&mut counters, kind, latency);
+    }
+
+    fn record_request_fingerprint(&self, fingerprint: Value) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .last_request_fingerprint = Some(fingerprint);
+    }
+
+    fn record_stream_response_headers(&self, latency: Duration) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .stream_response_headers_latency
+            .record(latency);
+    }
+
+    fn record_stream_first_upstream_byte(&self, latency: Duration) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .stream_first_upstream_byte_latency
+            .record(latency);
+    }
+
+    fn record_stream_first_parsed_chunk(&self, latency: Duration) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .stream_first_parsed_chunk_latency
+            .record(latency);
+    }
+
+    fn record_stream_first_tool_delta(&self, latency: Duration) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .stream_first_tool_delta_latency
+            .record(latency);
+    }
+
+    fn record_stream_upstream_complete(&self, latency: Duration) {
+        self.counters
+            .lock_or_panic("MLX backend metrics")
+            .stream_upstream_complete_latency
+            .record(latency);
     }
 
     fn record_failure(
@@ -187,6 +260,51 @@ impl MlxBackendRequestMetrics {
         self.metrics.record_response_bytes(bytes as u64);
     }
 
+    pub(super) fn record_request_fingerprint(&self, fingerprint: Value) {
+        self.metrics.record_request_fingerprint(fingerprint);
+    }
+
+    pub(super) fn record_stream_response_headers(&self) {
+        self.metrics
+            .record_stream_response_headers(self.started.elapsed());
+    }
+
+    pub(super) fn record_first_upstream_byte(&mut self) {
+        if self.observed_first_upstream_byte {
+            return;
+        }
+        self.observed_first_upstream_byte = true;
+        self.metrics
+            .record_stream_first_upstream_byte(self.started.elapsed());
+    }
+
+    pub(super) fn record_first_parsed_chunk(&mut self) {
+        if self.observed_first_parsed_chunk {
+            return;
+        }
+        self.observed_first_parsed_chunk = true;
+        self.metrics
+            .record_stream_first_parsed_chunk(self.started.elapsed());
+    }
+
+    pub(super) fn record_first_tool_delta(&mut self) {
+        if self.observed_first_tool_delta {
+            return;
+        }
+        self.observed_first_tool_delta = true;
+        self.metrics
+            .record_stream_first_tool_delta(self.started.elapsed());
+    }
+
+    pub(super) fn record_stream_complete(&mut self) {
+        if self.observed_stream_complete {
+            return;
+        }
+        self.observed_stream_complete = true;
+        self.metrics
+            .record_stream_upstream_complete(self.started.elapsed());
+    }
+
     pub(super) fn finish_success(&mut self) {
         if self.finished {
             return;
@@ -228,6 +346,65 @@ pub(super) fn mlx_backend_metrics() -> Arc<MlxBackendMetrics> {
 
 pub(crate) fn mlx_backend_metrics_snapshot() -> Value {
     mlx_backend_metrics().snapshot()
+}
+
+pub(super) fn mlx_request_fingerprint(
+    protocol: MlxUpstreamProtocol,
+    stream: bool,
+    metadata: &BackendModelMetadata,
+    request: &BackendRequest,
+) -> Value {
+    json!({
+        "protocol": protocol_label(protocol),
+        "stream": stream,
+        "prompt_template_id": request.cache_context.prompt_template.as_str(),
+        "prompt_hash": hash_str(&request.prompt),
+        "tool_schema_hash": request.cache_context.tool_schema.as_deref().map(hash_str),
+        "messages_hash": request
+            .chat_context
+            .as_ref()
+            .and_then(|context| hash_json(&context.messages)),
+        "tool_choice_hash": request.required_tool_choice.as_ref().and_then(hash_tool_choice),
+        "chat_template_kwargs_hash": mlx_chat_template_kwargs_for_metadata(metadata)
+            .as_ref()
+            .and_then(hash_json),
+        "max_tokens": request.max_tokens,
+    })
+}
+
+fn protocol_label(protocol: MlxUpstreamProtocol) -> &'static str {
+    match protocol {
+        MlxUpstreamProtocol::Completions => "completions",
+        MlxUpstreamProtocol::ChatCompletions => "chat_completions",
+    }
+}
+
+fn hash_tool_choice(choice: &BackendToolChoice) -> Option<String> {
+    let value = match choice {
+        BackendToolChoice::RequiredAny => json!("required"),
+        BackendToolChoice::RequiredFunction(name) => json!({
+            "type": "function",
+            "function": {
+                "name": name,
+            },
+        }),
+    };
+    hash_json(&value)
+}
+
+fn hash_json(value: &impl serde::Serialize) -> Option<String> {
+    serde_json::to_vec(value)
+        .ok()
+        .map(|bytes| hash_bytes(&bytes))
+}
+
+fn hash_str(value: &str) -> String {
+    hash_bytes(value.as_bytes())
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("{digest:x}")
 }
 
 fn latency_summary(metrics: LatencyMetrics) -> Value {

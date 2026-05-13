@@ -437,6 +437,104 @@ async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
 }
 
 #[tokio::test]
+async fn chat_stream_structured_omp_arguments_include_filled_intent() {
+    let response = build_router_with_backend(Box::new(StructuredToolDeltaHttpBackend))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "read calculator.py"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "description": "read file",
+                                "parameters": {
+                                    "type": "object",
+                                    "required": ["path", "_i"],
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "_i": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }],
+                        "tool_choice": "required",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    let frames = sse_json_frames(&body);
+    let mut reconstructed_arguments = String::new();
+    let mut saw_progress_without_arguments = false;
+    let mut saw_tool_calls_finish = false;
+
+    for frame in &frames {
+        let Some(choices) = frame["choices"].as_array() else {
+            continue;
+        };
+        for choice in choices {
+            if let Some(tool_calls) = choice["delta"]["tool_calls"].as_array() {
+                for tool_call in tool_calls {
+                    let function = tool_call.get("function");
+                    if tool_call.get("id").and_then(Value::as_str) == Some("call_read_1")
+                        && function
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            == Some("read")
+                        && function
+                            .and_then(|function| function.get("arguments"))
+                            .is_none()
+                    {
+                        saw_progress_without_arguments = true;
+                    }
+                    if let Some(arguments) = function
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                    {
+                        assert!(
+                            !saw_tool_calls_finish,
+                            "arguments must arrive before tool_calls finish"
+                        );
+                        reconstructed_arguments.push_str(arguments);
+                    }
+                }
+            }
+            if choice["finish_reason"].as_str() == Some("tool_calls") {
+                assert!(
+                    !reconstructed_arguments.is_empty(),
+                    "finish must wait for final arguments"
+                );
+                saw_tool_calls_finish = true;
+            }
+        }
+    }
+
+    assert!(saw_progress_without_arguments);
+    assert!(saw_tool_calls_finish);
+    let reconstructed_arguments: Value =
+        serde_json::from_str(&reconstructed_arguments).expect("client arguments JSON");
+    assert_eq!(reconstructed_arguments["path"], "calculator.py");
+    assert!(
+        reconstructed_arguments["_i"]
+            .as_str()
+            .is_some_and(|intent| !intent.is_empty())
+    );
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn dropping_chat_stream_body_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
     let app = build_router_with_unauthenticated_admin(Box::new(CancellableStreamBackend {
@@ -734,6 +832,7 @@ impl ModelBackend for SlowDripStreamBackend {
                 tokio::time::sleep(delay).await;
                 yield BackendStreamChunk {
                     text: "x".to_owned(),
+                    tool_call_deltas: Vec::new(),
                     prompt_tokens: 1,
                     prompt_cached_tokens: None,
                     completion_tokens: 1,
@@ -815,4 +914,97 @@ where
     })
     .await
     .expect("metrics matched predicate")
+}
+
+struct StructuredToolDeltaHttpBackend;
+
+#[async_trait]
+impl ModelBackend for StructuredToolDeltaHttpBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "structured-tool-delta-http")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "structured tool delta HTTP test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "structured tool delta HTTP test must use generate_stream".to_owned(),
+        ))
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![http_structured_tool_delta(
+                    0,
+                    Some("call_read_1"),
+                    Some("read"),
+                    Some(r#"{"path":"#),
+                )],
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![http_structured_tool_delta(
+                    0,
+                    None,
+                    None,
+                    Some(r#""calculator.py"}"#),
+                )],
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: Some(llm_api::FinishReason::ToolCalls),
+            };
+        }
+        .boxed()
+    }
+}
+
+fn http_structured_tool_delta(
+    index: u32,
+    id: Option<&str>,
+    name: Option<&str>,
+    arguments: Option<&str>,
+) -> llm_api::ToolCallDelta {
+    llm_api::ToolCallDelta {
+        index,
+        id: id.map(str::to_owned),
+        call_type: id.map(|_| llm_api::ToolCallType::Function),
+        function: (name.is_some() || arguments.is_some()).then(|| llm_api::ToolCallFunctionDelta {
+            name: name.map(str::to_owned),
+            arguments: arguments.map(str::to_owned),
+        }),
+    }
+}
+
+fn sse_json_frames(body: &str) -> Vec<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).expect("SSE data frame is JSON"))
+        .collect()
 }

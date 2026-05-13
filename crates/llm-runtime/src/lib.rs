@@ -7,8 +7,9 @@ use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatCompletionStreamChoice, ChatCompletionStreamResponse, ChatMessage,
     ChatRole, CompletionChoice, CompletionRequest, CompletionResponse, CompletionStreamResponse,
-    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunctionDelta, ToolChoice, ToolDefinition,
-    Usage, ValidateRequest, canonical_tool_schema_json, canonicalize_tool_schemas,
+    ResponseFormat, ToolCall, ToolCallDelta, ToolCallFunction, ToolCallFunctionDelta, ToolCallType,
+    ToolChoice, ToolDefinition, Usage, ValidateRequest, canonical_tool_schema_json,
+    canonicalize_tool_schemas,
 };
 use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata};
 use llm_backend::{
@@ -725,6 +726,126 @@ fn looks_like_unmarked_tool_json_candidate(raw_text: &str) -> bool {
         || trimmed.starts_with("```")
 }
 
+#[derive(Debug, Default)]
+struct StructuredToolDeltaAssembler {
+    calls: Vec<StructuredToolCallAccumulator>,
+}
+
+#[derive(Debug, Default)]
+struct StructuredToolCallAccumulator {
+    id: Option<String>,
+    call_type: Option<ToolCallType>,
+    name: String,
+    arguments: String,
+}
+
+impl StructuredToolDeltaAssembler {
+    fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    fn push(&mut self, delta: &ToolCallDelta) -> Result<(), RuntimeError> {
+        let index = usize::try_from(delta.index).map_err(|err| {
+            ApiError::invalid_request(format!("tool call index does not fit usize: {err}"))
+        })?;
+        if self.calls.len() <= index {
+            self.calls
+                .resize_with(index + 1, StructuredToolCallAccumulator::default);
+        }
+        let call = &mut self.calls[index];
+        if let Some(id) = &delta.id {
+            call.id = Some(id.clone());
+        }
+        if let Some(call_type) = &delta.call_type {
+            call.call_type = Some(call_type.clone());
+        }
+        if let Some(function) = &delta.function {
+            if let Some(name) = &function.name {
+                call.name.push_str(name);
+            }
+            if let Some(arguments) = &function.arguments {
+                call.arguments.push_str(arguments);
+            }
+        }
+        Ok(())
+    }
+
+    fn into_parsed(self, content: &str) -> Result<ParsedAssistant, RuntimeError> {
+        let mut tool_calls = Vec::new();
+        for (index, call) in self.calls.into_iter().enumerate() {
+            if call.name.trim().is_empty() && call.arguments.trim().is_empty() {
+                continue;
+            }
+            if call.name.trim().is_empty() {
+                return Err(RuntimeError::ToolCallValidation(format!(
+                    "streamed tool call `{index}` was missing a function name"
+                )));
+            }
+            let arguments = parse_structured_tool_arguments(index, &call.arguments)?;
+            tool_calls.push(ToolCall {
+                id: call.id.unwrap_or_else(|| format!("call_{index}")),
+                call_type: call.call_type.unwrap_or(ToolCallType::Function),
+                function: ToolCallFunction {
+                    name: call.name,
+                    arguments,
+                },
+            });
+        }
+        Ok(ParsedAssistant {
+            reasoning: None,
+            content: content.to_owned(),
+            tool_calls,
+        })
+    }
+}
+
+fn parse_structured_tool_arguments(
+    index: usize,
+    arguments: &str,
+) -> Result<serde_json::Value, RuntimeError> {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(trimmed).map_err(|err| {
+        RuntimeError::ToolCallValidation(format!(
+            "streamed tool call `{index}` arguments were not valid JSON: {err}"
+        ))
+    })
+}
+
+fn request_may_fill_tool_intent_arguments(request: &ChatCompletionRequest) -> bool {
+    request
+        .tools
+        .iter()
+        .any(|tool| schema_requires_string_intent_argument(&tool.function.parameters))
+}
+
+fn structured_tool_delta_without_arguments(delta: &ToolCallDelta) -> Option<ToolCallDelta> {
+    let function = delta.function.as_ref().and_then(|function| {
+        function.name.as_ref().map(|name| ToolCallFunctionDelta {
+            name: Some(name.clone()),
+            arguments: None,
+        })
+    });
+    let stripped = ToolCallDelta {
+        index: delta.index,
+        id: delta.id.clone(),
+        call_type: delta.call_type.clone(),
+        function,
+    };
+    structured_tool_delta_has_progress(&stripped).then_some(stripped)
+}
+
+fn structured_tool_delta_has_progress(delta: &ToolCallDelta) -> bool {
+    delta.id.is_some()
+        || delta.call_type.is_some()
+        || delta
+            .function
+            .as_ref()
+            .is_some_and(|function| function.name.is_some() || function.arguments.is_some())
+}
+
 fn streaming_chat_stream<'a>(
     completion: RuntimeCompletionSeed,
     request: ChatCompletionRequest,
@@ -762,12 +883,39 @@ fn streaming_chat_stream<'a>(
             adapter.parses_unmarked_tool_calls() && !request.tools.is_empty(),
         );
         let mut emitted_tool_calls = 0;
+        let mut structured_tool_assembler = StructuredToolDeltaAssembler::default();
+        let buffer_structured_tool_arguments = request_may_fill_tool_intent_arguments(&request);
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
+            if !chunk.tool_call_deltas.is_empty() {
+                for delta in &chunk.tool_call_deltas {
+                    structured_tool_assembler.push(delta)?;
+                }
+                let tool_call_deltas = if buffer_structured_tool_arguments {
+                    chunk
+                        .tool_call_deltas
+                        .iter()
+                        .filter_map(structured_tool_delta_without_arguments)
+                        .collect::<Vec<_>>()
+                } else {
+                    chunk.tool_call_deltas.clone()
+                };
+                if !tool_call_deltas.is_empty() {
+                    yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                        &completion,
+                        ChatCompletionDelta {
+                            tool_calls: tool_call_deltas,
+                            ..ChatCompletionDelta::default()
+                        },
+                        None,
+                        None,
+                    ));
+                }
+            }
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
                 if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
@@ -876,7 +1024,12 @@ fn streaming_chat_stream<'a>(
         }
 
         let visible_text = &raw_text[..visible_len];
-        let mut parsed = parse_chat_text(adapter, visible_text, &request)?;
+        let structured_tool_deltas_seen = !structured_tool_assembler.is_empty();
+        let mut parsed = if structured_tool_deltas_seen {
+            structured_tool_assembler.into_parsed(visible_text)?
+        } else {
+            parse_chat_text(adapter, visible_text, &request)?
+        };
         validate_tool_call_arguments(&parsed)?;
         fill_missing_tool_intent_arguments(&mut parsed, &request);
         validate_tool_calls_against_request(&parsed, &request)?;
@@ -930,17 +1083,34 @@ fn streaming_chat_stream<'a>(
             }
             _ => {}
         }
-        for (index, tool_call) in parsed.tool_calls.iter().enumerate().skip(emitted_tool_calls) {
-            let delta = tool_call_delta(index, tool_call)?;
-            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                &completion,
-                ChatCompletionDelta {
-                    tool_calls: vec![delta],
-                    ..ChatCompletionDelta::default()
-                },
-                None,
-                None,
-            ));
+        if structured_tool_deltas_seen {
+            if buffer_structured_tool_arguments {
+                for (index, tool_call) in parsed.tool_calls.iter().enumerate() {
+                    let delta = tool_call_arguments_delta(index, tool_call)?;
+                    yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                        &completion,
+                        ChatCompletionDelta {
+                            tool_calls: vec![delta],
+                            ..ChatCompletionDelta::default()
+                        },
+                        None,
+                        None,
+                    ));
+                }
+            }
+        } else {
+            for (index, tool_call) in parsed.tool_calls.iter().enumerate().skip(emitted_tool_calls) {
+                let delta = tool_call_delta(index, tool_call)?;
+                yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                    &completion,
+                    ChatCompletionDelta {
+                        tool_calls: vec![delta],
+                        ..ChatCompletionDelta::default()
+                    },
+                    None,
+                    None,
+                ));
+            }
         }
         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
             &completion,
@@ -1193,6 +1363,23 @@ fn tool_call_delta(index: usize, tool_call: &ToolCall) -> Result<ToolCallDelta, 
         call_type: Some(tool_call.call_type.clone()),
         function: Some(ToolCallFunctionDelta {
             name: Some(tool_call.function.name.clone()),
+            arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
+        }),
+    })
+}
+
+fn tool_call_arguments_delta(
+    index: usize,
+    tool_call: &ToolCall,
+) -> Result<ToolCallDelta, RuntimeError> {
+    Ok(ToolCallDelta {
+        index: u32::try_from(index).map_err(|err| {
+            ApiError::invalid_request(format!("tool call index does not fit u32: {err}"))
+        })?,
+        id: None,
+        call_type: None,
+        function: Some(ToolCallFunctionDelta {
+            name: None,
             arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
         }),
     })

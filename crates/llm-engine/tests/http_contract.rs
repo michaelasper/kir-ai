@@ -487,6 +487,7 @@ impl ModelBackend for TwoStageStreamBackend {
             first.notified().await;
             yield BackendStreamChunk {
                 text: "first".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -495,6 +496,7 @@ impl ModelBackend for TwoStageStreamBackend {
             finish.notified().await;
             yield BackendStreamChunk {
                 text: " second".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -561,6 +563,7 @@ impl ModelBackend for CancellableStreamBackend {
         async_stream::try_stream! {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -609,6 +612,7 @@ impl ModelBackend for FailingStreamBackend {
         async_stream::try_stream! {
             yield BackendStreamChunk {
                 text: "first".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,

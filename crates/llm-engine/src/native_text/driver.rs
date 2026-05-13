@@ -446,6 +446,7 @@ where
             if let Some(delta) = delta {
                 tx.send(Ok(BackendStreamChunk {
                     text: delta,
+                    tool_call_deltas: Vec::new(),
                     prompt_tokens: prompt_tokens.len() as u64,
                     prompt_cached_tokens: None,
                     completion_tokens: std::mem::take(&mut unreported_completion_tokens),
@@ -474,6 +475,7 @@ where
         };
         tx.send(Ok(BackendStreamChunk {
             text: final_text.unwrap_or_default(),
+            tool_call_deltas: Vec::new(),
             prompt_tokens: prompt_tokens.len() as u64,
             prompt_cached_tokens: None,
             completion_tokens: std::mem::take(&mut unreported_completion_tokens),

@@ -1,4 +1,5 @@
 use super::protocol::MlxToolMarkup;
+use llm_api::{ToolCallDelta, ToolCallFunctionDelta};
 use llm_backend::{BackendError, BackendOutput, BackendStreamChunk};
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,6 +27,9 @@ struct MlxMessage {
 #[derive(Debug, Deserialize)]
 struct MlxToolCall {
     index: Option<usize>,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    call_type: Option<llm_api::ToolCallType>,
     function: Option<MlxToolCallFunction>,
 }
 
@@ -70,6 +74,7 @@ pub(super) struct MlxSseParser {
     stop_filter: MlxControlStopFilter,
     tool_markup: MlxToolMarkup,
     tool_calls: Vec<MlxToolCallAccumulator>,
+    emit_structured_tool_deltas: bool,
 }
 
 impl MlxSseParser {
@@ -89,6 +94,18 @@ impl MlxSseParser {
             stop_filter: MlxControlStopFilter::new(stop_tokens),
             tool_markup,
             tool_calls: Vec::new(),
+            emit_structured_tool_deltas: false,
+        }
+    }
+
+    pub(super) fn new_streaming(
+        prompt: &str,
+        stop_tokens: &'static [&'static str],
+        tool_markup: MlxToolMarkup,
+    ) -> Self {
+        Self {
+            emit_structured_tool_deltas: true,
+            ..Self::new(prompt, stop_tokens, tool_markup)
         }
     }
 
@@ -140,6 +157,7 @@ impl MlxSseParser {
             let completion_tokens = self.completion_token_delta(None, true);
             chunks.push(BackendStreamChunk {
                 text,
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: self.prompt_tokens,
                 prompt_cached_tokens: self.prompt_cached_tokens,
                 completion_tokens,
@@ -188,7 +206,7 @@ impl MlxSseParser {
             .as_ref()
             .and_then(|usage| usage.completion_tokens);
         let choice = completion.first_choice()?;
-        if let Some(tool_calls) = choice
+        let tool_call_deltas = if let Some(tool_calls) = choice
             .delta
             .as_ref()
             .and_then(|message| message.tool_calls.as_ref())
@@ -197,10 +215,11 @@ impl MlxSseParser {
                     .message
                     .as_ref()
                     .and_then(|message| message.tool_calls.as_ref())
-            })
-        {
-            self.push_tool_calls(tool_calls);
-        }
+            }) {
+            self.push_tool_calls(tool_calls)?
+        } else {
+            Vec::new()
+        };
         let text = choice
             .text
             .or_else(|| choice.delta.and_then(|message| message.content))
@@ -218,18 +237,25 @@ impl MlxSseParser {
                 .is_stopped()
                 .then_some(llm_api::FinishReason::Stop)
         });
-        if matches!(finish_reason, Some(llm_api::FinishReason::ToolCalls)) {
+        if matches!(finish_reason, Some(llm_api::FinishReason::ToolCalls))
+            && !self.emit_structured_tool_deltas
+        {
             let tool_text = self.render_tool_calls()?;
             self.estimated_completion_tokens += count_visible_tokens(&tool_text);
             text.push_str(&tool_text);
         }
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, finish_reason.is_some());
-        if text.is_empty() && finish_reason.is_none() && completion_tokens == 0 {
+        if text.is_empty()
+            && tool_call_deltas.is_empty()
+            && finish_reason.is_none()
+            && completion_tokens == 0
+        {
             return Ok(None);
         }
         Ok(Some(BackendStreamChunk {
             text,
+            tool_call_deltas,
             prompt_tokens: self.prompt_tokens,
             prompt_cached_tokens: self.prompt_cached_tokens,
             completion_tokens,
@@ -237,7 +263,11 @@ impl MlxSseParser {
         }))
     }
 
-    fn push_tool_calls(&mut self, tool_calls: &[MlxToolCall]) {
+    fn push_tool_calls(
+        &mut self,
+        tool_calls: &[MlxToolCall],
+    ) -> Result<Vec<ToolCallDelta>, BackendError> {
+        let mut deltas = Vec::new();
         for call in tool_calls {
             let index = call.index.unwrap_or(self.tool_calls.len());
             if self.tool_calls.len() <= index {
@@ -245,6 +275,7 @@ impl MlxSseParser {
                     .resize_with(index + 1, MlxToolCallAccumulator::default);
             }
             let accumulator = &mut self.tool_calls[index];
+            let mut function_delta = None;
             if let Some(function) = &call.function {
                 if let Some(name) = &function.name {
                     accumulator.name.push_str(name);
@@ -252,8 +283,23 @@ impl MlxSseParser {
                 if let Some(arguments) = &function.arguments {
                     accumulator.arguments.push_str(arguments);
                 }
+                function_delta = Some(ToolCallFunctionDelta {
+                    name: function.name.clone(),
+                    arguments: function.arguments.clone(),
+                });
+            }
+            if self.emit_structured_tool_deltas {
+                deltas.push(ToolCallDelta {
+                    index: u32::try_from(index).map_err(|err| {
+                        BackendError::Other(format!("MLX tool call index does not fit u32: {err}"))
+                    })?,
+                    id: call.id.clone(),
+                    call_type: call.call_type.clone(),
+                    function: function_delta,
+                });
             }
         }
+        Ok(deltas)
     }
 
     fn render_tool_calls(&mut self) -> Result<String, BackendError> {

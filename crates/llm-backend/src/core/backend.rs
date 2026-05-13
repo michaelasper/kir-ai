@@ -3,7 +3,7 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use llm_api::{ChatMessage, ChatRole, FinishReason};
+use llm_api::{ChatMessage, ChatRole, FinishReason, ToolCallDelta};
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -128,9 +128,10 @@ pub struct BackendOutput {
     pub finish_reason: FinishReason,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackendStreamChunk {
     pub text: String,
+    pub tool_call_deltas: Vec<ToolCallDelta>,
     pub prompt_tokens: u64,
     pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
@@ -203,6 +204,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                 .await
                 .map(|output| BackendStreamChunk {
                     text: output.text,
+                    tool_call_deltas: Vec::new(),
                     prompt_tokens: output.prompt_tokens,
                     prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,
@@ -222,6 +224,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                 .await
                 .map(|output| BackendStreamChunk {
                     text: output.text,
+                    tool_call_deltas: Vec::new(),
                     prompt_tokens: output.prompt_tokens,
                     prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,

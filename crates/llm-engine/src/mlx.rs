@@ -23,6 +23,7 @@ use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{
     MlxBackendFailureKind, MlxBackendMetrics, MlxBackendRequestKind, mlx_backend_metrics,
+    mlx_request_fingerprint,
 };
 use protocol::{mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata};
 use request::build_upstream_request;
@@ -115,6 +116,12 @@ impl MlxBackend {
         let mut request_metrics = self
             .metrics
             .start_request(upstream_protocol, MlxBackendRequestKind::Blocking);
+        request_metrics.record_request_fingerprint(mlx_request_fingerprint(
+            upstream_protocol,
+            false,
+            &self.metadata,
+            &request,
+        ));
         let response = tokio::select! {
             response = upstream_request.send() => response
                 .map_err(|err| mlx_request_error(err, self.timeouts.request)),
@@ -229,6 +236,12 @@ impl MlxBackend {
             let mut request_metrics = self
                 .metrics
                 .start_request(upstream_protocol, MlxBackendRequestKind::Streaming);
+            request_metrics.record_request_fingerprint(mlx_request_fingerprint(
+                upstream_protocol,
+                true,
+                &self.metadata,
+                &request,
+            ));
             let response = tokio::select! {
                 response = upstream_request.send() => response
                     .map_err(|err| mlx_request_error(err, self.timeouts.request)),
@@ -243,8 +256,9 @@ impl MlxBackend {
             };
             let status = response.status();
             if status.is_success() {
+                request_metrics.record_stream_response_headers();
                 let mut bytes = response.bytes_stream();
-                let mut parser = MlxSseParser::new(
+                let mut parser = MlxSseParser::new_streaming(
                     &request.prompt,
                     self.control_stop_tokens,
                     mlx_tool_markup_for_metadata(&self.metadata),
@@ -277,6 +291,7 @@ impl MlxBackend {
                             Err(BackendError::Other(format!("MLX stream read failed: {err}")))?
                         }
                     };
+                    request_metrics.record_first_upstream_byte();
                     request_metrics.record_response_bytes(bytes.len());
                     let chunk = match std::str::from_utf8(&bytes) {
                         Ok(chunk) => chunk,
@@ -294,12 +309,18 @@ impl MlxBackend {
                     };
                     request_metrics.record_stream_chunks(parsed_chunks.len());
                     for parsed in parsed_chunks {
+                        request_metrics.record_first_parsed_chunk();
+                        if !parsed.tool_call_deltas.is_empty() {
+                            request_metrics.record_first_tool_delta();
+                        }
                         if parsed.finish_reason.is_some() {
                             request_metrics.record_finish_chunk();
+                            request_metrics.record_stream_complete();
                         }
                         yield parsed;
                     }
                 }
+                request_metrics.record_stream_complete();
                 let final_chunks = match parser.finish() {
                     Ok(chunks) => chunks,
                     Err(err) => {
@@ -310,8 +331,13 @@ impl MlxBackend {
                 request_metrics.record_stream_chunks(final_chunks.len());
                 request_metrics.finish_success();
                 for parsed in final_chunks {
+                    request_metrics.record_first_parsed_chunk();
+                    if !parsed.tool_call_deltas.is_empty() {
+                        request_metrics.record_first_tool_delta();
+                    }
                     if parsed.finish_reason.is_some() {
                         request_metrics.record_finish_chunk();
+                        request_metrics.record_stream_complete();
                     }
                     yield parsed;
                 }

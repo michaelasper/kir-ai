@@ -2,8 +2,8 @@
 use super::protocol::protocol_test_backend;
 use super::{
     admin::{
-        ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_model, admin_model_plan,
-        admin_model_pull, admin_model_verify, admin_models, health, models,
+        ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_mlx_metrics, admin_model,
+        admin_model_plan, admin_model_pull, admin_model_verify, admin_models, health, models,
     },
     config::{EngineConfigError, EngineOptions, default_model_home, parse_hub_client},
     inference::{chat_completions, completions},
@@ -146,6 +146,7 @@ fn router_for_state(state: AppState) -> Router {
             post(admin_cancel_request),
         )
         .route("/admin/metrics", get(admin_metrics))
+        .route("/admin/metrics.mlx", get(admin_mlx_metrics))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .with_state(state.clone())
