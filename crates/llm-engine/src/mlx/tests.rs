@@ -145,6 +145,10 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     assert_eq!(request["temperature"], 0.7);
     assert_eq!(request["top_p"], 0.9);
     assert_eq!(request["stream"], false);
+    assert!(
+        request.get("stream_options").is_none(),
+        "non-streaming completion requests must not include stream_options: {request}"
+    );
 
     let metrics = metrics.snapshot();
     assert_eq!(metrics["requests_total"], 1);
@@ -209,6 +213,10 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     assert_eq!(server.received_path(), "/v1/chat/completions");
     let request = server.received_body();
     assert_eq!(request["stream"], false);
+    assert!(
+        request.get("stream_options").is_none(),
+        "non-streaming chat requests must not include stream_options: {request}"
+    );
     assert_eq!(
         request["tool_choice"],
         serde_json::json!({"type":"function","function":{"name":"read_file"}})
@@ -220,6 +228,137 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     assert_eq!(output.prompt_cached_tokens, Some(3));
     assert_eq!(output.completion_tokens, 5);
     assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+}
+
+#[tokio::test]
+async fn mlx_backend_streaming_completion_requests_include_usage_by_default() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"text\":\"one\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata:[DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(server.received_path(), "/v1/completions");
+    let request = server.received_body();
+    assert_eq!(request["stream"], true);
+    assert_eq!(request["stream_options"]["include_usage"], true);
+}
+
+#[tokio::test]
+async fn mlx_backend_streaming_chat_requests_include_usage_by_default() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"delta\":{\"content\":\"one\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata:[DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: Some(BackendChatContext {
+                messages: vec![ChatMessage::user("hello mlx")],
+            }),
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: true,
+            cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(server.received_path(), "/v1/chat/completions");
+    let request = server.received_body();
+    assert_eq!(request["stream"], true);
+    assert_eq!(request["stream_options"]["include_usage"], true);
+}
+
+#[tokio::test]
+async fn mlx_backend_streaming_requests_omit_usage_when_disabled() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"text\":\"one\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata:[DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            include_stream_usage: false,
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "hello mlx".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert_eq!(chunks.len(), 1);
+    let request = server.received_body();
+    assert_eq!(request["stream"], true);
+    assert!(
+        request.get("stream_options").is_none(),
+        "stream_options must be omitted when include_stream_usage is false: {request}"
+    );
 }
 
 #[tokio::test]
@@ -1659,6 +1798,7 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
                 request: Duration::from_secs(5),
                 read: Duration::from_millis(100),
             },
+            ..MlxBackendOptions::default()
         },
     )
     .await
@@ -1707,6 +1847,7 @@ async fn mlx_backend_request_timeout_detects_delayed_response_headers() {
                 request: Duration::from_millis(100),
                 read: Duration::from_secs(5),
             },
+            ..MlxBackendOptions::default()
         },
     )
     .await

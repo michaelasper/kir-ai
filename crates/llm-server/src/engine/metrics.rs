@@ -11,8 +11,13 @@ pub(super) fn record_success_metrics(
     streamed: bool,
     latency: Duration,
 ) {
+    let prompt_cached_tokens = usage
+        .prompt_tokens_details
+        .as_ref()
+        .map(|details| details.cached_tokens);
     state.metrics.lock_or_panic("metrics").record_success(
-        TokenCounters::new(usage.prompt_tokens, usage.completion_tokens),
+        TokenCounters::new(usage.prompt_tokens, usage.completion_tokens)
+            .with_prompt_cached_tokens(prompt_cached_tokens),
         streamed,
         latency,
     );

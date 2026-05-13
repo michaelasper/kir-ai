@@ -4,6 +4,7 @@ use std::time::Duration;
 pub struct TokenCounters {
     prompt_tokens: u64,
     completion_tokens: u64,
+    prompt_cached_tokens: Option<u64>,
 }
 
 impl TokenCounters {
@@ -11,7 +12,13 @@ impl TokenCounters {
         Self {
             prompt_tokens,
             completion_tokens,
+            prompt_cached_tokens: None,
         }
+    }
+
+    pub fn with_prompt_cached_tokens(mut self, cached_tokens: Option<u64>) -> Self {
+        self.prompt_cached_tokens = cached_tokens;
+        self
     }
 
     pub fn prompt_tokens(&self) -> u64 {
@@ -20,6 +27,10 @@ impl TokenCounters {
 
     pub fn completion_tokens(&self) -> u64 {
         self.completion_tokens
+    }
+
+    pub fn prompt_cached_tokens(&self) -> Option<u64> {
+        self.prompt_cached_tokens
     }
 
     pub fn total_tokens(&self) -> u64 {
@@ -32,6 +43,12 @@ impl TokenCounters {
 
     pub fn record_completion_tokens(&mut self, tokens: u64) {
         self.completion_tokens += tokens;
+    }
+
+    pub fn record_prompt_cached_tokens(&mut self, tokens: Option<u64>) {
+        if let Some(tokens) = tokens {
+            self.prompt_cached_tokens = Some(self.prompt_cached_tokens.unwrap_or(0) + tokens);
+        }
     }
 }
 
@@ -150,6 +167,8 @@ impl ServerMetrics {
         self.tokens.record_prompt_tokens(tokens.prompt_tokens());
         self.tokens
             .record_completion_tokens(tokens.completion_tokens());
+        self.tokens
+            .record_prompt_cached_tokens(tokens.prompt_cached_tokens());
     }
 
     pub fn record_failure(&mut self) {
@@ -308,6 +327,22 @@ mod tests {
         assert_eq!(counters.prompt_tokens(), 7);
         assert_eq!(counters.completion_tokens(), 10);
         assert_eq!(counters.total_tokens(), 17);
+        assert_eq!(counters.prompt_cached_tokens(), None);
+    }
+
+    #[test]
+    fn token_counters_sum_cached_prompt_tokens_when_reported() {
+        let mut counters = TokenCounters::new(2, 3).with_prompt_cached_tokens(Some(1));
+
+        counters.record_prompt_cached_tokens(Some(4));
+        counters.record_prompt_cached_tokens(None);
+        counters.record_prompt_tokens(5);
+        counters.record_completion_tokens(7);
+
+        assert_eq!(counters.prompt_tokens(), 7);
+        assert_eq!(counters.completion_tokens(), 10);
+        assert_eq!(counters.total_tokens(), 17);
+        assert_eq!(counters.prompt_cached_tokens(), Some(5));
     }
 
     #[test]
@@ -325,8 +360,16 @@ mod tests {
     fn server_metrics_tracks_success_failure_streams_and_tokens() {
         let mut metrics = ServerMetrics::default();
 
-        metrics.record_success(TokenCounters::new(4, 1), false, Duration::from_millis(10));
-        metrics.record_success(TokenCounters::new(8, 2), true, Duration::from_millis(30));
+        metrics.record_success(
+            TokenCounters::new(4, 1).with_prompt_cached_tokens(Some(6)),
+            false,
+            Duration::from_millis(10),
+        );
+        metrics.record_success(
+            TokenCounters::new(8, 2).with_prompt_cached_tokens(Some(9)),
+            true,
+            Duration::from_millis(30),
+        );
         metrics.record_failure();
 
         assert_eq!(metrics.requests_total(), 3);
@@ -342,7 +385,10 @@ mod tests {
         assert_eq!(metrics.model_pull_failures(), 0);
         assert_eq!(metrics.model_pull_bytes(), 0);
         assert_eq!(metrics.artifact_verification_failures(), 0);
-        assert_eq!(metrics.tokens(), TokenCounters::new(12, 3));
+        assert_eq!(
+            metrics.tokens(),
+            TokenCounters::new(12, 3).with_prompt_cached_tokens(Some(15))
+        );
         assert_eq!(metrics.request_latency().count(), 2);
         assert_eq!(metrics.request_latency().min_ms(), 10.0);
         assert_eq!(metrics.request_latency().max_ms(), 30.0);
@@ -377,5 +423,15 @@ mod tests {
         assert_eq!(metrics.model_pull_bytes(), 17);
         metrics.record_artifact_verification_failure();
         assert_eq!(metrics.artifact_verification_failures(), 1);
+    }
+
+    #[test]
+    fn server_metrics_leave_cached_prompt_tokens_absent_when_not_reported() {
+        let mut metrics = ServerMetrics::default();
+
+        metrics.record_success(TokenCounters::new(4, 1), false, Duration::from_millis(10));
+        metrics.record_success(TokenCounters::new(8, 2), true, Duration::from_millis(30));
+
+        assert_eq!(metrics.tokens().prompt_cached_tokens(), None);
     }
 }
