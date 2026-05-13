@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.10](https://github.com/michaelasper/kir-ai/compare/v1.8.9...v1.8.10) (2026-05-13)
+
+### Bug Fixes
+
+* **embeddings:** validate token ids before lookup ([c536d6d](https://github.com/michaelasper/kir-ai/commit/c536d6da3f0fd8b32ef5cf2f04ec30b07d94c69c))
+
 ## [1.8.9](https://github.com/michaelasper/kir-ai/compare/v1.8.8...v1.8.9) (2026-05-13)
 
 ### Bug Fixes
