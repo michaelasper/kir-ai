@@ -20,7 +20,8 @@ mod streaming;
 
 #[allow(unused_imports)]
 pub(crate) use driver::{
-    NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextStopTokens,
+    NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextResolvedStopTokens,
+    NativeTextStopTokens,
 };
 #[cfg(test)]
 pub(crate) use generation::native_text_prefill_context_with_cache;
@@ -590,7 +591,7 @@ mod tests {
 
         fn observe_candidate(
             &self,
-            tokenizer: &HuggingFaceTokenizer,
+            stop_tokens: &NativeTextResolvedStopTokens,
             emitted_tokens: &[u32],
             token_id: usize,
         ) -> Result<NativeTextCandidateDecision, BackendError> {
@@ -598,7 +599,7 @@ mod tests {
                 Ok(NativeTextCandidateDecision::Stop)
             } else {
                 self.base
-                    .observe_candidate(tokenizer, emitted_tokens, token_id)
+                    .observe_candidate(stop_tokens, emitted_tokens, token_id)
             }
         }
 
@@ -832,9 +833,34 @@ mod tests {
             .find(|token_id| *token_id != 1 && *token_id != im_end)
             .expect("small non-stop token id exists");
 
-        assert!(stop_tokens.contains(&tokenizer, 1));
-        assert!(stop_tokens.contains(&tokenizer, im_end));
-        assert!(!stop_tokens.contains(&tokenizer, non_stop));
+        let resolved = stop_tokens.resolve(&tokenizer);
+
+        assert_eq!(resolved.token_ids(), vec![1, im_end]);
+        assert!(resolved.contains(1));
+        assert!(resolved.contains(im_end));
+        assert!(!resolved.contains(non_stop));
+        assert!(
+            !resolved.contains(im_end + (u32::MAX as usize) + 1),
+            "candidate ids above u32::MAX must not wrap into a tokenizer stop token"
+        );
+
+        const PHRASE_STOP_STRINGS: &[&str] = &["hello rust tokenizer"];
+        let phrase = PHRASE_STOP_STRINGS[0];
+        assert!(
+            tokenizer.token_to_id(phrase).is_none(),
+            "fixture phrase should exercise encode fallback for non-vocabulary stop strings"
+        );
+        let phrase_ids = tokenizer
+            .encode(phrase, false)
+            .expect("fixture phrase encodes");
+        let phrase_stop_tokens = NativeTextStopTokens {
+            token_ids: &[],
+            token_strings: PHRASE_STOP_STRINGS,
+        }
+        .resolve(&tokenizer);
+        for token_id in phrase_ids {
+            assert!(phrase_stop_tokens.contains(token_id as usize));
+        }
     }
 
     #[test]

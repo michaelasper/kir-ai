@@ -629,7 +629,7 @@ fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
         backend
             .driver
             .adapter
-            .observe_candidate(&backend.driver.tokenizer, &[], im_end)
+            .observe_candidate(&backend.driver.stop_tokens, &[], im_end)
             .expect("im_end candidate is observed"),
         NativeTextCandidateDecision::Stop
     ));
@@ -637,7 +637,7 @@ fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
         backend
             .driver
             .adapter
-            .observe_candidate(&backend.driver.tokenizer, &[], non_stop)
+            .observe_candidate(&backend.driver.stop_tokens, &[], non_stop)
             .expect("non-stop candidate is observed"),
         NativeTextCandidateDecision::Emit(token_id) if token_id == non_stop
     ));

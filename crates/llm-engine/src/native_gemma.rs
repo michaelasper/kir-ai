@@ -584,7 +584,7 @@ mod tests {
             backend
                 .driver
                 .adapter
-                .observe_candidate(&backend.driver.tokenizer, &[], 1)
+                .observe_candidate(&backend.driver.stop_tokens, &[], 1)
                 .expect("eos candidate is observed"),
             NativeTextCandidateDecision::Stop
         ));
@@ -592,7 +592,7 @@ mod tests {
             backend
                 .driver
                 .adapter
-                .observe_candidate(&backend.driver.tokenizer, &[], 0)
+                .observe_candidate(&backend.driver.stop_tokens, &[], 0)
                 .expect("non-stop candidate is observed"),
             NativeTextCandidateDecision::Emit(0)
         ));

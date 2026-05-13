@@ -14,6 +14,7 @@ use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::{
     cell::RefCell,
+    collections::HashSet,
     future::Future,
     ops::{Deref, DerefMut},
     sync::Arc,
@@ -48,13 +49,12 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     }
     fn observe_candidate(
         &self,
-        tokenizer: &HuggingFaceTokenizer,
+        stop_tokens: &NativeTextResolvedStopTokens,
         _emitted_tokens: &[u32],
         token_id: usize,
     ) -> Result<NativeTextCandidateDecision, BackendError> {
         Ok(native_text_candidate_decision_for_stop_tokens(
-            self.stop_tokens(),
-            tokenizer,
+            stop_tokens,
             token_id,
         ))
     }
@@ -109,25 +109,44 @@ pub(crate) struct NativeTextStopTokens {
 }
 
 impl NativeTextStopTokens {
-    pub(crate) fn contains(&self, tokenizer: &HuggingFaceTokenizer, token_id: usize) -> bool {
-        if self.token_ids.contains(&token_id) {
-            return true;
+    pub(crate) fn resolve(&self, tokenizer: &HuggingFaceTokenizer) -> NativeTextResolvedStopTokens {
+        let mut token_ids = self.token_ids.to_vec();
+        for token_string in self.token_strings {
+            if let Some(token_id) = tokenizer.token_to_id(token_string) {
+                token_ids.push(token_id as usize);
+            } else if let Ok(encoded) = tokenizer.encode(token_string, false) {
+                token_ids.extend(encoded.into_iter().map(|token_id| token_id as usize));
+            }
         }
-        if let Ok(token_string) = tokenizer.decode(&[token_id as u32], false)
-            && self.token_strings.contains(&token_string.as_str())
-        {
-            return true;
+        NativeTextResolvedStopTokens {
+            token_ids: token_ids.into_iter().collect(),
         }
-        false
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NativeTextResolvedStopTokens {
+    token_ids: HashSet<usize>,
+}
+
+impl NativeTextResolvedStopTokens {
+    pub(crate) fn contains(&self, token_id: usize) -> bool {
+        self.token_ids.contains(&token_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn token_ids(&self) -> Vec<usize> {
+        let mut token_ids = self.token_ids.iter().copied().collect::<Vec<_>>();
+        token_ids.sort_unstable();
+        token_ids
     }
 }
 
 pub(crate) fn native_text_candidate_decision_for_stop_tokens(
-    stop_tokens: NativeTextStopTokens,
-    tokenizer: &HuggingFaceTokenizer,
+    stop_tokens: &NativeTextResolvedStopTokens,
     token_id: usize,
 ) -> NativeTextCandidateDecision {
-    if stop_tokens.contains(tokenizer, token_id) {
+    if stop_tokens.contains(token_id) {
         NativeTextCandidateDecision::Stop
     } else {
         NativeTextCandidateDecision::Emit(token_id)
@@ -150,6 +169,7 @@ where
     pub(crate) metadata: BackendModelMetadata,
     pub(crate) tokenizer: HuggingFaceTokenizer,
     pub(crate) adapter: A,
+    pub(crate) stop_tokens: NativeTextResolvedStopTokens,
     pub(crate) max_new_tokens: u32,
 }
 
@@ -195,12 +215,14 @@ where
         adapter: A,
         max_new_tokens: u32,
     ) -> Self {
+        let stop_tokens = adapter.stop_tokens().resolve(&tokenizer);
         Self {
             inner: Arc::new(NativeTextDriverInner {
                 model_id,
                 metadata,
                 tokenizer,
                 adapter,
+                stop_tokens,
                 max_new_tokens,
             }),
         }
@@ -317,7 +339,7 @@ where
             let token_id =
                 match self
                     .adapter
-                    .observe_candidate(&self.tokenizer, &output_ids, candidate)?
+                    .observe_candidate(&self.stop_tokens, &output_ids, candidate)?
                 {
                     NativeTextCandidateDecision::Emit(token_id) => token_id,
                     NativeTextCandidateDecision::Stop => {
@@ -422,7 +444,7 @@ where
             let token_id =
                 match self
                     .adapter
-                    .observe_candidate(&self.tokenizer, &output_ids, candidate)?
+                    .observe_candidate(&self.stop_tokens, &output_ids, candidate)?
                 {
                     NativeTextCandidateDecision::Emit(token_id) => token_id,
                     NativeTextCandidateDecision::Stop => {
