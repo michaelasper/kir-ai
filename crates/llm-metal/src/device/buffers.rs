@@ -1,37 +1,32 @@
 use super::{MetalDevice, MetalError};
 use metal::{Buffer, MTLResourceOptions};
-use std::ffi::c_void;
+use std::{collections::HashMap, ffi::c_void};
 
 #[derive(Debug, Default)]
 pub(crate) struct MetalBufferPool {
-    buffers: Vec<PooledMetalBuffer>,
-}
-
-#[derive(Debug)]
-struct PooledMetalBuffer {
-    byte_len: u64,
-    buffer: Buffer,
+    buffers_by_len: HashMap<u64, Vec<Buffer>>,
 }
 
 impl MetalBufferPool {
     fn take(&mut self, byte_len: u64) -> Option<Buffer> {
-        let position = self
-            .buffers
-            .iter()
-            .position(|buffer| buffer.byte_len == byte_len)?;
-        Some(self.buffers.swap_remove(position).buffer)
+        self.buffers_by_len.get_mut(&byte_len)?.pop()
     }
 
     fn put(&mut self, byte_len: u64, buffer: Buffer) {
-        self.buffers.push(PooledMetalBuffer { byte_len, buffer });
+        self.buffers_by_len
+            .entry(byte_len)
+            .or_default()
+            .push(buffer);
     }
 
     #[cfg(test)]
     fn count_for_len(&self, byte_len: u64) -> usize {
-        self.buffers
-            .iter()
-            .filter(|buffer| buffer.byte_len == byte_len)
-            .count()
+        self.buffers_by_len.get(&byte_len).map_or(0, Vec::len)
+    }
+
+    #[cfg(test)]
+    fn bucket_count(&self) -> usize {
+        self.buffers_by_len.len()
     }
 }
 
@@ -128,6 +123,14 @@ impl MetalDevice {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .count_for_len(byte_len)
+    }
+
+    #[cfg(test)]
+    pub fn scratch_buffer_bucket_count_for_test(&self) -> usize {
+        self.scratch_buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bucket_count()
     }
 
     pub fn new_f32_buffer(&self, values: &[f32]) -> Result<F32Buffer, MetalError> {
@@ -278,5 +281,30 @@ mod tests {
         );
         assert!((output[0] + 0.75).abs() < 1e-6);
         assert!(output[1].abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn scratch_buffer_pool_groups_buffers_by_byte_len() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let small = device.take_scratch_buffer(16);
+        let large = device.take_scratch_buffer(32);
+        let other_small = device.take_scratch_buffer(16);
+
+        device.return_scratch_buffer(16, small);
+        device.return_scratch_buffer(32, large);
+        device.return_scratch_buffer(16, other_small);
+
+        assert_eq!(device.scratch_buffer_bucket_count_for_test(), 2);
+        assert_eq!(device.scratch_buffer_count_for_test(16), 2);
+        assert_eq!(device.scratch_buffer_count_for_test(32), 1);
+
+        let reused_small = device.take_scratch_buffer(16);
+        assert_eq!(device.scratch_buffer_count_for_test(16), 1);
+        device.return_scratch_buffer(16, reused_small);
     }
 }
