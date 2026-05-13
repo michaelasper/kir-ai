@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.6](https://github.com/michaelasper/kir-ai/compare/v1.8.5...v1.8.6) (2026-05-13)
+
+### Bug Fixes
+
+* **metal:** cache command buffer timeout ([747cc4b](https://github.com/michaelasper/kir-ai/commit/747cc4bdc07abfc7a71422a76d5bd153437f10e0))
+
 ## [1.8.5](https://github.com/michaelasper/kir-ai/compare/v1.8.4...v1.8.5) (2026-05-13)
 
 ### Bug Fixes
