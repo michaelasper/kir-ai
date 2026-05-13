@@ -449,6 +449,7 @@ impl<'a> ChatCompletionStream<'a> {
         while let Some(event) = events.next().await {
             match event? {
                 ChatCompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
+                ChatCompletionStreamEvent::Stage(_) => {}
                 ChatCompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
             }
         }
@@ -490,7 +491,15 @@ impl<'a> CompletionStream<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatCompletionStreamEvent {
     Chunk(ChatCompletionStreamResponse),
+    Stage(ChatCompletionStreamStage),
     Complete(Usage),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatCompletionStreamStage {
+    ToolArgumentAssemblyComplete,
+    ToolIntentFillComplete,
+    ToolSchemaValidationComplete,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -656,6 +665,17 @@ fn buffered_chat_stream(
         ))));
     }
     for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
+        if index == 0 {
+            events.push(Ok(ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
+            )));
+            events.push(Ok(ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolIntentFillComplete,
+            )));
+            events.push(Ok(ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolSchemaValidationComplete,
+            )));
+        }
         events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
             &completion,
             ChatCompletionDelta {
@@ -1030,9 +1050,25 @@ fn streaming_chat_stream<'a>(
         } else {
             parse_chat_text(adapter, visible_text, &request)?
         };
+        let tool_calls_seen = !parsed.tool_calls.is_empty();
+        if tool_calls_seen {
+            yield ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
+            );
+        }
         validate_tool_call_arguments(&parsed)?;
         fill_missing_tool_intent_arguments(&mut parsed, &request);
+        if tool_calls_seen {
+            yield ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolIntentFillComplete,
+            );
+        }
         validate_tool_calls_against_request(&parsed, &request)?;
+        if tool_calls_seen {
+            yield ChatCompletionStreamEvent::Stage(
+                ChatCompletionStreamStage::ToolSchemaValidationComplete,
+            );
+        }
         if matches!(deferred, DeferredEmission::JsonObjectMode) {
             validate_json_object_response(&parsed)?;
         }

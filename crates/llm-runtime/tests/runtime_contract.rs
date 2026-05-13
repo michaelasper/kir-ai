@@ -9,8 +9,8 @@ use llm_backend::{
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
-    ChatCompletionStreamEvent, NoProgressClass, Runtime, RuntimeError, RuntimeOptions,
-    ToolSchemaNormalization,
+    ChatCompletionStreamEvent, ChatCompletionStreamStage, NoProgressClass, Runtime, RuntimeError,
+    RuntimeOptions, ToolSchemaNormalization,
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};

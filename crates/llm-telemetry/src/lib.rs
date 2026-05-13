@@ -149,6 +149,10 @@ pub struct ServerMetrics {
     streamed_request_latency: LatencyMetrics,
     time_to_first_token: LatencyMetrics,
     first_tool_delta: LatencyMetrics,
+    tool_argument_assembly: LatencyMetrics,
+    tool_intent_fill: LatencyMetrics,
+    tool_schema_validation: LatencyMetrics,
+    tool_finish: LatencyMetrics,
     validated_tool_call: LatencyMetrics,
     tokens: TokenCounters,
 }
@@ -217,6 +221,22 @@ impl ServerMetrics {
 
     pub fn record_first_tool_delta(&mut self, latency: Duration) {
         self.first_tool_delta.record(latency);
+    }
+
+    pub fn record_tool_argument_assembly(&mut self, latency: Duration) {
+        self.tool_argument_assembly.record(latency);
+    }
+
+    pub fn record_tool_intent_fill(&mut self, latency: Duration) {
+        self.tool_intent_fill.record(latency);
+    }
+
+    pub fn record_tool_schema_validation(&mut self, latency: Duration) {
+        self.tool_schema_validation.record(latency);
+    }
+
+    pub fn record_tool_finish(&mut self, latency: Duration) {
+        self.tool_finish.record(latency);
     }
 
     pub fn record_validated_tool_call(&mut self, latency: Duration) {
@@ -293,6 +313,22 @@ impl ServerMetrics {
 
     pub fn first_tool_delta(&self) -> LatencyMetrics {
         self.first_tool_delta
+    }
+
+    pub fn tool_argument_assembly(&self) -> LatencyMetrics {
+        self.tool_argument_assembly
+    }
+
+    pub fn tool_intent_fill(&self) -> LatencyMetrics {
+        self.tool_intent_fill
+    }
+
+    pub fn tool_schema_validation(&self) -> LatencyMetrics {
+        self.tool_schema_validation
+    }
+
+    pub fn tool_finish(&self) -> LatencyMetrics {
+        self.tool_finish
     }
 
     pub fn validated_tool_call(&self) -> LatencyMetrics {
@@ -402,6 +438,18 @@ mod tests {
         metrics.record_time_to_first_token(Duration::from_millis(7));
         assert_eq!(metrics.time_to_first_token().count(), 1);
         assert_eq!(metrics.time_to_first_token().avg_ms(), 7.0);
+        metrics.record_tool_argument_assembly(Duration::from_millis(8));
+        metrics.record_tool_intent_fill(Duration::from_millis(9));
+        metrics.record_tool_schema_validation(Duration::from_millis(10));
+        metrics.record_tool_finish(Duration::from_millis(11));
+        metrics.record_validated_tool_call(Duration::from_millis(11));
+        assert_eq!(metrics.tool_argument_assembly().count(), 1);
+        assert_eq!(metrics.tool_intent_fill().count(), 1);
+        assert_eq!(metrics.tool_schema_validation().count(), 1);
+        assert_eq!(metrics.tool_finish().count(), 1);
+        assert_eq!(metrics.validated_tool_call().count(), 1);
+        assert_eq!(metrics.tool_finish().avg_ms(), 11.0);
+        assert_eq!(metrics.validated_tool_call().avg_ms(), 11.0);
 
         metrics.record_stream_client_disconnect();
         assert_eq!(metrics.requests_total(), 4);

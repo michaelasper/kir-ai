@@ -85,6 +85,34 @@ pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duratio
         .record_first_tool_delta(latency);
 }
 
+pub(super) fn record_tool_argument_assembly_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_tool_argument_assembly(latency);
+}
+
+pub(super) fn record_tool_intent_fill_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_tool_intent_fill(latency);
+}
+
+pub(super) fn record_tool_schema_validation_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_tool_schema_validation(latency);
+}
+
+pub(super) fn record_tool_finish_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_tool_finish(latency);
+}
+
 pub(super) fn record_validated_tool_call_metrics(state: &AppState, latency: Duration) {
     state
         .metrics

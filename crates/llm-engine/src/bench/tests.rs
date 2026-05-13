@@ -177,6 +177,7 @@ fn case_run_populates_structured_prefill_decode_cache_and_summary() {
                 first_sse_data_latency_ms: Some(20),
                 first_content_delta_latency_ms: None,
                 first_tool_delta_latency_ms: Some(75),
+                tool_finish_latency_ms: Some(125),
                 first_semantic_delta_latency_ms: Some(75),
             },
             tokens_per_second: Some(12.5),
@@ -466,6 +467,7 @@ fn lane_comparison_serializes_explicit_stream_timing_fields_without_ttft() {
         first_sse_data_latency_ms: Some(13),
         first_content_delta_latency_ms: None,
         first_tool_delta_latency_ms: Some(21),
+        tool_finish_latency_ms: Some(34),
         first_semantic_delta_latency_ms: Some(21),
     };
 

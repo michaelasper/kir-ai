@@ -251,6 +251,7 @@ async fn streaming_json_object_response_format_rejects_text_content() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid JSON stream should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
     };
@@ -318,6 +319,7 @@ async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid tool markup should not complete successfully");
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
     };
@@ -361,6 +363,7 @@ async fn streaming_required_tool_rejects_text_fallback_without_emitting_content(
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("text fallback should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
     };
@@ -418,6 +421,7 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid tool call should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
     };
@@ -1076,6 +1080,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool call should arrive before completion")
                 }
@@ -1113,6 +1118,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
                     .and_then(|choice| choice.finish_reason.as_ref())
                     == Some(&FinishReason::ToolCalls);
             }
+            llm_runtime::ChatCompletionStreamEvent::Stage(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
         }
     }
@@ -1170,6 +1176,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("partial tool delta should arrive before completion")
                 }
@@ -1204,6 +1211,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                     .and_then(|choice| choice.finish_reason.as_ref())
                     == Some(&FinishReason::ToolCalls);
             }
+            llm_runtime::ChatCompletionStreamEvent::Stage(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Complete(final_usage) => {
                 usage = Some(final_usage);
                 break;
@@ -1286,6 +1294,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool progress should arrive before completion")
                 }
@@ -1316,6 +1325,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
     finish.add_permits(1);
     let mut final_arguments = None;
     let mut saw_finish = false;
+    let mut stages = Vec::new();
     while let Some(event) = events.next().await {
         match event.expect("stream event") {
             llm_runtime::ChatCompletionStreamEvent::Chunk(chunk) => {
@@ -1342,10 +1352,19 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
                     }
                 }
             }
+            llm_runtime::ChatCompletionStreamEvent::Stage(stage) => stages.push(stage),
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
         }
     }
 
+    assert_eq!(
+        stages,
+        vec![
+            ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
+            ChatCompletionStreamStage::ToolIntentFillComplete,
+            ChatCompletionStreamStage::ToolSchemaValidationComplete,
+        ]
+    );
     assert!(saw_finish, "validated tool_calls finish chunk is emitted");
     let final_arguments = final_arguments.expect("final validated arguments delta");
     let final_arguments: Value =
@@ -1429,6 +1448,7 @@ async fn runtime_rejects_invalid_structured_omp_args_without_argument_delta_or_f
     finish.add_permits(1);
     let mut saw_arguments = false;
     let mut saw_tool_calls_finish = false;
+    let mut stages = Vec::new();
     let err = loop {
         match events.next().await.expect("runtime emits validation error") {
             Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
@@ -1447,12 +1467,20 @@ async fn runtime_rejects_invalid_structured_omp_args_without_argument_delta_or_f
                     .and_then(|choice| choice.finish_reason.as_ref())
                     == Some(&FinishReason::ToolCalls);
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(stage)) => stages.push(stage),
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid final tool call must not complete successfully")
             }
             Err(err) => break err,
         }
     };
+    assert_eq!(
+        stages,
+        vec![
+            ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
+            ChatCompletionStreamStage::ToolIntentFillComplete,
+        ]
+    );
     assert!(!saw_arguments, "invalid OMP stream must not emit arguments");
     assert!(!saw_tool_calls_finish);
     assert!(matches!(err, RuntimeError::ToolCallValidation(_)));

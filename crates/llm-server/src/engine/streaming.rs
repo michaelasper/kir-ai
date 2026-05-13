@@ -6,6 +6,8 @@ use super::{
         record_failure_metrics, record_first_tool_delta_metrics, record_runtime_error_metrics,
         record_stream_client_disconnect_metrics, record_stream_stall_metrics,
         record_success_metrics, record_time_to_first_token_metrics,
+        record_tool_argument_assembly_metrics, record_tool_finish_metrics,
+        record_tool_intent_fill_metrics, record_tool_schema_validation_metrics,
         record_validated_tool_call_metrics,
     },
     runtime_error_metadata,
@@ -15,7 +17,9 @@ use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::{ChatCompletionStreamResponse, CompletionStreamResponse, Usage};
 use llm_backend::BackendError;
-use llm_runtime::{ChatCompletionStreamEvent, CompletionStreamEvent, RuntimeError};
+use llm_runtime::{
+    ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
+};
 use serde_json::json;
 use std::{
     convert::Infallible,
@@ -79,14 +83,29 @@ where
                             first_tool_delta_recorded = true;
                         }
                         if !validated_tool_call_recorded && chunk.has_tool_call_finish() {
-                            record_validated_tool_call_metrics(
-                                &lifecycle.state,
-                                lifecycle.request_started.elapsed(),
-                            );
+                            let latency = lifecycle.request_started.elapsed();
+                            record_tool_finish_metrics(&lifecycle.state, latency);
+                            record_validated_tool_call_metrics(&lifecycle.state, latency);
                             validated_tool_call_recorded = true;
                         }
                         stall_deadline.record_chunk(&chunk);
                         yield sse_json_event(chunk);
+                    }
+                    EngineStreamStep::ToolStage(stage) => {
+                        if lifecycle.active_request.cancellation.is_cancelled() {
+                            for event in lifecycle.finish_cancellation(
+                                "request was cancelled before stream stage processing",
+                                "decode",
+                            ) {
+                                yield event;
+                            }
+                            return;
+                        }
+                        record_tool_stage_metrics(
+                            &lifecycle.state,
+                            stage,
+                            lifecycle.request_started.elapsed(),
+                        );
                     }
                     EngineStreamStep::Complete(usage) => {
                         if let Err(events) = lifecycle.finish_success(&usage, streamed) {
@@ -127,6 +146,24 @@ where
                     return;
                 }
             }
+        }
+    }
+}
+
+fn record_tool_stage_metrics(
+    state: &AppState,
+    stage: ChatCompletionStreamStage,
+    latency: Duration,
+) {
+    match stage {
+        ChatCompletionStreamStage::ToolArgumentAssemblyComplete => {
+            record_tool_argument_assembly_metrics(state, latency);
+        }
+        ChatCompletionStreamStage::ToolIntentFillComplete => {
+            record_tool_intent_fill_metrics(state, latency);
+        }
+        ChatCompletionStreamStage::ToolSchemaValidationComplete => {
+            record_tool_schema_validation_metrics(state, latency);
         }
     }
 }
@@ -538,6 +575,7 @@ pub(super) trait EngineStreamEvent {
 
 pub(super) enum EngineStreamStep<C> {
     Chunk(C),
+    ToolStage(ChatCompletionStreamStage),
     Complete(Usage),
 }
 
@@ -556,6 +594,7 @@ impl EngineStreamEvent for ChatCompletionStreamEvent {
     ) -> EngineStreamStep<<ChatCompletionStreamEvent as EngineStreamEvent>::Chunk> {
         match self {
             Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
+            Self::Stage(stage) => EngineStreamStep::ToolStage(stage),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }
     }

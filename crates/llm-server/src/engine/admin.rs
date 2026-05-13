@@ -312,6 +312,10 @@ pub(super) async fn admin_metrics(
     let streamed_request_latency = metrics.streamed_request_latency();
     let time_to_first_token = metrics.time_to_first_token();
     let first_tool_delta = metrics.first_tool_delta();
+    let tool_argument_assembly = metrics.tool_argument_assembly();
+    let tool_intent_fill = metrics.tool_intent_fill();
+    let tool_schema_validation = metrics.tool_schema_validation();
+    let tool_finish = metrics.tool_finish();
     let validated_tool_call = metrics.validated_tool_call();
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
@@ -362,6 +366,10 @@ pub(super) async fn admin_metrics(
         streamed_request_latency_ms: LatencySummary::from_metrics(streamed_request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
         first_tool_delta_ms: LatencySummary::from_metrics(first_tool_delta),
+        tool_argument_assembly_ms: LatencySummary::from_metrics(tool_argument_assembly),
+        tool_intent_fill_ms: LatencySummary::from_metrics(tool_intent_fill),
+        tool_schema_validation_ms: LatencySummary::from_metrics(tool_schema_validation),
+        tool_finish_ms: LatencySummary::from_metrics(tool_finish),
         validated_tool_call_ms: LatencySummary::from_metrics(validated_tool_call),
         tokens: TokenSummary {
             prompt_tokens: tokens.prompt_tokens(),
@@ -429,6 +437,10 @@ pub(super) struct AdminMetricsResponse {
     streamed_request_latency_ms: LatencySummary,
     time_to_first_token_ms: LatencySummary,
     first_tool_delta_ms: LatencySummary,
+    tool_argument_assembly_ms: LatencySummary,
+    tool_intent_fill_ms: LatencySummary,
+    tool_schema_validation_ms: LatencySummary,
+    tool_finish_ms: LatencySummary,
     validated_tool_call_ms: LatencySummary,
     tokens: TokenSummary,
 }

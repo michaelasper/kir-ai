@@ -1353,6 +1353,8 @@ struct StreamTimingReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     first_tool_delta_latency_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tool_finish_latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     first_semantic_delta_latency_ms: Option<u128>,
 }
 
@@ -1362,6 +1364,7 @@ struct StreamTimingTracker {
     first_sse_data_latency: Option<Duration>,
     first_content_delta_latency: Option<Duration>,
     first_tool_delta_latency: Option<Duration>,
+    tool_finish_latency: Option<Duration>,
     first_semantic_delta_latency: Option<Duration>,
 }
 
@@ -1382,6 +1385,9 @@ impl StreamTimingTracker {
         if delta.tool && self.first_tool_delta_latency.is_none() {
             self.first_tool_delta_latency = Some(elapsed);
         }
+        if delta.tool_finish && self.tool_finish_latency.is_none() {
+            self.tool_finish_latency = Some(elapsed);
+        }
         if delta.semantic() && self.first_semantic_delta_latency.is_none() {
             self.first_semantic_delta_latency = Some(elapsed);
         }
@@ -1399,6 +1405,9 @@ impl StreamTimingTracker {
             first_tool_delta_latency_ms: self
                 .first_tool_delta_latency
                 .map(|duration| duration.as_millis()),
+            tool_finish_latency_ms: self
+                .tool_finish_latency
+                .map(|duration| duration.as_millis()),
             first_semantic_delta_latency_ms: self
                 .first_semantic_delta_latency
                 .map(|duration| duration.as_millis()),
@@ -1410,6 +1419,7 @@ impl StreamTimingTracker {
 struct StreamFrameDelta {
     content: bool,
     tool: bool,
+    tool_finish: bool,
 }
 
 impl StreamFrameDelta {
@@ -2086,6 +2096,9 @@ fn apply_sse_frame(value: &Value, assembly: &mut StreamAssembly) -> StreamFrameD
         .and_then(|choices| choices.first())
     {
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if reason == "tool_calls" {
+                delta.tool_finish = true;
+            }
             assembly.finish_reason = Some(reason.to_owned());
         }
         if let Some(content) = choice.pointer("/delta/content").and_then(Value::as_str) {

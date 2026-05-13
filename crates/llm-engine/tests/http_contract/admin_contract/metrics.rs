@@ -656,6 +656,12 @@ async fn admin_metrics_report_stream_time_to_first_token() {
     assert_eq!(body["time_to_first_token_ms"]["count"], 1);
     assert_eq!(body["non_streamed_request_latency_ms"]["count"], 0);
     assert_eq!(body["streamed_request_latency_ms"]["count"], 1);
+    assert_eq!(body["first_tool_delta_ms"]["count"], 0);
+    assert_eq!(body["tool_argument_assembly_ms"]["count"], 0);
+    assert_eq!(body["tool_intent_fill_ms"]["count"], 0);
+    assert_eq!(body["tool_schema_validation_ms"]["count"], 0);
+    assert_eq!(body["tool_finish_ms"]["count"], 0);
+    assert_eq!(body["validated_tool_call_ms"]["count"], 0);
     assert!(
         body["time_to_first_token_ms"]["max"]
             .as_f64()
@@ -710,7 +716,19 @@ async fn admin_metrics_report_stream_tool_call_timing() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
     assert_eq!(body["first_tool_delta_ms"]["count"], 1);
+    assert_eq!(body["tool_argument_assembly_ms"]["count"], 1);
+    assert_eq!(body["tool_intent_fill_ms"]["count"], 1);
+    assert_eq!(body["tool_schema_validation_ms"]["count"], 1);
+    assert_eq!(body["tool_finish_ms"]["count"], 1);
     assert_eq!(body["validated_tool_call_ms"]["count"], 1);
+    assert!(
+        body["tool_finish_ms"]["max"]
+            .as_f64()
+            .expect("tool finish max is numeric")
+            >= body["tool_schema_validation_ms"]["min"]
+                .as_f64()
+                .expect("schema validation min is numeric")
+    );
     assert!(
         body["validated_tool_call_ms"]["max"]
             .as_f64()

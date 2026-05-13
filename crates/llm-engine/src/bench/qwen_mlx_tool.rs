@@ -31,6 +31,7 @@ const BENCH_REPO_COMMIT_ENV: &str = "LLM_ENGINE_BENCH_REPO_COMMIT";
 const BENCH_REPO_BRANCH_ENV: &str = "LLM_ENGINE_BENCH_REPO_BRANCH";
 const BENCH_REPO_DIRTY_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIRTY";
 const BENCH_REPO_ORIGIN_FILE: &str = ".kir-ai-origin.json";
+const ADMIN_METRICS_TIMEOUT_MS: u64 = 250;
 
 pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--help") || has_flag(args, "-h") {
@@ -65,6 +66,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let connect_timeout_ms =
         parse_millis_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
     let output_path = flag_value(args, "--output").map(PathBuf::from);
+    let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
     let sweep_profile = parse_sweep_profile_flag(args)?;
     let probe_suite = parse_probe_suite_flag(args);
     let probes = probe_suite.probes();
@@ -106,6 +108,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         tool_choice_variants: probe_suite.tool_choice_variant_names(&probes),
         cache_phases: CachePhase::all().iter().map(|phase| phase.name()).collect(),
         summary: aggregate_normalized_summary(&lane_reports, &probes),
+        tool_required_stream: NormalizedToolRequiredStreamTimingReport::dry_run(&lane_reports),
         lanes: lane_reports,
         hardware: HardwareReport::detect(),
         comparison: NormalizedComparisonReport::dry_run(),
@@ -124,9 +127,18 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         .context("build qwen mlx tool normalized benchmark HTTP client")?;
 
     for (lane, lane_report) in lanes.iter().zip(&mut report.lanes) {
-        run_lane(&client, lane, lane_report, run_config, &probes).await;
+        run_lane(
+            &client,
+            lane,
+            lane_report,
+            run_config,
+            &probes,
+            admin_token.as_deref(),
+        )
+        .await;
     }
     report.summary = aggregate_normalized_summary(&report.lanes, &probes);
+    report.tool_required_stream = tool_required_stream_timing_report(&report.lanes);
     report.comparison = compare_normalized_lanes(&report.lanes, &probes);
     report.agentic_gate = agentic_gate_report(&report.lanes);
     report.status = if report.lanes.iter().all(|lane| lane.status == "passed") {
@@ -159,6 +171,7 @@ Options:
   --concurrent-samples <n>      Concurrent sample batches per case and phase; 0 disables unless concurrent requests > 1 [default: 0]
   --focused-agentic-gate        Run the small agentic gate instead of the full schema/tool matrix
   --output <path>               Write the trace JSON to a file as well as stdout
+  --admin-token <token>         Optional bearer token for lane /admin/metrics snapshots
   --timeout-ms <n>              Whole request timeout [default: 1800000]
   --connect-timeout-ms <n>      HTTP connect timeout [default: 10000]
   --dry-run                     Print the exact probe plan without HTTP requests
@@ -522,13 +535,56 @@ fn huggingface_cache_repo_id(directory_name: &str) -> Option<String> {
     Some(format!("{owner}/{}", repo.replace("--", "/")))
 }
 
+async fn capture_normalized_admin_metrics(
+    client: &reqwest::Client,
+    lane: &NormalizedLaneConfig,
+    admin_token: Option<&str>,
+) -> Result<Value, String> {
+    let mut request = client
+        .get(admin_metrics_url(&lane.endpoint))
+        .timeout(admin_metrics_timeout());
+    if let Some(token) = admin_token {
+        request = request.bearer_auth(token);
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => response
+            .json::<Value>()
+            .await
+            .map_err(|err| format!("parse admin metrics: {err}")),
+        Ok(response) => Err(format!("admin metrics HTTP {}", response.status())),
+        Err(err) => Err(format!("admin metrics request failed: {err}")),
+    }
+}
+
+fn should_capture_admin_metrics(lane: &NormalizedLaneConfig) -> bool {
+    matches!(lane.kind, NormalizedLaneKind::KirAiProxy)
+}
+
+fn admin_metrics_timeout() -> Duration {
+    Duration::from_millis(ADMIN_METRICS_TIMEOUT_MS)
+}
+
+fn admin_metrics_url(endpoint: &str) -> String {
+    let root = endpoint
+        .trim_end_matches('/')
+        .strip_suffix("/v1")
+        .unwrap_or_else(|| endpoint.trim_end_matches('/'));
+    format!("{root}/admin/metrics")
+}
+
 async fn run_lane(
     client: &reqwest::Client,
     lane: &NormalizedLaneConfig,
     lane_report: &mut NormalizedLaneReport,
     run_config: NormalizedRunConfig,
     probes: &[NormalizedProbePlan],
+    admin_token: Option<&str>,
 ) {
+    if should_capture_admin_metrics(lane) {
+        lane_report
+            .admin_metrics
+            .record_before(capture_normalized_admin_metrics(client, lane, admin_token).await);
+    }
     for &probe in probes {
         for planned in phase_plan(run_config.warmups, run_config.samples) {
             let prompt = planned.prompt(run_config.context_tokens);
@@ -589,6 +645,11 @@ async fn run_lane(
         "failed"
     }
     .to_owned();
+    if should_capture_admin_metrics(lane) {
+        lane_report
+            .admin_metrics
+            .record_after(capture_normalized_admin_metrics(client, lane, admin_token).await);
+    }
 }
 
 async fn execute_probe(
@@ -1378,6 +1439,157 @@ fn agentic_gate_report(lanes: &[NormalizedLaneReport]) -> NormalizedAgenticGateR
         .to_owned(),
         rows,
     }
+}
+
+fn tool_required_stream_timing_report(
+    lanes: &[NormalizedLaneReport],
+) -> NormalizedToolRequiredStreamTimingReport {
+    let lane_reports = lanes
+        .iter()
+        .map(tool_required_stream_lane_timing_report)
+        .collect::<Vec<_>>();
+    let has_admin = lane_reports.iter().any(|lane| lane.admin_metrics.is_some());
+    let has_admin_error = lane_reports
+        .iter()
+        .any(|lane| lane.admin_metrics_error.is_some());
+    let has_samples = lane_reports.iter().any(|lane| lane.pass_count > 0);
+    let status = match (has_admin, has_admin_error, has_samples) {
+        (true, true, _) => "partial_admin_metrics",
+        (true, false, _) => "reported",
+        (false, true, _) => "admin_metrics_unavailable",
+        (false, false, true) => "client_only",
+        (false, false, false) => "no_samples",
+    };
+    NormalizedToolRequiredStreamTimingReport {
+        status: status.to_owned(),
+        lanes: lane_reports,
+    }
+}
+
+fn tool_required_stream_lane_timing_report(
+    lane: &NormalizedLaneReport,
+) -> NormalizedToolRequiredStreamLaneTimingReport {
+    let samples = lane_samples(lane)
+        .filter(|sample| {
+            sample.case == NormalizedCaseKind::ToolRequiredStream.name()
+                && sample.status == "passed"
+        })
+        .collect::<Vec<_>>();
+    NormalizedToolRequiredStreamLaneTimingReport {
+        lane: lane.name.clone(),
+        kind: lane.kind,
+        pass_count: samples.len(),
+        p50_first_byte_latency_ms: percentile_for_samples(&samples, |sample| {
+            sample.stream_timing.first_byte_latency_ms
+        }),
+        p50_first_sse_data_latency_ms: percentile_for_samples(&samples, |sample| {
+            sample.stream_timing.first_sse_data_latency_ms
+        }),
+        p50_first_tool_delta_latency_ms: percentile_for_samples(&samples, |sample| {
+            sample.stream_timing.first_tool_delta_latency_ms
+        }),
+        p50_tool_finish_latency_ms: percentile_for_samples(&samples, |sample| {
+            sample.stream_timing.tool_finish_latency_ms
+        }),
+        p50_first_semantic_delta_latency_ms: percentile_for_samples(&samples, |sample| {
+            sample.stream_timing.first_semantic_delta_latency_ms
+        }),
+        admin_metrics: normalized_tool_stream_admin_metrics(&lane.admin_metrics),
+        admin_metrics_error: lane.admin_metrics.error.clone(),
+    }
+}
+
+fn normalized_tool_stream_admin_metrics(
+    capture: &NormalizedAdminMetricsCapture,
+) -> Option<NormalizedToolRequiredStreamAdminMetrics> {
+    let after = capture.after.as_ref()?;
+    Some(NormalizedToolRequiredStreamAdminMetrics {
+        first_tool_delta_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["first_tool_delta_ms"],
+        ),
+        tool_argument_assembly_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["tool_argument_assembly_ms"],
+        ),
+        tool_intent_fill_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["tool_intent_fill_ms"],
+        ),
+        tool_schema_validation_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["tool_schema_validation_ms"],
+        ),
+        tool_finish_ms: admin_latency_metric(capture.before.as_ref(), after, &["tool_finish_ms"]),
+        validated_tool_call_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["validated_tool_call_ms"],
+        ),
+        mlx_stream_first_upstream_byte_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_upstream_byte_ms"],
+        ),
+        mlx_stream_first_parsed_chunk_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_parsed_chunk_ms"],
+        ),
+        mlx_stream_first_tool_delta_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_tool_delta_ms"],
+        ),
+    })
+}
+
+fn admin_latency_metric(
+    before: Option<&Value>,
+    after: &Value,
+    path: &[&str],
+) -> NormalizedAdminLatencyMetricReport {
+    let after_summary = value_path(after, path);
+    let before_count = before
+        .and_then(|value| value_path(value, path))
+        .and_then(metric_count);
+    let after_count = after_summary.and_then(metric_count);
+    NormalizedAdminLatencyMetricReport {
+        count_delta: match (before_count, after_count) {
+            (Some(before_count), Some(after_count)) => Some(after_count - before_count),
+            _ => None,
+        },
+        count_after: after_count.and_then(|count| u64::try_from(count).ok()),
+        min_ms_after: after_summary
+            .and_then(|summary| summary.get("min"))
+            .and_then(Value::as_f64),
+        max_ms_after: after_summary
+            .and_then(|summary| summary.get("max"))
+            .and_then(Value::as_f64),
+        avg_ms_after: after_summary
+            .and_then(|summary| summary.get("avg"))
+            .and_then(Value::as_f64),
+    }
+}
+
+fn value_path<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    for segment in path {
+        value = value.get(*segment)?;
+    }
+    Some(value)
+}
+
+fn metric_count(value: &Value) -> Option<i64> {
+    value.get("count").and_then(Value::as_i64).or_else(|| {
+        value
+            .get("count")
+            .and_then(Value::as_u64)
+            .and_then(|count| i64::try_from(count).ok())
+    })
 }
 
 fn percentile_for_samples(
@@ -2406,6 +2618,7 @@ struct NormalizedBenchReport {
     tool_choice_variants: Vec<&'static str>,
     cache_phases: Vec<&'static str>,
     summary: Vec<NormalizedAggregateSummaryRow>,
+    tool_required_stream: NormalizedToolRequiredStreamTimingReport,
     lanes: Vec<NormalizedLaneReport>,
     hardware: HardwareReport,
     comparison: NormalizedComparisonReport,
@@ -2500,6 +2713,8 @@ struct NormalizedLaneReport {
     concurrent_samples: Vec<NormalizedSampleReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warmup_failures: Vec<NormalizedWarmupFailure>,
+    #[serde(skip)]
+    admin_metrics: NormalizedAdminMetricsCapture,
 }
 
 impl NormalizedLaneReport {
@@ -2531,6 +2746,7 @@ impl NormalizedLaneReport {
             samples: Vec::new(),
             concurrent_samples: Vec::new(),
             warmup_failures: Vec::new(),
+            admin_metrics: NormalizedAdminMetricsCapture::default(),
         }
     }
 
@@ -2585,6 +2801,39 @@ impl NormalizedLaneReport {
             }
         }
         report
+    }
+}
+
+#[derive(Debug, Default)]
+struct NormalizedAdminMetricsCapture {
+    before: Option<Value>,
+    after: Option<Value>,
+    error: Option<String>,
+}
+
+impl NormalizedAdminMetricsCapture {
+    fn record_before(&mut self, result: Result<Value, String>) {
+        match result {
+            Ok(metrics) => self.before = Some(metrics),
+            Err(err) => self.push_error(format!("before {err}")),
+        }
+    }
+
+    fn record_after(&mut self, result: Result<Value, String>) {
+        match result {
+            Ok(metrics) => self.after = Some(metrics),
+            Err(err) => self.push_error(format!("after {err}")),
+        }
+    }
+
+    fn push_error(&mut self, err: String) {
+        match &mut self.error {
+            Some(existing) => {
+                existing.push_str("; ");
+                existing.push_str(&err);
+            }
+            None => self.error = Some(err),
+        }
     }
 }
 
@@ -2759,6 +3008,71 @@ struct NormalizedAgenticGateLaneMetric {
     avg_cached_tokens: Option<f64>,
     avg_prompt_tokens: Option<f64>,
     avg_completion_tokens: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamTimingReport {
+    status: String,
+    lanes: Vec<NormalizedToolRequiredStreamLaneTimingReport>,
+}
+
+impl NormalizedToolRequiredStreamTimingReport {
+    fn dry_run(lanes: &[NormalizedLaneReport]) -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            lanes: lanes
+                .iter()
+                .map(|lane| NormalizedToolRequiredStreamLaneTimingReport {
+                    lane: lane.name.clone(),
+                    kind: lane.kind,
+                    pass_count: 0,
+                    p50_first_byte_latency_ms: None,
+                    p50_first_sse_data_latency_ms: None,
+                    p50_first_tool_delta_latency_ms: None,
+                    p50_tool_finish_latency_ms: None,
+                    p50_first_semantic_delta_latency_ms: None,
+                    admin_metrics: None,
+                    admin_metrics_error: None,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamLaneTimingReport {
+    lane: String,
+    kind: &'static str,
+    pass_count: usize,
+    p50_first_byte_latency_ms: Option<u128>,
+    p50_first_sse_data_latency_ms: Option<u128>,
+    p50_first_tool_delta_latency_ms: Option<u128>,
+    p50_tool_finish_latency_ms: Option<u128>,
+    p50_first_semantic_delta_latency_ms: Option<u128>,
+    admin_metrics: Option<NormalizedToolRequiredStreamAdminMetrics>,
+    admin_metrics_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamAdminMetrics {
+    first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
+    tool_argument_assembly_ms: NormalizedAdminLatencyMetricReport,
+    tool_intent_fill_ms: NormalizedAdminLatencyMetricReport,
+    tool_schema_validation_ms: NormalizedAdminLatencyMetricReport,
+    tool_finish_ms: NormalizedAdminLatencyMetricReport,
+    validated_tool_call_ms: NormalizedAdminLatencyMetricReport,
+    mlx_stream_first_upstream_byte_ms: NormalizedAdminLatencyMetricReport,
+    mlx_stream_first_parsed_chunk_ms: NormalizedAdminLatencyMetricReport,
+    mlx_stream_first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedAdminLatencyMetricReport {
+    count_delta: Option<i64>,
+    count_after: Option<u64>,
+    min_ms_after: Option<f64>,
+    max_ms_after: Option<f64>,
+    avg_ms_after: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
