@@ -332,15 +332,17 @@ impl ModelScheduler {
     }
 
     pub(super) fn classify_chat(&self, request: &ChatCompletionRequest) -> SchedulerClass {
-        self.classify_chars(estimated_chat_chars(request))
+        self.classify_estimated_tokens(estimated_chat_tokens(request))
     }
 
     pub(super) fn classify_completion(&self, request: &CompletionRequest) -> SchedulerClass {
-        self.classify_chars(request.prompt.len())
+        self.classify_estimated_tokens(estimated_text_tokens(&request.prompt))
     }
 
-    fn classify_chars(&self, chars: usize) -> SchedulerClass {
-        if chars >= self.options.prefill_threshold_chars {
+    fn classify_estimated_tokens(&self, tokens: usize) -> SchedulerClass {
+        // Keep the historical option field name for API compatibility; the
+        // scheduler compares it to estimated prompt tokens.
+        if tokens >= self.options.prefill_threshold_chars {
             SchedulerClass::Prefill
         } else {
             SchedulerClass::Decode
@@ -489,124 +491,133 @@ impl ModelScheduler {
     }
 }
 
-fn estimated_chat_chars(request: &ChatCompletionRequest) -> usize {
+fn estimated_chat_tokens(request: &ChatCompletionRequest) -> usize {
     request
         .messages
         .iter()
-        .map(|message| message.content.as_ref().map_or(0, String::len))
-        .chain(request.tools.iter().map(estimated_tool_definition_chars))
+        .map(|message| message.content.as_deref().map_or(0, estimated_text_tokens))
+        .chain(request.tools.iter().map(estimated_tool_definition_tokens))
         .fold(0usize, usize::saturating_add)
 }
 
-fn estimated_tool_definition_chars(tool: &ToolDefinition) -> usize {
-    let mut chars = json_object_wrapper_chars();
+fn estimated_tool_definition_tokens(tool: &ToolDefinition) -> usize {
+    let mut tokens = json_object_wrapper_tokens();
     let mut has_field = false;
-    add_json_object_field_chars(
-        &mut chars,
+    add_json_object_field_tokens(
+        &mut tokens,
         &mut has_field,
         "type",
-        estimated_tool_call_type_chars(&tool.tool_type),
+        estimated_tool_call_type_tokens(&tool.tool_type),
     );
-    add_json_object_field_chars(
-        &mut chars,
+    add_json_object_field_tokens(
+        &mut tokens,
         &mut has_field,
         "function",
-        estimated_function_definition_chars(&tool.function),
+        estimated_function_definition_tokens(&tool.function),
     );
-    chars
+    tokens
 }
 
-fn estimated_tool_call_type_chars(tool_type: &ToolCallType) -> usize {
+fn estimated_tool_call_type_tokens(tool_type: &ToolCallType) -> usize {
     match tool_type {
-        ToolCallType::Function => estimated_json_string_chars("function"),
+        ToolCallType::Function => estimated_json_string_tokens("function"),
     }
 }
 
-fn estimated_function_definition_chars(function: &FunctionDefinition) -> usize {
-    let mut chars = json_object_wrapper_chars();
+fn estimated_function_definition_tokens(function: &FunctionDefinition) -> usize {
+    let mut tokens = json_object_wrapper_tokens();
     let mut has_field = false;
-    add_json_object_field_chars(
-        &mut chars,
+    add_json_object_field_tokens(
+        &mut tokens,
         &mut has_field,
         "name",
-        estimated_json_string_chars(&function.name),
+        estimated_json_string_tokens(&function.name),
     );
     if let Some(description) = &function.description {
-        add_json_object_field_chars(
-            &mut chars,
+        add_json_object_field_tokens(
+            &mut tokens,
             &mut has_field,
             "description",
-            estimated_json_string_chars(description),
+            estimated_json_string_tokens(description),
         );
     }
-    add_json_object_field_chars(
-        &mut chars,
+    add_json_object_field_tokens(
+        &mut tokens,
         &mut has_field,
         "parameters",
-        estimated_json_value_chars(&function.parameters),
+        estimated_json_value_tokens(&function.parameters),
     );
-    chars
+    tokens
 }
 
-fn estimated_json_value_chars(value: &Value) -> usize {
+fn estimated_json_value_tokens(value: &Value) -> usize {
     match value {
-        Value::Null => "null".len(),
-        Value::Bool(true) => "true".len(),
-        Value::Bool(false) => "false".len(),
-        Value::Number(number) => estimated_json_number_chars(number),
-        Value::String(value) => estimated_json_string_chars(value),
+        Value::Null => 1,
+        Value::Bool(_) => 1,
+        Value::Number(number) => estimated_json_number_tokens(number),
+        Value::String(value) => estimated_json_string_tokens(value),
         Value::Array(values) => {
-            let mut chars = json_array_wrapper_chars();
+            let mut tokens = json_array_wrapper_tokens();
             let mut has_item = false;
             for value in values {
                 if has_item {
-                    chars = chars.saturating_add(",".len());
+                    tokens = tokens.saturating_add(1);
                 } else {
                     has_item = true;
                 }
-                chars = chars.saturating_add(estimated_json_value_chars(value));
+                tokens = tokens.saturating_add(estimated_json_value_tokens(value));
             }
-            chars
+            tokens
         }
         Value::Object(object) => {
-            let mut chars = json_object_wrapper_chars();
+            let mut tokens = json_object_wrapper_tokens();
             let mut has_field = false;
             for (key, value) in object {
-                add_json_object_field_chars(
-                    &mut chars,
+                add_json_object_field_tokens(
+                    &mut tokens,
                     &mut has_field,
                     key,
-                    estimated_json_value_chars(value),
+                    estimated_json_value_tokens(value),
                 );
             }
-            chars
+            tokens
         }
     }
 }
 
-fn estimated_json_string_chars(value: &str) -> usize {
-    value.bytes().fold(2usize, |chars, byte| {
-        chars.saturating_add(match byte {
-            b'"' | b'\\' => 2,
-            b'\x08' | b'\x0C' | b'\n' | b'\r' | b'\t' => 2,
-            b'\x00'..=b'\x1F' => 6,
-            _ => 1,
-        })
-    })
+fn estimated_json_string_tokens(value: &str) -> usize {
+    estimated_text_tokens(value).saturating_add(1)
 }
 
-fn estimated_json_number_chars(number: &serde_json::Number) -> usize {
+fn estimated_json_number_tokens(number: &serde_json::Number) -> usize {
     if let Some(value) = number.as_u64() {
-        return decimal_digits(value);
+        return decimal_digits(value).div_ceil(4);
     }
     if let Some(value) = number.as_i64() {
         return usize::from(value.is_negative())
-            .saturating_add(decimal_digits(value.unsigned_abs()));
+            .saturating_add(decimal_digits(value.unsigned_abs()))
+            .div_ceil(4);
     }
     if number.as_f64().is_some() {
-        return 32;
+        return 8;
     }
     usize::MAX / 2
+}
+
+fn estimated_text_tokens(value: &str) -> usize {
+    let mut ascii_bytes = 0usize;
+    let mut non_ascii_tokens = 0usize;
+    for character in value.chars() {
+        if character.is_ascii() {
+            ascii_bytes = ascii_bytes.saturating_add(1);
+        } else {
+            non_ascii_tokens =
+                non_ascii_tokens.saturating_add(character.len_utf8().saturating_sub(1).max(1));
+        }
+    }
+    let byte_estimate = ascii_bytes.div_ceil(4).saturating_add(non_ascii_tokens);
+    let word_estimate = value.split_whitespace().count();
+    byte_estimate.max(word_estimate)
 }
 
 fn decimal_digits(mut value: u64) -> usize {
@@ -618,29 +629,29 @@ fn decimal_digits(mut value: u64) -> usize {
     digits
 }
 
-fn add_json_object_field_chars(
-    chars: &mut usize,
+fn add_json_object_field_tokens(
+    tokens: &mut usize,
     has_field: &mut bool,
     key: &str,
-    value_chars: usize,
+    value_tokens: usize,
 ) {
     if *has_field {
-        *chars = (*chars).saturating_add(",".len());
+        *tokens = (*tokens).saturating_add(1);
     } else {
         *has_field = true;
     }
-    *chars = (*chars)
-        .saturating_add(estimated_json_string_chars(key))
-        .saturating_add(":".len())
-        .saturating_add(value_chars);
+    *tokens = (*tokens)
+        .saturating_add(estimated_json_string_tokens(key))
+        .saturating_add(1)
+        .saturating_add(value_tokens);
 }
 
-fn json_object_wrapper_chars() -> usize {
-    "{}".len()
+fn json_object_wrapper_tokens() -> usize {
+    1
 }
 
-fn json_array_wrapper_chars() -> usize {
-    "[]".len()
+fn json_array_wrapper_tokens() -> usize {
+    1
 }
 
 #[cfg(test)]
@@ -677,9 +688,9 @@ mod tests {
     }
 
     #[test]
-    fn chat_classification_counts_tool_schema_with_structural_estimate() {
+    fn chat_classification_counts_tool_schema_with_token_estimate() {
         let scheduler = ModelScheduler::new(ModelSchedulerOptions {
-            prefill_threshold_chars: 128,
+            prefill_threshold_chars: 48,
             ..test_options()
         });
         let tool_description = "x".repeat(96);
@@ -703,7 +714,61 @@ mod tests {
             ..ChatCompletionRequest::default()
         };
 
-        assert!(estimated_tool_definition_chars(&request.tools[0]) >= 128);
+        assert!(estimated_tool_definition_tokens(&request.tools[0]) >= 48);
         assert_eq!(scheduler.classify_chat(&request), SchedulerClass::Prefill);
+    }
+
+    #[test]
+    fn completion_classification_uses_token_estimate_for_multibyte_text() {
+        let scheduler = ModelScheduler::new(ModelSchedulerOptions {
+            prefill_threshold_chars: 8,
+            ..test_options()
+        });
+        let prompt = "é".repeat(4);
+        let request = CompletionRequest {
+            prompt: prompt.clone(),
+            ..CompletionRequest::default()
+        };
+
+        assert!(prompt.len() >= 8);
+        assert_eq!(
+            scheduler.classify_completion(&request),
+            SchedulerClass::Decode
+        );
+    }
+
+    #[test]
+    fn completion_classification_uses_token_estimate_for_long_ascii_words() {
+        let scheduler = ModelScheduler::new(ModelSchedulerOptions {
+            prefill_threshold_chars: 16,
+            ..test_options()
+        });
+        let request = CompletionRequest {
+            prompt: "antidisestablishmentarianism".to_owned(),
+            ..CompletionRequest::default()
+        };
+
+        assert!(request.prompt.len() >= 16);
+        assert_eq!(
+            scheduler.classify_completion(&request),
+            SchedulerClass::Decode
+        );
+    }
+
+    #[test]
+    fn completion_classification_counts_ascii_word_boundaries() {
+        let scheduler = ModelScheduler::new(ModelSchedulerOptions {
+            prefill_threshold_chars: 16,
+            ..test_options()
+        });
+        let request = CompletionRequest {
+            prompt: "a ".repeat(20),
+            ..CompletionRequest::default()
+        };
+
+        assert_eq!(
+            scheduler.classify_completion(&request),
+            SchedulerClass::Prefill
+        );
     }
 }
