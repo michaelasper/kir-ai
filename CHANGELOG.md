@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.1](https://github.com/michaelasper/kir-ai/compare/v1.10.0...v1.10.1) (2026-05-13)
+
+### Bug Fixes
+
+* **scheduler:** classify by token estimate ([65a4644](https://github.com/michaelasper/kir-ai/commit/65a464407ad8b46359a4ff41a97fde36c64fdb85))
+
 ## [1.10.0](https://github.com/michaelasper/kir-ai/compare/v1.9.0...v1.10.0) (2026-05-13)
 
 ### Features
