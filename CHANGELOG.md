@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.11.0](https://github.com/michaelasper/kir-ai/compare/v1.10.3...v1.11.0) (2026-05-13)
+
+### Features
+
+* add tool stream timing telemetry ([5d5026f](https://github.com/michaelasper/kir-ai/commit/5d5026fd789d4d54cc91f3577baa023c72003a56)), closes [#261](https://github.com/michaelasper/kir-ai/issues/261)
+
 ## [1.10.3](https://github.com/michaelasper/kir-ai/compare/v1.10.2...v1.10.3) (2026-05-13)
 
 ### Bug Fixes
