@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0](https://github.com/michaelasper/kir-ai/compare/v1.5.0...v1.6.0) (2026-05-13)
+
+### Features
+
+* **bench:** add canonical Qwen MLX tool benchmark ([5429e83](https://github.com/michaelasper/kir-ai/commit/5429e83ebd0df04297db90f0188b74a3683d52ee))
+
 ## [1.5.0](https://github.com/michaelasper/kir-ai/compare/v1.4.37...v1.5.0) (2026-05-12)
 
 ### Features
