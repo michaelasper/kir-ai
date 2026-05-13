@@ -1,7 +1,7 @@
 use super::{
     NativeStreamTextDeltas, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-    NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, native_text_cache_token_capacity,
-    native_text_worker_stream, resolve_native_text_max_tokens,
+    NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, NativeTextSamplingRng,
+    native_text_cache_token_capacity, native_text_worker_stream, resolve_native_text_max_tokens,
 };
 use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
@@ -92,6 +92,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        sampling_draw: Option<f32>,
         scratch: &mut InferenceScratchpad,
         sampling_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError>;
@@ -307,6 +308,7 @@ where
         )?;
         let mut scratch = InferenceScratchpad::new();
         let mut sampling_scratch = TopPSamplerScratch::new();
+        let mut sampling_rng = native_text_sampling_rng_for_config(request.sampling);
         let mut decode = self
             .start_decode_session(
                 &context_tokens,
@@ -329,6 +331,7 @@ where
                 .next_token_from_hidden(
                     self.adapter.hidden(&decode),
                     request.sampling,
+                    native_text_sampling_draw_for_config(request.sampling, &mut sampling_rng),
                     &mut scratch,
                     &mut sampling_scratch,
                 )
@@ -405,6 +408,7 @@ where
         )?;
         let mut scratch = InferenceScratchpad::new();
         let mut sampling_scratch = TopPSamplerScratch::new();
+        let mut sampling_rng = native_text_sampling_rng_for_config(request.sampling);
         let mut decode = match self
             .start_decode_session(
                 &context_tokens,
@@ -434,6 +438,7 @@ where
                 .next_token_from_hidden(
                     self.adapter.hidden(&decode),
                     request.sampling,
+                    native_text_sampling_draw_for_config(request.sampling, &mut sampling_rng),
                     &mut scratch,
                     &mut sampling_scratch,
                 )
@@ -649,6 +654,21 @@ fn build_native_text_worker_runtime() -> Result<tokio::runtime::Runtime, Backend
         .map_err(|err| {
             BackendError::Other(format!("native text worker runtime build failed: {err}"))
         })
+}
+
+fn native_text_sampling_draw_for_config(
+    sampling: SamplingConfig,
+    sampling_rng: &mut Option<NativeTextSamplingRng>,
+) -> Option<f32> {
+    if sampling.is_greedy() {
+        None
+    } else {
+        sampling_rng.as_mut().map(NativeTextSamplingRng::draw_f32)
+    }
+}
+
+fn native_text_sampling_rng_for_config(sampling: SamplingConfig) -> Option<NativeTextSamplingRng> {
+    (!sampling.is_greedy()).then(NativeTextSamplingRng::from_entropy)
 }
 
 #[async_trait]

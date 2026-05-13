@@ -4,6 +4,7 @@ use llm_backend::{
     native_lm_head_logits_for_spec_ref_with_matvec, native_lm_head_top_k_for_spec_ref_with_matvec,
 };
 use llm_sampler::TopPSamplerScratch;
+use rand::{Rng as _, SeedableRng, rngs::SmallRng};
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -160,6 +161,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        sampling_draw: Option<f32>,
         top_p_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError> {
         let final_norm =
@@ -176,10 +178,16 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             )
             .await
             .map_err(|err| BackendError::Other(err.to_string()))?;
+            let sampling_draw = sampling_draw.ok_or_else(|| {
+                BackendError::Other(format!(
+                    "{} non-greedy sampling requires an RNG draw",
+                    self.family_display_name
+                ))
+            })?;
             let sampled_token_id = sample_token_id_with_draw_with_scratch(
                 &logits,
                 sampling,
-                native_text_sampling_draw(),
+                sampling_draw,
                 self.family_display_name,
                 top_p_scratch,
             )?;
@@ -221,18 +229,105 @@ fn ensure_token_id_fits_u32(
     Ok(())
 }
 
-static NATIVE_TEXT_SAMPLING_COUNTER: AtomicU64 = AtomicU64::new(0);
+static NATIVE_TEXT_SAMPLING_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn native_text_sampling_draw() -> f32 {
+pub(crate) struct NativeTextSamplingRng {
+    rng: SmallRng,
+}
+
+impl NativeTextSamplingRng {
+    pub(crate) fn from_entropy() -> Self {
+        let mut seed_bytes = [0_u8; 32];
+        if getrandom::fill(&mut seed_bytes).is_ok() {
+            Self::from_seed_bytes(seed_bytes)
+        } else {
+            Self::from_seed_words_inner(fallback_entropy_seed_words())
+        }
+    }
+
+    #[cfg(test)]
+    fn from_seed_words(state: [u64; 4]) -> Self {
+        Self::from_seed_words_inner(state)
+    }
+
+    fn from_seed_words_inner(mut state: [u64; 4]) -> Self {
+        if state.iter().all(|word| *word == 0) {
+            let mut seed = 0x9E37_79B9_7F4A_7C15;
+            state = [
+                splitmix64_next(&mut seed),
+                splitmix64_next(&mut seed),
+                splitmix64_next(&mut seed),
+                splitmix64_next(&mut seed),
+            ];
+        }
+        Self::from_seed_bytes(seed_words_to_bytes(state))
+    }
+
+    fn from_seed_bytes(seed_bytes: [u8; 32]) -> Self {
+        Self {
+            rng: SmallRng::from_seed(seed_bytes),
+        }
+    }
+
+    pub(crate) fn draw_f32(&mut self) -> f32 {
+        self.rng.random::<f32>()
+    }
+}
+
+fn seed_words_to_bytes(words: [u64; 4]) -> [u8; 32] {
+    let mut seed_bytes = [0_u8; 32];
+    for (chunk, word) in seed_bytes.chunks_exact_mut(8).zip(words) {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    seed_bytes
+}
+
+fn fallback_entropy_seed_words() -> [u64; 4] {
     let time_seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
-    let counter = NATIVE_TEXT_SAMPLING_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut value = time_seed ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    value ^= value >> 12;
-    value ^= value << 25;
-    value ^= value >> 27;
-    let bits = value.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
-    (bits as f32) / ((1_u32 << 24) as f32)
+    let counter = NATIVE_TEXT_SAMPLING_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut seed = time_seed
+        ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(std::process::id()).rotate_left(32);
+    [
+        splitmix64_next(&mut seed),
+        splitmix64_next(&mut seed),
+        splitmix64_next(&mut seed),
+        splitmix64_next(&mut seed),
+    ]
+}
+
+fn splitmix64_next(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut value = *seed;
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_text_sampling_rng_uses_independent_seeded_streams() {
+        let mut first = NativeTextSamplingRng::from_seed_words([1, 2, 3, 4]);
+        let mut first_again = NativeTextSamplingRng::from_seed_words([1, 2, 3, 4]);
+        let mut second = NativeTextSamplingRng::from_seed_words([5, 6, 7, 8]);
+
+        let first_draws = (0..8).map(|_| first.draw_f32()).collect::<Vec<_>>();
+        let first_again_draws = (0..8).map(|_| first_again.draw_f32()).collect::<Vec<_>>();
+        let second_draws = (0..8).map(|_| second.draw_f32()).collect::<Vec<_>>();
+
+        assert_eq!(first_draws, first_again_draws);
+        assert_ne!(first_draws, second_draws);
+        assert!(
+            first_draws
+                .iter()
+                .chain(second_draws.iter())
+                .all(|draw| (0.0..1.0).contains(draw))
+        );
+    }
 }

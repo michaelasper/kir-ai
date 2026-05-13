@@ -29,12 +29,14 @@ async-trait = "0.1.89"
 axum = { version = "0.8.7", features = ["json", "macros", "tokio"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 futures = "0.3.31"
+getrandom = "0.3.4"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 libc = "0.2.177"
 metal = "0.33.0"
 block = "0.1.6"
 memmap2 = "0.9.10"
+rand = { version = "0.9.4", features = ["small_rng"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 safetensors = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }

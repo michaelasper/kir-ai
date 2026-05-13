@@ -29,7 +29,8 @@ pub(crate) use generation::native_text_prefill_context_with_cache;
 pub(crate) use generation::sample_token_id_with_draw;
 #[allow(unused_imports)]
 pub(crate) use generation::{
-    NativeTextNextTokenContext, native_text_cache_token_capacity, resolve_native_text_max_tokens,
+    NativeTextNextTokenContext, NativeTextSamplingRng, native_text_cache_token_capacity,
+    resolve_native_text_max_tokens,
 };
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
@@ -286,7 +287,7 @@ mod tests {
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
         sync::{
-            Arc, Weak,
+            Arc, Mutex, Weak,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -352,6 +353,7 @@ mod tests {
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
         cleanup_calls: Arc<AtomicUsize>,
         next_token_calls: Arc<AtomicUsize>,
+        sampling_draws: Arc<Mutex<Vec<Option<f32>>>>,
         decoded_token_total: Arc<AtomicUsize>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
@@ -367,6 +369,7 @@ mod tests {
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
                 cleanup_calls: Arc::new(AtomicUsize::new(0)),
                 next_token_calls: Arc::new(AtomicUsize::new(0)),
+                sampling_draws: Arc::new(Mutex::new(Vec::new())),
                 decoded_token_total: Arc::new(AtomicUsize::new(0)),
                 next_token_delay: None,
                 fail_prefill: false,
@@ -394,6 +397,10 @@ mod tests {
 
         fn next_token_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.next_token_calls)
+        }
+
+        fn sampling_draws(&self) -> Arc<Mutex<Vec<Option<f32>>>> {
+            Arc::clone(&self.sampling_draws)
         }
 
         fn decoded_token_total(&self) -> Arc<AtomicUsize> {
@@ -526,10 +533,15 @@ mod tests {
             &self,
             hidden: &[f32],
             _sampling: SamplingConfig,
+            sampling_draw: Option<f32>,
             _scratch: &mut InferenceScratchpad,
             _sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.next_token_calls.fetch_add(1, Ordering::SeqCst);
+            self.sampling_draws
+                .lock()
+                .expect("sampling draws lock is not poisoned")
+                .push(sampling_draw);
             if let Some(delay) = self.next_token_delay {
                 std::thread::sleep(delay);
             }
@@ -678,11 +690,12 @@ mod tests {
             &self,
             hidden: &[f32],
             sampling: SamplingConfig,
+            sampling_draw: Option<f32>,
             scratch: &mut InferenceScratchpad,
             sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.base
-                .next_token_from_hidden(hidden, sampling, scratch, sampling_scratch)
+                .next_token_from_hidden(hidden, sampling, sampling_draw, scratch, sampling_scratch)
                 .await
         }
     }
@@ -923,6 +936,48 @@ mod tests {
 
         assert_eq!(text, "<1><2><3><4>");
         assert_eq!(decoded_token_total.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn driver_supplies_rng_draws_only_for_non_greedy_sampling() {
+        let greedy_adapter = TestAdapter::new([1_usize, 2]);
+        let greedy_draws = greedy_adapter.sampling_draws();
+        let greedy_driver = driver_for_test(greedy_adapter);
+
+        greedy_driver
+            .generate_blocking(driver_test_request(2), CancellationToken::new())
+            .expect("greedy generation succeeds");
+
+        assert_eq!(
+            *greedy_draws
+                .lock()
+                .expect("greedy sampling draws lock is not poisoned"),
+            vec![None, None]
+        );
+
+        let top_p_adapter = TestAdapter::new([1_usize, 2]);
+        let top_p_draws = top_p_adapter.sampling_draws();
+        let top_p_driver = driver_for_test(top_p_adapter);
+        let mut request = driver_test_request(2);
+        request.sampling = SamplingConfig::TopP {
+            temperature: 1.0,
+            top_p: 0.9,
+        };
+
+        top_p_driver
+            .generate_blocking(request, CancellationToken::new())
+            .expect("top-p generation succeeds");
+
+        let top_p_draws = top_p_draws
+            .lock()
+            .expect("top-p sampling draws lock is not poisoned")
+            .clone();
+        assert_eq!(top_p_draws.len(), 2);
+        assert!(
+            top_p_draws
+                .into_iter()
+                .all(|draw| { matches!(draw, Some(value) if (0.0..1.0).contains(&value)) })
+        );
     }
 
     #[test]

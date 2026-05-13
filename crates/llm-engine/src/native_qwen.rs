@@ -229,11 +229,18 @@ impl NativeQwenBackend {
         hidden: &[f32],
         sampling: SamplingConfig,
     ) -> Result<NativeQwenCandidate, BackendError> {
+        let sampling_draw = if sampling.is_greedy() {
+            None
+        } else {
+            let mut sampling_rng = crate::native_text::NativeTextSamplingRng::from_entropy();
+            Some(sampling_rng.draw_f32())
+        };
         let token_id = tokio::task::block_in_place(|| {
             self.driver
                 .block_on_worker(self.driver.adapter.next_token_from_hidden(
                     hidden,
                     sampling,
+                    sampling_draw,
                     &mut InferenceScratchpad::new(),
                     &mut llm_sampler::TopPSamplerScratch::new(),
                 ))?
@@ -381,6 +388,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         &self,
         hidden: &[f32],
         sampling: SamplingConfig,
+        sampling_draw: Option<f32>,
         _scratch: &mut InferenceScratchpad,
         sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
     ) -> Result<usize, BackendError> {
@@ -392,7 +400,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             matvec: &self.matvec,
             family_display_name: "Qwen",
         }
-        .select_next_token(hidden, sampling, sampling_scratch)
+        .select_next_token(hidden, sampling, sampling_draw, sampling_scratch)
         .await
     }
 }
