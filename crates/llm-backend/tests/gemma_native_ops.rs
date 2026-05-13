@@ -324,6 +324,39 @@ async fn gemma_prefill_and_decode_produce_deterministic_tiny_outputs() {
 }
 
 #[tokio::test]
+async fn gemma_prefill_rejects_token_id_outside_vocab() {
+    let root = temp_snapshot_dir("gemma-token-bounds");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    write_tiny_gemma4_decoder_snapshot(&root);
+    let spec = GemmaModelSpec::from_config_json(
+        &std::fs::read_to_string(root.join("config.json")).expect("config"),
+    )
+    .expect("tiny Gemma config parses");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let mut caches = gemma_layer_caches_for_spec(&spec, 8).expect("Gemma caches allocate");
+
+    let mut scratch = InferenceScratchpad::default();
+    let err = gemma_prefill_sequence_with_cache(
+        &store,
+        &spec,
+        &[spec.vocab_size as usize],
+        &mut caches,
+        &mut scratch,
+    )
+    .await
+    .expect_err("token id equal to configured vocab size is rejected");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(
+        err.to_string()
+            .contains("Gemma token id 3 at position 0 is outside vocab size 3"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
 async fn gemma_prefill_supports_per_layer_inputs() {
     let root = temp_snapshot_dir("gemma-ple-prefill");
     std::fs::remove_dir_all(&root).ok();

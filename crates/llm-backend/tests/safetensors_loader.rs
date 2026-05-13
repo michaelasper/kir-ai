@@ -1,9 +1,11 @@
 #![cfg(feature = "slow-tests")]
 #![allow(dead_code)]
 use llm_backend::{
-    CpuNativeMatvecBackend, MathError, NativeMatvecBackend, QWEN_FINAL_NORM_WEIGHT, QwenLayerCache,
-    SafeTensorShardStore, TensorLoadError, qwen_final_norm, qwen_final_norm_for_spec,
-    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
+    CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeMatvecBackend,
+    QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
+    QwenLayerCache, SafeTensorShardStore, TensorLoadError, qwen_decode_token_with_cache,
+    qwen_embedding_and_layer0_norm, qwen_embedding_sequence_for_spec, qwen_final_norm,
+    qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
     qwen_layer_full_attention_sequence_with_cache_with_matvec,
     qwen_layer_linear_attention_sequence_with_cache_with_matvec, qwen_lm_head_logits,
     qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
@@ -208,6 +210,96 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
 
 fn caches_for_spec(spec: &QwenModelSpec, capacity: usize) -> Vec<QwenLayerCache> {
     qwen_layer_caches_for_spec(spec, capacity).expect("temporary caches")
+}
+
+#[tokio::test]
+async fn qwen_embedding_probe_rejects_token_id_outside_embedding_vocab() {
+    let root = temp_snapshot_dir("qwen-embed-token-bounds");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 20 },
+            "weight_map": {
+                QWEN_EMBED_TOKENS_WEIGHT: "embed.safetensors",
+                QWEN_LAYER0_INPUT_NORM_WEIGHT: "norm.safetensors"
+            }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("embed.safetensors"),
+        tiny_safetensors_bf16(QWEN_EMBED_TOKENS_WEIGHT, &[2, 2], &[3.0, 4.0, 6.0, 8.0]),
+    )
+    .expect("embedding shard");
+    std::fs::write(
+        root.join("norm.safetensors"),
+        tiny_safetensors_bf16(QWEN_LAYER0_INPUT_NORM_WEIGHT, &[2], &[0.0, 1.0]),
+    )
+    .expect("norm shard");
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let err = qwen_embedding_and_layer0_norm(&store, 2, 2, 0.0)
+        .expect_err("token id equal to vocab size is rejected");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(
+        err.to_string()
+            .contains("Qwen token id 2 is outside vocab size 2"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn qwen_spec_embedding_rejects_token_id_outside_configured_vocab() {
+    let root = temp_snapshot_dir("qwen-spec-embed-token-bounds");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+
+    let err = qwen_embedding_sequence_for_spec(&store, &spec, &[spec.vocab_size as usize])
+        .expect_err("token id equal to configured vocab size is rejected");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(
+        err.to_string()
+            .contains("Qwen token id 8 at position 0 is outside vocab size 8"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn qwen_decode_rejects_token_id_outside_configured_vocab() {
+    let root = temp_snapshot_dir("qwen-decode-token-bounds");
+    std::fs::remove_dir_all(&root).ok();
+    write_tiny_linear_decoder_snapshot(&root);
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+    let spec = tiny_qwen_spec(AttentionKind::LinearAttention);
+    let mut caches = caches_for_spec(&spec, 4);
+    let mut scratch = InferenceScratchpad::default();
+
+    let err = qwen_decode_token_with_cache(
+        &store,
+        &spec,
+        spec.vocab_size as usize,
+        &mut caches,
+        &mut scratch,
+    )
+    .await
+    .expect_err("decode rejects token id equal to configured vocab size");
+
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(
+        err.to_string()
+            .contains("Qwen token id 8 is outside vocab size 8"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

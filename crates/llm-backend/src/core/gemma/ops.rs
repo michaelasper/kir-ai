@@ -140,6 +140,21 @@ fn gemma_layer_cache_for_spec(
         })
 }
 
+fn validate_gemma_token_ids(
+    label: &str,
+    token_ids: &[usize],
+    vocab_size: usize,
+) -> Result<(), TensorLoadError> {
+    for (position, token_id) in token_ids.iter().enumerate() {
+        if *token_id >= vocab_size {
+            return Err(TensorLoadError::integrity(format!(
+                "{label} token id {token_id} at position {position} is outside vocab size {vocab_size}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub async fn gemma_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
@@ -257,6 +272,7 @@ fn gemma_embedding_sequence_for_spec(
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let hidden_size = spec.hidden_size as usize;
     let scale = (hidden_size as f32).sqrt();
+    validate_gemma_token_ids("Gemma", token_ids, spec.vocab_size as usize)?;
     token_ids
         .iter()
         .map(|token_id| {
@@ -295,6 +311,11 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
             token_ids.len()
         )));
     }
+    validate_gemma_token_ids(
+        "Gemma per-layer input",
+        token_ids,
+        spec.vocab_size_per_layer_input as usize,
+    )?;
     let total_per_token = layer_count
         .checked_mul(per_layer_size)
         .ok_or_else(|| TensorLoadError::integrity("Gemma PLE shape overflow"))?;
