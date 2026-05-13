@@ -104,6 +104,123 @@ fn cache_metrics_summary_extracts_admin_cache_counters() {
     assert!(summary.readiness.missing_signals.is_empty());
 }
 
+#[tokio::test]
+async fn qwen_long_context_dry_run_report_includes_analysis_schema() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = temp.path().join("bench-report.json");
+    let args = vec![
+        "--dry-run".to_owned(),
+        "--output".to_owned(),
+        output.display().to_string(),
+        "--max-tokens".to_owned(),
+        "64".to_owned(),
+        "--scheduler-concurrency".to_owned(),
+        "2".to_owned(),
+        "--scheduler-queue-limit".to_owned(),
+        "8".to_owned(),
+        "--scheduler-prefill-threshold-chars".to_owned(),
+        "8192".to_owned(),
+        "--scheduler-prefill-burst".to_owned(),
+        "3".to_owned(),
+    ];
+
+    run_qwen_long_context_bench(&args)
+        .await
+        .expect("dry-run benchmark report");
+
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(&output).expect("dry-run report file is written"))
+            .expect("dry-run report JSON");
+    assert_eq!(report["run_controls"]["warmup_count"], 0);
+    assert_eq!(report["run_controls"]["repetitions"], 1);
+    assert_eq!(report["run_controls"]["max_tokens"], 64);
+    assert_eq!(report["scheduler"]["concurrency_limit"], 2);
+    assert_eq!(report["scheduler"]["queue_limit"], 8);
+    assert_eq!(report["scheduler"]["prefill_threshold_chars"], 8192);
+    assert_eq!(report["scheduler"]["prefill_burst"], 3);
+
+    let case = &report["profiles"][0]["cases"][0];
+    assert_eq!(case["prompt_identity"]["profile"], "qwen-135k-promotion");
+    assert_eq!(case["prompt_identity"]["context_tokens"], 135_000);
+    assert!(
+        case["prompt_identity"]["prompt_hash"]
+            .as_str()
+            .expect("prompt hash")
+            .starts_with("sha256:")
+    );
+    assert_eq!(
+        case["prompt_identity"]["prompt_hash_source"],
+        "planned_identity"
+    );
+    assert_eq!(case["prefill"]["planned_prompt_tokens"], Value::Null);
+    assert_eq!(case["decode"]["max_tokens"], 64);
+    assert_eq!(case["cache"]["lookup_result"], Value::Null);
+    assert_eq!(case["summary"]["sample_count"], 0);
+}
+
+#[test]
+fn case_run_populates_structured_prefill_decode_cache_and_summary() {
+    let mut case = case_report(
+        BenchProfileKind::Promotion135k,
+        BenchCaseKind::StreamedRequiredToolRecall,
+        DEFAULT_MAX_TOKENS,
+    );
+    apply_case_run(
+        &mut case,
+        CaseRun {
+            status: "passed",
+            classification: "passed".to_owned(),
+            planned_prompt_tokens: 100,
+            latency_ms: Some(250),
+            stream_timing: StreamTimingReport {
+                first_byte_latency_ms: Some(10),
+                first_sse_data_latency_ms: Some(20),
+                first_content_delta_latency_ms: None,
+                first_tool_delta_latency_ms: Some(75),
+                first_semantic_delta_latency_ms: Some(75),
+            },
+            tokens_per_second: Some(12.5),
+            prompt_tokens: Some(100),
+            completion_tokens: Some(25),
+            total_tokens: Some(125),
+            cached_tokens_status: Some("present"),
+            cached_tokens: Some(40),
+            prompt_hash: Some("sha256:actual-prompt-body".to_owned()),
+            http_status: Some(200),
+            finish_reason: Some("tool_calls".to_owned()),
+            error: None,
+        },
+    );
+
+    let value = serde_json::to_value(&case).expect("serialize case");
+    assert_eq!(
+        value["prompt_identity"]["prompt_hash"],
+        "sha256:actual-prompt-body"
+    );
+    assert_eq!(
+        value["prompt_identity"]["prompt_hash_source"],
+        "prompt_body"
+    );
+    assert_eq!(value["prefill"]["planned_prompt_tokens"], 100);
+    assert_eq!(value["prefill"]["prompt_tokens"], 100);
+    assert_eq!(value["prefill"]["cached_tokens"], 40);
+    assert_eq!(value["prefill"]["uncached_tokens"], 60);
+    assert_eq!(value["prefill"]["time_to_first_token_ms"], 75);
+    assert_eq!(value["decode"]["completion_tokens"], 25);
+    assert_eq!(value["decode"]["total_latency_ms"], 250);
+    assert_eq!(value["decode"]["time_to_first_token_ms"], 75);
+    assert_eq!(value["decode"]["tokens_per_second"], 12.5);
+    assert_eq!(value["cache"]["lookup_result"], "hit");
+    assert_eq!(value["cache"]["reused_tokens"], 40);
+    assert_eq!(value["summary"]["sample_count"], 1);
+    assert_eq!(value["summary"]["latency_ms_p50"], 250);
+    assert_eq!(value["summary"]["latency_ms_p95"], 250);
+    assert_eq!(value["summary"]["tokens_per_second_p50"], 12.5);
+    assert_eq!(value["summary"]["tokens_per_second_p95"], 12.5);
+    assert_eq!(value["summary"]["ttft_ms_p50"], 75);
+    assert_eq!(value["summary"]["ttft_ms_p95"], 75);
+}
+
 #[test]
 fn json_object_recall_rejects_marker_only_contract() {
     let value = buffered_content_response(serde_json::json!({"marker": MARKER}).to_string());

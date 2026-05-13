@@ -14,6 +14,12 @@ Options:
   --baseline <path>                   Previous trace JSON for same hardware/model comparison
   --output <path>                     Write the trace JSON to a file as well as stdout
   --max-tokens <n>                    Completion token limit per request [default: 128]
+  --scheduler-concurrency <n>         Served scheduler concurrency for report identity [default: 1]
+  --scheduler-queue-limit <n>         Served scheduler queue limit for report identity [default: 1]
+  --scheduler-queue-timeout-ms <n>    Served scheduler queue timeout for report identity [default: 30000]
+  --scheduler-prefill-threshold-chars <n>
+                                      Served scheduler prefill/decode threshold [default: 4096]
+  --scheduler-prefill-burst <n>       Served scheduler prefill burst before decode priority [default: 1]
   --admin-token <token>               Optional bearer token for lane /admin/metrics snapshots
   --timeout-ms <n>                    Whole request timeout [default: 1800000]
   --connect-timeout-ms <n>            HTTP connect timeout [default: 10000]
@@ -60,6 +66,23 @@ pub(super) fn parse_u64_flag(args: &[String], flag: &str, default: u64) -> anyho
 pub(super) fn parse_u32_flag(args: &[String], flag: &str, default: u32) -> anyhow::Result<u32> {
     flag_value(args, flag)
         .map(str::parse::<u32>)
+        .transpose()
+        .with_context(|| format!("parse {flag}"))?
+        .map_or(Ok(default), |value| {
+            if value == 0 {
+                anyhow::bail!("{flag} must be greater than zero");
+            }
+            Ok(value)
+        })
+}
+
+pub(super) fn parse_usize_flag(
+    args: &[String],
+    flag: &str,
+    default: usize,
+) -> anyhow::Result<usize> {
+    flag_value(args, flag)
+        .map(str::parse::<usize>)
         .transpose()
         .with_context(|| format!("parse {flag}"))?
         .map_or(Ok(default), |value| {

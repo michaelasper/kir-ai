@@ -1,4 +1,4 @@
-use crate::{DEFAULT_MODEL_ID, flag_value, has_flag};
+use crate::{DEFAULT_MODEL_ID, EngineOptions, flag_value, has_flag};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use llm_hub::ModelStore;
@@ -6,6 +6,7 @@ use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +16,7 @@ mod qwen_mlx_tool;
 
 use cli::{
     flag_values, normalize_endpoint, parse_f64_flag, parse_u32_flag, parse_u64_flag,
-    print_bench_help,
+    parse_usize_flag, print_bench_help,
 };
 
 const GATE_NAME: &str = "qwen-long-context";
@@ -70,6 +71,15 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         "--latency-regression-threshold",
         DEFAULT_LATENCY_REGRESSION_THRESHOLD,
     )?;
+    let run_controls = BenchRunControlsReport {
+        warmup_count: 0,
+        repetitions: 1,
+        timeout_ms,
+        connect_timeout_ms,
+        max_tokens,
+        latency_regression_threshold,
+    };
+    let scheduler = SchedulerSettingsReport::from_args(args)?;
 
     if !dry_run {
         for lane in &lanes {
@@ -102,7 +112,7 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
             .await?,
             profiles: selected_profiles
                 .iter()
-                .map(|profile| profile_report(*profile))
+                .map(|profile| profile_report_with_max_tokens(*profile, max_tokens))
                 .collect(),
             cache_metrics: None,
             admin_metrics: None,
@@ -126,6 +136,8 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
         model: primary_model,
         hardware: HardwareReport::detect(),
         cache_policy: CachePolicyReport::from_env(),
+        run_controls,
+        scheduler,
         baseline: BaselineReport {
             path: baseline_path
                 .as_ref()
@@ -750,6 +762,8 @@ struct BenchReport {
     model: ModelIdentityReport,
     hardware: HardwareReport,
     cache_policy: CachePolicyReport,
+    run_controls: BenchRunControlsReport,
+    scheduler: SchedulerSettingsReport,
     baseline: BaselineReport,
     profiles: Vec<BenchProfileReport>,
     lanes: Vec<BenchLaneReport>,
@@ -757,6 +771,79 @@ struct BenchReport {
     failure_classification: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     comparison: Option<BenchLaneComparisonReport>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct BenchRunControlsReport {
+    warmup_count: u32,
+    repetitions: u32,
+    timeout_ms: u64,
+    connect_timeout_ms: u64,
+    max_tokens: u32,
+    latency_regression_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SchedulerSettingsReport {
+    source: &'static str,
+    concurrency_limit: usize,
+    queue_limit: usize,
+    queue_timeout_ms: u64,
+    prefill_threshold_chars: usize,
+    prefill_burst: usize,
+}
+
+impl SchedulerSettingsReport {
+    fn from_args(args: &[String]) -> anyhow::Result<Self> {
+        let defaults = EngineOptions::default();
+        let source = if [
+            "--scheduler-concurrency",
+            "--scheduler-queue-limit",
+            "--scheduler-queue-timeout-ms",
+            "--scheduler-prefill-threshold-chars",
+            "--scheduler-prefill-burst",
+        ]
+        .iter()
+        .any(|flag| flag_value(args, flag).is_some())
+        {
+            "serve_defaults_with_bench_cli_overrides"
+        } else {
+            "serve_defaults"
+        };
+        Ok(Self {
+            source,
+            concurrency_limit: parse_usize_flag(
+                args,
+                "--scheduler-concurrency",
+                defaults.concurrency_limit.max(1),
+            )?,
+            queue_limit: parse_usize_flag(
+                args,
+                "--scheduler-queue-limit",
+                defaults.scheduler_queue_limit,
+            )?,
+            queue_timeout_ms: parse_u64_flag(
+                args,
+                "--scheduler-queue-timeout-ms",
+                defaults
+                    .scheduler_queue_timeout
+                    .unwrap_or_default()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )?,
+            prefill_threshold_chars: parse_usize_flag(
+                args,
+                "--scheduler-prefill-threshold-chars",
+                defaults.scheduler_prefill_threshold_chars,
+            )?,
+            prefill_burst: parse_usize_flag(
+                args,
+                "--scheduler-prefill-burst",
+                defaults.scheduler_prefill_burst.max(1),
+            )?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -877,8 +964,13 @@ struct BenchCaseReport {
     stream: bool,
     response_contract: &'static str,
     marker: String,
+    prompt_identity: PromptIdentityReport,
     status: String,
     classification: String,
+    prefill: BenchPrefillReport,
+    decode: BenchDecodeReport,
+    cache: BenchCacheBehaviorReport,
+    summary: BenchCaseSummaryReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     planned_prompt_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -905,6 +997,147 @@ struct BenchCaseReport {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<BaselineComparisonReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PromptIdentityReport {
+    profile: &'static str,
+    case: &'static str,
+    context_tokens: usize,
+    marker: String,
+    prompt_hash: String,
+    prompt_hash_source: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchPrefillReport {
+    planned_prompt_tokens: Option<usize>,
+    prompt_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
+    uncached_tokens: Option<u64>,
+    time_to_first_token_ms: Option<u128>,
+}
+
+impl BenchPrefillReport {
+    fn planned() -> Self {
+        Self {
+            planned_prompt_tokens: None,
+            prompt_tokens: None,
+            cached_tokens: None,
+            uncached_tokens: None,
+            time_to_first_token_ms: None,
+        }
+    }
+
+    fn from_run(run: &CaseRun) -> Self {
+        Self {
+            planned_prompt_tokens: Some(run.planned_prompt_tokens),
+            prompt_tokens: run.prompt_tokens,
+            cached_tokens: run.cached_tokens,
+            uncached_tokens: uncached_tokens(run.prompt_tokens, run.cached_tokens),
+            time_to_first_token_ms: time_to_first_token_ms(run.stream_timing),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchDecodeReport {
+    max_tokens: u32,
+    completion_tokens: Option<u64>,
+    total_latency_ms: Option<u128>,
+    time_to_first_token_ms: Option<u128>,
+    tokens_per_second: Option<f64>,
+}
+
+impl BenchDecodeReport {
+    fn planned(max_tokens: u32) -> Self {
+        Self {
+            max_tokens,
+            completion_tokens: None,
+            total_latency_ms: None,
+            time_to_first_token_ms: None,
+            tokens_per_second: None,
+        }
+    }
+
+    fn from_run(max_tokens: u32, run: &CaseRun) -> Self {
+        Self {
+            max_tokens,
+            completion_tokens: run.completion_tokens,
+            total_latency_ms: run.latency_ms,
+            time_to_first_token_ms: time_to_first_token_ms(run.stream_timing),
+            tokens_per_second: run.tokens_per_second,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchCacheBehaviorReport {
+    cached_tokens_status: Option<&'static str>,
+    cached_tokens: Option<u64>,
+    reused_tokens: Option<u64>,
+    lookup_result: Option<&'static str>,
+}
+
+impl BenchCacheBehaviorReport {
+    fn planned() -> Self {
+        Self {
+            cached_tokens_status: None,
+            cached_tokens: None,
+            reused_tokens: None,
+            lookup_result: None,
+        }
+    }
+
+    fn from_run(run: &CaseRun) -> Self {
+        Self {
+            cached_tokens_status: run.cached_tokens_status,
+            cached_tokens: run.cached_tokens,
+            reused_tokens: run.cached_tokens,
+            lookup_result: cache_lookup_result(run.cached_tokens_status, run.cached_tokens),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchCaseSummaryReport {
+    sample_count: usize,
+    latency_ms_p50: Option<u128>,
+    latency_ms_p95: Option<u128>,
+    tokens_per_second_p50: Option<f64>,
+    tokens_per_second_p95: Option<f64>,
+    ttft_ms_p50: Option<u128>,
+    ttft_ms_p95: Option<u128>,
+}
+
+impl BenchCaseSummaryReport {
+    fn planned() -> Self {
+        Self {
+            sample_count: 0,
+            latency_ms_p50: None,
+            latency_ms_p95: None,
+            tokens_per_second_p50: None,
+            tokens_per_second_p95: None,
+            ttft_ms_p50: None,
+            ttft_ms_p95: None,
+        }
+    }
+
+    fn from_run(run: &CaseRun) -> Self {
+        let ttft_ms = time_to_first_token_ms(run.stream_timing);
+        let sample_count = usize::from(
+            run.latency_ms.is_some() || run.tokens_per_second.is_some() || ttft_ms.is_some(),
+        );
+        Self {
+            sample_count,
+            latency_ms_p50: run.latency_ms,
+            latency_ms_p95: run.latency_ms,
+            tokens_per_second_p50: run.tokens_per_second,
+            tokens_per_second_p95: run.tokens_per_second,
+            ttft_ms_p50: ttft_ms,
+            ttft_ms_p95: ttft_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1016,6 +1249,7 @@ struct CaseRun {
     total_tokens: Option<u64>,
     cached_tokens_status: Option<&'static str>,
     cached_tokens: Option<u64>,
+    prompt_hash: Option<String>,
     http_status: Option<u16>,
     finish_reason: Option<String>,
     error: Option<String>,
@@ -1193,7 +1427,15 @@ struct StreamAssembly {
     usage: UsageMetrics,
 }
 
+#[cfg(test)]
 fn profile_report(profile: BenchProfileKind) -> BenchProfileReport {
+    profile_report_with_max_tokens(profile, DEFAULT_MAX_TOKENS)
+}
+
+fn profile_report_with_max_tokens(
+    profile: BenchProfileKind,
+    max_tokens: u32,
+) -> BenchProfileReport {
     BenchProfileReport {
         name: profile.name(),
         target_tokens: profile.target_tokens(),
@@ -1202,25 +1444,38 @@ fn profile_report(profile: BenchProfileKind) -> BenchProfileReport {
         cases: BenchCaseKind::all()
             .iter()
             .copied()
-            .map(|case| case_report(profile, case))
+            .map(|case| case_report(profile, case, max_tokens))
             .collect(),
     }
 }
 
-fn case_report(profile: BenchProfileKind, case: BenchCaseKind) -> BenchCaseReport {
+fn case_report(profile: BenchProfileKind, case: BenchCaseKind, max_tokens: u32) -> BenchCaseReport {
+    let marker = marker_for_case(profile, case);
     BenchCaseReport {
         name: case.name(),
         mode: case.mode(),
         target_tokens: profile.target_tokens(),
         stream: case.streams(),
         response_contract: case.response_contract(),
-        marker: marker_for_case(profile, case),
+        marker: marker.clone(),
+        prompt_identity: PromptIdentityReport {
+            profile: profile.name(),
+            case: case.name(),
+            context_tokens: profile.target_tokens(),
+            marker: marker.clone(),
+            prompt_hash: prompt_identity_hash(profile, case, &marker),
+            prompt_hash_source: "planned_identity",
+        },
         status: "planned".to_owned(),
         classification: if profile.release_blocking() {
             "release-blocking".to_owned()
         } else {
             "frontier-characterization".to_owned()
         },
+        prefill: BenchPrefillReport::planned(),
+        decode: BenchDecodeReport::planned(max_tokens),
+        cache: BenchCacheBehaviorReport::planned(),
+        summary: BenchCaseSummaryReport::planned(),
         planned_prompt_tokens: None,
         latency_ms: None,
         stream_timing: StreamTimingReport::default(),
@@ -1235,6 +1490,23 @@ fn case_report(profile: BenchProfileKind, case: BenchCaseKind) -> BenchCaseRepor
         error: None,
         baseline: None,
     }
+}
+
+fn prompt_identity_hash(profile: BenchProfileKind, case: BenchCaseKind, marker: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(profile.name().as_bytes());
+    hasher.update([0]);
+    hasher.update(case.name().as_bytes());
+    hasher.update([0]);
+    hasher.update(profile.target_tokens().to_le_bytes());
+    hasher.update(marker.as_bytes());
+    let digest = hasher.finalize();
+    format!("sha256:{digest:x}")
+}
+
+fn prompt_body_hash(prompt: &str) -> String {
+    let digest = Sha256::digest(prompt.as_bytes());
+    format!("sha256:{digest:x}")
 }
 
 async fn load_model_identity(
@@ -1347,18 +1619,22 @@ async fn run_case(
                 total_tokens: None,
                 cached_tokens_status: None,
                 cached_tokens: None,
+                prompt_hash: None,
                 http_status: None,
                 finish_reason: None,
                 error: Some(err.to_string()),
             };
         }
     };
+    let prompt_hash = prompt_body_hash(&prompt.body);
     let body = request_body(model_id, profile, case, &prompt, max_tokens);
-    if case.streams() {
+    let mut run = if case.streams() {
         run_streaming_case(client, endpoint, profile, case, prompt, body).await
     } else {
         run_buffered_case(client, endpoint, profile, case, prompt, body).await
-    }
+    };
+    run.prompt_hash = Some(prompt_hash);
+    run
 }
 
 async fn run_buffered_case(
@@ -1901,6 +2177,7 @@ fn case_from_validation(
             total_tokens: usage.total_tokens,
             cached_tokens_status: usage.cached_tokens_status,
             cached_tokens: usage.cached_tokens,
+            prompt_hash: None,
             http_status,
             finish_reason,
             error: None,
@@ -1917,6 +2194,7 @@ fn case_from_validation(
             total_tokens: usage.total_tokens,
             cached_tokens_status: usage.cached_tokens_status,
             cached_tokens: usage.cached_tokens,
+            prompt_hash: None,
             http_status,
             finish_reason,
             error: Some(err),
@@ -1961,6 +2239,7 @@ fn failed_case_with_stream_timing(
         total_tokens: None,
         cached_tokens_status: None,
         cached_tokens: None,
+        prompt_hash: None,
         http_status,
         finish_reason: None,
         error: Some(error),
@@ -1968,8 +2247,20 @@ fn failed_case_with_stream_timing(
 }
 
 fn apply_case_run(case: &mut BenchCaseReport, run: CaseRun) {
+    let prefill = BenchPrefillReport::from_run(&run);
+    let decode = BenchDecodeReport::from_run(case.decode.max_tokens, &run);
+    let cache = BenchCacheBehaviorReport::from_run(&run);
+    let summary = BenchCaseSummaryReport::from_run(&run);
+    if let Some(prompt_hash) = &run.prompt_hash {
+        case.prompt_identity.prompt_hash = prompt_hash.clone();
+        case.prompt_identity.prompt_hash_source = "prompt_body";
+    }
     case.status = run.status.to_owned();
     case.classification = run.classification;
+    case.prefill = prefill;
+    case.decode = decode;
+    case.cache = cache;
+    case.summary = summary;
     case.planned_prompt_tokens = Some(run.planned_prompt_tokens);
     case.latency_ms = run.latency_ms;
     case.stream_timing = run.stream_timing;
@@ -1982,6 +2273,28 @@ fn apply_case_run(case: &mut BenchCaseReport, run: CaseRun) {
     case.http_status = run.http_status;
     case.finish_reason = run.finish_reason;
     case.error = run.error;
+}
+
+fn time_to_first_token_ms(stream_timing: StreamTimingReport) -> Option<u128> {
+    stream_timing.first_semantic_delta_latency_ms
+}
+
+fn uncached_tokens(prompt_tokens: Option<u64>, cached_tokens: Option<u64>) -> Option<u64> {
+    Some(prompt_tokens?.saturating_sub(cached_tokens?))
+}
+
+fn cache_lookup_result(
+    cached_tokens_status: Option<&'static str>,
+    cached_tokens: Option<u64>,
+) -> Option<&'static str> {
+    match (cached_tokens_status, cached_tokens) {
+        (_, Some(0)) => Some("miss"),
+        (_, Some(_)) => Some("hit"),
+        (Some("missing"), None) => Some("not_reported"),
+        (Some("null"), None) => Some("null"),
+        (Some("invalid"), None) => Some("invalid"),
+        _ => None,
+    }
 }
 
 fn apply_baseline_comparison(
