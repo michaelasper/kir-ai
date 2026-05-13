@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0](https://github.com/michaelasper/kir-ai/compare/v1.7.1...v1.8.0) (2026-05-13)
+
+### Features
+
+* **streaming:** add structured tool-call fast path ([89b5091](https://github.com/michaelasper/kir-ai/commit/89b50913198200151bf15e4f4ed87385965784d7))
+
 ## [1.7.1](https://github.com/michaelasper/kir-ai/compare/v1.7.0...v1.7.1) (2026-05-13)
 
 ### Bug Fixes
