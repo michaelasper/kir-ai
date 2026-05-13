@@ -1,12 +1,13 @@
 use super::MetalError;
 use metal::{CommandBufferRef, MTLCommandBufferStatus};
 use std::{
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
     time::Duration,
 };
 
 const DEFAULT_COMMAND_BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_BUFFER_TIMEOUT_MS_ENV: &str = "LLM_ENGINE_METAL_COMMAND_BUFFER_TIMEOUT_MS";
+static COMMAND_BUFFER_TIMEOUT: CommandBufferTimeout = CommandBufferTimeout::new();
 
 pub(crate) async fn finish_command_buffer_async(
     synchronization: &Arc<MetalSynchronization>,
@@ -219,10 +220,31 @@ async fn command_buffer_completion_result(
 }
 
 fn command_buffer_timeout() -> Duration {
-    std::env::var(COMMAND_BUFFER_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|value| parse_command_buffer_timeout_ms(&value))
-        .unwrap_or(DEFAULT_COMMAND_BUFFER_TIMEOUT)
+    COMMAND_BUFFER_TIMEOUT.get()
+}
+
+struct CommandBufferTimeout {
+    value: OnceLock<Duration>,
+}
+
+impl CommandBufferTimeout {
+    const fn new() -> Self {
+        Self {
+            value: OnceLock::new(),
+        }
+    }
+
+    fn get(&self) -> Duration {
+        self.get_or_init_with(|| std::env::var(COMMAND_BUFFER_TIMEOUT_MS_ENV).ok())
+    }
+
+    fn get_or_init_with(&self, read_source: impl FnOnce() -> Option<String>) -> Duration {
+        *self.value.get_or_init(|| {
+            read_source()
+                .and_then(|value| parse_command_buffer_timeout_ms(&value))
+                .unwrap_or(DEFAULT_COMMAND_BUFFER_TIMEOUT)
+        })
+    }
 }
 
 fn parse_command_buffer_timeout_ms(value: &str) -> Option<Duration> {
@@ -298,6 +320,25 @@ mod tests {
     fn command_buffer_timeout_parser_rejects_zero_or_invalid_values() {
         assert_eq!(parse_command_buffer_timeout_ms("0"), None);
         assert_eq!(parse_command_buffer_timeout_ms("not-a-number"), None);
+    }
+
+    #[test]
+    fn command_buffer_timeout_cache_reads_source_once() {
+        let cache = CommandBufferTimeout::new();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+
+        let first = cache.get_or_init_with(|| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some("125".to_owned())
+        });
+        let second = cache.get_or_init_with(|| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some("250".to_owned())
+        });
+
+        assert_eq!(first, Duration::from_millis(125));
+        assert_eq!(second, first);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
