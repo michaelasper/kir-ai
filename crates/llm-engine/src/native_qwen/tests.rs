@@ -1241,6 +1241,25 @@ fn native_stream_text_deltas_emit_stable_prefix_with_one_token_delay() {
 }
 
 #[test]
+fn native_stream_text_deltas_emit_common_prefix_when_pending_decode_shifts() {
+    let mut deltas = NativeStreamTextDeltas::default();
+
+    assert_eq!(deltas.observe("a".to_owned()).expect("observe"), None);
+    assert_eq!(
+        deltas.observe("abc".to_owned()).expect("observe"),
+        Some("a".to_owned())
+    );
+    assert_eq!(
+        deltas.observe("abd".to_owned()).expect("observe"),
+        Some("b".to_owned())
+    );
+    assert_eq!(
+        deltas.finish("abd".to_owned()).expect("finish"),
+        Some("d".to_owned())
+    );
+}
+
+#[test]
 fn native_stream_text_deltas_emit_incremental_pieces_with_one_token_delay() {
     let mut deltas = NativeStreamTextDeltas::default();
 

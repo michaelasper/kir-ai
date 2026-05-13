@@ -17,9 +17,14 @@ impl NativeStreamTextDeltas {
             self.pending = Some(decoded);
             return Ok(None);
         };
-        let delta = if pending.starts_with(&self.emitted) && decoded.starts_with(&pending) {
-            let delta = pending[self.emitted.len()..].to_owned();
-            self.emitted = pending;
+        if !pending.starts_with(&self.emitted) {
+            return Err(non_prefix_stream_error());
+        }
+        let stable_len = common_prefix_len(&pending, &decoded);
+        let delta = if stable_len > self.emitted.len() {
+            let stable = pending[..stable_len].to_owned();
+            let delta = stable[self.emitted.len()..].to_owned();
+            self.emitted = stable;
             non_empty(delta)
         } else {
             None
@@ -58,6 +63,22 @@ impl NativeStreamTextDeltas {
 
 fn non_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    let mut len = 0;
+    let mut right_chars = right.chars();
+    for (index, left_char) in left.char_indices() {
+        let Some(right_char) = right_chars.next() else {
+            break;
+        };
+        if left_char != right_char {
+            break;
+        }
+        len = index + left_char.len_utf8();
+    }
+    len
 }
 
 #[cfg(test)]
