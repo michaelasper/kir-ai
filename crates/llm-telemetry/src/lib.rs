@@ -131,6 +131,8 @@ pub struct ServerMetrics {
     non_streamed_request_latency: LatencyMetrics,
     streamed_request_latency: LatencyMetrics,
     time_to_first_token: LatencyMetrics,
+    first_tool_delta: LatencyMetrics,
+    validated_tool_call: LatencyMetrics,
     tokens: TokenCounters,
 }
 
@@ -192,6 +194,14 @@ impl ServerMetrics {
 
     pub fn record_time_to_first_token(&mut self, latency: Duration) {
         self.time_to_first_token.record(latency);
+    }
+
+    pub fn record_first_tool_delta(&mut self, latency: Duration) {
+        self.first_tool_delta.record(latency);
+    }
+
+    pub fn record_validated_tool_call(&mut self, latency: Duration) {
+        self.validated_tool_call.record(latency);
     }
 
     pub fn requests_total(&self) -> u64 {
@@ -260,6 +270,14 @@ impl ServerMetrics {
 
     pub fn time_to_first_token(&self) -> LatencyMetrics {
         self.time_to_first_token
+    }
+
+    pub fn first_tool_delta(&self) -> LatencyMetrics {
+        self.first_tool_delta
+    }
+
+    pub fn validated_tool_call(&self) -> LatencyMetrics {
+        self.validated_tool_call
     }
 
     pub fn tokens_per_second(&self) -> f64 {

@@ -449,6 +449,15 @@ struct ToolBoundaryStreamBackend {
     text: &'static str,
 }
 
+struct StructuredToolDeltaStreamBackend {
+    first: Arc<Semaphore>,
+    finish: Arc<Semaphore>,
+    model_id: &'static str,
+    family: &'static str,
+    first_delta: llm_api::ToolCallDelta,
+    final_delta: llm_api::ToolCallDelta,
+}
+
 struct CancellableStreamBackend {
     cancelled: Arc<Notify>,
 }
@@ -580,6 +589,7 @@ impl ModelBackend for TwoChunkStreamBackend {
             first.notified().await;
             yield BackendStreamChunk {
                 text: "first".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -588,6 +598,7 @@ impl ModelBackend for TwoChunkStreamBackend {
             finish.notified().await;
             yield BackendStreamChunk {
                 text: " second".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -643,6 +654,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
             let _permit = first.acquire().await.expect("first semaphore open");
             yield BackendStreamChunk {
                 text: self.text.to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -651,9 +663,76 @@ impl ModelBackend for ToolBoundaryStreamBackend {
             let _permit = finish.acquire().await.expect("finish semaphore open");
             yield BackendStreamChunk {
                 text: String::new(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 0,
+                finish_reason: Some(FinishReason::ToolCalls),
+            };
+        }
+        .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+        }
+        self.generate_stream(request)
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for StructuredToolDeltaStreamBackend {
+    fn model_id(&self) -> &str {
+        self.model_id
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id, "structured-tool-delta-stream")
+            .with_family(self.family)
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::Other(
+            "structured tool delta streaming test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let first = self.first.clone();
+        let finish = self.finish.clone();
+        async_stream::try_stream! {
+            let _permit = first.acquire().await.expect("first semaphore open");
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![self.first_delta.clone()],
+                prompt_tokens: 11,
+                prompt_cached_tokens: Some(7),
+                completion_tokens: 1,
+                finish_reason: None,
+            };
+            let _permit = finish.acquire().await.expect("finish semaphore open");
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![self.final_delta.clone()],
+                prompt_tokens: 11,
+                prompt_cached_tokens: Some(7),
+                completion_tokens: 1,
                 finish_reason: Some(FinishReason::ToolCalls),
             };
         }
@@ -733,6 +812,7 @@ impl ModelBackend for StopStreamingBackend {
         async_stream::try_stream! {
             yield BackendStreamChunk {
                 text: "hello ST".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
@@ -740,6 +820,7 @@ impl ModelBackend for StopStreamingBackend {
             };
             yield BackendStreamChunk {
                 text: "OP ignored".to_owned(),
+                tool_call_deltas: Vec::new(),
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,

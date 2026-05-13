@@ -2,7 +2,7 @@ use super::protocol::{
     MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxToolMarkup,
 };
 use super::*;
-use llm_api::ChatMessage;
+use llm_api::{ChatMessage, ToolCallDelta};
 use llm_backend::{
     BackendCacheContext, BackendChatContext, BackendRequest, ModelBackend, SamplingConfig,
 };
@@ -16,13 +16,19 @@ use std::{
 };
 use tempfile::TempDir;
 
-type ParsedMlxChunkForTest = (String, u64, u64, Option<llm_api::FinishReason>);
+type ParsedMlxChunkForTest = (
+    String,
+    Vec<ToolCallDelta>,
+    u64,
+    u64,
+    Option<llm_api::FinishReason>,
+);
 
 fn parse_mlx_sse_for_test(
     chunks: &[&str],
     markup: MlxToolMarkup,
 ) -> Result<Vec<ParsedMlxChunkForTest>, BackendError> {
-    let mut parser = MlxSseParser::new("hello mlx", MLX_QWEN_CONTROL_STOP_TOKENS, markup);
+    let mut parser = MlxSseParser::new_streaming("hello mlx", MLX_QWEN_CONTROL_STOP_TOKENS, markup);
     let mut parsed = Vec::new();
     for chunk in chunks {
         parsed.extend(parser.push_str(chunk)?);
@@ -33,12 +39,54 @@ fn parse_mlx_sse_for_test(
         .map(|chunk| {
             (
                 chunk.text,
+                chunk.tool_call_deltas,
                 chunk.prompt_tokens,
                 chunk.completion_tokens,
                 chunk.finish_reason,
             )
         })
         .collect())
+}
+
+#[test]
+fn mlx_sse_parser_emits_structured_tool_call_deltas_without_synthetic_markup() {
+    let chunks = parse_mlx_sse_for_test(
+        &[
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_read_1\",\"type\":\"function\",\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n",
+            "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\n",
+            "data:[DONE]\n\n",
+        ],
+        MlxToolMarkup::Json,
+    )
+    .expect("structured tool deltas parse");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| chunk.0.as_str())
+        .collect::<String>();
+    assert_eq!(text, "");
+    let deltas = chunks.iter().flat_map(|chunk| &chunk.1).collect::<Vec<_>>();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(deltas[0].index, 0);
+    assert_eq!(deltas[0].id.as_deref(), Some("call_read_1"));
+    assert_eq!(
+        deltas[0]
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("read_")
+    );
+    assert_eq!(
+        deltas[1]
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(":\"Cargo.toml\"}")
+    );
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.4.clone()),
+        Some(llm_api::FinishReason::ToolCalls)
+    );
 }
 
 #[tokio::test]
@@ -136,7 +184,6 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     )
     .await
     .expect("backend opens");
-
     let output = backend
         .generate(BackendRequest {
             model: "local-mlx".to_owned(),
@@ -1211,7 +1258,7 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
     let server = FakeMlxServer::start(
         "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"file\",\"arguments\":\":\\\"Cargo.toml\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
     );
-    let backend = MlxBackend::open_with_options(
+    let mut backend = MlxBackend::open_with_options(
         "local-mlx",
         server.snapshot_path(),
         MlxBackendOptions {
@@ -1222,6 +1269,8 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
     )
     .await
     .expect("backend opens");
+    backend.metrics = Arc::new(MlxBackendMetrics::default());
+    let metrics = backend.metrics.clone();
 
     let chunks = backend
         .generate_stream(BackendRequest {
@@ -1245,12 +1294,51 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
         .iter()
         .map(|chunk| chunk.text.as_str())
         .collect::<String>();
-    assert!(text.contains("\"name\":\"read_file\""));
-    assert!(text.contains("\"path\":\"Cargo.toml\""));
+    assert!(
+        !text.contains("<tool_call>"),
+        "structured stream should not synthesize tool markup: {text}"
+    );
+    let deltas = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.tool_call_deltas)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.name.as_deref())
+            .collect::<String>(),
+        "read_file"
+    );
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.arguments.as_deref())
+            .collect::<String>(),
+        r#"{"path":"Cargo.toml"}"#
+    );
     assert_eq!(
         chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
         Some(llm_api::FinishReason::ToolCalls)
     );
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics["stream_response_headers_ms"]["count"], 1);
+    assert_eq!(metrics["stream_first_upstream_byte_ms"]["count"], 1);
+    assert_eq!(metrics["stream_first_parsed_chunk_ms"]["count"], 1);
+    assert_eq!(metrics["stream_first_tool_delta_ms"]["count"], 1);
+    assert_eq!(metrics["stream_upstream_complete_ms"]["count"], 1);
+    assert_eq!(
+        metrics["last_request_fingerprint"]["protocol"],
+        "completions"
+    );
+    assert_eq!(metrics["last_request_fingerprint"]["stream"], true);
+    assert_eq!(
+        metrics["last_request_fingerprint"]["prompt_template_id"],
+        "raw-prompt/v1"
+    );
+    assert!(metrics["last_request_fingerprint"]["prompt_hash"].is_string());
 }
 
 #[tokio::test]

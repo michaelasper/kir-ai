@@ -311,6 +311,8 @@ pub(super) async fn admin_metrics(
     let non_streamed_request_latency = metrics.non_streamed_request_latency();
     let streamed_request_latency = metrics.streamed_request_latency();
     let time_to_first_token = metrics.time_to_first_token();
+    let first_tool_delta = metrics.first_tool_delta();
+    let validated_tool_call = metrics.validated_tool_call();
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
@@ -359,6 +361,8 @@ pub(super) async fn admin_metrics(
         non_streamed_request_latency_ms: LatencySummary::from_metrics(non_streamed_request_latency),
         streamed_request_latency_ms: LatencySummary::from_metrics(streamed_request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
+        first_tool_delta_ms: LatencySummary::from_metrics(first_tool_delta),
+        validated_tool_call_ms: LatencySummary::from_metrics(validated_tool_call),
         tokens: TokenSummary {
             prompt_tokens: tokens.prompt_tokens(),
             completion_tokens: tokens.completion_tokens(),
@@ -366,6 +370,14 @@ pub(super) async fn admin_metrics(
         },
     };
     Ok(Json(response))
+}
+
+pub(super) async fn admin_mlx_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
+    Ok(Json(state.backend_metrics.snapshot().mlx))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -413,6 +425,8 @@ pub(super) struct AdminMetricsResponse {
     non_streamed_request_latency_ms: LatencySummary,
     streamed_request_latency_ms: LatencySummary,
     time_to_first_token_ms: LatencySummary,
+    first_tool_delta_ms: LatencySummary,
+    validated_tool_call_ms: LatencySummary,
     tokens: TokenSummary,
 }
 

@@ -70,7 +70,7 @@ pub(crate) fn classify_chat_no_progress(
     } else if repeated_invalid_tool_call(parsed, request) {
         return Some(NoProgressClass::RepeatedInvalidToolCall);
     }
-    if raw_text.trim().is_empty() {
+    if parsed.tool_calls.is_empty() && raw_text.trim().is_empty() {
         return classify_no_progress(raw_text, completion_tokens);
     }
     None

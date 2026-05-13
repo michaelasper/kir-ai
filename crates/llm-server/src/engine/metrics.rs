@@ -72,3 +72,17 @@ pub(super) fn record_time_to_first_token_metrics(state: &AppState, latency: Dura
         .lock_or_panic("metrics")
         .record_time_to_first_token(latency);
 }
+
+pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_first_tool_delta(latency);
+}
+
+pub(super) fn record_validated_tool_call_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_validated_tool_call(latency);
+}

@@ -537,7 +537,8 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     let body = body_text(response.into_body()).await;
     assert!(body.contains("streamed mlx"));
 
-    let after = app
+    let after_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/admin/metrics")
@@ -546,8 +547,8 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
         )
         .await
         .expect("metrics response after MLX stream");
-    assert_eq!(after.status(), StatusCode::OK);
-    let after = body_json(after.into_body()).await;
+    assert_eq!(after_response.status(), StatusCode::OK);
+    let after = body_json(after_response.into_body()).await;
 
     assert_metric_incremented(&before, &after, &["mlx", "requests_total"], 1);
     assert_metric_incremented(&before, &after, &["mlx", "successful_requests"], 1);
@@ -561,6 +562,22 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     );
     assert_metric_unchanged(&before, &after, &["mlx", "failed_requests"]);
     assert_metric_unchanged(&before, &after, &["mlx", "dropped_requests"]);
+
+    let mlx_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics.mlx")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("MLX metrics response");
+    assert_eq!(mlx_response.status(), StatusCode::OK);
+    let mlx = body_json(mlx_response.into_body()).await;
+    assert_eq!(mlx["stream_response_headers_ms"]["count"], 1);
+    assert_eq!(mlx["stream_first_upstream_byte_ms"]["count"], 1);
+    assert_eq!(mlx["stream_first_parsed_chunk_ms"]["count"], 1);
+    assert_eq!(mlx["stream_upstream_complete_ms"]["count"], 1);
 }
 
 #[tokio::test]
@@ -633,6 +650,61 @@ async fn admin_metrics_report_stream_time_to_first_token() {
             >= body["time_to_first_token_ms"]["min"]
                 .as_f64()
                 .expect("ttft min is numeric")
+    );
+}
+
+#[tokio::test]
+async fn admin_metrics_report_stream_tool_call_timing() {
+    let app = build_router_with_protocol_test_backend();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "lookup rust"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {"name": "lookup", "parameters": {}}
+                        }],
+                        "tool_choice": "required",
+                        "stream": true,
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("\"finish_reason\":\"tool_calls\""));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["first_tool_delta_ms"]["count"], 1);
+    assert_eq!(body["validated_tool_call_ms"]["count"], 1);
+    assert!(
+        body["validated_tool_call_ms"]["max"]
+            .as_f64()
+            .expect("validated tool-call max is numeric")
+            >= body["first_tool_delta_ms"]["min"]
+                .as_f64()
+                .expect("first tool delta min is numeric")
     );
 }
 

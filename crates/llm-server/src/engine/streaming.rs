@@ -3,9 +3,10 @@ use super::{
     AppState,
     lifecycle::StreamingGenerationRun,
     metrics::{
-        record_failure_metrics, record_runtime_error_metrics,
+        record_failure_metrics, record_first_tool_delta_metrics, record_runtime_error_metrics,
         record_stream_client_disconnect_metrics, record_stream_stall_metrics,
         record_success_metrics, record_time_to_first_token_metrics,
+        record_validated_tool_call_metrics,
     },
     runtime_error_metadata,
 };
@@ -40,6 +41,8 @@ where
         let mut lifecycle = lifecycle;
         let mut events = events;
         let mut ttft_recorded = false;
+        let mut first_tool_delta_recorded = false;
+        let mut validated_tool_call_recorded = false;
         let mut stall_deadline = StreamStallDeadline::new(lifecycle.stream_stall_timeout());
         loop {
             match next_stream_event(
@@ -67,6 +70,20 @@ where
                                 lifecycle.request_started.elapsed(),
                             );
                             ttft_recorded = true;
+                        }
+                        if !first_tool_delta_recorded && chunk.has_tool_delta() {
+                            record_first_tool_delta_metrics(
+                                &lifecycle.state,
+                                lifecycle.request_started.elapsed(),
+                            );
+                            first_tool_delta_recorded = true;
+                        }
+                        if !validated_tool_call_recorded && chunk.has_tool_call_finish() {
+                            record_validated_tool_call_metrics(
+                                &lifecycle.state,
+                                lifecycle.request_started.elapsed(),
+                            );
+                            validated_tool_call_recorded = true;
                         }
                         stall_deadline.record_chunk(&chunk);
                         yield sse_json_event(chunk);
@@ -526,6 +543,8 @@ pub(super) enum EngineStreamStep<C> {
 
 pub(super) trait StreamChunkProgress {
     fn has_real_delta(&self) -> bool;
+    fn has_tool_delta(&self) -> bool;
+    fn has_tool_call_finish(&self) -> bool;
     fn real_delta_bytes(&self) -> usize;
 }
 
@@ -565,6 +584,18 @@ impl StreamChunkProgress for ChatCompletionStreamResponse {
         })
     }
 
+    fn has_tool_delta(&self) -> bool {
+        self.choices
+            .iter()
+            .any(|choice| !choice.delta.tool_calls.is_empty())
+    }
+
+    fn has_tool_call_finish(&self) -> bool {
+        self.choices
+            .iter()
+            .any(|choice| choice.finish_reason.as_ref() == Some(&llm_api::FinishReason::ToolCalls))
+    }
+
     fn real_delta_bytes(&self) -> usize {
         self.choices
             .iter()
@@ -591,6 +622,14 @@ impl StreamChunkProgress for ChatCompletionStreamResponse {
 impl StreamChunkProgress for CompletionStreamResponse {
     fn has_real_delta(&self) -> bool {
         self.real_delta_bytes() > 0
+    }
+
+    fn has_tool_delta(&self) -> bool {
+        false
+    }
+
+    fn has_tool_call_finish(&self) -> bool {
+        false
     }
 
     fn real_delta_bytes(&self) -> usize {
