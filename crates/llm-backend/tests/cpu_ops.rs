@@ -23,6 +23,14 @@ fn rms_norm_matches_reference_calculation() {
 }
 
 #[test]
+fn rms_norm_zero_input_with_zero_eps_returns_zeroes() {
+    let output = rms_norm_f32(&[0.0, 0.0], &[1.0, 2.0], 0.0).expect("rms norm");
+
+    assert!(output.iter().all(|value| value.is_finite()));
+    assert_eq!(output, vec![0.0, 0.0]);
+}
+
+#[test]
 fn rms_norm_rejects_mismatched_weight_shape() {
     let err = rms_norm_f32(&[1.0, 2.0], &[1.0], 1e-6).expect_err("shape fails");
 
@@ -35,6 +43,15 @@ fn rms_norm_one_centered_uses_one_centered_weights() {
         rms_norm_one_centered_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0).expect("one-centered rms norm");
 
     assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
+}
+
+#[test]
+fn rms_norm_one_centered_zero_input_with_zero_eps_returns_zeroes() {
+    let output =
+        rms_norm_one_centered_f32(&[0.0, 0.0], &[0.0, 1.0], 0.0).expect("one-centered rms norm");
+
+    assert!(output.iter().all(|value| value.is_finite()));
+    assert_eq!(output, vec![0.0, 0.0]);
 }
 
 #[test]

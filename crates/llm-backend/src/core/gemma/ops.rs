@@ -1,6 +1,6 @@
 use super::super::math::{
     InferenceScratchpad, MathError, TopKLogit, apply_rope_to_head, require_len,
-    rms_norm_f32_in_place,
+    rms_norm_f32_in_place, rms_norm_scale_f32,
 };
 use super::super::{
     CpuNativeMatvecBackend, LayerKvCache, NativeF32Rows, NativeFullAttentionCacheSequenceParts,
@@ -1107,7 +1107,7 @@ fn rms_norm_no_scale_f32(input: &[f32], eps: f32) -> Result<Vec<f32>, MathError>
         ));
     }
     let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
-    let scale = (mean_square + eps).sqrt().recip();
+    let scale = rms_norm_scale_f32(mean_square, eps);
     Ok(input.iter().map(|value| value * scale).collect())
 }
 

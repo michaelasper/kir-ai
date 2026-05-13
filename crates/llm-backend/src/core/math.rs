@@ -88,11 +88,20 @@ fn rms_norm_with_weight_offset_f32_in_place(
         ));
     }
     let mean_square = input.iter().map(|value| value * value).sum::<f32>() / input.len() as f32;
-    let scale = (mean_square + eps).sqrt().recip();
+    let scale = rms_norm_scale_f32(mean_square, eps);
     for ((out, val), w) in output.iter_mut().zip(input).zip(weight) {
         *out = val * scale * (weight_offset + w);
     }
     Ok(())
+}
+
+pub(crate) fn rms_norm_scale_f32(mean_square: f32, eps: f32) -> f32 {
+    let variance = mean_square + eps;
+    if variance == 0.0 {
+        0.0
+    } else {
+        variance.sqrt().recip()
+    }
 }
 
 pub fn matvec_row_major_f32(
