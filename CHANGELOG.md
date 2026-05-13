@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.11](https://github.com/michaelasper/kir-ai/compare/v1.8.10...v1.8.11) (2026-05-13)
+
+### Bug Fixes
+
+* **bench:** report focused qwen agentic metrics ([e26540d](https://github.com/michaelasper/kir-ai/commit/e26540ddcc177e0427942a168fb15689d37c31e4))
+
 ## [1.8.10](https://github.com/michaelasper/kir-ai/compare/v1.8.9...v1.8.10) (2026-05-13)
 
 ### Bug Fixes
