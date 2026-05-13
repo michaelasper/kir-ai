@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.4](https://github.com/michaelasper/kir-ai/compare/v1.8.3...v1.8.4) (2026-05-13)
+
+### Bug Fixes
+
+* **scheduler:** estimate tool sizes without JSON allocation ([e1310fd](https://github.com/michaelasper/kir-ai/commit/e1310fd51d17ef9eddd60e6ceb4c1c47f2d2a269)), closes [#228](https://github.com/michaelasper/kir-ai/issues/228)
+
 ## [1.8.3](https://github.com/michaelasper/kir-ai/compare/v1.8.2...v1.8.3) (2026-05-13)
 
 ### Bug Fixes
