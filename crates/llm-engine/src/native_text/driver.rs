@@ -174,6 +174,75 @@ where
     pub(crate) max_new_tokens: u32,
 }
 
+struct NativeTextDecodeStart<S> {
+    session: S,
+    cache_report: NativeTextRequestCacheReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeTextRequestCacheReport {
+    lookup_result: NativeTextPrefixLookupResult,
+    prompt_tokens: u64,
+    reused_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextPrefixLookupResult {
+    Hit,
+    Miss,
+}
+
+impl NativeTextRequestCacheReport {
+    fn hit(prompt_tokens: usize, reused_tokens: usize) -> Self {
+        Self {
+            lookup_result: NativeTextPrefixLookupResult::Hit,
+            prompt_tokens: prompt_tokens as u64,
+            reused_tokens: reused_tokens as u64,
+        }
+    }
+
+    fn miss(prompt_tokens: usize) -> Self {
+        Self {
+            lookup_result: NativeTextPrefixLookupResult::Miss,
+            prompt_tokens: prompt_tokens as u64,
+            reused_tokens: 0,
+        }
+    }
+
+    fn prompt_cached_tokens(self) -> Option<u64> {
+        Some(self.reused_tokens)
+    }
+
+    fn trace(self, namespace: &NativeTextPrefixCacheNamespace) {
+        tracing::debug!(
+            lookup_result = self.lookup_result.as_str(),
+            reuse_source = "in_memory_prefix_cache",
+            reused_tokens = self.reused_tokens,
+            prompt_tokens = self.prompt_tokens,
+            model_id = %namespace.model_id,
+            backend = %namespace.backend,
+            family = ?namespace.family,
+            loader = ?namespace.loader,
+            quantization = ?namespace.quantization,
+            prompt_template = %namespace.prompt_template,
+            request_mode = %namespace.request_mode,
+            cache_layout_version = namespace.cache_layout_version,
+            cache_tokens = namespace.cache_tokens,
+            max_prefill_tokens = namespace.max_prefill_tokens,
+            "native text prefix cache request"
+        );
+    }
+}
+
+impl NativeTextPrefixLookupResult {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+        }
+    }
+}
+
 impl<A> Clone for NativeTextDriver<A>
 where
     A: NativeTextAdapter,
@@ -309,8 +378,8 @@ where
         let mut scratch = InferenceScratchpad::new();
         let mut sampling_scratch = TopPSamplerScratch::new();
         let mut sampling_rng = native_text_sampling_rng_for_config(request.sampling);
-        let mut decode = self
-            .start_decode_session(
+        let start = self
+            .start_decode_session_with_cache_report(
                 &context_tokens,
                 requested,
                 &request,
@@ -318,6 +387,8 @@ where
                 &mut scratch,
             )
             .await?;
+        let cache_report = start.cache_report;
+        let mut decode = start.session;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -367,7 +438,7 @@ where
         Ok(BackendOutput {
             text,
             prompt_tokens: prompt_tokens.len() as u64,
-            prompt_cached_tokens: None,
+            prompt_cached_tokens: cache_report.prompt_cached_tokens(),
             completion_tokens: output_ids.len() as u64,
             finish_reason,
         })
@@ -409,8 +480,8 @@ where
         let mut scratch = InferenceScratchpad::new();
         let mut sampling_scratch = TopPSamplerScratch::new();
         let mut sampling_rng = native_text_sampling_rng_for_config(request.sampling);
-        let mut decode = match self
-            .start_decode_session(
+        let start = match self
+            .start_decode_session_with_cache_report(
                 &context_tokens,
                 requested,
                 &request,
@@ -419,12 +490,14 @@ where
             )
             .await
         {
-            Ok(decode) => decode,
+            Ok(start) => start,
             Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
                 return Err(BackendError::Cancelled);
             }
             Err(err) => return Err(err),
         };
+        let cache_report = start.cache_report;
+        let mut decode = start.session;
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -475,7 +548,7 @@ where
                     text: delta,
                     tool_call_deltas: Vec::new(),
                     prompt_tokens: prompt_tokens.len() as u64,
-                    prompt_cached_tokens: None,
+                    prompt_cached_tokens: cache_report.prompt_cached_tokens(),
                     completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                     finish_reason: None,
                 }))
@@ -504,7 +577,7 @@ where
             text: final_text.unwrap_or_default(),
             tool_call_deltas: Vec::new(),
             prompt_tokens: prompt_tokens.len() as u64,
-            prompt_cached_tokens: None,
+            prompt_cached_tokens: cache_report.prompt_cached_tokens(),
             completion_tokens: std::mem::take(&mut unreported_completion_tokens),
             finish_reason: Some(finish_reason),
         }))
@@ -527,7 +600,8 @@ where
         self.adapter.encode_prompt(&self.tokenizer, request)
     }
 
-    pub async fn start_decode_session(
+    #[cfg(test)]
+    pub(crate) async fn start_decode_session(
         &self,
         context_tokens: &[usize],
         max_new_tokens: u32,
@@ -535,6 +609,25 @@ where
         cancellation: &CancellationToken,
         scratch: &mut InferenceScratchpad,
     ) -> Result<A::DecodeSession, BackendError> {
+        self.start_decode_session_with_cache_report(
+            context_tokens,
+            max_new_tokens,
+            request,
+            cancellation,
+            scratch,
+        )
+        .await
+        .map(|start| start.session)
+    }
+
+    async fn start_decode_session_with_cache_report(
+        &self,
+        context_tokens: &[usize],
+        max_new_tokens: u32,
+        request: &BackendRequest,
+        cancellation: &CancellationToken,
+        scratch: &mut InferenceScratchpad,
+    ) -> Result<NativeTextDecodeStart<A::DecodeSession>, BackendError> {
         if cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
@@ -548,6 +641,7 @@ where
         let namespace = self.adapter.prefix_cache_namespace(request, cache_tokens);
         let layer_count = self.adapter.layer_count();
         let mut cached_prefix_len = 0_usize;
+        let mut cache_report = NativeTextRequestCacheReport::miss(context_tokens.len());
         let (mut hidden, mut caches) = if let Some(hit) = self.adapter.prefix_cache().lookup(
             &namespace,
             context_tokens,
@@ -561,10 +655,12 @@ where
                 )));
             }
             cached_prefix_len = hit.token_count;
+            cache_report = NativeTextRequestCacheReport::hit(context_tokens.len(), hit.token_count);
             (Some(hit.hidden), hit.caches)
         } else {
             (None, self.adapter.allocate_caches(cache_tokens)?)
         };
+        cache_report.trace(&namespace);
         let mut cache_cleanup = NativeTextCacheMirrorCleanupGuard::new(&self.adapter);
         if cancellation.is_cancelled() {
             cache_cleanup.cleanup(&caches);
@@ -625,7 +721,10 @@ where
             self.adapter.prefix_cache_metrics(),
         );
         cache_cleanup.disarm();
-        Ok(self.adapter.make_decode_session(hidden, caches))
+        Ok(NativeTextDecodeStart {
+            session: self.adapter.make_decode_session(hidden, caches),
+            cache_report,
+        })
     }
 }
 

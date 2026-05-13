@@ -753,6 +753,27 @@ mod tests {
         )
     }
 
+    fn stream_final_chunk<A>(
+        driver: &NativeTextDriver<A>,
+        request: BackendRequest,
+    ) -> BackendStreamChunk
+    where
+        A: NativeTextAdapter,
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        driver
+            .generate_blocking_stream(request, tx, CancellationToken::new())
+            .expect("streaming generation succeeds");
+        let mut final_chunk = None;
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk is ok");
+            if chunk.finish_reason.is_some() {
+                final_chunk = Some(chunk);
+            }
+        }
+        final_chunk.expect("streaming generation emits a final chunk")
+    }
+
     #[test]
     fn native_text_driver_clone_shares_inner_state() {
         let driver = driver_for_test(TestAdapter::new([1_usize]));
@@ -978,6 +999,32 @@ mod tests {
                 .into_iter()
                 .all(|draw| { matches!(draw, Some(value) if (0.0..1.0).contains(&value)) })
         );
+    }
+
+    #[test]
+    fn driver_reports_prefix_cache_miss_and_hit_for_blocking_generation() {
+        let driver = driver_for_test(TestAdapter::new([1_usize]));
+
+        let first = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("first generation succeeds");
+        let second = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("second generation succeeds");
+
+        assert_eq!(first.prompt_cached_tokens, Some(0));
+        assert_eq!(second.prompt_cached_tokens, Some(1));
+    }
+
+    #[test]
+    fn driver_reports_prefix_cache_miss_and_hit_for_streaming_generation() {
+        let driver = driver_for_test(TestAdapter::new([1_usize]));
+
+        let first = stream_final_chunk(&driver, driver_test_request(1));
+        let second = stream_final_chunk(&driver, driver_test_request(1));
+
+        assert_eq!(first.prompt_cached_tokens, Some(0));
+        assert_eq!(second.prompt_cached_tokens, Some(1));
     }
 
     #[test]
