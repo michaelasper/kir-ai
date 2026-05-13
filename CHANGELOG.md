@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.7](https://github.com/michaelasper/kir-ai/compare/v1.8.6...v1.8.7) (2026-05-13)
+
+### Bug Fixes
+
+* **metal:** bucket scratch buffers by size ([fa38323](https://github.com/michaelasper/kir-ai/commit/fa38323f9d5748cce3911328e04e94dbcf364af5))
+
 ## [1.8.6](https://github.com/michaelasper/kir-ai/compare/v1.8.5...v1.8.6) (2026-05-13)
 
 ### Bug Fixes
