@@ -1,5 +1,8 @@
 use crate::sync_ext::FailPoisonedMutex;
-use llm_api::{ChatCompletionRequest, CompletionRequest};
+use llm_api::{
+    ChatCompletionRequest, CompletionRequest, FunctionDefinition, ToolCallType, ToolDefinition,
+};
+use serde_json::Value;
 use std::{
     collections::VecDeque,
     sync::{
@@ -329,18 +332,7 @@ impl ModelScheduler {
     }
 
     pub(super) fn classify_chat(&self, request: &ChatCompletionRequest) -> SchedulerClass {
-        let chars = request
-            .messages
-            .iter()
-            .map(|message| message.content.as_ref().map_or(0, String::len))
-            .sum::<usize>()
-            + request
-                .tools
-                .iter()
-                .filter_map(|tool| serde_json::to_string(tool).ok())
-                .map(|tool| tool.len())
-                .sum::<usize>();
-        self.classify_chars(chars)
+        self.classify_chars(estimated_chat_chars(request))
     }
 
     pub(super) fn classify_completion(&self, request: &CompletionRequest) -> SchedulerClass {
@@ -497,9 +489,165 @@ impl ModelScheduler {
     }
 }
 
+fn estimated_chat_chars(request: &ChatCompletionRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .map(|message| message.content.as_ref().map_or(0, String::len))
+        .chain(request.tools.iter().map(estimated_tool_definition_chars))
+        .fold(0usize, usize::saturating_add)
+}
+
+fn estimated_tool_definition_chars(tool: &ToolDefinition) -> usize {
+    let mut chars = json_object_wrapper_chars();
+    let mut has_field = false;
+    add_json_object_field_chars(
+        &mut chars,
+        &mut has_field,
+        "type",
+        estimated_tool_call_type_chars(&tool.tool_type),
+    );
+    add_json_object_field_chars(
+        &mut chars,
+        &mut has_field,
+        "function",
+        estimated_function_definition_chars(&tool.function),
+    );
+    chars
+}
+
+fn estimated_tool_call_type_chars(tool_type: &ToolCallType) -> usize {
+    match tool_type {
+        ToolCallType::Function => estimated_json_string_chars("function"),
+    }
+}
+
+fn estimated_function_definition_chars(function: &FunctionDefinition) -> usize {
+    let mut chars = json_object_wrapper_chars();
+    let mut has_field = false;
+    add_json_object_field_chars(
+        &mut chars,
+        &mut has_field,
+        "name",
+        estimated_json_string_chars(&function.name),
+    );
+    if let Some(description) = &function.description {
+        add_json_object_field_chars(
+            &mut chars,
+            &mut has_field,
+            "description",
+            estimated_json_string_chars(description),
+        );
+    }
+    add_json_object_field_chars(
+        &mut chars,
+        &mut has_field,
+        "parameters",
+        estimated_json_value_chars(&function.parameters),
+    );
+    chars
+}
+
+fn estimated_json_value_chars(value: &Value) -> usize {
+    match value {
+        Value::Null => "null".len(),
+        Value::Bool(true) => "true".len(),
+        Value::Bool(false) => "false".len(),
+        Value::Number(number) => estimated_json_number_chars(number),
+        Value::String(value) => estimated_json_string_chars(value),
+        Value::Array(values) => {
+            let mut chars = json_array_wrapper_chars();
+            let mut has_item = false;
+            for value in values {
+                if has_item {
+                    chars = chars.saturating_add(",".len());
+                } else {
+                    has_item = true;
+                }
+                chars = chars.saturating_add(estimated_json_value_chars(value));
+            }
+            chars
+        }
+        Value::Object(object) => {
+            let mut chars = json_object_wrapper_chars();
+            let mut has_field = false;
+            for (key, value) in object {
+                add_json_object_field_chars(
+                    &mut chars,
+                    &mut has_field,
+                    key,
+                    estimated_json_value_chars(value),
+                );
+            }
+            chars
+        }
+    }
+}
+
+fn estimated_json_string_chars(value: &str) -> usize {
+    value.bytes().fold(2usize, |chars, byte| {
+        chars.saturating_add(match byte {
+            b'"' | b'\\' => 2,
+            b'\x08' | b'\x0C' | b'\n' | b'\r' | b'\t' => 2,
+            b'\x00'..=b'\x1F' => 6,
+            _ => 1,
+        })
+    })
+}
+
+fn estimated_json_number_chars(number: &serde_json::Number) -> usize {
+    if let Some(value) = number.as_u64() {
+        return decimal_digits(value);
+    }
+    if let Some(value) = number.as_i64() {
+        return usize::from(value.is_negative())
+            .saturating_add(decimal_digits(value.unsigned_abs()));
+    }
+    if number.as_f64().is_some() {
+        return 32;
+    }
+    usize::MAX / 2
+}
+
+fn decimal_digits(mut value: u64) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+fn add_json_object_field_chars(
+    chars: &mut usize,
+    has_field: &mut bool,
+    key: &str,
+    value_chars: usize,
+) {
+    if *has_field {
+        *chars = (*chars).saturating_add(",".len());
+    } else {
+        *has_field = true;
+    }
+    *chars = (*chars)
+        .saturating_add(estimated_json_string_chars(key))
+        .saturating_add(":".len())
+        .saturating_add(value_chars);
+}
+
+fn json_object_wrapper_chars() -> usize {
+    "{}".len()
+}
+
+fn json_array_wrapper_chars() -> usize {
+    "[]".len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_api::{ChatMessage, ToolDefinition};
+    use serde_json::json;
 
     fn test_options() -> ModelSchedulerOptions {
         ModelSchedulerOptions {
@@ -526,5 +674,36 @@ mod tests {
         let snapshot = scheduler.snapshot();
         assert_eq!(snapshot.active_decode, 0);
         assert_eq!(snapshot.cancelled, 1);
+    }
+
+    #[test]
+    fn chat_classification_counts_tool_schema_with_structural_estimate() {
+        let scheduler = ModelScheduler::new(ModelSchedulerOptions {
+            prefill_threshold_chars: 128,
+            ..test_options()
+        });
+        let tool_description = "x".repeat(96);
+        let request = ChatCompletionRequest {
+            model: "test-model".to_owned(),
+            messages: vec![ChatMessage::user("short")],
+            tools: vec![ToolDefinition::function(
+                "lookup_customer_profile",
+                "looks up customer profile data",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {
+                            "type": "string",
+                            "description": tool_description,
+                        },
+                    },
+                    "required": ["customer_id"],
+                }),
+            )],
+            ..ChatCompletionRequest::default()
+        };
+
+        assert!(estimated_tool_definition_chars(&request.tools[0]) >= 128);
+        assert_eq!(scheduler.classify_chat(&request), SchedulerClass::Prefill);
     }
 }
