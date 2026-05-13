@@ -18,12 +18,16 @@ pub(super) fn build_upstream_request(
     metadata: &BackendModelMetadata,
     request: &BackendRequest,
     stream: bool,
+    include_stream_usage: bool,
 ) -> Result<(MlxUpstreamProtocol, reqwest::RequestBuilder), BackendError> {
     let protocol = mlx_upstream_protocol_for_request(metadata, request);
     let (temperature, top_p) = match request.sampling {
         SamplingConfig::Greedy => (0.0, 1.0),
         SamplingConfig::TopP { temperature, top_p } => (temperature, top_p),
     };
+    let stream_options = (stream && include_stream_usage).then_some(MlxStreamOptions {
+        include_usage: true,
+    });
     let upstream_url = mlx_endpoint_url(endpoint, protocol.endpoint_suffix());
     let request = match protocol {
         MlxUpstreamProtocol::Completions => client.post(upstream_url).json(&MlxCompletionRequest {
@@ -33,6 +37,7 @@ pub(super) fn build_upstream_request(
             temperature,
             top_p,
             stream,
+            stream_options,
         }),
         MlxUpstreamProtocol::ChatCompletions => {
             let messages = mlx_chat_messages(request);
@@ -51,6 +56,7 @@ pub(super) fn build_upstream_request(
                 temperature,
                 top_p,
                 stream,
+                stream_options,
             })
         }
     };
@@ -65,6 +71,8 @@ struct MlxCompletionRequest<'a> {
     temperature: f32,
     top_p: f32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<MlxStreamOptions>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +91,13 @@ struct MlxChatCompletionRequest<'a> {
     temperature: f32,
     top_p: f32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<MlxStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct MlxStreamOptions {
+    include_usage: bool,
 }
 
 fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {

@@ -298,6 +298,10 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert_eq!(body["stream_client_disconnected_requests"], 0);
     assert_eq!(body["stream_stalled_requests"], 0);
     assert_eq!(body["tokens"]["prompt_tokens"], 1);
+    assert!(
+        body["tokens"].get("prompt_tokens_details").is_none(),
+        "cached prompt token details should be absent when no successful request reported them"
+    );
     let completion_tokens = body["tokens"]["completion_tokens"]
         .as_u64()
         .expect("completion tokens are numeric");
@@ -485,7 +489,7 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
 #[tokio::test]
 async fn admin_metrics_report_successful_streamed_mlx_generation() {
     let server = FakeMlxServer::start(
-        "data: {\"choices\":[{\"text\":\"streamed mlx\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+        "data: {\"choices\":[{\"text\":\"streamed mlx\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":5}}}\n\ndata: [DONE]\n\n",
     );
     let backend = llm_engine::MlxBackend::open_with_options(
         "local-mlx",
@@ -525,7 +529,8 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
                         "model": "local-mlx",
                         "prompt": "hello mlx",
                         "max_tokens": 8,
-                        "stream": true
+                        "stream": true,
+                        "stream_options": {"include_usage": true}
                     })
                     .to_string(),
                 ))
@@ -536,6 +541,10 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_text(response.into_body()).await;
     assert!(body.contains("streamed mlx"));
+    assert!(
+        body.contains("\"prompt_tokens_details\":{\"cached_tokens\":5}"),
+        "stream usage chunk should expose cached prompt tokens: {body}"
+    );
 
     let after_response = app
         .clone()
@@ -562,6 +571,10 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     );
     assert_metric_unchanged(&before, &after, &["mlx", "failed_requests"]);
     assert_metric_unchanged(&before, &after, &["mlx", "dropped_requests"]);
+    assert_eq!(after["tokens"]["prompt_tokens"], 2);
+    assert_eq!(after["tokens"]["completion_tokens"], 3);
+    assert_eq!(after["tokens"]["total_tokens"], 5);
+    assert_eq!(after["tokens"]["prompt_tokens_details"]["cached_tokens"], 5);
 
     let mlx_response = app
         .oneshot(

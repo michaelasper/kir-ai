@@ -34,6 +34,7 @@ pub struct MlxBackendOptions {
     pub endpoint: Url,
     pub family: Option<ModelFamily>,
     pub timeouts: MlxTimeouts,
+    pub include_stream_usage: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,7 @@ pub struct MlxBackend {
     control_stop_tokens: &'static [&'static str],
     client: reqwest::Client,
     timeouts: MlxTimeouts,
+    include_stream_usage: bool,
     metrics: Arc<MlxBackendMetrics>,
 }
 
@@ -74,6 +76,7 @@ impl MlxBackend {
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
         let client = build_http_client(options.timeouts);
         let timeouts = options.timeouts;
+        let include_stream_usage = options.include_stream_usage;
         Ok(Self {
             model_id: model_id.clone(),
             metadata,
@@ -82,6 +85,7 @@ impl MlxBackend {
             control_stop_tokens,
             client,
             timeouts,
+            include_stream_usage,
             metrics: mlx_backend_metrics(),
         })
     }
@@ -112,6 +116,7 @@ impl MlxBackend {
             &self.metadata,
             &request,
             false,
+            self.include_stream_usage,
         )?;
         let mut request_metrics = self
             .metrics
@@ -232,6 +237,7 @@ impl MlxBackend {
                 &self.metadata,
                 &request,
                 true,
+                self.include_stream_usage,
             )?;
             let mut request_metrics = self
                 .metrics
@@ -399,6 +405,7 @@ impl Default for MlxBackendOptions {
             ),
             family: None,
             timeouts: MlxTimeouts::default(),
+            include_stream_usage: true,
         }
     }
 }

@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     MlxBackendOptions::default().endpoint
                 };
+                let mlx_stream_usage = mlx_stream_usage_enabled(&serve_args)?;
                 let mlx_timeouts = {
                     let defaults = MlxTimeouts::default();
                     let connect = flag_value(&serve_args, "--mlx-connect-timeout")
@@ -181,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
                         mlx: MlxBackendOptions {
                             endpoint: mlx_endpoint,
                             timeouts: mlx_timeouts,
+                            include_stream_usage: mlx_stream_usage,
                             ..MlxBackendOptions::default()
                         },
                         max_new_tokens,
@@ -271,6 +273,7 @@ Options:
   --mlx-connect-timeout <secs>               MLX sidecar connect timeout [default: 5]
   --mlx-request-timeout <secs>               MLX sidecar whole-request timeout [default: 600]
   --mlx-read-timeout <secs>                  MLX sidecar per-chunk read timeout [default: 60]
+  --mlx-stream-usage <true|false>            Forward stream_options.include_usage to MLX sidecars [default: true, env: LLM_ENGINE_MLX_STREAM_USAGE]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
@@ -293,6 +296,65 @@ fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {
         other => anyhow::bail!(
             "LLM_ENGINE_CANONICAL_TOOL_SCHEMAS must be 1/0 or true/false, got `{other}`"
         ),
+    }
+}
+
+fn mlx_stream_usage_enabled(args: &[String]) -> anyhow::Result<bool> {
+    let env_value = std::env::var("LLM_ENGINE_MLX_STREAM_USAGE").ok();
+    mlx_stream_usage_enabled_from_env(args, env_value.as_deref())
+}
+
+fn mlx_stream_usage_enabled_from_env(
+    args: &[String],
+    env_value: Option<&str>,
+) -> anyhow::Result<bool> {
+    if let Some(value) = flag_value(args, "--mlx-stream-usage") {
+        return parse_bool_config("--mlx-stream-usage", value);
+    }
+    env_value
+        .map(|value| parse_bool_config("LLM_ENGINE_MLX_STREAM_USAGE", value))
+        .unwrap_or(Ok(true))
+}
+
+fn parse_bool_config(name: &str, value: &str) -> anyhow::Result<bool> {
+    match value {
+        "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
+        "0" | "false" | "FALSE" | "no" | "NO" => Ok(false),
+        other => anyhow::bail!("{name} must be 1/0 or true/false, got `{other}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mlx_stream_usage_defaults_true_and_parses_flag() {
+        assert!(mlx_stream_usage_enabled_from_env(&[], None).expect("default parses"));
+        assert!(
+            !mlx_stream_usage_enabled_from_env(
+                &["--mlx-stream-usage".to_owned(), "false".to_owned()],
+                None
+            )
+            .expect("flag parses")
+        );
+        assert!(
+            mlx_stream_usage_enabled_from_env(
+                &["--mlx-stream-usage".to_owned(), "true".to_owned()],
+                Some("false")
+            )
+            .expect("flag overrides env")
+        );
+    }
+
+    #[test]
+    fn mlx_stream_usage_parses_env_value() {
+        assert!(
+            !mlx_stream_usage_enabled_from_env(&[], Some("0")).expect("zero env disables usage")
+        );
+        assert!(
+            mlx_stream_usage_enabled_from_env(&[], Some("yes")).expect("yes env enables usage")
+        );
     }
 }
 

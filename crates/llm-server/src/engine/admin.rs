@@ -367,6 +367,9 @@ pub(super) async fn admin_metrics(
             prompt_tokens: tokens.prompt_tokens(),
             completion_tokens: tokens.completion_tokens(),
             total_tokens: tokens.total_tokens(),
+            prompt_tokens_details: tokens
+                .prompt_cached_tokens()
+                .map(|cached_tokens| TokenPromptTokensDetailsSummary { cached_tokens }),
         },
     };
     Ok(Json(response))
@@ -454,6 +457,13 @@ pub(super) struct TokenSummary {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens_details: Option<TokenPromptTokensDetailsSummary>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct TokenPromptTokensDetailsSummary {
+    cached_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

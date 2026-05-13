@@ -1024,6 +1024,14 @@ fn serve_help_prints_without_backend_validation() {
         stdout.contains("LLM_ENGINE_CANONICAL_TOOL_SCHEMAS"),
         "serve help should document the canonicalization environment variable: {stdout}"
     );
+    assert!(
+        stdout.contains("--mlx-stream-usage <true|false>"),
+        "serve help should document MLX streaming usage forwarding: {stdout}"
+    );
+    assert!(
+        stdout.contains("LLM_ENGINE_MLX_STREAM_USAGE"),
+        "serve help should document the MLX streaming usage environment variable: {stdout}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("requires --snapshot"),
