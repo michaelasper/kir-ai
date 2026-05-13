@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.9](https://github.com/michaelasper/kir-ai/compare/v1.8.8...v1.8.9) (2026-05-13)
+
+### Bug Fixes
+
+* **metal:** check buffer byte lengths ([98014ee](https://github.com/michaelasper/kir-ai/commit/98014ee3c80753cb9b0e0e87dd01d8fcc9116f02))
+
 ## [1.8.8](https://github.com/michaelasper/kir-ai/compare/v1.8.7...v1.8.8) (2026-05-13)
 
 ### Bug Fixes
