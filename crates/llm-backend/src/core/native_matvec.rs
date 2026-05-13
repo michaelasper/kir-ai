@@ -7,6 +7,58 @@ use super::math::{
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeBatchedMatvecOutput {
+    values: Vec<f32>,
+    row_len: usize,
+}
+
+impl NativeBatchedMatvecOutput {
+    pub fn new(values: Vec<f32>, row_len: usize) -> Result<Self, TensorLoadError> {
+        if row_len == 0 {
+            if values.is_empty() {
+                return Ok(Self { values, row_len });
+            }
+            return Err(TensorLoadError::integrity(
+                "batched matvec row length must be non-zero for non-empty values",
+            ));
+        }
+        if !values.len().is_multiple_of(row_len) {
+            return Err(TensorLoadError::integrity(format!(
+                "batched matvec values length {} must be divisible by row length {row_len}",
+                values.len()
+            )));
+        }
+        Ok(Self { values, row_len })
+    }
+
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    pub fn row_len(&self) -> usize {
+        self.row_len
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.values.len().checked_div(self.row_len).unwrap_or(0)
+    }
+
+    pub fn into_rows(self) -> Vec<Vec<f32>> {
+        if self.row_len == 0 {
+            return Vec::new();
+        }
+        self.values
+            .chunks_exact(self.row_len)
+            .map(<[f32]>::to_vec)
+            .collect()
+    }
+
+    pub fn into_values(self) -> Vec<f32> {
+        self.values
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn swiglu_mlp_f32_with_matvec(
     input: &[f32],
@@ -70,7 +122,19 @@ pub trait NativeMatvecBackend {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
-        store.bf16_matvecs_row_major_f32(tensor, inputs)
+        Ok(self
+            .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+            .await?
+            .into_rows())
+    }
+
+    async fn bf16_matvecs_row_major_f32_flat(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
+        store.bf16_matvecs_row_major_f32_flat(tensor, inputs)
     }
 
     async fn bf16_matvec_rows_f32(

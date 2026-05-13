@@ -1,5 +1,5 @@
 use llm_backend::{
-    BackendCacheContext, NativeOutputProjection, QwenFullAttentionDims,
+    BackendCacheContext, NativeF32Rows, NativeOutputProjection, QwenFullAttentionDims,
     QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts, QwenFullAttentionStepParts,
     QwenLinearAttentionDims, QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
@@ -352,9 +352,9 @@ async fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
     let output = qwen_full_attention_sequence_from_parts(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
+            q_proj: rows(&q_proj),
+            k_proj: rows(&k_proj),
+            v_proj: rows(&v_proj),
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -409,9 +409,9 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
     let output = qwen_full_attention_sequence_with_cache_from_parts(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
+            q_proj: rows(&q_proj),
+            k_proj: rows(&k_proj),
+            v_proj: rows(&v_proj),
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -425,9 +425,9 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
     let expected = qwen_full_attention_sequence_from_parts(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
+            q_proj: rows(&q_proj),
+            k_proj: rows(&k_proj),
+            v_proj: rows(&v_proj),
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -473,9 +473,9 @@ async fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
     let output = qwen_full_attention_sequence_with_cache_from_parts(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
+            q_proj: rows(&q_proj),
+            k_proj: rows(&k_proj),
+            v_proj: rows(&v_proj),
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -517,9 +517,9 @@ async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
     qwen_full_attention_sequence_with_cache_from_parts(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &prefill_q_proj,
-            k_proj: &prefill_k_proj,
-            v_proj: &prefill_v_proj,
+            q_proj: rows(&prefill_q_proj),
+            k_proj: rows(&prefill_k_proj),
+            v_proj: rows(&prefill_v_proj),
             q_norm_weight: &q_norm_weight,
             k_norm_weight: &k_norm_weight,
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -578,9 +578,9 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         one_centered_rms_norm: true,
     };
     let expected_parts = QwenFullAttentionSequenceParts {
-        q_proj: &q_proj,
-        k_proj: &k_proj,
-        v_proj: &v_proj,
+        q_proj: rows(&q_proj),
+        k_proj: rows(&k_proj),
+        v_proj: rows(&v_proj),
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -598,9 +598,9 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
     let prefill_k_proj = k_proj[..2].to_vec();
     let prefill_v_proj = v_proj[..2].to_vec();
     let prefill_parts = QwenFullAttentionSequenceParts {
-        q_proj: &prefill_q_proj,
-        k_proj: &prefill_k_proj,
-        v_proj: &prefill_v_proj,
+        q_proj: rows(&prefill_q_proj),
+        k_proj: rows(&prefill_k_proj),
+        v_proj: rows(&prefill_v_proj),
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -658,9 +658,9 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         one_centered_rms_norm: false,
     };
     let expected_parts = QwenFullAttentionSequenceParts {
-        q_proj: &q_proj,
-        k_proj: &k_proj,
-        v_proj: &v_proj,
+        q_proj: rows(&q_proj),
+        k_proj: rows(&k_proj),
+        v_proj: rows(&v_proj),
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -678,9 +678,9 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
     let prefill_k_proj = k_proj[..2].to_vec();
     let prefill_v_proj = v_proj[..2].to_vec();
     let prefill_parts = QwenFullAttentionSequenceParts {
-        q_proj: &prefill_q_proj,
-        k_proj: &prefill_k_proj,
-        v_proj: &prefill_v_proj,
+        q_proj: rows(&prefill_q_proj),
+        k_proj: rows(&prefill_k_proj),
+        v_proj: rows(&prefill_v_proj),
         q_norm_weight: &q_norm_weight,
         k_norm_weight: &k_norm_weight,
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
@@ -841,4 +841,8 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
             "actual {actual} expected {expected}"
         );
     }
+}
+
+fn rows(values: &[Vec<f32>]) -> NativeF32Rows<'_> {
+    NativeF32Rows::from_rows(values)
 }

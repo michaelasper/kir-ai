@@ -3,7 +3,7 @@ use super::super::math::{
     rms_norm_f32_in_place,
 };
 use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeFullAttentionCacheSequenceParts,
+    CpuNativeMatvecBackend, LayerKvCache, NativeF32Rows, NativeFullAttentionCacheSequenceParts,
     NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
     NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
     native_full_attention_sequence_from_cache_parts_with_matvec,
@@ -567,34 +567,38 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
     require_gemma_attention_cache_shape(&dims, cache, layer_idx)?;
 
     let q_proj = matvec
-        .bf16_matvecs_row_major_f32(
+        .bf16_matvecs_row_major_f32_flat(
             store,
             &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
             hidden_states,
         )
         .await?;
     let k_proj = if is_shared_layer {
-        Vec::new()
+        None
     } else {
-        matvec
-            .bf16_matvecs_row_major_f32(
-                store,
-                &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
-                hidden_states,
-            )
-            .await?
+        Some(
+            matvec
+                .bf16_matvecs_row_major_f32_flat(
+                    store,
+                    &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
+                    hidden_states,
+                )
+                .await?,
+        )
     };
     let use_k_eq_v = spec.attention_k_eq_v && matches!(kind, GemmaAttentionKind::FullAttention);
     let v_proj = if is_shared_layer || use_k_eq_v {
-        Vec::new()
+        None
     } else {
-        matvec
-            .bf16_matvecs_row_major_f32(
-                store,
-                &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
-                hidden_states,
-            )
-            .await?
+        Some(
+            matvec
+                .bf16_matvecs_row_major_f32_flat(
+                    store,
+                    &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
+                    hidden_states,
+                )
+                .await?,
+        )
     };
     let q_norm_weight =
         store.bf16_tensor_f32_cached_arc(&spec.self_attn_tensor(layer_idx, "q_norm.weight"))?;
@@ -610,16 +614,41 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
         cache.next_position()
     };
     let rotary = gemma_rotary_config(spec, kind);
-    let mut queries = Vec::with_capacity(hidden_states.len());
+    let q_proj_rows = NativeF32Rows::from_batched_matvec(&q_proj).map_err(|err| {
+        TensorLoadError::integrity(format!("Gemma q projection rows failed: {err}"))
+    })?;
+    let k_proj_rows = k_proj
+        .as_ref()
+        .map(NativeF32Rows::from_batched_matvec)
+        .transpose()
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Gemma k projection rows failed: {err}"))
+        })?;
+    let v_proj_rows = v_proj
+        .as_ref()
+        .map(NativeF32Rows::from_batched_matvec)
+        .transpose()
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Gemma v projection rows failed: {err}"))
+        })?;
+    let attention_values_len = hidden_states
+        .len()
+        .checked_mul(attention_dim)
+        .ok_or_else(|| TensorLoadError::integrity("Gemma attention sequence shape overflow"))?;
+    let key_values_len = hidden_states
+        .len()
+        .checked_mul(key_value_dim)
+        .ok_or_else(|| TensorLoadError::integrity("Gemma KV sequence shape overflow"))?;
+    let mut queries = vec![0.0; attention_values_len];
     let mut keys = if is_shared_layer {
         Vec::new()
     } else {
-        Vec::with_capacity(hidden_states.len())
+        vec![0.0; key_values_len]
     };
     let mut values = if is_shared_layer {
         Vec::new()
     } else {
-        Vec::with_capacity(hidden_states.len())
+        vec![0.0; key_values_len]
     };
     let mut source_counts = if is_shared_layer {
         Vec::with_capacity(hidden_states.len())
@@ -627,13 +656,14 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
         Vec::new()
     };
     for token_idx in 0..hidden_states.len() {
-        require_len("Gemma q projection", q_proj[token_idx].len(), attention_dim)
+        let q_projection = q_proj_rows.row(token_idx);
+        require_len("Gemma q projection", q_projection.len(), attention_dim)
             .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
         let position = position_offset
             .checked_add(token_idx)
             .ok_or_else(|| TensorLoadError::integrity("Gemma RoPE position overflow"))?;
         let query = gemma_projected_heads_normed_and_rotary(
-            &q_proj[token_idx],
+            q_projection,
             dims.num_attention_heads,
             dims.head_dim,
             q_norm_weight.as_ref(),
@@ -641,13 +671,17 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
             position,
             rotary,
         )?;
-        queries.push(query);
+        let query_row_start = token_idx * attention_dim;
+        queries[query_row_start..query_row_start + attention_dim].copy_from_slice(&query);
 
         if !is_shared_layer {
-            require_len("Gemma k projection", k_proj[token_idx].len(), key_value_dim)
+            let k_projection = k_proj_rows
+                .expect("non-shared Gemma attention has k projection")
+                .row(token_idx);
+            require_len("Gemma k projection", k_projection.len(), key_value_dim)
                 .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
             let key = gemma_projected_heads_normed_and_rotary(
-                &k_proj[token_idx],
+                k_projection,
                 dims.num_key_value_heads,
                 dims.head_dim,
                 k_norm_weight
@@ -659,11 +693,14 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 rotary,
             )?;
             let value_source = if use_k_eq_v {
-                &k_proj[token_idx]
+                k_projection
             } else {
-                require_len("Gemma v projection", v_proj[token_idx].len(), key_value_dim)
+                let v_projection = v_proj_rows
+                    .expect("Gemma attention without K=V has v projection")
+                    .row(token_idx);
+                require_len("Gemma v projection", v_projection.len(), key_value_dim)
                     .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
-                &v_proj[token_idx]
+                v_projection
             };
             let value = gemma_projected_heads_rms_norm_no_scale(
                 value_source,
@@ -671,8 +708,9 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
                 dims.head_dim,
                 spec.rms_norm_eps,
             )?;
-            keys.push(key);
-            values.push(value);
+            let key_row_start = token_idx * key_value_dim;
+            keys[key_row_start..key_row_start + key_value_dim].copy_from_slice(&key);
+            values[key_row_start..key_row_start + key_value_dim].copy_from_slice(&value);
         } else {
             source_counts.push(
                 position
@@ -687,7 +725,8 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
         native_full_attention_sequence_from_cache_parts_with_matvec(
             dims.native(),
             &NativeFullAttentionCacheSequenceParts {
-                queries: &queries,
+                queries: NativeF32Rows::flat(&queries, attention_dim)
+                    .map_err(|err| TensorLoadError::integrity(err.to_string()))?,
                 gates: None,
                 source_counts: &source_counts,
                 output_projection: NativeOutputProjection::Bf16Tensor {
@@ -704,9 +743,12 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
         native_full_attention_sequence_with_cache_from_parts_with_matvec(
             dims.native(),
             &NativeFullAttentionSequenceParts {
-                queries: &queries,
-                keys: &keys,
-                values: &values,
+                queries: NativeF32Rows::flat(&queries, attention_dim)
+                    .map_err(|err| TensorLoadError::integrity(err.to_string()))?,
+                keys: NativeF32Rows::flat(&keys, key_value_dim)
+                    .map_err(|err| TensorLoadError::integrity(err.to_string()))?,
+                values: NativeF32Rows::flat(&values, key_value_dim)
+                    .map_err(|err| TensorLoadError::integrity(err.to_string()))?,
                 gates: None,
                 output_projection: NativeOutputProjection::Bf16Tensor {
                     store,

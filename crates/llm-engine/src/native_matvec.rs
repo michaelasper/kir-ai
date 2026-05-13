@@ -1,7 +1,8 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError, NativeKvCacheTensor,
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
+    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError,
+    NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend, SafeTensorShardStore,
+    TensorLoadError, TopKLogit, TopKWeight,
 };
 use serde_json::{Value, json};
 use std::{
@@ -1197,13 +1198,25 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+        Ok(self
+            .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+            .await?
+            .into_rows())
+    }
+
+    async fn bf16_matvecs_row_major_f32_flat(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
         let Self::Metal(state) = self else {
             return Self::cpu()
-                .bf16_matvecs_row_major_f32(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await;
         };
         let Some(first_input) = inputs.first() else {
-            return Ok(Vec::new());
+            return NativeBatchedMatvecOutput::new(Vec::new(), 0);
         };
         let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, first_input) else {
             Self::record_metal_fallback(
@@ -1216,7 +1229,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 "unsupported BF16 matrix shape or input length",
             );
             return Self::cpu()
-                .bf16_matvecs_row_major_f32(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await;
         };
         let Some(flattened) = Self::flattened_inputs(inputs, columns) else {
@@ -1226,7 +1239,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 "batched input width mismatch",
             );
             return Self::cpu()
-                .bf16_matvecs_row_major_f32(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await;
         };
         let matrix = match state.bf16_matrix_buffer(store, tensor, 0, rows, columns) {
@@ -1238,10 +1251,14 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                     err,
                 );
                 return Self::cpu()
-                    .bf16_matvecs_row_major_f32(store, tensor, inputs)
+                    .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                     .await;
             }
         };
+        let output_len = inputs
+            .len()
+            .checked_mul(rows)
+            .ok_or_else(|| TensorLoadError::integrity("batched matvec output overflow"))?;
         if let Some(output) = Self::run_metal_tensor(
             "batched_matvec_bf16_f32",
             format!(
@@ -1249,7 +1266,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 inputs.len()
             ),
             || async {
-                let mut output = vec![0.0; inputs.len() * rows];
+                let mut output = vec![0.0; output_len];
                 state
                     .device
                     .batched_matvec_bf16_f32_buffered(
@@ -1259,20 +1276,15 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                         &mut output,
                     )
                     .await
-                    .map(|()| {
-                        output
-                            .chunks_exact(rows)
-                            .map(|chunk| chunk.to_vec())
-                            .collect()
-                    })
+                    .map(|()| output)
             },
         )
         .await?
         {
-            Ok(output)
+            NativeBatchedMatvecOutput::new(output, rows)
         } else {
             Self::cpu()
-                .bf16_matvecs_row_major_f32(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await
         }
     }

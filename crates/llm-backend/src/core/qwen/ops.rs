@@ -3,9 +3,9 @@ use super::super::math::{
     rms_norm_one_centered_f32, sigmoid_f32, silu_f32, softplus_f32,
 };
 use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeFullAttentionDims,
-    NativeFullAttentionSequenceParts, NativeFullAttentionStepParts, NativeMatvecBackend,
-    NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
+    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeF32Rows,
+    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeFullAttentionStepParts,
+    NativeMatvecBackend, NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
     native_full_attention_sequence_from_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
     native_full_attention_step_with_cache_from_parts_with_matvec,
@@ -129,9 +129,9 @@ pub struct QwenLinearAttentionStepParts<'a> {
 }
 
 pub struct QwenFullAttentionSequenceParts<'a> {
-    pub q_proj: &'a [Vec<f32>],
-    pub k_proj: &'a [Vec<f32>],
-    pub v_proj: &'a [Vec<f32>],
+    pub q_proj: NativeF32Rows<'a>,
+    pub k_proj: NativeF32Rows<'a>,
+    pub v_proj: NativeF32Rows<'a>,
     pub q_norm_weight: &'a [f32],
     pub k_norm_weight: &'a [f32],
     pub o_proj_weight: NativeOutputProjection<'a>,
@@ -1604,16 +1604,30 @@ async fn qwen_full_attention_sequence_from_parts_impl(
     }
 
     let position_offset = cache.as_deref().map_or(0, LayerKvCache::next_position);
-    let mut queries = vec![vec![0.0; attention_dim]; seq_len];
-    let mut gates = vec![vec![0.0; attention_dim]; seq_len];
-    let mut keys = vec![vec![0.0; key_value_dim]; seq_len];
+    let attention_values_len = seq_len.checked_mul(attention_dim).ok_or_else(|| {
+        MathError::InvalidShape("Qwen attention sequence shape overflow".to_owned())
+    })?;
+    let key_values_len = seq_len
+        .checked_mul(key_value_dim)
+        .ok_or_else(|| MathError::InvalidShape("Qwen KV sequence shape overflow".to_owned()))?;
+    let mut queries = vec![0.0; attention_values_len];
+    let mut gates = vec![0.0; attention_values_len];
+    let mut keys = vec![0.0; key_values_len];
     for token_idx in 0..seq_len {
         let position = position_offset
             .checked_add(token_idx)
             .ok_or_else(|| MathError::InvalidShape("Qwen RoPE position overflow".to_owned()))?;
-        require_len("q projection", q_proj[token_idx].len(), q_projection_width)?;
-        require_len("k projection", k_proj[token_idx].len(), key_value_dim)?;
-        require_len("v projection", v_proj[token_idx].len(), key_value_dim)?;
+        let q_projection = q_proj.row(token_idx);
+        let k_projection = k_proj.row(token_idx);
+        let v_projection = v_proj.row(token_idx);
+        require_len("q projection", q_projection.len(), q_projection_width)?;
+        require_len("k projection", k_projection.len(), key_value_dim)?;
+        require_len("v projection", v_projection.len(), key_value_dim)?;
+        let query_row_start = token_idx * attention_dim;
+        let key_row_start = token_idx * key_value_dim;
+        let query_row = &mut queries[query_row_start..query_row_start + attention_dim];
+        let gate_row = &mut gates[query_row_start..query_row_start + attention_dim];
+        let key_row = &mut keys[key_row_start..key_row_start + key_value_dim];
 
         for head in 0..dims.num_attention_heads {
             let projected_head_start = if config.q_projection_gate {
@@ -1623,21 +1637,21 @@ async fn qwen_full_attention_sequence_from_parts_impl(
             };
             let q_start = head * dims.head_dim;
             let query = qwen_attention_rms_norm_with_matvec(
-                &q_proj[token_idx][projected_head_start..projected_head_start + dims.head_dim],
+                &q_projection[projected_head_start..projected_head_start + dims.head_dim],
                 parts.q_norm_weight,
                 config,
                 matvec,
             )
             .await?;
-            queries[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(&query);
+            query_row[q_start..q_start + dims.head_dim].copy_from_slice(&query);
             if config.q_projection_gate {
-                gates[token_idx][q_start..q_start + dims.head_dim].copy_from_slice(
-                    &q_proj[token_idx][projected_head_start + dims.head_dim
+                gate_row[q_start..q_start + dims.head_dim].copy_from_slice(
+                    &q_projection[projected_head_start + dims.head_dim
                         ..projected_head_start + dims.head_dim * 2],
                 );
             }
             apply_rope_to_head(
-                &mut queries[token_idx][q_start..q_start + dims.head_dim],
+                &mut query_row[q_start..q_start + dims.head_dim],
                 position,
                 rotary_dim,
                 config.rope_theta,
@@ -1646,15 +1660,15 @@ async fn qwen_full_attention_sequence_from_parts_impl(
         for head in 0..dims.num_key_value_heads {
             let head_start = head * dims.head_dim;
             let key = qwen_attention_rms_norm_with_matvec(
-                &k_proj[token_idx][head_start..head_start + dims.head_dim],
+                &k_projection[head_start..head_start + dims.head_dim],
                 parts.k_norm_weight,
                 config,
                 matvec,
             )
             .await?;
-            keys[token_idx][head_start..head_start + dims.head_dim].copy_from_slice(&key);
+            key_row[head_start..head_start + dims.head_dim].copy_from_slice(&key);
             apply_rope_to_head(
-                &mut keys[token_idx][head_start..head_start + dims.head_dim],
+                &mut key_row[head_start..head_start + dims.head_dim],
                 position,
                 rotary_dim,
                 config.rope_theta,
@@ -1662,10 +1676,13 @@ async fn qwen_full_attention_sequence_from_parts_impl(
         }
     }
     let generic_parts = NativeFullAttentionSequenceParts {
-        queries: &queries,
-        keys: &keys,
+        queries: NativeF32Rows::flat(&queries, attention_dim)?,
+        keys: NativeF32Rows::flat(&keys, key_value_dim)?,
         values: v_proj,
-        gates: config.q_projection_gate.then_some(gates.as_slice()),
+        gates: config
+            .q_projection_gate
+            .then(|| NativeF32Rows::flat(&gates, attention_dim))
+            .transpose()?,
         output_projection: parts.o_proj_weight,
         score_scale: (dims.head_dim as f32).sqrt().recip(),
     };
@@ -2017,9 +2034,9 @@ pub async fn qwen_layer_full_attention_first_token_with_matvec(
     qwen_full_attention_sequence_from_parts_with_matvec(
         &dims,
         &QwenFullAttentionSequenceParts {
-            q_proj: &q_proj,
-            k_proj: &k_proj,
-            v_proj: &v_proj,
+            q_proj: NativeF32Rows::from_rows(&q_proj),
+            k_proj: NativeF32Rows::from_rows(&k_proj),
+            v_proj: NativeF32Rows::from_rows(&v_proj),
             q_norm_weight: q_norm_weight.as_ref(),
             k_norm_weight: k_norm_weight.as_ref(),
             o_proj_weight: NativeOutputProjection::Bf16Tensor {
@@ -2109,21 +2126,21 @@ async fn qwen_layer_full_attention_sequence_impl(
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let dims = QwenFullAttentionDims::from_spec(spec);
     let q_proj = matvec
-        .bf16_matvecs_row_major_f32(
+        .bf16_matvecs_row_major_f32_flat(
             store,
             &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
             hidden_states,
         )
         .await?;
     let k_proj = matvec
-        .bf16_matvecs_row_major_f32(
+        .bf16_matvecs_row_major_f32_flat(
             store,
             &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
             hidden_states,
         )
         .await?;
     let v_proj = matvec
-        .bf16_matvecs_row_major_f32(
+        .bf16_matvecs_row_major_f32_flat(
             store,
             &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
             hidden_states,
@@ -2135,9 +2152,15 @@ async fn qwen_layer_full_attention_sequence_impl(
         store.bf16_tensor_f32_cached_arc(&spec.self_attn_tensor(layer_idx, "k_norm.weight"))?;
     let o_proj_tensor = spec.self_attn_tensor(layer_idx, "o_proj.weight");
     let parts = QwenFullAttentionSequenceParts {
-        q_proj: &q_proj,
-        k_proj: &k_proj,
-        v_proj: &v_proj,
+        q_proj: NativeF32Rows::from_batched_matvec(&q_proj).map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen q projection rows failed: {err}"))
+        })?,
+        k_proj: NativeF32Rows::from_batched_matvec(&k_proj).map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen k projection rows failed: {err}"))
+        })?,
+        v_proj: NativeF32Rows::from_batched_matvec(&v_proj).map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen v projection rows failed: {err}"))
+        })?,
         q_norm_weight: q_norm_weight.as_ref(),
         k_norm_weight: k_norm_weight.as_ref(),
         o_proj_weight: NativeOutputProjection::Bf16Tensor {

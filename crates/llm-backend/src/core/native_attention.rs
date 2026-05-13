@@ -1,7 +1,7 @@
 use super::math::{MathError, require_len, sigmoid_f32};
 use super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeKvCacheTensor, NativeMatvecBackend,
-    SafeTensorShardStore,
+    CpuNativeMatvecBackend, LayerKvCache, NativeBatchedMatvecOutput, NativeKvCacheTensor,
+    NativeMatvecBackend, SafeTensorShardStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +33,71 @@ struct NativeFullAttentionShape {
     groups: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NativeF32Rows<'a>(NativeF32RowsInner<'a>);
+
+#[derive(Debug, Clone, Copy)]
+enum NativeF32RowsInner<'a> {
+    Rows(&'a [Vec<f32>]),
+    Flat { values: &'a [f32], row_len: usize },
+}
+
+impl<'a> NativeF32Rows<'a> {
+    pub fn from_rows(rows: &'a [Vec<f32>]) -> Self {
+        Self(NativeF32RowsInner::Rows(rows))
+    }
+
+    pub fn flat(values: &'a [f32], row_len: usize) -> Result<Self, MathError> {
+        if row_len == 0 {
+            if values.is_empty() {
+                return Ok(Self(NativeF32RowsInner::Flat { values, row_len }));
+            }
+            return Err(MathError::InvalidShape(
+                "flat row length must be non-zero for non-empty values".to_owned(),
+            ));
+        }
+        if !values.len().is_multiple_of(row_len) {
+            return Err(MathError::InvalidShape(format!(
+                "flat row values length {} must be divisible by row length {row_len}",
+                values.len()
+            )));
+        }
+        Ok(Self(NativeF32RowsInner::Flat { values, row_len }))
+    }
+
+    pub fn from_batched_matvec(output: &'a NativeBatchedMatvecOutput) -> Result<Self, MathError> {
+        Self::flat(output.values(), output.row_len())
+    }
+
+    pub fn len(self) -> usize {
+        match self.0 {
+            NativeF32RowsInner::Rows(rows) => rows.len(),
+            NativeF32RowsInner::Flat { values, row_len } => {
+                values.len().checked_div(row_len).unwrap_or(0)
+            }
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn row(self, index: usize) -> &'a [f32] {
+        match self.0 {
+            NativeF32RowsInner::Rows(rows) => rows[index].as_slice(),
+            NativeF32RowsInner::Flat { values, row_len } => {
+                let start = index * row_len;
+                &values[start..start + row_len]
+            }
+        }
+    }
+}
+
 pub struct NativeFullAttentionSequenceParts<'a> {
-    pub queries: &'a [Vec<f32>],
-    pub keys: &'a [Vec<f32>],
-    pub values: &'a [Vec<f32>],
-    pub gates: Option<&'a [Vec<f32>]>,
+    pub queries: NativeF32Rows<'a>,
+    pub keys: NativeF32Rows<'a>,
+    pub values: NativeF32Rows<'a>,
+    pub gates: Option<NativeF32Rows<'a>>,
     pub output_projection: NativeOutputProjection<'a>,
     pub score_scale: f32,
 }
@@ -52,8 +112,8 @@ pub struct NativeFullAttentionStepParts<'a> {
 }
 
 pub struct NativeFullAttentionCacheSequenceParts<'a> {
-    pub queries: &'a [Vec<f32>],
-    pub gates: Option<&'a [Vec<f32>]>,
+    pub queries: NativeF32Rows<'a>,
+    pub gates: Option<NativeF32Rows<'a>>,
     pub source_counts: &'a [usize],
     pub output_projection: NativeOutputProjection<'a>,
     pub score_scale: f32,
@@ -69,8 +129,8 @@ pub enum NativeOutputProjection<'a> {
 }
 
 struct NativeFullAttentionInlineSource<'a> {
-    keys: &'a [Vec<f32>],
-    values: &'a [Vec<f32>],
+    keys: NativeF32Rows<'a>,
+    values: NativeF32Rows<'a>,
     count: usize,
 }
 
@@ -172,13 +232,13 @@ pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
     for token_idx in 0..seq_len {
         require_len(
             "query projection",
-            parts.queries[token_idx].len(),
+            parts.queries.row(token_idx).len(),
             shape.attention_dim,
         )?;
         if let Some(gates) = parts.gates {
             require_len(
                 "gate projection",
-                gates[token_idx].len(),
+                gates.row(token_idx).len(),
                 shape.attention_dim,
             )?;
         }
@@ -197,8 +257,8 @@ pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
             dims,
             shape,
             NativeFullAttentionMixInput {
-                query: &parts.queries[token_idx],
-                gate: parts.gates.map(|gates| gates[token_idx].as_slice()),
+                query: parts.queries.row(token_idx),
+                gate: parts.gates.map(|gates| gates.row(token_idx)),
                 score_scale: parts.score_scale,
             },
             NativeFullAttentionCacheSource {
@@ -328,20 +388,20 @@ async fn native_full_attention_sequence_impl(
         require_full_attention_token_parts(
             dims,
             shape,
-            &parts.queries[token_idx],
-            &parts.keys[token_idx],
-            &parts.values[token_idx],
-            parts.gates.map(|gates| gates[token_idx].as_slice()),
+            parts.queries.row(token_idx),
+            parts.keys.row(token_idx),
+            parts.values.row(token_idx),
+            parts.gates.map(|gates| gates.row(token_idx)),
         )?;
     }
 
     let mut outputs = Vec::with_capacity(seq_len);
     for token_idx in 0..seq_len {
-        let query = &parts.queries[token_idx];
-        let gate = parts.gates.map(|gates| gates[token_idx].as_slice());
+        let query = parts.queries.row(token_idx);
+        let gate = parts.gates.map(|gates| gates.row(token_idx));
         let attended = if let Some(cache) = cache.as_deref_mut() {
             cache
-                .append_sliding(&parts.keys[token_idx], &parts.values[token_idx])
+                .append_sliding(parts.keys.row(token_idx), parts.values.row(token_idx))
                 .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
             native_full_attention_mix_from_cache(
                 dims,
@@ -654,7 +714,8 @@ async fn native_full_attention_mix_from_inline(
         let q_start = head * dims.head_dim;
         let kv_start = kv_head * dims.head_dim;
         let mut key_rows = Vec::with_capacity(source.count * dims.head_dim);
-        for key in source.keys.iter().take(source.count) {
+        for source_idx in 0..source.count {
+            let key = source.keys.row(source_idx);
             key_rows.extend_from_slice(&key[kv_start..kv_start + dims.head_dim]);
         }
         let scores = scaled_full_attention_scores_with_matvec(
@@ -667,7 +728,8 @@ async fn native_full_attention_mix_from_inline(
         .await?;
         let weights = matvec.softmax_f32(&scores).await?;
         let mut value_rows = Vec::with_capacity(source.count * dims.head_dim);
-        for value in source.values.iter().take(source.count) {
+        for source_idx in 0..source.count {
+            let value = source.values.row(source_idx);
             value_rows.extend_from_slice(&value[kv_start..kv_start + dims.head_dim]);
         }
         let mixed = matvec
@@ -908,9 +970,9 @@ mod tests {
         let output = native_full_attention_sequence_from_parts_with_matvec(
             dims,
             &NativeFullAttentionSequenceParts {
-                queries: &queries,
-                keys: &keys,
-                values: &values,
+                queries: NativeF32Rows::from_rows(&queries),
+                keys: NativeF32Rows::from_rows(&keys),
+                values: NativeF32Rows::from_rows(&values),
                 gates: None,
                 output_projection: NativeOutputProjection::Bf16Tensor {
                     store: &store,
@@ -944,9 +1006,40 @@ mod tests {
         let output = native_full_attention_sequence_from_parts(
             dims,
             &NativeFullAttentionSequenceParts {
-                queries: &queries,
-                keys: &keys,
-                values: &values,
+                queries: NativeF32Rows::from_rows(&queries),
+                keys: NativeF32Rows::from_rows(&keys),
+                values: NativeF32Rows::from_rows(&values),
+                gates: None,
+                output_projection: NativeOutputProjection::F32(&output_projection),
+                score_scale: 1.0,
+            },
+        )
+        .await
+        .expect("attention succeeds");
+
+        assert_close(output[0][0], 10.0);
+        assert!(output[1][0] > 27.0, "second token should attend to new key");
+    }
+
+    #[tokio::test]
+    async fn native_full_attention_sequence_accepts_flat_projection_rows() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 1,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let queries = vec![1.0, 1.0];
+        let keys = vec![1.0, 3.0];
+        let values = vec![10.0, 30.0];
+        let output_projection = vec![1.0];
+
+        let output = native_full_attention_sequence_from_parts(
+            dims,
+            &NativeFullAttentionSequenceParts {
+                queries: NativeF32Rows::flat(&queries, 1).expect("query rows"),
+                keys: NativeF32Rows::flat(&keys, 1).expect("key rows"),
+                values: NativeF32Rows::flat(&values, 1).expect("value rows"),
                 gates: None,
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
@@ -973,10 +1066,10 @@ mod tests {
         let gates = vec![vec![0.0, 1.0], vec![1.0, 0.0]];
         let output_projection = vec![1.0, 0.0, 0.0, 1.0];
         let parts = NativeFullAttentionSequenceParts {
-            queries: &queries,
-            keys: &keys,
-            values: &values,
-            gates: Some(&gates),
+            queries: NativeF32Rows::from_rows(&queries),
+            keys: NativeF32Rows::from_rows(&keys),
+            values: NativeF32Rows::from_rows(&values),
+            gates: Some(NativeF32Rows::from_rows(&gates)),
             output_projection: NativeOutputProjection::F32(&output_projection),
             score_scale: 1.0,
         };
@@ -1013,9 +1106,9 @@ mod tests {
         let flat_scaled = native_full_attention_sequence_from_parts(
             dims,
             &NativeFullAttentionSequenceParts {
-                queries: &queries,
-                keys: &keys,
-                values: &values,
+                queries: NativeF32Rows::from_rows(&queries),
+                keys: NativeF32Rows::from_rows(&keys),
+                values: NativeF32Rows::from_rows(&values),
                 gates: None,
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 0.0,
@@ -1026,9 +1119,9 @@ mod tests {
         let sharp_scaled = native_full_attention_sequence_from_parts(
             dims,
             &NativeFullAttentionSequenceParts {
-                queries: &queries,
-                keys: &keys,
-                values: &values,
+                queries: NativeF32Rows::from_rows(&queries),
+                keys: NativeF32Rows::from_rows(&keys),
+                values: NativeF32Rows::from_rows(&values),
                 gates: None,
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
@@ -1066,7 +1159,7 @@ mod tests {
         let output = native_full_attention_sequence_from_cache_parts_with_matvec(
             dims,
             &NativeFullAttentionCacheSequenceParts {
-                queries: &queries,
+                queries: NativeF32Rows::from_rows(&queries),
                 gates: None,
                 source_counts: &source_counts,
                 output_projection: NativeOutputProjection::F32(&output_projection),
@@ -1274,7 +1367,7 @@ mod tests {
         let output = native_full_attention_sequence_from_cache_parts_with_matvec(
             dims,
             &NativeFullAttentionCacheSequenceParts {
-                queries: &queries,
+                queries: NativeF32Rows::from_rows(&queries),
                 gates: None,
                 source_counts: &source_counts,
                 output_projection: NativeOutputProjection::F32(&output_projection),

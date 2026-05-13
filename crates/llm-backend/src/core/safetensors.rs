@@ -1,4 +1,5 @@
 use super::math::{TopKLogit, bf16_bits_to_f32, push_top_logit};
+use super::native_matvec::NativeBatchedMatvecOutput;
 use llm_models::SafetensorsIndex;
 use memmap2::{Mmap, MmapOptions};
 use safetensors::{SafeTensors, tensor::Dtype};
@@ -867,6 +868,16 @@ impl SafeTensorShardStore {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+        Ok(self
+            .bf16_matvecs_row_major_f32_flat(tensor, inputs)?
+            .into_rows())
+    }
+
+    pub fn bf16_matvecs_row_major_f32_flat(
+        &self,
+        tensor: &str,
+        inputs: &[Vec<f32>],
+    ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
         let metadata = file.tensor_metadata(tensor)?;
         if metadata.shape.len() != 2 {
@@ -885,7 +896,11 @@ impl SafeTensorShardStore {
                 )));
             }
         }
-        let mut outputs = vec![Vec::with_capacity(rows); inputs.len()];
+        let output_len = inputs
+            .len()
+            .checked_mul(rows)
+            .ok_or_else(|| TensorLoadError::integrity("batched matvec output overflow"))?;
+        let mut outputs = vec![0.0; output_len];
         for row_start in (0..rows).step_by(BF16_MATVEC_CHUNK_ROWS) {
             let rows_in_chunk = BF16_MATVEC_CHUNK_ROWS.min(rows - row_start);
             let element_offset = row_start
@@ -895,16 +910,23 @@ impl SafeTensorShardStore {
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("batched matvec chunk overflow"))?;
             let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-            for input_idx in 0..inputs.len() {
-                outputs[input_idx].extend(weights.chunks_exact(columns).map(|row| {
-                    row.iter()
-                        .zip(&inputs[input_idx])
+            for (input_idx, input) in inputs.iter().enumerate() {
+                let output_start = input_idx
+                    .checked_mul(rows)
+                    .and_then(|start| start.checked_add(row_start))
+                    .ok_or_else(|| {
+                        TensorLoadError::integrity("batched matvec output offset overflow")
+                    })?;
+                for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
+                    outputs[output_start + row_offset] = row
+                        .iter()
+                        .zip(input)
                         .map(|(weight, value)| weight * value)
-                        .sum::<f32>()
-                }));
+                        .sum::<f32>();
+                }
             }
         }
-        Ok(outputs)
+        NativeBatchedMatvecOutput::new(outputs, rows)
     }
 
     pub fn bf16_matvec_top_k_rows_f32(
