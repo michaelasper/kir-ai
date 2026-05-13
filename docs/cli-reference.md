@@ -273,9 +273,11 @@ classification, and the stream timing fields when observed. The top-level
 `repo_revision` records the kir-ai source checkout branch, commit SHA, and dirty
 status. Exported benchmark harnesses without a `.git` directory should set
 `LLM_ENGINE_BENCH_REPO_COMMIT`, `LLM_ENGINE_BENCH_REPO_BRANCH`, and
-`LLM_ENGINE_BENCH_REPO_DIRTY`; `LLM_ENGINE_BENCH_REPO_DIR` is used only when it
-points at the actual kir-ai Git root so parent harness repositories are not
-reported as the benchmark source.
+`LLM_ENGINE_BENCH_REPO_DIRTY`, or include a `.kir-ai-origin.json` file with
+`repo_revision.commit_sha`, `repo_revision.branch`, and `repo_revision.dirty`;
+`LLM_ENGINE_BENCH_REPO_DIR` is used only when it points at the actual kir-ai Git
+root or exported workspace so parent harness repositories are not reported as
+the benchmark source.
 Manifestless Hugging Face cache snapshots are recorded as raw snapshot identity
 with inferred `repo_id` and resolved commit when the path follows
 `models--<owner>--<repo>/snapshots/<commit>`. Use `launched_model_id` to pin the
@@ -283,6 +285,10 @@ model identity from the sidecar launch command when `/v1/models` reports a
 generic or unrelated ID. `model_addressing=server_default` omits the request
 payload `model` field and lets an externally launched MLX-LM sidecar use its
 loaded model; the built-in `qwen-mlx-cache-prefill` direct lanes use this mode.
+Use `--focused-agentic-gate` to run the smaller Qwen MLX agentic subset; the
+top-level `agentic_gate` report summarizes warm-prefix latency, first-byte and
+first-semantic/tool-delta timing, token throughput, cached-token counts, and
+lane deltas without requiring the full schema/tool-choice matrix.
 The top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.

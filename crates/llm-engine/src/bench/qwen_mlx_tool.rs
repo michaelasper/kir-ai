@@ -30,6 +30,7 @@ const BENCH_REPO_DIR_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIR";
 const BENCH_REPO_COMMIT_ENV: &str = "LLM_ENGINE_BENCH_REPO_COMMIT";
 const BENCH_REPO_BRANCH_ENV: &str = "LLM_ENGINE_BENCH_REPO_BRANCH";
 const BENCH_REPO_DIRTY_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIRTY";
+const BENCH_REPO_ORIGIN_FILE: &str = ".kir-ai-origin.json";
 
 pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--help") || has_flag(args, "-h") {
@@ -65,13 +66,15 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         parse_millis_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
     let output_path = flag_value(args, "--output").map(PathBuf::from);
     let sweep_profile = parse_sweep_profile_flag(args)?;
+    let probe_suite = parse_probe_suite_flag(args);
+    let probes = probe_suite.probes();
     let lanes = parse_lane_specs(args)?;
 
     let mut lane_reports = Vec::with_capacity(lanes.len());
     for lane in &lanes {
         let snapshot_identity = load_lane_snapshot_identity(lane, dry_run).await?;
         lane_reports.push(if dry_run {
-            NormalizedLaneReport::dry_run(lane, run_config, snapshot_identity)
+            NormalizedLaneReport::dry_run(lane, run_config, snapshot_identity, &probes)
         } else {
             NormalizedLaneReport::planned(
                 lane,
@@ -96,24 +99,17 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         effective_concurrent_samples: run_config.effective_concurrent_samples,
         timeout_ms,
         connect_timeout_ms,
+        probe_suite: probe_suite.name(),
         repo_revision: RepoRevisionReport::detect(),
-        cases: NormalizedCaseKind::all()
-            .iter()
-            .map(|case| case.name())
-            .collect(),
-        schema_variants: SchemaVariant::all()
-            .iter()
-            .map(|variant| variant.name())
-            .collect(),
-        tool_choice_variants: ToolChoiceVariant::all()
-            .iter()
-            .map(|variant| variant.name())
-            .collect(),
+        cases: probe_suite.case_names(&probes),
+        schema_variants: probe_suite.schema_variant_names(&probes),
+        tool_choice_variants: probe_suite.tool_choice_variant_names(&probes),
         cache_phases: CachePhase::all().iter().map(|phase| phase.name()).collect(),
-        summary: aggregate_normalized_summary(&lane_reports),
+        summary: aggregate_normalized_summary(&lane_reports, &probes),
         lanes: lane_reports,
         hardware: HardwareReport::detect(),
         comparison: NormalizedComparisonReport::dry_run(),
+        agentic_gate: NormalizedAgenticGateReport::dry_run(),
     };
 
     if dry_run {
@@ -128,10 +124,11 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         .context("build qwen mlx tool normalized benchmark HTTP client")?;
 
     for (lane, lane_report) in lanes.iter().zip(&mut report.lanes) {
-        run_lane(&client, lane, lane_report, run_config).await;
+        run_lane(&client, lane, lane_report, run_config, &probes).await;
     }
-    report.summary = aggregate_normalized_summary(&report.lanes);
-    report.comparison = compare_normalized_lanes(&report.lanes);
+    report.summary = aggregate_normalized_summary(&report.lanes, &probes);
+    report.comparison = compare_normalized_lanes(&report.lanes, &probes);
+    report.agentic_gate = agentic_gate_report(&report.lanes);
     report.status = if report.lanes.iter().all(|lane| lane.status == "passed") {
         "passed"
     } else {
@@ -160,6 +157,7 @@ Options:
   --context-tokens <n>          Stable long-context prompt target [default: 135000]
   --concurrent-requests <n>     Requests to issue together during the concurrent pass [default: 1]
   --concurrent-samples <n>      Concurrent sample batches per case and phase; 0 disables unless concurrent requests > 1 [default: 0]
+  --focused-agentic-gate        Run the small agentic gate instead of the full schema/tool matrix
   --output <path>               Write the trace JSON to a file as well as stdout
   --timeout-ms <n>              Whole request timeout [default: 1800000]
   --connect-timeout-ms <n>      HTTP connect timeout [default: 10000]
@@ -188,6 +186,15 @@ fn parse_sweep_profile_flag(args: &[String]) -> anyhow::Result<Option<Normalized
         [] => Ok(None),
         [profile] => NormalizedSweepProfile::parse(profile).map(Some),
         _ => anyhow::bail!("--sweep-profile may only be provided once"),
+    }
+}
+
+fn parse_probe_suite_flag(args: &[String]) -> NormalizedProbeSuite {
+    let focused_agentic_gate = has_flag(args, "--focused-agentic-gate");
+    if focused_agentic_gate {
+        NormalizedProbeSuite::FocusedAgenticGate
+    } else {
+        NormalizedProbeSuite::FullMatrix
     }
 }
 
@@ -520,8 +527,9 @@ async fn run_lane(
     lane: &NormalizedLaneConfig,
     lane_report: &mut NormalizedLaneReport,
     run_config: NormalizedRunConfig,
+    probes: &[NormalizedProbePlan],
 ) {
-    for probe in NormalizedProbePlan::all() {
+    for &probe in probes {
         for planned in phase_plan(run_config.warmups, run_config.samples) {
             let prompt = planned.prompt(run_config.context_tokens);
             match planned.kind {
@@ -549,7 +557,7 @@ async fn run_lane(
             }
         }
     }
-    for probe in NormalizedProbePlan::all() {
+    for &probe in probes {
         for phase in CachePhase::all() {
             for sample_index in 0..run_config.effective_concurrent_samples {
                 let requests = (0..run_config.concurrent_requests).map(|request_index| {
@@ -1155,9 +1163,12 @@ fn effective_concurrent_samples(
     }
 }
 
-fn compare_normalized_lanes(lanes: &[NormalizedLaneReport]) -> NormalizedComparisonReport {
+fn compare_normalized_lanes(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+) -> NormalizedComparisonReport {
     let mut fastest = Vec::new();
-    for probe in NormalizedProbePlan::all() {
+    for &probe in probes {
         for phase in CachePhase::all() {
             let mut fastest_lane = None;
             let mut fastest_latency_ms = None;
@@ -1211,10 +1222,11 @@ fn compare_normalized_lanes(lanes: &[NormalizedLaneReport]) -> NormalizedCompari
 
 fn aggregate_normalized_summary(
     lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
 ) -> Vec<NormalizedAggregateSummaryRow> {
     let mut rows = Vec::new();
     for lane in lanes {
-        for probe in NormalizedProbePlan::all() {
+        for &probe in probes {
             for phase in CachePhase::all() {
                 for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                     let samples = lane_samples(lane)
@@ -1275,6 +1287,111 @@ fn aggregate_normalized_summary(
     rows
 }
 
+fn agentic_gate_report(lanes: &[NormalizedLaneReport]) -> NormalizedAgenticGateReport {
+    let mut rows = Vec::new();
+    for probe in NormalizedProbePlan::focused_agentic_gate() {
+        for phase in CachePhase::all() {
+            for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
+                let mut lane_metrics = Vec::new();
+                let mut fastest_lane = None;
+                let mut fastest_latency = None;
+                for lane in lanes {
+                    let samples = lane_samples(lane)
+                        .filter(|sample| {
+                            sample.case == probe.case.name()
+                                && sample.schema_variant == probe.schema_variant.name()
+                                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                                && sample.cache_phase == phase.name()
+                                && sample.run_mode == run_mode.name()
+                                && sample.status == "passed"
+                        })
+                        .collect::<Vec<_>>();
+                    if samples.is_empty() {
+                        continue;
+                    }
+                    let p50_latency_ms =
+                        percentile_for_samples(&samples, |sample| sample.latency_ms);
+                    if let Some(latency) = p50_latency_ms
+                        && fastest_latency.is_none_or(|fastest| latency < fastest)
+                    {
+                        fastest_latency = Some(latency);
+                        fastest_lane = Some(lane.name.clone());
+                    }
+                    lane_metrics.push(NormalizedAgenticGateLaneMetric {
+                        lane: lane.name.clone(),
+                        pass_count: samples.len(),
+                        p50_latency_ms,
+                        latency_delta_vs_fastest_ms: None,
+                        p50_first_byte_latency_ms: percentile_for_samples(&samples, |sample| {
+                            sample.stream_timing.first_byte_latency_ms
+                        }),
+                        p50_first_semantic_delta_latency_ms: percentile_for_samples(
+                            &samples,
+                            |sample| sample.stream_timing.first_semantic_delta_latency_ms,
+                        ),
+                        p50_first_tool_delta_latency_ms: percentile_for_samples(
+                            &samples,
+                            |sample| sample.stream_timing.first_tool_delta_latency_ms,
+                        ),
+                        avg_tokens_per_second: average_f64(
+                            samples.iter().filter_map(|sample| sample.tokens_per_second),
+                        ),
+                        avg_cached_tokens: average_u64(
+                            samples.iter().filter_map(|sample| sample.cached_tokens),
+                        ),
+                        avg_prompt_tokens: average_u64(
+                            samples.iter().filter_map(|sample| sample.prompt_tokens),
+                        ),
+                        avg_completion_tokens: average_u64(
+                            samples.iter().filter_map(|sample| sample.completion_tokens),
+                        ),
+                    });
+                }
+                if lane_metrics.is_empty() {
+                    continue;
+                }
+                if let Some(fastest) = fastest_latency {
+                    for metric in &mut lane_metrics {
+                        metric.latency_delta_vs_fastest_ms = metric
+                            .p50_latency_ms
+                            .map(|latency| latency.saturating_sub(fastest));
+                    }
+                }
+                rows.push(NormalizedAgenticGateRow {
+                    case: probe.case.name(),
+                    schema_variant: probe.schema_variant.name(),
+                    tool_choice_variant: probe.tool_choice_variant.name(),
+                    cache_phase: phase.name(),
+                    run_mode: run_mode.name(),
+                    fastest_lane: fastest_lane.clone(),
+                    lanes: lane_metrics,
+                });
+            }
+        }
+    }
+    NormalizedAgenticGateReport {
+        status: if rows.is_empty() {
+            "no_samples"
+        } else {
+            "reported"
+        }
+        .to_owned(),
+        rows,
+    }
+}
+
+fn percentile_for_samples(
+    samples: &[&NormalizedSampleReport],
+    value: impl Fn(&NormalizedSampleReport) -> Option<u128>,
+) -> Option<u128> {
+    let mut values = samples
+        .iter()
+        .filter_map(|sample| value(sample))
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    percentile_latency(&values, 0.50)
+}
+
 fn lane_samples(lane: &NormalizedLaneReport) -> impl Iterator<Item = &NormalizedSampleReport> {
     lane.samples.iter().chain(lane.concurrent_samples.iter())
 }
@@ -1329,6 +1446,38 @@ fn average_u64(values: impl Iterator<Item = u64>) -> Option<f64> {
     (count > 0).then_some(total as f64 / count as f64)
 }
 
+fn average_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut count = 0u64;
+    let mut total = 0.0;
+    for value in values {
+        count += 1;
+        total += value;
+    }
+    (count > 0).then_some(total / count as f64)
+}
+
+fn probe_case_names(probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+    unique_probe_names(probes.iter().map(|probe| probe.case.name()))
+}
+
+fn probe_schema_variant_names(probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+    unique_probe_names(probes.iter().map(|probe| probe.schema_variant.name()))
+}
+
+fn probe_tool_choice_variant_names(probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+    unique_probe_names(probes.iter().map(|probe| probe.tool_choice_variant.name()))
+}
+
+fn unique_probe_names(names: impl Iterator<Item = &'static str>) -> Vec<&'static str> {
+    let mut unique = Vec::new();
+    for name in names {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    unique
+}
+
 fn benchmark_repo_dir() -> PathBuf {
     std::env::var_os(BENCH_REPO_DIR_ENV)
         .map(PathBuf::from)
@@ -1350,7 +1499,36 @@ fn env_string(name: &str) -> Option<String> {
 
 fn env_bool(name: &str) -> Option<bool> {
     let value = env_string(name)?;
-    match value.to_ascii_lowercase().as_str() {
+    parse_bool_text(&value)
+}
+
+fn origin_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn origin_bool(value: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        let Some(value) = value.get(*key) else {
+            continue;
+        };
+        if let Some(boolean) = value.as_bool() {
+            return Some(boolean);
+        }
+        if let Some(text) = value.as_str()
+            && let Some(boolean) = parse_bool_text(text)
+        {
+            return Some(boolean);
+        }
+    }
+    None
+}
+
+fn parse_bool_text(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "dirty" => Some(true),
         "0" | "false" | "no" | "clean" => Some(false),
         _ => None,
@@ -1908,6 +2086,58 @@ impl ToolChoiceVariant {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizedProbeSuite {
+    FullMatrix,
+    FocusedAgenticGate,
+}
+
+impl NormalizedProbeSuite {
+    fn name(self) -> &'static str {
+        match self {
+            Self::FullMatrix => "full_matrix",
+            Self::FocusedAgenticGate => "focused_agentic_gate",
+        }
+    }
+
+    fn probes(self) -> Vec<NormalizedProbePlan> {
+        match self {
+            Self::FullMatrix => NormalizedProbePlan::all(),
+            Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
+        }
+    }
+
+    fn case_names(self, probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+        match self {
+            Self::FullMatrix => NormalizedCaseKind::all()
+                .iter()
+                .map(|case| case.name())
+                .collect(),
+            Self::FocusedAgenticGate => probe_case_names(probes),
+        }
+    }
+
+    fn schema_variant_names(self, probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+        match self {
+            Self::FullMatrix => SchemaVariant::all()
+                .iter()
+                .map(|variant| variant.name())
+                .collect(),
+            Self::FocusedAgenticGate => probe_schema_variant_names(probes),
+        }
+    }
+
+    fn tool_choice_variant_names(self, probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
+        match self {
+            Self::FullMatrix => ToolChoiceVariant::all()
+                .iter()
+                .map(|variant| variant.name())
+                .collect(),
+            Self::FocusedAgenticGate => probe_tool_choice_variant_names(probes),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NormalizedProbePlan {
     case: NormalizedCaseKind,
     schema_variant: SchemaVariant,
@@ -1945,6 +2175,26 @@ impl NormalizedProbePlan {
             }
         }
         probes
+    }
+
+    fn focused_agentic_gate() -> Vec<Self> {
+        vec![
+            Self::new(
+                NormalizedCaseKind::ToolRequired,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            Self::new(
+                NormalizedCaseKind::ToolRequiredStream,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            Self::new(
+                NormalizedCaseKind::OmpRepeatedPrefix,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+        ]
     }
 }
 
@@ -2149,6 +2399,7 @@ struct NormalizedBenchReport {
     effective_concurrent_samples: usize,
     timeout_ms: u64,
     connect_timeout_ms: u64,
+    probe_suite: &'static str,
     repo_revision: RepoRevisionReport,
     cases: Vec<&'static str>,
     schema_variants: Vec<&'static str>,
@@ -2158,6 +2409,7 @@ struct NormalizedBenchReport {
     lanes: Vec<NormalizedLaneReport>,
     hardware: HardwareReport,
     comparison: NormalizedComparisonReport,
+    agentic_gate: NormalizedAgenticGateReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -2172,6 +2424,9 @@ impl RepoRevisionReport {
         if let Some(report) = Self::from_env() {
             return report;
         }
+        if let Some(report) = Self::from_origin_file() {
+            return report;
+        }
         Self {
             branch: git_output(&["branch", "--show-current"]).filter(|branch| !branch.is_empty()),
             commit_sha: git_output(&["rev-parse", "HEAD"]),
@@ -2183,6 +2438,32 @@ impl RepoRevisionReport {
         let branch = env_string(BENCH_REPO_BRANCH_ENV);
         let commit_sha = env_string(BENCH_REPO_COMMIT_ENV);
         let dirty = env_bool(BENCH_REPO_DIRTY_ENV);
+        if branch.is_none() && commit_sha.is_none() && dirty.is_none() {
+            return None;
+        }
+        Some(Self {
+            branch,
+            commit_sha,
+            dirty: dirty.unwrap_or(false),
+        })
+    }
+
+    fn from_origin_file() -> Option<Self> {
+        let path = benchmark_repo_dir().join(BENCH_REPO_ORIGIN_FILE);
+        let value = serde_json::from_slice::<Value>(&std::fs::read(path).ok()?).ok()?;
+        let revision = value.get("repo_revision").unwrap_or(&value);
+        let branch = origin_string(revision, &["branch", "git_branch", "ref"]);
+        let commit_sha = origin_string(
+            revision,
+            &[
+                "commit_sha",
+                "commit",
+                "git_commit",
+                "revision",
+                "source_commit",
+            ],
+        );
+        let dirty = origin_bool(revision, &["dirty", "git_dirty"]);
         if branch.is_none() && commit_sha.is_none() && dirty.is_none() {
             return None;
         }
@@ -2257,6 +2538,7 @@ impl NormalizedLaneReport {
         lane: &NormalizedLaneConfig,
         run_config: NormalizedRunConfig,
         snapshot_identity: Option<ModelIdentityReport>,
+        probes: &[NormalizedProbePlan],
     ) -> Self {
         let mut report = Self::planned(
             lane,
@@ -2265,7 +2547,7 @@ impl NormalizedLaneReport {
             snapshot_identity,
         );
         report.status = "dry_run".to_owned();
-        for probe in NormalizedProbePlan::all() {
+        for &probe in probes {
             for planned in phase_plan(run_config.warmups, run_config.samples) {
                 if planned.kind == PlannedRunKind::Measured {
                     let mut sample = NormalizedSampleReport::base(
@@ -2439,6 +2721,47 @@ struct NormalizedComparisonLaneMetric {
 }
 
 #[derive(Debug, Serialize)]
+struct NormalizedAgenticGateReport {
+    status: String,
+    rows: Vec<NormalizedAgenticGateRow>,
+}
+
+impl NormalizedAgenticGateReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedAgenticGateRow {
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    fastest_lane: Option<String>,
+    lanes: Vec<NormalizedAgenticGateLaneMetric>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedAgenticGateLaneMetric {
+    lane: String,
+    pass_count: usize,
+    p50_latency_ms: Option<u128>,
+    latency_delta_vs_fastest_ms: Option<u128>,
+    p50_first_byte_latency_ms: Option<u128>,
+    p50_first_semantic_delta_latency_ms: Option<u128>,
+    p50_first_tool_delta_latency_ms: Option<u128>,
+    avg_tokens_per_second: Option<f64>,
+    avg_cached_tokens: Option<f64>,
+    avg_prompt_tokens: Option<f64>,
+    avg_completion_tokens: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
 struct NormalizedAggregateSummaryRow {
     lane: String,
     case: &'static str,
@@ -2459,8 +2782,7 @@ struct NormalizedAggregateSummaryRow {
 
 #[cfg(test)]
 mod tests {
-    use super::super::StreamAssembly;
-    use super::super::usage_from_value;
+    use super::super::{StreamAssembly, StreamTimingReport, apply_sse_frame, usage_from_value};
     use super::*;
     use crate::DEFAULT_MODEL_ID;
     use serde_json::json;
@@ -2700,6 +3022,7 @@ mod tests {
             &parsed_lane,
             NormalizedRunConfig::new(1, 1, 128, 1, 0),
             None,
+            &NormalizedProbePlan::all(),
         );
         let value = serde_json::to_value(report).expect("lane report serializes");
         assert_eq!(value["mlx_lm_settings"]["mlx_prompt_cache_size"], 4096);
@@ -2786,6 +3109,7 @@ mod tests {
             &default_model,
             NormalizedRunConfig::new(1, 1, 128, 1, 0),
             None,
+            &NormalizedProbePlan::all(),
         );
         let value = serde_json::to_value(report).expect("lane report serializes");
         assert_eq!(value["declared_model_id"], "qwen-loaded");
@@ -2813,8 +3137,12 @@ mod tests {
         assert_eq!(lane.effective_request_model_id(), "default_model");
         assert_eq!(lane.identity_model_id(), "/models/qwen-snapshot");
 
-        let report =
-            NormalizedLaneReport::dry_run(&lane, NormalizedRunConfig::new(0, 1, 128, 1, 0), None);
+        let report = NormalizedLaneReport::dry_run(
+            &lane,
+            NormalizedRunConfig::new(0, 1, 128, 1, 0),
+            None,
+            &NormalizedProbePlan::all(),
+        );
         let value = serde_json::to_value(report).expect("lane report serializes");
         assert_eq!(value["declared_model_id"], "default_model");
         assert_eq!(value["effective_request_model_id"], "default_model");
@@ -3135,6 +3463,49 @@ mod tests {
     }
 
     #[test]
+    fn qwen_mlx_tool_normalized_focused_agentic_gate_uses_small_probe_plan() {
+        let suite = parse_probe_suite_flag(&args(&["--focused-agentic-gate"]));
+        let probes = suite.probes();
+
+        assert_eq!(suite.name(), "focused_agentic_gate");
+        assert_eq!(
+            probes,
+            vec![
+                NormalizedProbePlan::new(
+                    NormalizedCaseKind::ToolRequired,
+                    SchemaVariant::CanonicalCurrent,
+                    ToolChoiceVariant::Required,
+                ),
+                NormalizedProbePlan::new(
+                    NormalizedCaseKind::ToolRequiredStream,
+                    SchemaVariant::CanonicalCurrent,
+                    ToolChoiceVariant::Required,
+                ),
+                NormalizedProbePlan::new(
+                    NormalizedCaseKind::OmpRepeatedPrefix,
+                    SchemaVariant::CanonicalCurrent,
+                    ToolChoiceVariant::Required,
+                ),
+            ]
+        );
+
+        let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen");
+        let report = NormalizedLaneReport::dry_run(
+            &lane,
+            NormalizedRunConfig::new(0, 1, 128, 1, 0),
+            None,
+            &probes,
+        );
+        assert_eq!(report.samples.len(), 9);
+        assert!(
+            report
+                .samples
+                .iter()
+                .all(|sample| sample.case != "json_object")
+        );
+    }
+
+    #[test]
     fn qwen_mlx_tool_normalized_aggregate_summary_rows_group_by_lane_case_phase_and_run_mode() {
         let lane_a = lane("name=a,endpoint=http://127.0.0.1:8080/v1,model=qwen-a");
         let lane_b = lane("name=b,endpoint=http://127.0.0.1:8081/v1,model=qwen-b");
@@ -3187,7 +3558,8 @@ mod tests {
             5,
         )];
 
-        let summary = aggregate_normalized_summary(&[report_a, report_b]);
+        let probes = NormalizedProbePlan::all();
+        let summary = aggregate_normalized_summary(&[report_a, report_b], &probes);
         let a_row = summary
             .iter()
             .find(|row| {
@@ -3212,6 +3584,75 @@ mod tests {
     }
 
     #[test]
+    fn qwen_mlx_tool_normalized_agentic_gate_reports_warm_stream_cache_and_lane_deltas() {
+        let lane_a = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-a");
+        let lane_b = lane("name=proxy,endpoint=http://127.0.0.1:3000,model=qwen-b");
+        let mut report_a = NormalizedLaneReport::planned(&lane_a, 0, 0, None);
+        let mut report_b = NormalizedLaneReport::planned(&lane_b, 0, 0, None);
+
+        let mut direct = passed_sample(
+            NormalizedCaseKind::ToolRequiredStream,
+            CachePhase::WarmSamePrompt,
+            RunMode::Sequential,
+            0,
+            None,
+            1000,
+            64,
+        );
+        direct.schema_variant = SchemaVariant::CanonicalCurrent.name();
+        direct.schema_canonicalized = true;
+        direct.stream_timing = StreamTimingReport {
+            first_byte_latency_ms: Some(120),
+            first_sse_data_latency_ms: Some(125),
+            first_content_delta_latency_ms: None,
+            first_tool_delta_latency_ms: Some(700),
+            first_semantic_delta_latency_ms: Some(700),
+        };
+        direct.tokens_per_second = Some(33.0);
+        report_a.samples = vec![direct];
+
+        let mut proxy = passed_sample(
+            NormalizedCaseKind::ToolRequiredStream,
+            CachePhase::WarmSamePrompt,
+            RunMode::Sequential,
+            0,
+            None,
+            1125,
+            60,
+        );
+        proxy.schema_variant = SchemaVariant::CanonicalCurrent.name();
+        proxy.schema_canonicalized = true;
+        proxy.stream_timing = StreamTimingReport {
+            first_byte_latency_ms: Some(150),
+            first_sse_data_latency_ms: Some(155),
+            first_content_delta_latency_ms: None,
+            first_tool_delta_latency_ms: Some(760),
+            first_semantic_delta_latency_ms: Some(760),
+        };
+        proxy.tokens_per_second = Some(31.0);
+        report_b.samples = vec![proxy];
+
+        let gate = agentic_gate_report(&[report_a, report_b]);
+        let row = gate
+            .rows
+            .iter()
+            .find(|row| {
+                row.case == "tool_required_stream"
+                    && row.cache_phase == "warm_same_prompt"
+                    && row.run_mode == "sequential"
+            })
+            .expect("warm stream gate row");
+
+        assert_eq!(gate.status, "reported");
+        assert_eq!(row.fastest_lane.as_deref(), Some("direct"));
+        assert_eq!(row.lanes[0].p50_first_byte_latency_ms, Some(120));
+        assert_eq!(row.lanes[0].p50_first_semantic_delta_latency_ms, Some(700));
+        assert_eq!(row.lanes[0].p50_first_tool_delta_latency_ms, Some(700));
+        assert_eq!(row.lanes[0].avg_cached_tokens, Some(64.0));
+        assert_eq!(row.lanes[1].latency_delta_vs_fastest_ms, Some(125));
+    }
+
+    #[test]
     fn qwen_mlx_tool_normalized_cached_tokens_usage_parses_present_null_and_missing_shapes() {
         let present = usage_from_value(Some(&json!({
             "prompt_tokens": 10,
@@ -3233,6 +3674,34 @@ mod tests {
         })));
         assert_eq!(missing.cached_tokens, None);
         assert_eq!(missing.cached_tokens_status, Some("missing"));
+    }
+
+    #[test]
+    fn qwen_mlx_tool_normalized_stream_usage_merges_across_frames() {
+        let mut assembly = StreamAssembly::default();
+        apply_sse_frame(
+            &json!({
+                "choices": [{"delta": {"role": "assistant"}, "finish_reason": null}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": 80}
+                }
+            }),
+            &mut assembly,
+        );
+        apply_sse_frame(
+            &json!({
+                "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "record_qwen_tool_probe", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}],
+                "usage": {"completion_tokens": 12}
+            }),
+            &mut assembly,
+        );
+
+        assert_eq!(assembly.usage.prompt_tokens, Some(100));
+        assert_eq!(assembly.usage.cached_tokens_status, Some("present"));
+        assert_eq!(assembly.usage.cached_tokens, Some(80));
+        assert_eq!(assembly.usage.completion_tokens, Some(12));
+        assert_eq!(assembly.usage.total_tokens, Some(112));
     }
 
     #[test]

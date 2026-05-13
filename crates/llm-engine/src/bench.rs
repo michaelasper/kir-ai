@@ -1049,6 +1049,65 @@ impl Default for UsageMetrics {
     }
 }
 
+impl UsageMetrics {
+    fn merge(&mut self, next: Self) {
+        self.prompt_tokens = max_optional_u64(self.prompt_tokens, next.prompt_tokens);
+        self.completion_tokens = max_optional_u64(self.completion_tokens, next.completion_tokens);
+        self.total_tokens = max_optional_u64(self.total_tokens, next.total_tokens);
+        self.cached_tokens = max_optional_u64(self.cached_tokens, next.cached_tokens);
+        self.cached_tokens_status =
+            merge_cached_tokens_status(self.cached_tokens_status, next.cached_tokens_status);
+        if self.total_tokens.is_none()
+            && let (Some(prompt), Some(completion)) = (self.prompt_tokens, self.completion_tokens)
+        {
+            self.total_tokens = prompt.checked_add(completion);
+        }
+    }
+}
+
+fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Option<u64> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current.max(next)),
+        (Some(current), None) => Some(current),
+        (None, Some(next)) => Some(next),
+        (None, None) => None,
+    }
+}
+
+fn merge_cached_tokens_status(
+    current: Option<&'static str>,
+    next: Option<&'static str>,
+) -> Option<&'static str> {
+    match (
+        cached_tokens_status_rank(current),
+        cached_tokens_status_rank(next),
+    ) {
+        (Some((current_rank, current)), Some((next_rank, next))) => {
+            if next_rank > current_rank {
+                Some(next)
+            } else {
+                Some(current)
+            }
+        }
+        (Some((_rank, current)), None) => Some(current),
+        (None, Some((_rank, next))) => Some(next),
+        (None, None) => None,
+    }
+}
+
+fn cached_tokens_status_rank(status: Option<&'static str>) -> Option<(u8, &'static str)> {
+    status.map(|status| {
+        let rank = match status {
+            "present" => 4,
+            "invalid" => 3,
+            "null" => 2,
+            "missing" => 1,
+            _ => 0,
+        };
+        (rank, status)
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq)]
 struct StreamTimingReport {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1743,7 +1802,7 @@ fn consume_sse_buffer(
 fn apply_sse_frame(value: &Value, assembly: &mut StreamAssembly) -> StreamFrameDelta {
     let mut delta = StreamFrameDelta::default();
     if let Some(usage) = value.get("usage") {
-        assembly.usage = usage_from_value(Some(usage));
+        assembly.usage.merge(usage_from_value(Some(usage)));
     }
     if let Some(choice) = value
         .get("choices")
