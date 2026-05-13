@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.3](https://github.com/michaelasper/kir-ai/compare/v1.8.2...v1.8.3) (2026-05-13)
+
+### Bug Fixes
+
+* **native-text:** preserve shifted streaming prefixes ([cc4886d](https://github.com/michaelasper/kir-ai/commit/cc4886d06be900cde6adc6b32b1c92af6c832f6d)), closes [#232](https://github.com/michaelasper/kir-ai/issues/232)
+
 ## [1.8.2](https://github.com/michaelasper/kir-ai/compare/v1.8.1...v1.8.2) (2026-05-13)
 
 ### Bug Fixes
