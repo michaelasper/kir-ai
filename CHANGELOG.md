@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.1](https://github.com/michaelasper/kir-ai/compare/v1.7.0...v1.7.1) (2026-05-13)
+
+### Bug Fixes
+
+* **bench:** use server default for mlx sweep lanes ([b8b2d33](https://github.com/michaelasper/kir-ai/commit/b8b2d331ada87bd6a3f695aeca8015012d29a7d3)), closes [#255](https://github.com/michaelasper/kir-ai/issues/255)
+
 ## [1.7.0](https://github.com/michaelasper/kir-ai/compare/v1.6.0...v1.7.0) (2026-05-13)
 
 ### Features
