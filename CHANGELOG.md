@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.3](https://github.com/michaelasper/kir-ai/compare/v1.10.2...v1.10.3) (2026-05-13)
+
+### Bug Fixes
+
+* **mlx:** forward streaming usage ([41061c5](https://github.com/michaelasper/kir-ai/commit/41061c56d3dee14bc8066e0d5cd66d3996b7dd13))
+
 ## [1.10.2](https://github.com/michaelasper/kir-ai/compare/v1.10.1...v1.10.2) (2026-05-13)
 
 ### Bug Fixes
