@@ -285,7 +285,7 @@ mod tests {
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
         sync::{
-            Arc,
+            Arc, Weak,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -306,6 +306,35 @@ mod tests {
 
     impl NativeTextCacheMirrorSource for TestCache {
         fn append_cache_mirror_ids(&self, _ids: &mut NativeTextCacheMirrorIds) {}
+    }
+
+    #[derive(Debug)]
+    struct LockObservingCache {
+        bytes: u64,
+        cache: Weak<NativeTextPrefixCache<LockObservingCache>>,
+        cloned_while_locked: Arc<AtomicUsize>,
+    }
+
+    impl Clone for LockObservingCache {
+        fn clone(&self) -> Self {
+            if let Some(cache) = self.cache.upgrade()
+                && cache.inner.try_lock().is_err()
+            {
+                self.cloned_while_locked.fetch_add(1, Ordering::SeqCst);
+            }
+            Self {
+                bytes: self.bytes,
+                cache: self.cache.clone(),
+                cloned_while_locked: self.cloned_while_locked.clone(),
+            }
+        }
+    }
+
+    impl NativeTextPrefixCacheValue for LockObservingCache {
+        fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+            std::mem::size_of_val(hidden) as u64
+                + caches.iter().map(|cache| cache.bytes).sum::<u64>()
+        }
     }
 
     #[derive(Clone)]
@@ -1080,6 +1109,31 @@ mod tests {
             ..namespace
         };
         assert!(cache.lookup(&incompatible, &[1, 2], &metrics).is_none());
+    }
+
+    #[test]
+    fn prefix_cache_clones_payloads_outside_global_lock() {
+        let cache = Arc::new(NativeTextPrefixCache::new(1024));
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let namespace = namespace("clone-lock");
+        let cloned_while_locked = Arc::new(AtomicUsize::new(0));
+        let caches = vec![LockObservingCache {
+            bytes: 8,
+            cache: Arc::downgrade(&cache),
+            cloned_while_locked: cloned_while_locked.clone(),
+        }];
+
+        cache.store(namespace.clone(), &[1, 2], &[0.5, 1.5], &caches, &metrics);
+        let hit = cache
+            .lookup(&namespace, &[1, 2, 3], &metrics)
+            .expect("compatible longer prompt reuses stored prefix");
+
+        assert_eq!(hit.token_count, 2);
+        assert_eq!(
+            cloned_while_locked.load(Ordering::SeqCst),
+            0,
+            "prefix cache must not clone layer-cache payloads while holding its global lock"
+        );
     }
 
     #[test]

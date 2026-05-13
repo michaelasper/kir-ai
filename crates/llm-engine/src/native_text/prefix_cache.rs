@@ -1,6 +1,9 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{BackendCacheContext, BackendModelMetadata, BackendRequest};
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 pub(crate) trait NativeTextPrefixCacheValue: Clone {
     fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64;
@@ -102,10 +105,15 @@ pub(crate) struct NativeTextPrefixCacheKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeTextPrefixCacheEntry<C> {
-    pub(crate) hidden: Vec<f32>,
-    pub(crate) caches: Vec<C>,
+    pub(crate) payload: Arc<NativeTextPrefixCacheEntryPayload<C>>,
     pub(crate) byte_len: u64,
     pub(crate) last_used: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeTextPrefixCacheEntryPayload<C> {
+    pub(crate) hidden: Vec<f32>,
+    pub(crate) caches: Vec<C>,
 }
 
 #[derive(Debug)]
@@ -151,30 +159,42 @@ where
         tokens: &[usize],
         metrics: &NativeTextPrefixCacheMetrics,
     ) -> Option<NativeTextPrefixCacheHit<C>> {
-        let mut inner = self.inner.lock_or_panic("native text prefix cache");
-        let mut best_key = None;
-        let mut best_len = 0;
-        for key in inner.entries.keys() {
-            if key.namespace == *namespace
-                && key.tokens.len() > best_len
-                && tokens.starts_with(&key.tokens)
-            {
-                best_len = key.tokens.len();
-                best_key = Some(key.clone());
+        let hit = {
+            let mut inner = self.inner.lock_or_panic("native text prefix cache");
+            let NativeTextPrefixCacheInner {
+                entries,
+                next_access,
+                ..
+            } = &mut *inner;
+            let mut best_len = 0;
+            let mut best_entry = None;
+            for (key, entry) in entries.iter_mut() {
+                if key.namespace == *namespace
+                    && key.tokens.len() > best_len
+                    && tokens.starts_with(&key.tokens)
+                {
+                    best_len = key.tokens.len();
+                    best_entry = Some(entry);
+                }
             }
-        }
-        let Some(best_key) = best_key else {
+            if let Some(entry) = best_entry {
+                let access = *next_access;
+                *next_access = next_access.saturating_add(1);
+                entry.last_used = access;
+                Some((best_len, Arc::clone(&entry.payload)))
+            } else {
+                None
+            }
+        };
+        let Some((best_len, payload)) = hit else {
             metrics.record_miss();
             return None;
         };
-        let access = inner.next_access();
-        let entry = inner.entries.get_mut(&best_key)?;
-        entry.last_used = access;
         metrics.record_hit(best_len as u64);
         Some(NativeTextPrefixCacheHit {
             token_count: best_len,
-            hidden: entry.hidden.clone(),
-            caches: entry.caches.clone(),
+            hidden: payload.hidden.clone(),
+            caches: payload.caches.clone(),
         })
     }
 
@@ -194,42 +214,57 @@ where
             metrics.record_rejected();
             return;
         }
+        let payload = Arc::new(NativeTextPrefixCacheEntryPayload {
+            hidden: hidden.to_vec(),
+            caches: caches.to_vec(),
+        });
         let key = NativeTextPrefixCacheKey {
             namespace,
             tokens: tokens.to_vec(),
         };
-        let mut inner = self.inner.lock_or_panic("native text prefix cache");
-        if let Some(existing) = inner.entries.remove(&key) {
-            inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
+        let mut removed_entries = Vec::new();
+        let mut evicted_byte_lens = Vec::new();
+        let (resident_bytes, resident_entries) = {
+            let mut inner = self.inner.lock_or_panic("native text prefix cache");
+            if let Some(existing) = inner.entries.remove(&key) {
+                inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
+                removed_entries.push(existing);
+            }
+            while inner.used_bytes.saturating_add(byte_len) > self.max_bytes {
+                let Some(lru_key) = inner
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                let Some(evicted) = inner.entries.remove(&lru_key) else {
+                    break;
+                };
+                inner.used_bytes = inner.used_bytes.saturating_sub(evicted.byte_len);
+                evicted_byte_lens.push(evicted.byte_len);
+                removed_entries.push(evicted);
+            }
+            let access = inner.next_access();
+            inner.entries.insert(
+                key,
+                NativeTextPrefixCacheEntry {
+                    payload,
+                    byte_len,
+                    last_used: access,
+                },
+            );
+            inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
+            (inner.used_bytes, inner.entries.len() as u64)
+        };
+        // Drop replaced or evicted payloads after releasing the global cache lock.
+        drop(removed_entries);
+        for byte_len in evicted_byte_lens {
+            metrics.record_eviction(byte_len);
         }
-        while inner.used_bytes.saturating_add(byte_len) > self.max_bytes {
-            let Some(lru_key) = inner
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            let Some(evicted) = inner.entries.remove(&lru_key) else {
-                break;
-            };
-            inner.used_bytes = inner.used_bytes.saturating_sub(evicted.byte_len);
-            metrics.record_eviction(evicted.byte_len);
-        }
-        let access = inner.next_access();
-        inner.entries.insert(
-            key,
-            NativeTextPrefixCacheEntry {
-                hidden: hidden.to_vec(),
-                caches: caches.to_vec(),
-                byte_len,
-                last_used: access,
-            },
-        );
-        inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
         metrics.record_store(byte_len);
-        metrics.record_residency(inner.used_bytes, inner.entries.len() as u64);
+        metrics.record_residency(resident_bytes, resident_entries);
     }
 }
 
