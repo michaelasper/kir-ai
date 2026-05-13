@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.5](https://github.com/michaelasper/kir-ai/compare/v1.8.4...v1.8.5) (2026-05-13)
+
+### Bug Fixes
+
+* **attention:** use flat rows for batched prefill ([9e2f6e2](https://github.com/michaelasper/kir-ai/commit/9e2f6e2084aae29777a3a391870c22c1ce50ef55)), closes [#233](https://github.com/michaelasper/kir-ai/issues/233)
+
 ## [1.8.4](https://github.com/michaelasper/kir-ai/compare/v1.8.3...v1.8.4) (2026-05-13)
 
 ### Bug Fixes
