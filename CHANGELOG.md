@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.2](https://github.com/michaelasper/kir-ai/compare/v1.10.1...v1.10.2) (2026-05-13)
+
+### Bug Fixes
+
+* **backend:** avoid rms norm zero-scale NaNs ([9b350a4](https://github.com/michaelasper/kir-ai/commit/9b350a4a3d0d95b8f8f832330ad7d7188a226221))
+
 ## [1.10.1](https://github.com/michaelasper/kir-ai/compare/v1.10.0...v1.10.1) (2026-05-13)
 
 ### Bug Fixes
