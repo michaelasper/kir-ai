@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2](https://github.com/michaelasper/kir-ai/compare/v1.8.1...v1.8.2) (2026-05-13)
+
+### Bug Fixes
+
+* **native-text:** precompute stop token ids ([128eece](https://github.com/michaelasper/kir-ai/commit/128eece73cb2455ff4aab426c0ef29d0b493ece5)), closes [#243](https://github.com/michaelasper/kir-ai/issues/243)
+
 ## [1.8.1](https://github.com/michaelasper/kir-ai/compare/v1.8.0...v1.8.1) (2026-05-13)
 
 ### Bug Fixes
