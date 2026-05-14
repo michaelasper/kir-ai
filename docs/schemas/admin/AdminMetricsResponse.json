@@ -189,6 +189,24 @@
     "time_to_first_token_ms": {
       "$ref": "#/$defs/LatencySummary"
     },
+    "first_tool_delta_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "tool_argument_assembly_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "tool_intent_fill_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "tool_schema_validation_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "tool_finish_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
+    "validated_tool_call_ms": {
+      "$ref": "#/$defs/LatencySummary"
+    },
     "tokens": {
       "$ref": "#/$defs/TokenSummary"
     }
@@ -237,6 +255,12 @@
     "non_streamed_request_latency_ms",
     "streamed_request_latency_ms",
     "time_to_first_token_ms",
+    "first_tool_delta_ms",
+    "tool_argument_assembly_ms",
+    "tool_intent_fill_ms",
+    "tool_schema_validation_ms",
+    "tool_finish_ms",
+    "validated_tool_call_ms",
     "tokens"
   ],
   "$defs": {
@@ -285,12 +309,35 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "prompt_tokens_details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenPromptTokensDetailsSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "prompt_tokens",
         "completion_tokens",
         "total_tokens"
+      ]
+    },
+    "TokenPromptTokensDetailsSummary": {
+      "type": "object",
+      "properties": {
+        "cached_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cached_tokens"
       ]
     }
   }

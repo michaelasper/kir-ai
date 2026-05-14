@@ -10,8 +10,8 @@ use llm_backend::{
 };
 use llm_engine::{
     DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
-    MlxTimeouts, NativeTextLoadOptions, NativeTextRuntimeOptions, SnapshotBackendLoader,
-    SnapshotBackendOptions, build_router_with_backend_and_options,
+    MlxTimeouts, MlxToolParserMode, NativeTextLoadOptions, NativeTextRuntimeOptions,
+    SnapshotBackendLoader, SnapshotBackendOptions, build_router_with_backend_and_options,
     build_router_with_backend_and_options_allowing_unauthenticated_admin, open_snapshot_backend,
     parse_snapshot_model_family,
 };
@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
                     MlxBackendOptions::default().endpoint
                 };
                 let mlx_stream_usage = mlx_stream_usage_enabled(&serve_args)?;
+                let mlx_tool_parser = mlx_tool_parser_mode_from_args(&serve_args)?;
                 let mlx_timeouts = {
                     let defaults = MlxTimeouts::default();
                     let connect = flag_value(&serve_args, "--mlx-connect-timeout")
@@ -183,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
                             endpoint: mlx_endpoint,
                             timeouts: mlx_timeouts,
                             include_stream_usage: mlx_stream_usage,
+                            tool_parser: mlx_tool_parser,
                             ..MlxBackendOptions::default()
                         },
                         max_new_tokens,
@@ -274,6 +276,7 @@ Options:
   --mlx-request-timeout <secs>               MLX sidecar whole-request timeout [default: 600]
   --mlx-read-timeout <secs>                  MLX sidecar per-chunk read timeout [default: 60]
   --mlx-stream-usage <true|false>            Forward stream_options.include_usage to MLX sidecars [default: true, env: LLM_ENGINE_MLX_STREAM_USAGE]
+  --mlx-tool-parser <auto|json|qwen-xml>     MLX streamed tool parser [default: auto]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
@@ -302,6 +305,15 @@ fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {
 fn mlx_stream_usage_enabled(args: &[String]) -> anyhow::Result<bool> {
     let env_value = std::env::var("LLM_ENGINE_MLX_STREAM_USAGE").ok();
     mlx_stream_usage_enabled_from_env(args, env_value.as_deref())
+}
+
+fn mlx_tool_parser_mode_from_args(args: &[String]) -> anyhow::Result<MlxToolParserMode> {
+    let Some(value) = flag_value(args, "--mlx-tool-parser") else {
+        return Ok(MlxToolParserMode::Auto);
+    };
+    MlxToolParserMode::parse(value).ok_or_else(|| {
+        anyhow::anyhow!("--mlx-tool-parser must be auto|json|qwen-xml, got `{value}`")
+    })
 }
 
 fn mlx_stream_usage_enabled_from_env(
@@ -355,6 +367,26 @@ mod tests {
         assert!(
             mlx_stream_usage_enabled_from_env(&[], Some("yes")).expect("yes env enables usage")
         );
+    }
+
+    #[test]
+    fn mlx_tool_parser_mode_defaults_auto_and_parses_flag() {
+        assert_eq!(
+            mlx_tool_parser_mode_from_args(&[]).expect("default parser mode"),
+            MlxToolParserMode::Auto
+        );
+        assert_eq!(
+            mlx_tool_parser_mode_from_args(&[
+                "--mlx-tool-parser".to_owned(),
+                "qwen-xml".to_owned()
+            ])
+            .expect("qwen XML parser mode"),
+            MlxToolParserMode::QwenXml
+        );
+        let err =
+            mlx_tool_parser_mode_from_args(&["--mlx-tool-parser".to_owned(), "xml".to_owned()])
+                .expect_err("invalid parser mode fails");
+        assert!(err.to_string().contains("auto|json|qwen-xml"));
     }
 }
 

@@ -587,10 +587,125 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
         .expect("MLX metrics response");
     assert_eq!(mlx_response.status(), StatusCode::OK);
     let mlx = body_json(mlx_response.into_body()).await;
-    assert_eq!(mlx["stream_response_headers_ms"]["count"], 1);
-    assert_eq!(mlx["stream_first_upstream_byte_ms"]["count"], 1);
-    assert_eq!(mlx["stream_first_parsed_chunk_ms"]["count"], 1);
-    assert_eq!(mlx["stream_upstream_complete_ms"]["count"], 1);
+    assert_metric_incremented(
+        &before["mlx"],
+        &mlx,
+        &["stream_response_headers_ms", "count"],
+        1,
+    );
+    assert_metric_incremented(
+        &before["mlx"],
+        &mlx,
+        &["stream_first_upstream_byte_ms", "count"],
+        1,
+    );
+    assert_metric_incremented(
+        &before["mlx"],
+        &mlx,
+        &["stream_first_parsed_chunk_ms", "count"],
+        1,
+    );
+    assert_metric_incremented(
+        &before["mlx"],
+        &mlx,
+        &["stream_upstream_complete_ms", "count"],
+        1,
+    );
+}
+
+#[tokio::test]
+async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
+    let server = FakeMlxServer::start(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<tool_call><function=read_file>\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"<parameter=path>Cargo.toml</parameter></function></tool_call>\"},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata: [DONE]\n\n",
+    );
+    let backend = llm_engine::MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        llm_engine::MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(llm_models::ModelFamily::Qwen),
+            tool_parser: llm_engine::MlxToolParserMode::QwenXml,
+            ..llm_engine::MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("MLX backend opens");
+    let app = build_router_with_unauthenticated_admin(Box::new(backend));
+
+    let before_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("initial metrics response");
+    assert_eq!(before_response.status(), StatusCode::OK);
+    let before = body_json(before_response.into_body()).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "local-mlx",
+                        "messages": [{"role": "user", "content": "read Cargo.toml"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"path": {"type": "string"}},
+                                    "required": ["path"]
+                                }
+                            }
+                        }],
+                        "tool_choice": {"type": "function", "function": {"name": "read_file"}},
+                        "stream": true,
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(
+        !body.contains("<tool_call>"),
+        "Qwen XML must not leak to client SSE: {body}"
+    );
+    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
+    assert!(body.contains("\"name\":\"read_file\""));
+    assert!(body.contains("\"finish_reason\":\"tool_calls\""));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_metric_incremented(&before, &body, &["first_tool_delta_ms", "count"], 1);
+    assert_metric_incremented(&before, &body, &["validated_tool_call_ms", "count"], 1);
+    assert_metric_incremented(
+        &before,
+        &body,
+        &["mlx", "stream_first_tool_delta_ms", "count"],
+        1,
+    );
 }
 
 #[tokio::test]

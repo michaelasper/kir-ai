@@ -1,13 +1,14 @@
 use super::{
     DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, HardwareReport, ModelIdentityReport,
     StreamAssembly, StreamTimingReport, StreamTimingTracker, cli::flag_values, consume_sse_buffer,
-    load_model_identity, normalize_endpoint, unix_now_ms, usage_from_value,
+    load_model_identity, load_qwen_tokenizer, normalize_endpoint, unix_now_ms, usage_from_value,
 };
-use crate::{DEFAULT_MODEL_ID, flag_value, has_flag};
+use crate::{DEFAULT_MODEL_ID, MlxToolParserMode, flag_value, has_flag};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use futures::future::join_all;
 use llm_api::canonicalize_json_value;
+use llm_tokenizer::HuggingFaceTokenizer;
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -24,8 +25,13 @@ const DEFAULT_CONCURRENT_REQUESTS: usize = 1;
 const DEFAULT_CONCURRENT_SAMPLES: usize = 0;
 const DEFAULT_MAX_TOKENS: u32 = 96;
 const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
+const QWEN_MLX_PREFILL_135K_PROFILE: &str = "qwen-mlx-prefill-135k";
 const PROFILE_PROXY_MODEL_ID: &str = "local-qwen36-mlx";
 const PROFILE_CACHE_BYTES_1G: u64 = 1_073_741_824;
+const PREFILL_SWEEP_135K_PROFILE_NAME: &str = "qwen-prefill-sweep-135k";
+const CHAT_STREAM_MARKER: &str = "KIR_QWEN_MLX_PREFILL_135K_CHAT_STREAM_QUARTZ_2741";
+const CONTEXT_RECALL_STREAM_135K_MARKER: &str =
+    "KIR_LONG_CONTEXT_135K_CONTEXT_RECALL_STREAM_135K_QUARTZ_2741";
 const BENCH_REPO_DIR_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIR";
 const BENCH_REPO_COMMIT_ENV: &str = "LLM_ENGINE_BENCH_REPO_COMMIT";
 const BENCH_REPO_BRANCH_ENV: &str = "LLM_ENGINE_BENCH_REPO_BRANCH";
@@ -68,7 +74,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let output_path = flag_value(args, "--output").map(PathBuf::from);
     let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
     let sweep_profile = parse_sweep_profile_flag(args)?;
-    let probe_suite = parse_probe_suite_flag(args);
+    let probe_suite = parse_probe_suite_flag(args, sweep_profile)?;
     let probes = probe_suite.probes();
     let lanes = parse_lane_specs(args)?;
 
@@ -113,6 +119,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         hardware: HardwareReport::detect(),
         comparison: NormalizedComparisonReport::dry_run(),
         agentic_gate: NormalizedAgenticGateReport::dry_run(),
+        prefill_sweep: NormalizedPrefillSweepReport::dry_run(),
     };
 
     if dry_run {
@@ -127,6 +134,11 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         .context("build qwen mlx tool normalized benchmark HTTP client")?;
 
     for (lane, lane_report) in lanes.iter().zip(&mut report.lanes) {
+        let tokenizer = if sweep_profile_requires_exact_token_prompt(sweep_profile) {
+            Some(load_lane_tokenizer(lane)?)
+        } else {
+            None
+        };
         run_lane(
             &client,
             lane,
@@ -134,6 +146,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
             run_config,
             &probes,
             admin_token.as_deref(),
+            tokenizer.as_ref(),
         )
         .await;
     }
@@ -141,6 +154,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     report.tool_required_stream = tool_required_stream_timing_report(&report.lanes);
     report.comparison = compare_normalized_lanes(&report.lanes, &probes);
     report.agentic_gate = agentic_gate_report(&report.lanes);
+    report.prefill_sweep = prefill_sweep_report(&report.lanes, &probes);
     report.status = if report.lanes.iter().all(|lane| lane.status == "passed") {
         "passed"
     } else {
@@ -161,15 +175,16 @@ fn print_help() {
 Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
-  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill (requires --snapshot)
+  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill or qwen-mlx-prefill-135k (requires --snapshot)
+  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, or prefill-sweep-135k
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
-  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
+  --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,tool_parser=auto|json|qwen-xml][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                 Warmup requests for warm phases [default: 1]
   --samples <n>                 Measured samples per case and phase [default: 1]
   --context-tokens <n>          Stable long-context prompt target [default: 135000]
   --concurrent-requests <n>     Requests to issue together during the concurrent pass [default: 1]
   --concurrent-samples <n>      Concurrent sample batches per case and phase; 0 disables unless concurrent requests > 1 [default: 0]
-  --focused-agentic-gate        Run the small agentic gate instead of the full schema/tool matrix
+  --focused-agentic-gate        Compatibility alias for --probe-suite focused-agentic-gate
   --output <path>               Write the trace JSON to a file as well as stdout
   --admin-token <token>         Optional bearer token for lane /admin/metrics snapshots
   --timeout-ms <n>              Whole request timeout [default: 1800000]
@@ -202,13 +217,28 @@ fn parse_sweep_profile_flag(args: &[String]) -> anyhow::Result<Option<Normalized
     }
 }
 
-fn parse_probe_suite_flag(args: &[String]) -> NormalizedProbeSuite {
+fn parse_probe_suite_flag(
+    args: &[String],
+    sweep_profile: Option<NormalizedSweepProfile>,
+) -> anyhow::Result<NormalizedProbeSuite> {
+    let suites = flag_values(args, "--probe-suite");
     let focused_agentic_gate = has_flag(args, "--focused-agentic-gate");
-    if focused_agentic_gate {
-        NormalizedProbeSuite::FocusedAgenticGate
-    } else {
-        NormalizedProbeSuite::FullMatrix
+    let explicit = match suites.as_slice() {
+        [] => None,
+        [suite] => Some(NormalizedProbeSuite::parse(suite)?),
+        _ => anyhow::bail!("--probe-suite may only be provided once"),
+    };
+    if focused_agentic_gate && explicit.is_some() {
+        anyhow::bail!("--focused-agentic-gate cannot be combined with --probe-suite");
     }
+    if focused_agentic_gate {
+        return Ok(NormalizedProbeSuite::FocusedAgenticGate);
+    }
+    Ok(explicit.unwrap_or_else(|| {
+        sweep_profile
+            .map(NormalizedSweepProfile::default_probe_suite)
+            .unwrap_or(NormalizedProbeSuite::FullMatrix)
+    }))
 }
 
 fn expand_sweep_profile(
@@ -218,6 +248,7 @@ fn expand_sweep_profile(
     let snapshot = required_profile_snapshot(args)?;
     Ok(match profile {
         NormalizedSweepProfile::QwenMlxCachePrefill => qwen_mlx_cache_prefill_lanes(snapshot),
+        NormalizedSweepProfile::QwenMlxPrefill135k => qwen_mlx_prefill_135k_lanes(snapshot),
     })
 }
 
@@ -299,9 +330,42 @@ fn qwen_mlx_cache_prefill_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
             kind: NormalizedLaneKind::KirAiProxy,
             model_addressing: NormalizedModelAddressing::DefaultModel,
             template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+            tool_parser: MlxToolParserMode::Auto,
             mlx_lm_settings: MlxLmSettings::default(),
         },
     ]
+}
+
+fn qwen_mlx_prefill_135k_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
+    let steps = [
+        ("default", DefaultOrU64::Default),
+        ("512", DefaultOrU64::Value(512)),
+        ("1024", DefaultOrU64::Value(1024)),
+        ("2048", DefaultOrU64::Value(2048)),
+        ("4096", DefaultOrU64::Value(4096)),
+        ("8192", DefaultOrU64::Value(8192)),
+    ];
+    let mut lanes = Vec::with_capacity(steps.len() * 2);
+    for (index, (label, prefill_step_size)) in steps.into_iter().enumerate() {
+        let port_offset = index as u16;
+        let settings = MlxLmSettings {
+            prefill_step_size,
+            ..MlxLmSettings::default()
+        };
+        lanes.push(profile_direct_lane(
+            &format!("mlx-prefill-{label}"),
+            8080 + port_offset,
+            settings,
+            snapshot,
+        ));
+        lanes.push(profile_proxy_lane(
+            &format!("kir-prefill-{label}"),
+            3000 + port_offset,
+            settings,
+            snapshot,
+        ));
+    }
+    lanes
 }
 
 fn profile_direct_lane(
@@ -319,6 +383,27 @@ fn profile_direct_lane(
         kind: NormalizedLaneKind::DirectMlx,
         model_addressing: NormalizedModelAddressing::ServerDefault,
         template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+        tool_parser: MlxToolParserMode::Auto,
+        mlx_lm_settings,
+    }
+}
+
+fn profile_proxy_lane(
+    name: &str,
+    port: u16,
+    mlx_lm_settings: MlxLmSettings,
+    snapshot: &str,
+) -> NormalizedLaneConfig {
+    NormalizedLaneConfig {
+        name: name.to_owned(),
+        endpoint: format!("http://127.0.0.1:{port}"),
+        declared_model_id: PROFILE_PROXY_MODEL_ID.to_owned(),
+        launched_model_id: Some(snapshot.to_owned()),
+        snapshot_path: Some(PathBuf::from(snapshot)),
+        kind: NormalizedLaneKind::KirAiProxy,
+        model_addressing: NormalizedModelAddressing::DefaultModel,
+        template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+        tool_parser: MlxToolParserMode::Auto,
         mlx_lm_settings,
     }
 }
@@ -367,6 +452,11 @@ fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
         .map(|value| NormalizedTemplatePolicy::parse(&value))
         .transpose()?
         .unwrap_or(NormalizedTemplatePolicy::QwenNoThinking);
+    let tool_parser = values
+        .remove("tool_parser")
+        .map(|value| parse_mlx_tool_parser_mode(&value))
+        .transpose()?
+        .unwrap_or(MlxToolParserMode::Auto);
     let mlx_lm_settings = MlxLmSettings::parse(&mut values)?;
 
     if !values.is_empty() {
@@ -383,8 +473,14 @@ fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
         kind,
         model_addressing,
         template,
+        tool_parser,
         mlx_lm_settings,
     })
+}
+
+fn parse_mlx_tool_parser_mode(value: &str) -> anyhow::Result<MlxToolParserMode> {
+    MlxToolParserMode::parse(value)
+        .ok_or_else(|| anyhow!("unknown tool_parser `{value}`; expected auto, json, or qwen-xml"))
 }
 
 fn parse_count_flag(
@@ -468,6 +564,20 @@ async fn load_lane_snapshot_identity(
     )
     .await
     .map(Some)
+}
+
+fn sweep_profile_requires_exact_token_prompt(profile: Option<NormalizedSweepProfile>) -> bool {
+    matches!(profile, Some(NormalizedSweepProfile::QwenMlxPrefill135k))
+}
+
+fn load_lane_tokenizer(lane: &NormalizedLaneConfig) -> anyhow::Result<HuggingFaceTokenizer> {
+    let snapshot_path = lane.snapshot_path.as_deref().ok_or_else(|| {
+        anyhow!(
+            "profile {} requires snapshot-backed lanes to build exact-token recall prompts",
+            QWEN_MLX_PREFILL_135K_PROFILE
+        )
+    })?;
+    load_qwen_tokenizer(snapshot_path)
 }
 
 fn raw_snapshot_identity(lane: &NormalizedLaneConfig, snapshot_path: &Path) -> ModelIdentityReport {
@@ -579,6 +689,7 @@ async fn run_lane(
     run_config: NormalizedRunConfig,
     probes: &[NormalizedProbePlan],
     admin_token: Option<&str>,
+    prompt_tokenizer: Option<&HuggingFaceTokenizer>,
 ) {
     if should_capture_admin_metrics(lane) {
         lane_report
@@ -587,11 +698,11 @@ async fn run_lane(
     }
     for &probe in probes {
         for planned in phase_plan(run_config.warmups, run_config.samples) {
-            let prompt = planned.prompt(run_config.context_tokens);
             match planned.kind {
                 PlannedRunKind::Warmup => {
                     let result =
-                        execute_probe(client, lane, probe, planned, prompt, run_config).await;
+                        execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
+                            .await;
                     if result.status != "passed" {
                         lane_report.warmup_failures.push(NormalizedWarmupFailure {
                             case: probe.case.name(),
@@ -607,7 +718,8 @@ async fn run_lane(
                 }
                 PlannedRunKind::Measured => {
                     let sample =
-                        execute_probe(client, lane, probe, planned, prompt, run_config).await;
+                        execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
+                            .await;
                     lane_report.samples.push(sample);
                 }
             }
@@ -625,8 +737,7 @@ async fn run_lane(
                         request_index: Some(request_index),
                         warmup_index: None,
                     };
-                    let prompt = planned.prompt(run_config.context_tokens);
-                    execute_probe(client, lane, probe, planned, prompt, run_config)
+                    execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
                 });
                 lane_report
                     .concurrent_samples
@@ -657,10 +768,36 @@ async fn execute_probe(
     lane: &NormalizedLaneConfig,
     probe: NormalizedProbePlan,
     planned: PlannedRun,
-    prompt: ProbePrompt,
+    prompt_tokenizer: Option<&HuggingFaceTokenizer>,
     run_config: NormalizedRunConfig,
 ) -> NormalizedSampleReport {
+    let prompt = match planned.prompt(run_config.context_tokens, probe.case, prompt_tokenizer) {
+        Ok(prompt) => prompt,
+        Err(err) => {
+            let context = SampleContext {
+                probe,
+                phase: planned.phase,
+                run_mode: planned.run_mode,
+                sample_index: planned.sample_index.unwrap_or_default(),
+                request_index: planned.request_index,
+                planned_prompt_tokens: 0,
+                prewarmed: planned.phase.warms_before_samples() && run_config.warmups > 0,
+                expected_probe_id: probe.case.probe_id().to_owned(),
+                expected_marker: None,
+            };
+            return failed_sample(
+                context,
+                "prompt_build_failed",
+                Duration::from_millis(0),
+                None,
+                None,
+                err.to_string(),
+                StreamTimingReport::default(),
+            );
+        }
+    };
     let expected_probe_id = prompt.probe_id(probe.case);
+    let expected_marker = prompt.expected_marker(probe.case);
     let context = SampleContext {
         probe,
         phase: planned.phase,
@@ -670,6 +807,7 @@ async fn execute_probe(
         planned_prompt_tokens: prompt.planned_prompt_tokens(),
         prewarmed: planned.phase.warms_before_samples() && run_config.warmups > 0,
         expected_probe_id,
+        expected_marker,
     };
     let body = probe_request_body(lane, probe, prompt);
     if probe.case.streams() {
@@ -695,6 +833,7 @@ async fn run_buffered_probe(
                 "http_request_failed",
                 started.elapsed(),
                 None,
+                None,
                 err.to_string(),
                 StreamTimingReport::default(),
             );
@@ -702,6 +841,7 @@ async fn run_buffered_probe(
     };
     let status = response.status();
     let http_status = Some(status.as_u16());
+    let response_headers = response_headers_map(response.headers());
     let text = match response.text().await {
         Ok(text) => text,
         Err(err) => {
@@ -710,6 +850,7 @@ async fn run_buffered_probe(
                 "http_body_failed",
                 started.elapsed(),
                 http_status,
+                Some(response_headers),
                 err.to_string(),
                 StreamTimingReport::default(),
             );
@@ -722,6 +863,7 @@ async fn run_buffered_probe(
             "http_status_failed",
             latency,
             http_status,
+            Some(response_headers),
             text,
             StreamTimingReport::default(),
         );
@@ -734,6 +876,7 @@ async fn run_buffered_probe(
                 "response_json_failed",
                 latency,
                 http_status,
+                Some(response_headers),
                 err.to_string(),
                 StreamTimingReport::default(),
             );
@@ -749,11 +892,14 @@ async fn run_buffered_probe(
     sample_from_validation(
         context,
         validation,
-        latency,
-        StreamTimingReport::default(),
-        http_status,
-        finish_reason,
-        usage,
+        ProbeResponseMetadata {
+            latency,
+            stream_timing: StreamTimingReport::default(),
+            http_status,
+            response_headers: Some(response_headers),
+            finish_reason,
+            usage,
+        },
     )
 }
 
@@ -773,6 +919,7 @@ async fn run_streaming_probe(
                 "stream_http_request_failed",
                 started.elapsed(),
                 None,
+                None,
                 err.to_string(),
                 StreamTimingReport::default(),
             );
@@ -780,6 +927,7 @@ async fn run_streaming_probe(
     };
     let status = response.status();
     let http_status = Some(status.as_u16());
+    let response_headers = response_headers_map(response.headers());
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
         return failed_sample(
@@ -787,6 +935,7 @@ async fn run_streaming_probe(
             "stream_http_status_failed",
             started.elapsed(),
             http_status,
+            Some(response_headers),
             text,
             StreamTimingReport::default(),
         );
@@ -805,6 +954,7 @@ async fn run_streaming_probe(
                     "stream_body_failed",
                     started.elapsed(),
                     http_status,
+                    Some(response_headers),
                     err.to_string(),
                     timings.to_report(),
                 );
@@ -823,30 +973,43 @@ async fn run_streaming_probe(
         consume_sse_buffer(&mut buffer, &mut assembly, &mut timings, started.elapsed());
     }
 
-    let validation =
-        validate_streaming_probe(context.probe.case, &assembly, &context.expected_probe_id);
+    let validation = validate_streaming_probe(
+        context.probe.case,
+        &assembly,
+        &context.expected_probe_id,
+        context.expected_marker.as_deref(),
+    );
     sample_from_validation(
         context,
         validation,
-        started.elapsed(),
-        timings.to_report(),
-        http_status,
-        assembly.finish_reason,
-        assembly.usage,
+        ProbeResponseMetadata {
+            latency: started.elapsed(),
+            stream_timing: timings.to_report(),
+            http_status,
+            response_headers: Some(response_headers),
+            finish_reason: assembly.finish_reason,
+            usage: assembly.usage,
+        },
     )
+}
+
+struct ProbeResponseMetadata {
+    latency: Duration,
+    stream_timing: StreamTimingReport,
+    http_status: Option<u16>,
+    response_headers: Option<BTreeMap<String, String>>,
+    finish_reason: Option<String>,
+    usage: super::UsageMetrics,
 }
 
 fn sample_from_validation(
     context: SampleContext,
     validation: Result<(), String>,
-    latency: Duration,
-    stream_timing: StreamTimingReport,
-    http_status: Option<u16>,
-    finish_reason: Option<String>,
-    usage: super::UsageMetrics,
+    response: ProbeResponseMetadata,
 ) -> NormalizedSampleReport {
-    let tokens_per_second = usage.completion_tokens.and_then(|tokens| {
-        (latency.as_secs_f64() > 0.0).then_some(tokens as f64 / latency.as_secs_f64())
+    let tokens_per_second = response.usage.completion_tokens.and_then(|tokens| {
+        (response.latency.as_secs_f64() > 0.0)
+            .then_some(tokens as f64 / response.latency.as_secs_f64())
     });
     let mut sample = NormalizedSampleReport::base(
         context.probe,
@@ -857,16 +1020,17 @@ fn sample_from_validation(
         context.prewarmed,
         context.planned_prompt_tokens,
     );
-    sample.latency_ms = Some(latency.as_millis());
-    sample.stream_timing = stream_timing;
+    sample.latency_ms = Some(response.latency.as_millis());
+    sample.stream_timing = response.stream_timing;
     sample.tokens_per_second = tokens_per_second;
-    sample.prompt_tokens = usage.prompt_tokens;
-    sample.completion_tokens = usage.completion_tokens;
-    sample.total_tokens = usage.total_tokens;
-    sample.cached_tokens_status = usage.cached_tokens_status.unwrap_or("missing");
-    sample.cached_tokens = usage.cached_tokens;
-    sample.http_status = http_status;
-    sample.finish_reason = finish_reason;
+    sample.prompt_tokens = response.usage.prompt_tokens;
+    sample.completion_tokens = response.usage.completion_tokens;
+    sample.total_tokens = response.usage.total_tokens;
+    sample.cached_tokens_status = response.usage.cached_tokens_status.unwrap_or("missing");
+    sample.cached_tokens = response.usage.cached_tokens;
+    sample.http_status = response.http_status;
+    sample.response_headers = response.response_headers;
+    sample.finish_reason = response.finish_reason;
     match validation {
         Ok(()) => {
             sample.status = "passed".to_owned();
@@ -886,6 +1050,7 @@ fn failed_sample(
     classification: impl Into<String>,
     latency: Duration,
     http_status: Option<u16>,
+    response_headers: Option<BTreeMap<String, String>>,
     error: String,
     stream_timing: StreamTimingReport,
 ) -> NormalizedSampleReport {
@@ -903,6 +1068,7 @@ fn failed_sample(
     sample.latency_ms = Some(latency.as_millis());
     sample.stream_timing = stream_timing;
     sample.http_status = http_status;
+    sample.response_headers = response_headers;
     sample.error = Some(error);
     sample
 }
@@ -913,6 +1079,18 @@ fn chat_completions_url(endpoint: &str) -> String {
     } else {
         format!("{endpoint}/v1/chat/completions")
     }
+}
+
+fn response_headers_map(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect()
 }
 
 fn probe_request_body(
@@ -932,13 +1110,19 @@ fn probe_request_body(
     match probe.case {
         NormalizedCaseKind::ToolRequired
         | NormalizedCaseKind::ToolRequiredStream
-        | NormalizedCaseKind::OmpRepeatedPrefix => {
-            body["tools"] = json!([probe_tool_schema(probe.schema_variant)]);
-            body["tool_choice"] = probe.tool_choice_variant.request_value();
+        | NormalizedCaseKind::ContextRecallStream135k
+        | NormalizedCaseKind::OmpRepeatedPrefix
+        | NormalizedCaseKind::WarmPrefixRepeatedTurnStream => {
+            body["tools"] = json!([probe_tool_schema(probe)]);
+            body["tool_choice"] = probe.tool_choice_variant.request_value(probe.case);
             if probe.case.streams() {
                 body["stream"] = json!(true);
                 body["stream_options"] = json!({"include_usage": true});
             }
+        }
+        NormalizedCaseKind::ChatStream => {
+            body["stream"] = json!(true);
+            body["stream_options"] = json!({"include_usage": true});
         }
         NormalizedCaseKind::JsonObject => {
             body["response_format"] = json!({"type": "json_object"});
@@ -949,7 +1133,10 @@ fn probe_request_body(
 }
 
 fn probe_messages(case: NormalizedCaseKind, prompt: ProbePrompt) -> Value {
-    if case == NormalizedCaseKind::OmpRepeatedPrefix {
+    if matches!(
+        case,
+        NormalizedCaseKind::OmpRepeatedPrefix | NormalizedCaseKind::WarmPrefixRepeatedTurnStream
+    ) {
         let history_probe_id = format!("{}_HISTORY", case.probe_id());
         let history_arguments =
             json!({"probe_id": history_probe_id.clone(), "case": case.name()}).to_string();
@@ -982,7 +1169,16 @@ fn probe_messages(case: NormalizedCaseKind, prompt: ProbePrompt) -> Value {
     ])
 }
 
-fn probe_tool_schema(variant: SchemaVariant) -> Value {
+fn probe_tool_schema(probe: NormalizedProbePlan) -> Value {
+    match probe.case {
+        NormalizedCaseKind::ContextRecallStream135k => {
+            recall_probe_tool_schema(probe.schema_variant)
+        }
+        _ => qwen_probe_tool_schema(probe.schema_variant),
+    }
+}
+
+fn qwen_probe_tool_schema(variant: SchemaVariant) -> Value {
     let current = json!({
         "type": "function",
         "function": {
@@ -1024,6 +1220,50 @@ fn probe_tool_schema(variant: SchemaVariant) -> Value {
     }
 }
 
+fn recall_probe_tool_schema(variant: SchemaVariant) -> Value {
+    let current = json!({
+        "type": "function",
+        "function": {
+            "name": "report_long_context_recall",
+            "description": "Report a recalled long-context benchmark marker.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case": {"type": "string"},
+                    "marker": {"type": "string"},
+                    "profile": {"type": "string"}
+                },
+                "required": ["case", "marker", "profile"],
+                "additionalProperties": false
+            }
+        }
+    });
+    let permuted = json!({
+        "function": {
+            "parameters": {
+                "additionalProperties": false,
+                "required": ["profile", "marker", "case"],
+                "properties": {
+                    "profile": {"type": "string"},
+                    "marker": {"type": "string"},
+                    "case": {"type": "string"}
+                },
+                "type": "object"
+            },
+            "description": "Report a recalled long-context benchmark marker.",
+            "name": "report_long_context_recall"
+        },
+        "type": "function"
+    });
+    match variant {
+        SchemaVariant::BaselineCurrent => current,
+        SchemaVariant::CanonicalCurrent => canonicalize_json_value(&current),
+        SchemaVariant::BaselinePermutedEquivalent => permuted,
+        SchemaVariant::CanonicalPermutedEquivalent => canonicalize_json_value(&permuted),
+        SchemaVariant::None => Value::Null,
+    }
+}
+
 fn tool_schema_metadata(probe: NormalizedProbePlan) -> ToolSchemaMetadata {
     if probe.schema_variant == SchemaVariant::None {
         return ToolSchemaMetadata {
@@ -1031,7 +1271,7 @@ fn tool_schema_metadata(probe: NormalizedProbePlan) -> ToolSchemaMetadata {
             bytes: None,
         };
     }
-    let schema_json = serde_json::to_string(&json!([probe_tool_schema(probe.schema_variant)]))
+    let schema_json = serde_json::to_string(&json!([probe_tool_schema(probe)]))
         .expect("benchmark tool schema serializes");
     let digest = Sha256::digest(schema_json.as_bytes());
     ToolSchemaMetadata {
@@ -1071,7 +1311,10 @@ fn validate_buffered_probe(
                 .map_err(|err| format!("assistant content was not valid JSON: {err}"))?;
             validate_probe_arguments(&parsed, case, expected_probe_id, "JSON")
         }
-        NormalizedCaseKind::ToolRequiredStream => {
+        NormalizedCaseKind::ToolRequiredStream
+        | NormalizedCaseKind::ChatStream
+        | NormalizedCaseKind::ContextRecallStream135k
+        | NormalizedCaseKind::WarmPrefixRepeatedTurnStream => {
             Err("streamed tool case was routed through buffered validator".to_owned())
         }
     }
@@ -1081,9 +1324,26 @@ fn validate_streaming_probe(
     case: NormalizedCaseKind,
     assembly: &StreamAssembly,
     expected_probe_id: &str,
+    expected_marker: Option<&str>,
 ) -> Result<(), String> {
     if !case.streams() {
         return Err("non-streaming case was routed through streaming validator".to_owned());
+    }
+    if case == NormalizedCaseKind::ChatStream {
+        let marker = expected_marker
+            .ok_or_else(|| "chat stream validation was missing expected marker".to_owned())?;
+        return if assembly.content.contains(marker) {
+            Ok(())
+        } else {
+            Err(format!(
+                "streamed assistant content did not contain marker `{marker}`"
+            ))
+        };
+    }
+    if case == NormalizedCaseKind::ContextRecallStream135k {
+        let marker = expected_marker
+            .ok_or_else(|| "recall stream validation was missing expected marker".to_owned())?;
+        return validate_streaming_recall_probe(case, assembly, marker);
     }
     let name = assembly
         .tool_name
@@ -1098,6 +1358,29 @@ fn validate_streaming_probe(
     let args = serde_json::from_str::<Value>(&assembly.tool_arguments)
         .map_err(|err| format!("streamed tool arguments were not JSON: {err}"))?;
     validate_probe_arguments(&args, case, expected_probe_id, "streamed tool")
+}
+
+fn validate_streaming_recall_probe(
+    case: NormalizedCaseKind,
+    assembly: &StreamAssembly,
+    expected_marker: &str,
+) -> Result<(), String> {
+    let name = assembly
+        .tool_name
+        .as_deref()
+        .ok_or_else(|| "missing streamed recall tool name".to_owned())?;
+    if name != "report_long_context_recall" {
+        return Err(format!(
+            "streamed recall tool name `{name}` did not match expected"
+        ));
+    }
+    validate_tool_finish_reason(
+        assembly.finish_reason.as_deref(),
+        "streamed recall tool call",
+    )?;
+    let args = serde_json::from_str::<Value>(&assembly.tool_arguments)
+        .map_err(|err| format!("streamed recall tool arguments were not JSON: {err}"))?;
+    validate_recall_arguments(&args, case, expected_marker, "streamed recall tool")
 }
 
 fn validate_probe_tool_call(
@@ -1157,6 +1440,51 @@ fn validate_probe_arguments(
         return Err(format!(
             "{label} case `{actual_case}` did not equal `{}`",
             case.name()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recall_arguments(
+    args: &Value,
+    case: NormalizedCaseKind,
+    expected_marker: &str,
+    label: &str,
+) -> Result<(), String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| format!("{label} arguments were not a JSON object"))?;
+    let marker = object
+        .get("marker")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} arguments missing string `marker`"))?;
+    if marker != expected_marker {
+        return Err(format!(
+            "{label} marker `{marker}` did not equal `{expected_marker}`"
+        ));
+    }
+    let profile = object
+        .get("profile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} arguments missing string `profile`"))?;
+    if profile != PREFILL_SWEEP_135K_PROFILE_NAME {
+        return Err(format!(
+            "{label} profile `{profile}` did not equal `{PREFILL_SWEEP_135K_PROFILE_NAME}`"
+        ));
+    }
+    let actual_case = object
+        .get("case")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} arguments missing string `case`"))?;
+    if actual_case != case.name() {
+        return Err(format!(
+            "{label} case `{actual_case}` did not equal `{}`",
+            case.name()
+        ));
+    }
+    if object.len() != 3 {
+        return Err(format!(
+            "{label} arguments must contain exactly marker, profile, and case"
         ));
     }
     Ok(())
@@ -1439,6 +1767,229 @@ fn agentic_gate_report(lanes: &[NormalizedLaneReport]) -> NormalizedAgenticGateR
         .to_owned(),
         rows,
     }
+}
+
+fn prefill_sweep_report(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+) -> NormalizedPrefillSweepReport {
+    let mut rows = Vec::new();
+    for &probe in probes {
+        for phase in CachePhase::all() {
+            for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
+                let mut lane_metrics = lanes
+                    .iter()
+                    .filter_map(|lane| prefill_sweep_lane_metric(lane, probe, phase, run_mode))
+                    .collect::<Vec<_>>();
+                if lane_metrics.is_empty() {
+                    continue;
+                }
+                let fastest_latency = lane_metrics
+                    .iter()
+                    .filter(|metric| metric.valid)
+                    .filter_map(|metric| metric.p50_first_semantic_delta_latency_ms)
+                    .min();
+                let fastest_lane = fastest_latency.and_then(|fastest| {
+                    lane_metrics
+                        .iter()
+                        .find(|metric| {
+                            metric.valid
+                                && metric.p50_first_semantic_delta_latency_ms == Some(fastest)
+                        })
+                        .map(|metric| metric.lane.clone())
+                });
+                if let Some(fastest) = fastest_latency {
+                    for metric in &mut lane_metrics {
+                        metric.latency_delta_vs_fastest_ms = metric
+                            .p50_first_semantic_delta_latency_ms
+                            .map(|latency| latency.saturating_sub(fastest));
+                    }
+                }
+                lane_metrics.sort_by(|left, right| {
+                    prefill_metric_sort_key(left).cmp(&prefill_metric_sort_key(right))
+                });
+                rows.push(NormalizedPrefillSweepRow {
+                    case: probe.case.name(),
+                    schema_variant: probe.schema_variant.name(),
+                    tool_choice_variant: probe.tool_choice_variant.name(),
+                    cache_phase: phase.name(),
+                    run_mode: run_mode.name(),
+                    fastest_lane,
+                    lanes: lane_metrics,
+                });
+            }
+        }
+    }
+    NormalizedPrefillSweepReport {
+        status: if rows.is_empty() {
+            "no_samples"
+        } else {
+            "reported"
+        }
+        .to_owned(),
+        rows,
+    }
+}
+
+fn prefill_sweep_lane_metric(
+    lane: &NormalizedLaneReport,
+    probe: NormalizedProbePlan,
+    phase: CachePhase,
+    run_mode: RunMode,
+) -> Option<NormalizedPrefillSweepLaneMetric> {
+    let samples = lane_samples(lane)
+        .filter(|sample| {
+            sample.case == probe.case.name()
+                && sample.schema_variant == probe.schema_variant.name()
+                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                && sample.cache_phase == phase.name()
+                && sample.run_mode == run_mode.name()
+        })
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return None;
+    }
+    let passed = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.status == "passed")
+        .collect::<Vec<_>>();
+    let pass_count = passed.len();
+    let fail_count = samples
+        .iter()
+        .filter(|sample| sample.status == "failed")
+        .count();
+    let p50_first_semantic_delta_latency_ms = percentile_for_samples(&passed, |sample| {
+        sample.stream_timing.first_semantic_delta_latency_ms
+    });
+    let p50_first_tool_delta_latency_ms = percentile_for_samples(&passed, |sample| {
+        sample.stream_timing.first_tool_delta_latency_ms
+    });
+    let stream_stalled_requests_delta =
+        admin_counter_delta(&lane.admin_metrics, &["stream_stalled_requests"]);
+    let no_progress_failures_delta =
+        admin_counter_delta(&lane.admin_metrics, &["no_progress_failures"]);
+    let mut invalid_reasons = Vec::new();
+    if fail_count > 0 {
+        invalid_reasons.push("sample_failed".to_owned());
+    }
+    if p50_first_semantic_delta_latency_ms.is_none() {
+        invalid_reasons.push("missing_ttft".to_owned());
+        invalid_reasons.push("missing_stream_delta".to_owned());
+    }
+    if probe.case.requires_tool_delta() && p50_first_tool_delta_latency_ms.is_none() {
+        invalid_reasons.push("missing_tool_delta".to_owned());
+    }
+    if stream_stalled_requests_delta.is_some_and(|delta| delta > 0) {
+        invalid_reasons.push("admin_stalled_request_delta".to_owned());
+    }
+    if no_progress_failures_delta.is_some_and(|delta| delta > 0) {
+        invalid_reasons.push("admin_no_progress_delta".to_owned());
+    }
+    invalid_reasons.sort();
+    invalid_reasons.dedup();
+
+    Some(NormalizedPrefillSweepLaneMetric {
+        lane: lane.name.clone(),
+        lane_kind: lane.kind,
+        prefill_step_size: lane.mlx_lm_settings.prefill_step_size,
+        valid: invalid_reasons.is_empty(),
+        invalid_reasons,
+        sample_count: samples.len(),
+        pass_count,
+        fail_count,
+        p50_first_response_byte_latency_ms: percentile_for_samples(&passed, |sample| {
+            sample.stream_timing.first_byte_latency_ms
+        }),
+        p50_first_parsed_sse_chunk_latency_ms: percentile_for_samples(&passed, |sample| {
+            sample.stream_timing.first_sse_data_latency_ms
+        }),
+        p50_first_semantic_delta_latency_ms,
+        p50_first_tool_delta_latency_ms,
+        p50_elapsed_latency_ms: percentile_for_samples(&passed, |sample| sample.latency_ms),
+        latency_delta_vs_fastest_ms: None,
+        avg_tokens_per_second: average_f64(
+            passed.iter().filter_map(|sample| sample.tokens_per_second),
+        ),
+        avg_cached_tokens: average_u64(passed.iter().filter_map(|sample| sample.cached_tokens)),
+        avg_prompt_tokens: average_u64(passed.iter().filter_map(|sample| sample.prompt_tokens)),
+        avg_completion_tokens: average_u64(
+            passed.iter().filter_map(|sample| sample.completion_tokens),
+        ),
+        avg_total_tokens: average_u64(passed.iter().filter_map(|sample| sample.total_tokens)),
+        response_headers: samples
+            .iter()
+            .filter_map(|sample| sample.response_headers.clone())
+            .collect(),
+        admin_mlx_upstream_timing: normalized_prefill_admin_mlx_timing(&lane.admin_metrics),
+        process_rss_bytes_after: admin_counter_after(&lane.admin_metrics, &["process_rss_bytes"]),
+        stream_stalled_requests_delta,
+        no_progress_failures_delta,
+    })
+}
+
+fn prefill_metric_sort_key(metric: &NormalizedPrefillSweepLaneMetric) -> (bool, u128, String) {
+    (
+        !metric.valid,
+        metric
+            .p50_first_semantic_delta_latency_ms
+            .unwrap_or(u128::MAX),
+        metric.lane.clone(),
+    )
+}
+
+fn normalized_prefill_admin_mlx_timing(
+    capture: &NormalizedAdminMetricsCapture,
+) -> Option<NormalizedPrefillSweepAdminMlxTiming> {
+    let after = capture.after.as_ref()?;
+    Some(NormalizedPrefillSweepAdminMlxTiming {
+        stream_first_upstream_byte_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_upstream_byte_ms"],
+        ),
+        stream_first_parsed_chunk_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_parsed_chunk_ms"],
+        ),
+        stream_first_tool_delta_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["mlx", "stream_first_tool_delta_ms"],
+        ),
+    })
+}
+
+fn admin_counter_delta(capture: &NormalizedAdminMetricsCapture, path: &[&str]) -> Option<i64> {
+    let before = capture
+        .before
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(value_i64);
+    let after = capture
+        .after
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(value_i64);
+    match (before, after) {
+        (Some(before), Some(after)) => Some(after - before),
+        _ => None,
+    }
+}
+
+fn admin_counter_after(capture: &NormalizedAdminMetricsCapture, path: &[&str]) -> Option<u64> {
+    capture
+        .after
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(Value::as_u64)
+}
+
+fn value_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
 }
 
 fn tool_required_stream_timing_report(
@@ -1827,6 +2378,7 @@ struct NormalizedLaneConfig {
     kind: NormalizedLaneKind,
     model_addressing: NormalizedModelAddressing,
     template: NormalizedTemplatePolicy,
+    tool_parser: MlxToolParserMode,
     mlx_lm_settings: MlxLmSettings,
 }
 
@@ -1878,19 +2430,25 @@ impl NormalizedLaneConfig {
     fn thinking_policy_report(&self) -> Value {
         self.template.thinking_policy_report()
     }
+
+    fn tool_parser_report(&self) -> Option<&'static str> {
+        (self.tool_parser != MlxToolParserMode::Auto).then(|| self.tool_parser.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NormalizedSweepProfile {
     QwenMlxCachePrefill,
+    QwenMlxPrefill135k,
 }
 
 impl NormalizedSweepProfile {
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             QWEN_MLX_CACHE_PREFILL_PROFILE => Ok(Self::QwenMlxCachePrefill),
+            QWEN_MLX_PREFILL_135K_PROFILE => Ok(Self::QwenMlxPrefill135k),
             other => anyhow::bail!(
-                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE}"
+                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE} or {QWEN_MLX_PREFILL_135K_PROFILE}"
             ),
         }
     }
@@ -1898,6 +2456,14 @@ impl NormalizedSweepProfile {
     fn as_str(self) -> &'static str {
         match self {
             Self::QwenMlxCachePrefill => QWEN_MLX_CACHE_PREFILL_PROFILE,
+            Self::QwenMlxPrefill135k => QWEN_MLX_PREFILL_135K_PROFILE,
+        }
+    }
+
+    fn default_probe_suite(self) -> NormalizedProbeSuite {
+        match self {
+            Self::QwenMlxCachePrefill => NormalizedProbeSuite::FullMatrix,
+            Self::QwenMlxPrefill135k => NormalizedProbeSuite::PrefillSweep135k,
         }
     }
 }
@@ -2173,6 +2739,9 @@ enum NormalizedCaseKind {
     ToolRequiredStream,
     JsonObject,
     OmpRepeatedPrefix,
+    ChatStream,
+    ContextRecallStream135k,
+    WarmPrefixRepeatedTurnStream,
 }
 
 impl NormalizedCaseKind {
@@ -2191,6 +2760,9 @@ impl NormalizedCaseKind {
             Self::ToolRequiredStream => "tool_required_stream",
             Self::JsonObject => "json_object",
             Self::OmpRepeatedPrefix => "omp_repeated_prefix",
+            Self::ChatStream => "chat_stream",
+            Self::ContextRecallStream135k => "context_recall_stream_135k",
+            Self::WarmPrefixRepeatedTurnStream => "warm_prefix_repeated_turn_stream",
         }
     }
 
@@ -2200,6 +2772,13 @@ impl NormalizedCaseKind {
             Self::ToolRequiredStream => "KIR_QWEN_MLX_TOOL_NORMALIZED_TOOL_REQUIRED_STREAM",
             Self::JsonObject => "KIR_QWEN_MLX_TOOL_NORMALIZED_JSON_OBJECT",
             Self::OmpRepeatedPrefix => "KIR_QWEN_MLX_TOOL_NORMALIZED_OMP_REPEATED_PREFIX",
+            Self::ChatStream => "KIR_QWEN_MLX_TOOL_NORMALIZED_CHAT_STREAM",
+            Self::ContextRecallStream135k => {
+                "KIR_QWEN_MLX_TOOL_NORMALIZED_CONTEXT_RECALL_STREAM_135K"
+            }
+            Self::WarmPrefixRepeatedTurnStream => {
+                "KIR_QWEN_MLX_TOOL_NORMALIZED_WARM_PREFIX_REPEATED_TURN_STREAM"
+            }
         }
     }
 
@@ -2208,17 +2787,48 @@ impl NormalizedCaseKind {
             Self::ToolRequired | Self::ToolRequiredStream => {
                 "You are a tool-call conformance probe. Use the provided function exactly once."
             }
+            Self::ChatStream => {
+                "You are a streaming chat latency probe. Return the requested marker in assistant content."
+            }
+            Self::ContextRecallStream135k => {
+                "You are a long-context streaming tool-call evaluator. Use the provided function to report the recalled marker."
+            }
             Self::JsonObject => {
                 "You are a JSON conformance probe. Return one JSON object and no prose."
             }
             Self::OmpRepeatedPrefix => {
                 "You are an OMP-style repeated-prefix workflow probe. Continue the tool workflow and use the provided function exactly once."
             }
+            Self::WarmPrefixRepeatedTurnStream => {
+                "You are a warm-prefix repeated-turn streaming workflow probe. Continue the tool workflow and use the provided function exactly once."
+            }
         }
     }
 
     fn streams(self) -> bool {
-        matches!(self, Self::ToolRequiredStream)
+        matches!(
+            self,
+            Self::ToolRequiredStream
+                | Self::ChatStream
+                | Self::ContextRecallStream135k
+                | Self::WarmPrefixRepeatedTurnStream
+        )
+    }
+
+    fn tool_function_name(self) -> &'static str {
+        match self {
+            Self::ContextRecallStream135k => "report_long_context_recall",
+            _ => "record_qwen_tool_probe",
+        }
+    }
+
+    fn requires_tool_delta(self) -> bool {
+        matches!(
+            self,
+            Self::ToolRequiredStream
+                | Self::ContextRecallStream135k
+                | Self::WarmPrefixRepeatedTurnStream
+        )
     }
 }
 
@@ -2286,11 +2896,11 @@ impl ToolChoiceVariant {
         }
     }
 
-    fn request_value(self) -> Value {
+    fn request_value(self, case: NormalizedCaseKind) -> Value {
         match self {
             Self::Required => json!("required"),
             Self::Function => {
-                json!({"type": "function", "function": {"name": "record_qwen_tool_probe"}})
+                json!({"type": "function", "function": {"name": case.tool_function_name()}})
             }
             Self::None => Value::Null,
         }
@@ -2301,13 +2911,26 @@ impl ToolChoiceVariant {
 enum NormalizedProbeSuite {
     FullMatrix,
     FocusedAgenticGate,
+    PrefillSweep135k,
 }
 
 impl NormalizedProbeSuite {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "full-matrix" | "full_matrix" => Ok(Self::FullMatrix),
+            "focused-agentic-gate" | "focused_agentic_gate" => Ok(Self::FocusedAgenticGate),
+            "prefill-sweep-135k" | "prefill_sweep_135k" => Ok(Self::PrefillSweep135k),
+            other => anyhow::bail!(
+                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, or prefill-sweep-135k"
+            ),
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::FullMatrix => "full_matrix",
             Self::FocusedAgenticGate => "focused_agentic_gate",
+            Self::PrefillSweep135k => "prefill_sweep_135k",
         }
     }
 
@@ -2315,6 +2938,7 @@ impl NormalizedProbeSuite {
         match self {
             Self::FullMatrix => NormalizedProbePlan::all(),
             Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
+            Self::PrefillSweep135k => NormalizedProbePlan::prefill_sweep_135k(),
         }
     }
 
@@ -2324,7 +2948,7 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|case| case.name())
                 .collect(),
-            Self::FocusedAgenticGate => probe_case_names(probes),
+            Self::FocusedAgenticGate | Self::PrefillSweep135k => probe_case_names(probes),
         }
     }
 
@@ -2334,7 +2958,7 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate => probe_schema_variant_names(probes),
+            Self::FocusedAgenticGate | Self::PrefillSweep135k => probe_schema_variant_names(probes),
         }
     }
 
@@ -2344,7 +2968,9 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate => probe_tool_choice_variant_names(probes),
+            Self::FocusedAgenticGate | Self::PrefillSweep135k => {
+                probe_tool_choice_variant_names(probes)
+            }
         }
     }
 }
@@ -2403,6 +3029,31 @@ impl NormalizedProbePlan {
             ),
             Self::new(
                 NormalizedCaseKind::OmpRepeatedPrefix,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+        ]
+    }
+
+    fn prefill_sweep_135k() -> Vec<Self> {
+        vec![
+            Self::new(
+                NormalizedCaseKind::ChatStream,
+                SchemaVariant::None,
+                ToolChoiceVariant::None,
+            ),
+            Self::new(
+                NormalizedCaseKind::ToolRequiredStream,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            Self::new(
+                NormalizedCaseKind::ContextRecallStream135k,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            Self::new(
+                NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
                 SchemaVariant::CanonicalCurrent,
                 ToolChoiceVariant::Required,
             ),
@@ -2467,16 +3118,33 @@ struct PlannedRun {
 }
 
 impl PlannedRun {
-    fn prompt(self, context_tokens: usize) -> ProbePrompt {
+    fn prompt(
+        self,
+        context_tokens: usize,
+        case: NormalizedCaseKind,
+        tokenizer: Option<&HuggingFaceTokenizer>,
+    ) -> anyhow::Result<ProbePrompt> {
+        let long_context = if case == NormalizedCaseKind::ContextRecallStream135k {
+            tokenizer
+                .map(|tokenizer| build_context_recall_prompt(tokenizer, context_tokens))
+                .transpose()?
+        } else {
+            None
+        };
         match (self.kind, self.phase) {
             (PlannedRunKind::Warmup, CachePhase::WarmSameToolSchema) => {
-                ProbePrompt::schema_warmup(context_tokens, self.warmup_index.unwrap_or_default())
+                Ok(ProbePrompt::schema_warmup(
+                    context_tokens,
+                    self.warmup_index.unwrap_or_default(),
+                    long_context,
+                ))
             }
-            _ => ProbePrompt::measured(
+            _ => Ok(ProbePrompt::measured_with_long_context(
                 context_tokens,
                 self.sample_index.unwrap_or_default(),
                 self.request_index,
-            ),
+                long_context,
+            )),
         }
     }
 }
@@ -2491,40 +3159,61 @@ struct SampleContext {
     planned_prompt_tokens: usize,
     prewarmed: bool,
     expected_probe_id: String,
+    expected_marker: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ProbePrompt {
     variant: ProbePromptVariant,
     context_tokens: usize,
     sample_index: usize,
     request_index: Option<usize>,
+    long_context: Option<LongContextPrompt>,
 }
 
 impl ProbePrompt {
+    #[cfg(test)]
     fn measured(context_tokens: usize, sample_index: usize, request_index: Option<usize>) -> Self {
+        Self::measured_with_long_context(context_tokens, sample_index, request_index, None)
+    }
+
+    fn measured_with_long_context(
+        context_tokens: usize,
+        sample_index: usize,
+        request_index: Option<usize>,
+        long_context: Option<LongContextPrompt>,
+    ) -> Self {
         Self {
             variant: ProbePromptVariant::Measured,
             context_tokens,
             sample_index,
             request_index,
+            long_context,
         }
     }
 
-    fn schema_warmup(context_tokens: usize, index: usize) -> Self {
+    fn schema_warmup(
+        context_tokens: usize,
+        index: usize,
+        long_context: Option<LongContextPrompt>,
+    ) -> Self {
         Self {
             variant: ProbePromptVariant::SchemaWarmup(index),
             context_tokens,
             sample_index: 0,
             request_index: None,
+            long_context,
         }
     }
 
-    fn planned_prompt_tokens(self) -> usize {
-        self.context_tokens
+    fn planned_prompt_tokens(&self) -> usize {
+        self.long_context
+            .as_ref()
+            .map(|prompt| prompt.token_count)
+            .unwrap_or(self.context_tokens)
     }
 
-    fn probe_id(self, case: NormalizedCaseKind) -> String {
+    fn probe_id(&self, case: NormalizedCaseKind) -> String {
         match self.variant {
             ProbePromptVariant::Measured => case.probe_id().to_owned(),
             ProbePromptVariant::SchemaWarmup(index) => {
@@ -2533,7 +3222,21 @@ impl ProbePrompt {
         }
     }
 
-    fn user_prompt(self, case: NormalizedCaseKind) -> String {
+    fn expected_marker(&self, case: NormalizedCaseKind) -> Option<String> {
+        match case {
+            NormalizedCaseKind::ChatStream => Some(CHAT_STREAM_MARKER.to_owned()),
+            NormalizedCaseKind::ContextRecallStream135k => Some(
+                self.long_context
+                    .as_ref()
+                    .map(|prompt| prompt.marker.as_str())
+                    .unwrap_or(CONTEXT_RECALL_STREAM_135K_MARKER)
+                    .to_owned(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn user_prompt(&self, case: NormalizedCaseKind) -> String {
         let probe_id = self.probe_id(case);
         let prefix = stable_context_prefix(self.context_tokens, case);
         match case {
@@ -2549,6 +3252,20 @@ impl ProbePrompt {
                     case.name()
                 )
             }
+            NormalizedCaseKind::ChatStream => {
+                format!(
+                    "{prefix}\nReturn exactly this marker in assistant content and no tool call: {CHAT_STREAM_MARKER}"
+                )
+            }
+            NormalizedCaseKind::ContextRecallStream135k => {
+                let body = self
+                    .long_context
+                    .as_ref()
+                    .map(|prompt| prompt.body.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| approximate_context_recall_prompt(self.context_tokens));
+                format!("{body}\nCall report_long_context_recall with marker, profile, and case.")
+            }
             NormalizedCaseKind::OmpRepeatedPrefix => {
                 let request = self
                     .request_index
@@ -2556,6 +3273,17 @@ impl ProbePrompt {
                     .unwrap_or_else(|| "sequential".to_owned());
                 format!(
                     "OMP final delta: sample={} request={request}. Call record_qwen_tool_probe with probe_id `{probe_id}` and case `{}`.",
+                    self.sample_index,
+                    case.name()
+                )
+            }
+            NormalizedCaseKind::WarmPrefixRepeatedTurnStream => {
+                let request = self
+                    .request_index
+                    .map(|index| index.to_string())
+                    .unwrap_or_else(|| "sequential".to_owned());
+                format!(
+                    "Warm-prefix final delta: sample={} request={request}. Call record_qwen_tool_probe with probe_id `{probe_id}` and case `{}`.",
                     self.sample_index,
                     case.name()
                 )
@@ -2568,6 +3296,75 @@ impl ProbePrompt {
 enum ProbePromptVariant {
     Measured,
     SchemaWarmup(usize),
+}
+
+#[derive(Debug, Clone)]
+struct LongContextPrompt {
+    marker: String,
+    body: String,
+    token_count: usize,
+}
+
+fn build_context_recall_prompt(
+    tokenizer: &HuggingFaceTokenizer,
+    target_tokens: usize,
+) -> anyhow::Result<LongContextPrompt> {
+    let marker = CONTEXT_RECALL_STREAM_135K_MARKER.to_owned();
+    let mut body = context_recall_prompt_header(&marker);
+    let footer = "\nEnd of benchmark context. Use the target_marker value from the first section when calling the tool.\n";
+    let row_template = "Context row 000000: MLX scheduler counters, prefill chunk sizes, cache namespace fields, parser states, and trace identifiers. This row is distractor material only.\n";
+    let row_tokens = tokenizer.encode(row_template, false)?.len().max(1);
+    let base_tokens = tokenizer.encode(&(body.clone() + footer), false)?.len();
+    let estimated_rows = target_tokens
+        .saturating_sub(base_tokens)
+        .div_ceil(row_tokens)
+        .saturating_add(8);
+    for row in 0..estimated_rows {
+        body.push_str(&format!(
+            "Context row {row:06}: MLX scheduler counters, prefill chunk sizes, cache namespace fields, parser states, and trace identifiers. This row is distractor material only.\n"
+        ));
+    }
+    body.push_str(footer);
+    let mut token_count = tokenizer.encode(&body, false)?.len();
+    while token_count < target_tokens {
+        let row = token_count;
+        body.push_str(&format!(
+            "Context extension {row:06}: additional non-target diagnostics for Qwen MLX prefill pressure.\n"
+        ));
+        token_count = tokenizer.encode(&body, false)?.len();
+    }
+    Ok(LongContextPrompt {
+        marker,
+        body,
+        token_count,
+    })
+}
+
+fn approximate_context_recall_prompt(context_tokens: usize) -> String {
+    let marker = CONTEXT_RECALL_STREAM_135K_MARKER;
+    let mut body = context_recall_prompt_header(marker);
+    body.push_str(&stable_context_prefix(
+        context_tokens,
+        NormalizedCaseKind::ContextRecallStream135k,
+    ));
+    body.push_str(
+        "\nEnd of benchmark context. Use the target_marker value from the first section when calling the tool.",
+    );
+    body
+}
+
+fn context_recall_prompt_header(marker: &str) -> String {
+    format!(
+        "\
+Long-context benchmark profile: {PREFILL_SWEEP_135K_PROFILE_NAME}
+Scenario: context_recall_stream_135k
+Target marker name: target_marker
+Target marker value: {marker}
+
+Only the marker value above is correct. Later context rows are distractors and must not replace it.
+
+"
+    )
 }
 
 fn stable_context_prefix(context_tokens: usize, case: NormalizedCaseKind) -> String {
@@ -2623,6 +3420,7 @@ struct NormalizedBenchReport {
     hardware: HardwareReport,
     comparison: NormalizedComparisonReport,
     agentic_gate: NormalizedAgenticGateReport,
+    prefill_sweep: NormalizedPrefillSweepReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -2700,6 +3498,8 @@ struct NormalizedLaneReport {
     launched_model_id: Option<String>,
     model_identity_source: &'static str,
     model_addressing: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_parser: Option<&'static str>,
     mlx_lm_settings: MlxLmSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_path: Option<String>,
@@ -2734,6 +3534,7 @@ impl NormalizedLaneReport {
             launched_model_id: lane.launched_model_id.clone(),
             model_identity_source: lane.model_identity_source(),
             model_addressing: lane.model_addressing.as_str(),
+            tool_parser: lane.tool_parser_report(),
             mlx_lm_settings: lane.mlx_lm_settings,
             snapshot_path: lane
                 .snapshot_path
@@ -2889,6 +3690,8 @@ struct NormalizedSampleReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    response_headers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -2930,6 +3733,7 @@ impl NormalizedSampleReport {
             cached_tokens_status: "missing",
             cached_tokens: None,
             http_status: None,
+            response_headers: None,
             finish_reason: None,
             error: None,
         }
@@ -3008,6 +3812,67 @@ struct NormalizedAgenticGateLaneMetric {
     avg_cached_tokens: Option<f64>,
     avg_prompt_tokens: Option<f64>,
     avg_completion_tokens: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillSweepReport {
+    status: String,
+    rows: Vec<NormalizedPrefillSweepRow>,
+}
+
+impl NormalizedPrefillSweepReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillSweepRow {
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    fastest_lane: Option<String>,
+    lanes: Vec<NormalizedPrefillSweepLaneMetric>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillSweepLaneMetric {
+    lane: String,
+    lane_kind: &'static str,
+    prefill_step_size: DefaultOrU64,
+    valid: bool,
+    invalid_reasons: Vec<String>,
+    sample_count: usize,
+    pass_count: usize,
+    fail_count: usize,
+    p50_first_response_byte_latency_ms: Option<u128>,
+    p50_first_parsed_sse_chunk_latency_ms: Option<u128>,
+    p50_first_semantic_delta_latency_ms: Option<u128>,
+    p50_first_tool_delta_latency_ms: Option<u128>,
+    p50_elapsed_latency_ms: Option<u128>,
+    latency_delta_vs_fastest_ms: Option<u128>,
+    avg_tokens_per_second: Option<f64>,
+    avg_cached_tokens: Option<f64>,
+    avg_prompt_tokens: Option<f64>,
+    avg_completion_tokens: Option<f64>,
+    avg_total_tokens: Option<f64>,
+    response_headers: Vec<BTreeMap<String, String>>,
+    admin_mlx_upstream_timing: Option<NormalizedPrefillSweepAdminMlxTiming>,
+    process_rss_bytes_after: Option<u64>,
+    stream_stalled_requests_delta: Option<i64>,
+    no_progress_failures_delta: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillSweepAdminMlxTiming {
+    stream_first_upstream_byte_ms: NormalizedAdminLatencyMetricReport,
+    stream_first_parsed_chunk_ms: NormalizedAdminLatencyMetricReport,
+    stream_first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
 }
 
 #[derive(Debug, Serialize)]

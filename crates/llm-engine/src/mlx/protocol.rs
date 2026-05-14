@@ -1,3 +1,4 @@
+use super::MlxToolParserMode;
 use llm_backend::{BackendModelMetadata, BackendRequest};
 use llm_models::ModelFamily;
 use serde_json::Value;
@@ -24,9 +25,10 @@ impl MlxUpstreamProtocol {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MlxToolMarkup {
     Json,
+    QwenXml,
     DeepSeek,
     Gemma,
 }
@@ -42,11 +44,37 @@ pub(super) fn mlx_control_stop_tokens_for_metadata(
     }
 }
 
-pub(super) fn mlx_tool_markup_for_metadata(metadata: &BackendModelMetadata) -> MlxToolMarkup {
-    match metadata_family(metadata) {
-        Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
-        Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
-        Some(ModelFamily::Qwen) | Some(ModelFamily::Llama) | None => MlxToolMarkup::Json,
+pub(super) fn mlx_tool_markup_for_metadata(
+    metadata: &BackendModelMetadata,
+    mode: MlxToolParserMode,
+) -> anyhow::Result<MlxToolMarkup> {
+    let family = metadata_family(metadata);
+    match mode {
+        MlxToolParserMode::Json => Ok(match family {
+            Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
+            Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
+            Some(ModelFamily::Qwen) | Some(ModelFamily::Llama) | None => MlxToolMarkup::Json,
+        }),
+        MlxToolParserMode::QwenXml => {
+            if !matches!(family, Some(ModelFamily::Qwen) | None) {
+                anyhow::bail!(
+                    "--mlx-tool-parser qwen-xml is only supported for Qwen or unknown-family MLX metadata"
+                );
+            }
+            Ok(MlxToolMarkup::QwenXml)
+        }
+        MlxToolParserMode::Auto => Ok(match family {
+            Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
+            Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
+            Some(ModelFamily::Llama) => MlxToolMarkup::Json,
+            Some(ModelFamily::Qwen) | None => {
+                if metadata_looks_like_qwen_xml_model(metadata) {
+                    MlxToolMarkup::QwenXml
+                } else {
+                    MlxToolMarkup::Json
+                }
+            }
+        }),
     }
 }
 
@@ -87,4 +115,35 @@ fn metadata_family(metadata: &BackendModelMetadata) -> Option<ModelFamily> {
         .family
         .as_deref()
         .and_then(|family| ModelFamily::parse_slug(family).ok())
+}
+
+fn metadata_looks_like_qwen_xml_model(metadata: &BackendModelMetadata) -> bool {
+    if metadata
+        .repo_id
+        .as_deref()
+        .is_some_and(looks_like_qwen35_or_qwen36)
+        || metadata
+            .profile
+            .as_deref()
+            .is_some_and(looks_like_qwen35_or_qwen36)
+    {
+        return true;
+    }
+    if let Some(snapshot_path) = metadata
+        .snapshot_path
+        .as_ref()
+        .map(|path| path.display().to_string())
+    {
+        return looks_like_qwen35_or_qwen36(&snapshot_path);
+    }
+    false
+}
+
+fn looks_like_qwen35_or_qwen36(value: &str) -> bool {
+    let normalized = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    normalized.contains("qwen35") || normalized.contains("qwen36")
 }

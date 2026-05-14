@@ -141,7 +141,8 @@ without changing the `qwen-long-context` promotion gate. The command does not
 start MLX sidecars; each lane records the endpoint, request model, optional
 launch model identity, model addressing mode, template/thinking assumption,
 optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
-measured cache phase, and aggregate summary rows.
+measured cache phase, aggregate summary rows, and the structured
+`prefill_sweep` ranking report.
 
 Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
 disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an
@@ -225,6 +226,40 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-tool-sweep.json
 ```
 
+The focused Qwen3.6 35B A3B 135K prefill sweep uses paired direct MLX and Kir
+proxy lanes. The benchmark still does not launch sidecars; start one direct MLX
+server per prefill setting and one Kir proxy per matching upstream:
+
+```sh
+SNAPSHOT=.llm-models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<resolved-commit>
+
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8080 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8081 --prefill-step-size 512 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8082 --prefill-step-size 1024 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8083 --prefill-step-size 2048 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8084 --prefill-step-size 4096 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8085 --prefill-step-size 8192 --chat-template-args '{"enable_thinking":false}'
+```
+
+```sh
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3000 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8080/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3001 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8081/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3002 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8082/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3003 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8083/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3004 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8084/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3005 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8085/v1
+```
+
+Run the repeatable prefill sweep with:
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --sweep-profile qwen-mlx-prefill-135k \
+  --snapshot "$SNAPSHOT" \
+  --samples 3 \
+  --output qwen-mlx-prefill-135k.json
+```
+
 Use `--dry-run` with the same profile to print the exact lane/sample matrix
 without issuing HTTP requests. The profile expands the eight fixed lanes
 `mlx-default`, `mlx-cache-size-4096`, `mlx-cache-bytes-1g`,
@@ -233,11 +268,20 @@ without issuing HTTP requests. The profile expands the eight fixed lanes
 `3000`. Use explicit `--lane` specs instead of `--sweep-profile` when a sidecar
 uses custom ports or experiment-specific knobs.
 
+The `qwen-mlx-prefill-135k` profile defaults to `--probe-suite
+prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
+`mlx-prefill-512`, `kir-prefill-512`, `mlx-prefill-1024`,
+`kir-prefill-1024`, `mlx-prefill-2048`, `kir-prefill-2048`,
+`mlx-prefill-4096`, `kir-prefill-4096`, `mlx-prefill-8192`, and
+`kir-prefill-8192` on direct ports `8080` through `8085` and proxy ports
+`3000` through `3005`.
+
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill` requires `--snapshot` and uses the default MLX/Kir proxy ports above. |
+| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill` and `qwen-mlx-prefill-135k` require `--snapshot` and use the default MLX/Kir proxy ports above. |
+| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, or `prefill-sweep-135k`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; other modes default to `full-matrix`. |
 | `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
-| `--lane <spec>` | none | Adds an explicit lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `launched_model_id`, `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|server_default\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. Do not combine explicit lanes with `--sweep-profile`. |
+| `--lane <spec>` | none | Adds an explicit lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `launched_model_id`, `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|server_default\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `tool_parser=auto\|json\|qwen-xml`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. Do not combine explicit lanes with `--sweep-profile`. |
 | `--warmups <n>` | `1` | Warmup requests issued before measured samples for `warm_same_prompt` and `warm_same_tool_schema`. `cold` never performs command-issued warmups. |
 | `--samples <n>` | `1` | Sequential measured samples per lane, case, schema variant, tool-choice variant, and cache phase. |
 | `--context-tokens <n>` | `135000` | Stable long-context prompt target for all probes. |
@@ -289,6 +333,13 @@ Use `--focused-agentic-gate` to run the smaller Qwen MLX agentic subset; the
 top-level `agentic_gate` report summarizes warm-prefix latency, first-byte and
 first-semantic/tool-delta timing, token throughput, cached-token counts, and
 lane deltas without requiring the full schema/tool-choice matrix.
+The `prefill_sweep` report ranks lanes by p50 first semantic delta for each
+probe, cache phase, and run mode, while preserving lane kind, prefill step size,
+response headers, first response byte, first parsed SSE chunk, first tool delta,
+elapsed latency, token and cached-token stats, optional Kir MLX upstream admin
+timing, process RSS, stalled-request deltas, and no-progress deltas. Runs are
+flagged invalid when samples fail, TTFT or required stream/tool deltas are
+missing, or Kir admin metrics report stalled/no-progress deltas.
 The top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.

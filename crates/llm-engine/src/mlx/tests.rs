@@ -48,6 +48,282 @@ fn parse_mlx_sse_for_test(
         .collect())
 }
 
+fn parse_mlx_sse_for_test_with_tool_schema(
+    chunks: &[&str],
+    markup: MlxToolMarkup,
+    tool_schema: &str,
+) -> Result<Vec<ParsedMlxChunkForTest>, BackendError> {
+    let mut parser = MlxSseParser::new_streaming_with_tool_schema(
+        "hello mlx",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        markup,
+        Some(tool_schema),
+    )?;
+    let mut parsed = Vec::new();
+    for chunk in chunks {
+        parsed.extend(parser.push_str(chunk)?);
+    }
+    parsed.extend(parser.finish()?);
+    Ok(parsed
+        .into_iter()
+        .map(|chunk| {
+            (
+                chunk.text,
+                chunk.tool_call_deltas,
+                chunk.prompt_tokens,
+                chunk.completion_tokens,
+                chunk.finish_reason,
+            )
+        })
+        .collect())
+}
+
+fn mlx_text_sse_frame(text: &str, finish_reason: Option<&str>) -> String {
+    format!(
+        "data:{}\n\n",
+        serde_json::json!({
+            "choices": [{
+                "text": text,
+                "finish_reason": finish_reason,
+            }]
+        })
+    )
+}
+
+fn qwen_xml_test_tool_schema() -> String {
+    serde_json::json!([{
+        "type": "function",
+        "function": {
+            "name": "record",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "active": {"type": "boolean"}
+                },
+                "required": ["path", "limit", "active"]
+            }
+        }
+    }])
+    .to_string()
+}
+
+#[test]
+fn mlx_sse_parser_streams_split_qwen_xml_as_schema_aware_tool_deltas() {
+    let schema = qwen_xml_test_tool_schema();
+    let first = mlx_text_sse_frame("Before <too", None);
+    let second = mlx_text_sse_frame("l_call><function=record><parameter=path>Car", None);
+    let third = mlx_text_sse_frame(
+        "go.toml</parameter><parameter=limit>3</parameter><parameter=active>true</parameter></function></tool_call> after",
+        Some("tool_calls"),
+    );
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test_with_tool_schema(
+        &[&first, &second, &third, done],
+        MlxToolMarkup::QwenXml,
+        &schema,
+    )
+    .expect("Qwen XML tool stream parses");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| chunk.0.as_str())
+        .collect::<String>();
+    assert_eq!(text, "Before  after");
+    assert!(!text.contains("<tool_call>"));
+
+    let deltas = chunks.iter().flat_map(|chunk| &chunk.1).collect::<Vec<_>>();
+    assert!(
+        deltas.len() >= 4,
+        "expected header and argument fragments, got {deltas:#?}"
+    );
+    let header = deltas
+        .iter()
+        .find(|delta| delta.id.as_deref() == Some("call_0"))
+        .expect("tool header delta");
+    assert_eq!(header.call_type, Some(llm_api::ToolCallType::Function));
+    assert_eq!(
+        header
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("record")
+    );
+    let arguments = deltas
+        .iter()
+        .filter_map(|delta| delta.function.as_ref())
+        .filter_map(|function| function.arguments.as_deref())
+        .collect::<String>();
+    assert_eq!(
+        serde_json::from_str::<Value>(&arguments).expect("arguments are JSON"),
+        serde_json::json!({"path":"Cargo.toml","limit":3,"active":true})
+    );
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.4.clone()),
+        Some(llm_api::FinishReason::ToolCalls)
+    );
+}
+
+#[test]
+fn mlx_sse_parser_preserves_xml_like_prose_until_exact_qwen_tool_call() {
+    let first = mlx_text_sse_frame("Use <tool_calling> and partial <tool", None);
+    let second = mlx_text_sse_frame("_call prose as text", Some("stop"));
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test(&[&first, &second, done], MlxToolMarkup::QwenXml)
+        .expect("XML-like prose parses as content");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| chunk.0.as_str())
+        .collect::<String>();
+    assert_eq!(
+        text,
+        "Use <tool_calling> and partial <tool_call prose as text"
+    );
+    assert!(chunks.iter().all(|chunk| chunk.1.is_empty()));
+}
+
+#[test]
+fn mlx_sse_parser_rejects_truncated_active_qwen_xml_tool_call() {
+    let frame = mlx_text_sse_frame("<tool_call><function=record><parameter=path>Cargo", None);
+    let done = "data:[DONE]\n\n";
+    let err = parse_mlx_sse_for_test(&[&frame, done], MlxToolMarkup::QwenXml)
+        .expect_err("truncated active XML tool call fails closed");
+
+    assert!(
+        err.to_string().contains("Qwen XML"),
+        "error should identify Qwen XML parser: {err}"
+    );
+}
+
+#[test]
+fn mlx_sse_parser_handles_adjacent_qwen_xml_tool_calls() {
+    let frame = mlx_text_sse_frame(
+        "<tool_call><function=first></function></tool_call><tool_call><function=second><parameter=path>src/lib.rs</parameter></function></tool_call>",
+        Some("tool_calls"),
+    );
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test(&[&frame, done], MlxToolMarkup::QwenXml)
+        .expect("adjacent Qwen XML calls parse");
+    let deltas = chunks.iter().flat_map(|chunk| &chunk.1).collect::<Vec<_>>();
+
+    let names = deltas
+        .iter()
+        .filter_map(|delta| delta.function.as_ref())
+        .filter_map(|function| function.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["first", "second"]);
+    assert_eq!(deltas[0].index, 0);
+    assert_eq!(deltas[0].id.as_deref(), Some("call_0"));
+    assert!(deltas.iter().any(|delta| delta.index == 1));
+
+    let first_arguments = deltas
+        .iter()
+        .filter(|delta| delta.index == 0)
+        .filter_map(|delta| delta.function.as_ref())
+        .filter_map(|function| function.arguments.as_deref())
+        .collect::<String>();
+    let second_arguments = deltas
+        .iter()
+        .filter(|delta| delta.index == 1)
+        .filter_map(|delta| delta.function.as_ref())
+        .filter_map(|function| function.arguments.as_deref())
+        .collect::<String>();
+    assert_eq!(
+        serde_json::from_str::<Value>(&first_arguments).expect("first arguments JSON"),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&second_arguments).expect("second arguments JSON"),
+        serde_json::json!({"path":"src/lib.rs"})
+    );
+}
+
+#[test]
+fn mlx_non_streaming_qwen_xml_converts_to_canonical_tool_markup() {
+    let schema = qwen_xml_test_tool_schema();
+    let body = serde_json::json!({
+        "choices": [{
+            "text": "<tool_call><function=record><parameter=path>Cargo.toml</parameter><parameter=limit>3</parameter><parameter=active>true</parameter></function></tool_call>",
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 5}
+    })
+    .to_string();
+    let (output, _chunk_count) = parse_mlx_completion_body(
+        &body,
+        "hello mlx",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::QwenXml,
+        Some(&schema),
+    )
+    .expect("non-streaming XML parses");
+
+    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert!(output.text.starts_with("<tool_call>"));
+    assert!(output.text.ends_with("</tool_call>"));
+    assert!(output.text.contains("\"name\":\"record\""));
+    assert!(output.text.contains("\"path\":\"Cargo.toml\""));
+    assert!(output.text.contains("\"limit\":3"));
+    assert!(output.text.contains("\"active\":true"));
+}
+
+#[test]
+fn mlx_tool_parser_auto_detects_qwen36_and_keeps_older_qwen_json() {
+    let mut qwen36 = BackendModelMetadata::new("local-qwen36", "mlx").with_family("qwen");
+    qwen36.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::Auto).expect("auto resolves"),
+        MlxToolMarkup::QwenXml
+    );
+
+    let mut qwen35 = BackendModelMetadata::new("local-qwen35", "mlx").with_family("qwen");
+    qwen35.profile = Some("qwen3_5_moe-mlx-4bit".to_owned());
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&qwen35, MlxToolParserMode::Auto).expect("auto resolves"),
+        MlxToolMarkup::QwenXml
+    );
+
+    let mut snapshot = BackendModelMetadata::new("local-qwen", "mlx").with_family("qwen");
+    snapshot.snapshot_path = Some(std::path::PathBuf::from(
+        "/models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef",
+    ));
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&snapshot, MlxToolParserMode::Auto).expect("auto resolves"),
+        MlxToolMarkup::QwenXml
+    );
+
+    let qwen3 = BackendModelMetadata::new("local-qwen3", "mlx").with_family("qwen");
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&qwen3, MlxToolParserMode::Auto).expect("auto resolves"),
+        MlxToolMarkup::Json
+    );
+}
+
+#[test]
+fn mlx_tool_parser_override_controls_or_rejects_qwen_xml() {
+    let mut qwen36 = BackendModelMetadata::new("local-qwen36", "mlx").with_family("qwen");
+    qwen36.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::Json).expect("json resolves"),
+        MlxToolMarkup::Json
+    );
+    assert_eq!(
+        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::QwenXml)
+            .expect("qwen xml resolves"),
+        MlxToolMarkup::QwenXml
+    );
+
+    let gemma = BackendModelMetadata::new("local-gemma", "mlx").with_family("gemma");
+    let err = mlx_tool_markup_for_metadata(&gemma, MlxToolParserMode::QwenXml)
+        .expect_err("Gemma cannot use Qwen XML parser");
+    assert!(
+        err.to_string().contains("qwen-xml"),
+        "override rejection should name parser: {err}"
+    );
+}
+
 #[test]
 fn mlx_sse_parser_emits_structured_tool_call_deltas_without_synthetic_markup() {
     let chunks = parse_mlx_sse_for_test(
@@ -1478,6 +1754,81 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
         "raw-prompt/v1"
     );
     assert!(metrics["last_request_fingerprint"]["prompt_hash"].is_string());
+}
+
+#[tokio::test]
+async fn mlx_backend_streams_qwen_xml_tool_deltas_and_records_first_tool_delta() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"text\":\"<tool_call><function=read_file>\",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:{\"choices\":[{\"text\":\"<parameter=path>Cargo.toml</parameter></function></tool_call>\",\"finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
+    );
+    let mut backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            tool_parser: MlxToolParserMode::QwenXml,
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    backend.metrics = Arc::new(MlxBackendMetrics::default());
+    let metrics = backend.metrics.clone();
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "read a file".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert_eq!(chunks[0].finish_reason, None);
+    assert!(
+        !chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>()
+            .contains("<tool_call>")
+    );
+    let deltas = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.tool_call_deltas)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas[0].id.as_deref(), Some("call_0"));
+    assert_eq!(
+        deltas[0]
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("read_file")
+    );
+    let arguments = deltas
+        .iter()
+        .filter_map(|delta| delta.function.as_ref())
+        .filter_map(|function| function.arguments.as_deref())
+        .collect::<String>();
+    assert_eq!(
+        serde_json::from_str::<Value>(&arguments).expect("arguments JSON"),
+        serde_json::json!({"path":"Cargo.toml"})
+    );
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
+        Some(llm_api::FinishReason::ToolCalls)
+    );
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics["stream_first_tool_delta_ms"]["count"], 1);
 }
 
 #[tokio::test]

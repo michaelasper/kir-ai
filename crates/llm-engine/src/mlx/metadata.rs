@@ -56,11 +56,21 @@ pub(super) async fn mlx_metadata(
 }
 
 fn validate_mlx_serving_family(family: ModelFamily) -> anyhow::Result<()> {
-    if !family.adapter().capabilities().backend_execution {
+    if !family
+        .adapter()
+        .production_backends()
+        .contains(&BackendKind::Mlx)
+    {
+        let supported = family
+            .adapter()
+            .production_backends()
+            .iter()
+            .map(|backend| backend.canonical_slug())
+            .collect::<Vec<_>>()
+            .join(", ");
         anyhow::bail!(
-            "model family `{}` is recognized but not serveable yet; {} serving is deferred until a production backend is implemented",
+            "MLX backend is not supported for family `{}`; supported loaders: {supported}",
             family.canonical_slug(),
-            family.display_name()
         );
     }
     Ok(())

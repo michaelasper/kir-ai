@@ -29,12 +29,40 @@ use protocol::{mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadat
 use request::build_upstream_request;
 use sse::{MlxSseParser, parse_mlx_completion_body};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MlxToolParserMode {
+    #[default]
+    Auto,
+    Json,
+    QwenXml,
+}
+
+impl MlxToolParserMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "json" => Some(Self::Json),
+            "qwen-xml" => Some(Self::QwenXml),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Json => "json",
+            Self::QwenXml => "qwen-xml",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MlxBackendOptions {
     pub endpoint: Url,
     pub family: Option<ModelFamily>,
     pub timeouts: MlxTimeouts,
     pub include_stream_usage: bool,
+    pub tool_parser: MlxToolParserMode,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +72,7 @@ pub struct MlxBackend {
     upstream_model: String,
     endpoint: Url,
     control_stop_tokens: &'static [&'static str],
+    tool_markup: protocol::MlxToolMarkup,
     client: reqwest::Client,
     timeouts: MlxTimeouts,
     include_stream_usage: bool,
@@ -74,6 +103,7 @@ impl MlxBackend {
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = mlx_metadata(&model_id, snapshot_path, options.family).await?;
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
+        let tool_markup = mlx_tool_markup_for_metadata(&metadata, options.tool_parser)?;
         let client = build_http_client(options.timeouts);
         let timeouts = options.timeouts;
         let include_stream_usage = options.include_stream_usage;
@@ -83,6 +113,7 @@ impl MlxBackend {
             upstream_model,
             endpoint: options.endpoint,
             control_stop_tokens,
+            tool_markup,
             client,
             timeouts,
             include_stream_usage,
@@ -207,7 +238,8 @@ impl MlxBackend {
             body,
             &request.prompt,
             self.control_stop_tokens,
-            mlx_tool_markup_for_metadata(&self.metadata),
+            self.tool_markup,
+            request.cache_context.tool_schema.as_deref(),
         ) {
             Ok(parsed) => parsed,
             Err(err) => {
@@ -267,8 +299,19 @@ impl MlxBackend {
                 let mut parser = MlxSseParser::new_streaming(
                     &request.prompt,
                     self.control_stop_tokens,
-                    mlx_tool_markup_for_metadata(&self.metadata),
+                    self.tool_markup,
                 );
+                if matches!(self.tool_markup, protocol::MlxToolMarkup::QwenXml) {
+                    parser = MlxSseParser::new_streaming_with_tool_schema(
+                        &request.prompt,
+                        self.control_stop_tokens,
+                        self.tool_markup,
+                        request.cache_context.tool_schema.as_deref(),
+                    )
+                    .inspect_err(|_| {
+                        request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                    })?;
+                }
                 loop {
                     let item = tokio::select! {
                         biased;
@@ -406,6 +449,7 @@ impl Default for MlxBackendOptions {
             family: None,
             timeouts: MlxTimeouts::default(),
             include_stream_usage: true,
+            tool_parser: MlxToolParserMode::Auto,
         }
     }
 }

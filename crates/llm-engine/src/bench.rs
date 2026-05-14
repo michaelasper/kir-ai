@@ -1262,7 +1262,7 @@ struct PromptBuild {
     token_count: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UsageMetrics {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
@@ -1428,7 +1428,7 @@ impl StreamFrameDelta {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct StreamAssembly {
     content: String,
     tool_name: Option<String>,

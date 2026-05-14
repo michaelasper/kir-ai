@@ -8,7 +8,11 @@ fn runnable_qwen_files() -> Vec<HubFile> {
     vec![
         HubFile::new("config.json", 2, Some("\"cfg\"")),
         HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
-        HubFile::new("model.safetensors", 4, Some("\"weights\"")),
+        HubFile::new(
+            "model.safetensors",
+            4,
+            Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+        ),
     ]
 }
 
@@ -563,6 +567,69 @@ fn qwen_mlx_tool_normalized_cache_prefill_profile_dry_run_emits_sweep_matrix() {
             .len(),
         150
     );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_prefill_135k_profile_dry_run_defaults_to_prefill_suite() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp
+        .path()
+        .join("huggingface")
+        .join("models--mlx-community--Qwen3.6-35B-A3B-4bit")
+        .join("snapshots")
+        .join("abcdef1234567890");
+    std::fs::create_dir_all(&snapshot).expect("raw HF snapshot dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--sweep-profile",
+            "qwen-mlx-prefill-135k",
+            "--warmups",
+            "0",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--snapshot",
+        ])
+        .arg(&snapshot)
+        .output()
+        .expect("run qwen mlx prefill 135k profile dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["sweep_profile"], "qwen-mlx-prefill-135k");
+    assert_eq!(value["probe_suite"], "prefill_sweep_135k");
+    assert_eq!(value["prefill_sweep"]["status"], "dry_run");
+    assert_eq!(
+        value["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .map(|case| case.as_str().expect("case"))
+            .collect::<Vec<_>>(),
+        [
+            "chat_stream",
+            "tool_required_stream",
+            "context_recall_stream_135k",
+            "warm_prefix_repeated_turn_stream"
+        ]
+    );
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(lanes.len(), 12);
+    assert_eq!(lanes[0]["name"], "mlx-prefill-default");
+    assert_eq!(lanes[1]["name"], "kir-prefill-default");
+    assert_eq!(lanes[10]["endpoint"], "http://127.0.0.1:8085/v1");
+    assert_eq!(lanes[11]["endpoint"], "http://127.0.0.1:3005");
+    assert_eq!(lanes[2]["mlx_lm_settings"]["mlx_prefill_step_size"], 512);
+    assert_eq!(lanes[0]["samples"].as_array().expect("samples").len(), 12);
 }
 
 #[test]

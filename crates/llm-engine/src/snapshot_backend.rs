@@ -56,7 +56,6 @@ pub async fn open_snapshot_backend(
     let effective_family = requested_family.or(manifest_family).or(detected_family);
     validate_snapshot_family(manifest_family, requested_family)?;
     validate_snapshot_loader_has_family(loader, manifest_family, requested_family)?;
-    validate_snapshot_serving_family(effective_family)?;
     validate_snapshot_loader_family(loader, effective_family)?;
     match loader {
         SnapshotBackendLoader::Mlx => {
@@ -164,20 +163,6 @@ fn validate_snapshot_loader_family(
             "snapshot loader `{}` is not supported for family `{}`; supported loaders: {supported}",
             loader.canonical_slug(),
             family.canonical_slug()
-        );
-    }
-    Ok(())
-}
-
-fn validate_snapshot_serving_family(family: Option<ModelFamily>) -> anyhow::Result<()> {
-    let Some(family) = family else {
-        return Ok(());
-    };
-    if !family.adapter().capabilities().backend_execution {
-        anyhow::bail!(
-            "model family `{}` is recognized but not serveable yet; {} serving is deferred until a production backend is implemented",
-            family.canonical_slug(),
-            family.display_name()
         );
     }
     Ok(())
