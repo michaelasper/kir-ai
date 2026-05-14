@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.13.0](https://github.com/michaelasper/kir-ai/compare/v1.12.0...v1.13.0) (2026-05-14)
+
+### Features
+
+* **cache:** add stable prefix metrics ([c79a7e9](https://github.com/michaelasper/kir-ai/commit/c79a7e9f3cb3b463f92a4a795ae0634e35752e26))
+
 ## [1.12.0](https://github.com/michaelasper/kir-ai/compare/v1.11.0...v1.12.0) (2026-05-14)
 
 ### Features
