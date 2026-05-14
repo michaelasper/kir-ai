@@ -1,5 +1,7 @@
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(feature = "bench")]
+use serde_json::json;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -29,6 +31,7 @@ async fn write_runnable_qwen_files(snapshot_path: &Path) {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot = temp.path().join("snapshot");
@@ -156,6 +159,7 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn long_context_bench_dry_run_accepts_named_backend_lanes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let native_snapshot = temp.path().join("native");
@@ -203,6 +207,7 @@ fn long_context_bench_dry_run_accepts_named_backend_lanes() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
     let temp = tempfile::tempdir().expect("tempdir");
     let trace = temp.path().join("qwen-mlx-tool-normalized.json");
@@ -466,6 +471,7 @@ fn qwen_mlx_tool_normalized_dry_run_records_template_model_and_phases() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_cache_prefill_profile_dry_run_emits_sweep_matrix() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot = temp
@@ -570,6 +576,7 @@ fn qwen_mlx_tool_normalized_cache_prefill_profile_dry_run_emits_sweep_matrix() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_prefill_135k_profile_dry_run_defaults_to_prefill_suite() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot = temp
@@ -633,6 +640,7 @@ fn qwen_mlx_tool_normalized_prefill_135k_profile_dry_run_defaults_to_prefill_sui
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_repo_revision_uses_kir_ai_checkout_when_run_from_harness_repo() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness_repo = temp.path().join("llm-server");
@@ -731,6 +739,7 @@ fn qwen_mlx_tool_normalized_repo_revision_uses_kir_ai_checkout_when_run_from_har
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_repo_revision_accepts_exported_source_metadata() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness_repo = temp.path().join("llm-server");
@@ -840,6 +849,7 @@ fn qwen_mlx_tool_normalized_repo_revision_accepts_exported_source_metadata() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_repo_revision_reads_kir_ai_origin_json() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness_repo = temp.path().join("llm-server");
@@ -958,6 +968,7 @@ fn qwen_mlx_tool_normalized_repo_revision_reads_kir_ai_origin_json() {
 }
 
 #[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_repo_revision_does_not_walk_into_parent_harness_repo() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness_repo = temp.path().join("llm-server");
@@ -1135,6 +1146,25 @@ async fn serve_without_snapshot_requires_explicit_backend() {
     panic!("serve bound the protocol test backend instead of failing without --snapshot");
 }
 
+#[test]
+#[cfg(not(feature = "bench"))]
+fn bench_command_without_feature_errors_clearly() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .arg("bench")
+        .output()
+        .expect("run llm-engine bench without bench feature");
+
+    assert!(
+        !output.status.success(),
+        "bench command unexpectedly succeeded without bench feature"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires the llm-engine `bench` feature"),
+        "stderr did not explain missing bench feature: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn serve_with_missing_snapshot_alias_fails_before_binding() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -1268,6 +1298,7 @@ async fn serve_legacy_deterministic_test_backend_alias_requires_explicit_fixture
 }
 
 #[tokio::test]
+#[cfg(feature = "test-utils")]
 async fn serve_legacy_deterministic_test_backend_alias_accepts_explicit_fixture_ack() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args([
@@ -1293,6 +1324,7 @@ async fn serve_legacy_deterministic_test_backend_alias_accepts_explicit_fixture_
 }
 
 #[tokio::test]
+#[cfg(feature = "test-utils")]
 async fn serve_rejects_invalid_hub_endpoint_without_panic() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args([

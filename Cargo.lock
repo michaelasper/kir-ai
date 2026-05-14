@@ -1060,6 +1060,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "llm-api",
+ "llm-hub",
+ "llm-models",
+ "llm-server",
+ "llm-telemetry",
+ "llm-tokenizer",
+ "llm-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "llm-engine"
 version = "0.1.0"
 dependencies = [
@@ -1073,6 +1094,7 @@ dependencies = [
  "libc",
  "llm-api",
  "llm-backend",
+ "llm-bench",
  "llm-hub",
  "llm-metal",
  "llm-models",

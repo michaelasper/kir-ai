@@ -1,0 +1,25 @@
+[package]
+name = "llm-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+llm-api = { path = "../llm-api" }
+llm-hub = { path = "../llm-hub" }
+llm-models = { path = "../llm-models" }
+llm-server = { path = "../llm-server" }
+llm-telemetry = { path = "../llm-telemetry" }
+llm-tokenizer = { path = "../llm-tokenizer" }
+llm-util = { path = "../llm-util" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

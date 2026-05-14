@@ -1,9 +1,10 @@
-use crate::{DEFAULT_MODEL_ID, EngineOptions, flag_value, has_flag};
 use anyhow::{Context, anyhow};
 use futures::StreamExt;
 use llm_hub::ModelStore;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
+use llm_server::EngineOptions;
 use llm_tokenizer::HuggingFaceTokenizer;
+pub use llm_util::defaults::DEFAULT_MODEL_ID;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -25,6 +26,42 @@ const DEFAULT_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10 * 1000;
 const DEFAULT_MAX_TOKENS: u32 = 128;
 const DEFAULT_LATENCY_REGRESSION_THRESHOLD: f64 = 0.20;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum MlxToolParserMode {
+    #[default]
+    Auto,
+    Json,
+    QwenXml,
+}
+
+impl MlxToolParserMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "json" => Some(Self::Json),
+            "qwen-xml" => Some(Self::QwenXml),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Json => "json",
+            Self::QwenXml => "qwen-xml",
+        }
+    }
+}
+
+pub(crate) fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find_map(|window| (window[0] == flag).then_some(window[1].as_str()))
+}
+
+pub(crate) fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| arg == flag)
+}
 
 pub async fn run_bench_command(args: Vec<String>) -> anyhow::Result<()> {
     let Some(subcommand) = args.first() else {

@@ -25,11 +25,10 @@ use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::Path};
 
-mod bench;
-
 const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
 const DETERMINISTIC_TEST_BACKEND_FLAG: &str = "--deterministic-test-backend";
 const PROTOCOL_TEST_BACKEND_ACK_FLAG: &str = "--i-understand-this-is-not-real-inference";
+#[cfg(feature = "test-utils")]
 const PROTOCOL_TEST_BACKEND_WARNING: &str =
     "WARNING: SERVING WITH HARDCODED PROTOCOL TEST BACKEND - NOT REAL INFERENCE";
 
@@ -243,7 +242,12 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(%addr, "llm-engine listening");
             llm_server::serve(listener, router).await?;
         }
-        "bench" => bench::run_bench_command(std::env::args().skip(2).collect()).await?,
+        #[cfg(feature = "bench")]
+        "bench" => llm_bench::run_bench_command(std::env::args().skip(2).collect()).await?,
+        #[cfg(not(feature = "bench"))]
+        "bench" => anyhow::bail!(
+            "the bench command requires the llm-engine `bench` feature; rebuild with --features bench"
+        ),
         "model" => run_model_command(std::env::args().skip(2).collect()).await?,
         other => anyhow::bail!("unknown command `{other}`"),
     }

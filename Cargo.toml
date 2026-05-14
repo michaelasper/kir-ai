@@ -2,6 +2,7 @@
 members = [
   "crates/llm-api",
   "crates/llm-backend",
+  "crates/llm-bench",
   "crates/llm-engine",
   "crates/llm-hub",
   "crates/llm-kv-cache",
