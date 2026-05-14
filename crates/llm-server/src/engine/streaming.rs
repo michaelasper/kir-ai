@@ -270,6 +270,8 @@ enum StreamTerminalOutcome {
 
 pub(super) struct StreamRunLifecycle {
     state: AppState,
+    request_id: String,
+    model: String,
     active_request: ActiveRequest,
     scheduler_slot: SchedulerPermit,
     phase: GenerationPhaseGuard,
@@ -278,9 +280,9 @@ pub(super) struct StreamRunLifecycle {
 }
 
 impl StreamRunLifecycle {
-    pub(super) fn new(state: AppState, run: StreamingGenerationRun) -> Self {
+    pub(super) fn new(state: AppState, run: StreamingGenerationRun, model: String) -> Self {
         let StreamingGenerationRun {
-            request_id: _request_id,
+            request_id,
             active_request,
             scheduler_slot,
             phase,
@@ -288,6 +290,8 @@ impl StreamRunLifecycle {
         } = run;
         Self {
             state,
+            request_id,
+            model,
             active_request,
             scheduler_slot,
             phase,
@@ -319,6 +323,8 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Finished => {
                 record_success_metrics(
                     &self.state,
+                    &self.request_id,
+                    &self.model,
                     usage,
                     streamed,
                     self.request_started.elapsed(),

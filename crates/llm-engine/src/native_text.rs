@@ -713,6 +713,7 @@ mod tests {
             manifest_digest: Some("digest".to_owned()),
             prompt_template: "raw".to_owned(),
             tool_schema: None,
+            chat_template_kwargs: None,
             request_mode: "conversation=false,json_object=false,required_tool=None".to_owned(),
             cache_layout_version: 1,
             cache_tokens: 16,
@@ -819,6 +820,7 @@ mod tests {
             cache_context: llm_backend::BackendCacheContext {
                 prompt_template: String::new(),
                 tool_schema: Some("schema-a".to_owned()),
+                chat_template_kwargs: Some(r#"{"enable_thinking":false}"#.to_owned()),
             },
         };
 
@@ -843,12 +845,59 @@ mod tests {
         assert_eq!(namespace.prompt_template, "raw-prompt/v1");
         assert_eq!(namespace.tool_schema.as_deref(), Some("schema-a"));
         assert_eq!(
+            namespace.chat_template_kwargs.as_deref(),
+            Some(r#"{"enable_thinking":false}"#)
+        );
+        assert_eq!(
             namespace.request_mode,
             "conversation=true,json_object=true,required_tool=None"
         );
         assert_eq!(namespace.cache_layout_version, 7);
         assert_eq!(namespace.cache_tokens, 64);
         assert_eq!(namespace.max_prefill_tokens, 8);
+    }
+
+    #[test]
+    fn prefix_namespace_identity_changes_with_chat_template_kwargs() {
+        let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
+        let mut request = driver_test_request(1);
+        request.cache_context = llm_backend::BackendCacheContext::chat_template_with_kwargs(
+            "chatml/qwen/v1",
+            None,
+            Some(r#"{"enable_thinking":false}"#.to_owned()),
+        );
+
+        let no_thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+            model_id: "model-a",
+            metadata: &metadata,
+            request: &request,
+            cache_layout_version: 1,
+            cache_tokens: 16,
+            max_prefill_tokens: 8,
+        });
+        request.cache_context = llm_backend::BackendCacheContext::chat_template_with_kwargs(
+            "chatml/qwen/v1",
+            None,
+            Some(r#"{"enable_thinking":true}"#.to_owned()),
+        );
+        let thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+            model_id: "model-a",
+            metadata: &metadata,
+            request: &request,
+            cache_layout_version: 1,
+            cache_tokens: 16,
+            max_prefill_tokens: 8,
+        });
+
+        assert_ne!(no_thinking, thinking);
+        assert_eq!(
+            no_thinking.chat_template_kwargs.as_deref(),
+            Some(r#"{"enable_thinking":false}"#)
+        );
+        assert_eq!(
+            thinking.chat_template_kwargs.as_deref(),
+            Some(r#"{"enable_thinking":true}"#)
+        );
     }
 
     #[test]

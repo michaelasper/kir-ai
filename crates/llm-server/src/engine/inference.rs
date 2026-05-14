@@ -22,13 +22,14 @@ pub(super) async fn chat_completions(
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
     if request.stream {
+        let model = request.model.clone();
         let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
         let request_id = run.request_id().to_owned();
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
         let events = async_stream::stream! {
             let mut stream_lifecycle =
-                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run);
+                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
             match stream_state
                 .runtime
                 .chat_stream_with_cancel(request, stream_lifecycle.cancellation())
@@ -68,7 +69,15 @@ pub(super) async fn chat_completions(
         Err(err) => return Err(run.finish_runtime_error(&state, err)),
     };
     let finished = run.finish_success(&state)?;
-    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
+    let model = response.model.clone();
+    record_success_metrics(
+        &state,
+        finished.request_id(),
+        &model,
+        &response.usage,
+        streamed,
+        finished.elapsed(),
+    );
     let mut response = Json(response).into_response();
     lifecycle::insert_request_id_header(&mut response, finished.request_id());
     Ok(response)
@@ -83,13 +92,14 @@ pub(super) async fn completions(
     validate_api_request(&request, &state)?;
     let streamed = request.stream;
     if request.stream {
+        let model = request.model.clone();
         let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
         let request_id = run.request_id().to_owned();
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
         let events = async_stream::stream! {
             let mut stream_lifecycle =
-                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run);
+                super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
             match stream_state
                 .runtime
                 .completion_stream_with_cancel(request, stream_lifecycle.cancellation())
@@ -129,7 +139,15 @@ pub(super) async fn completions(
         Err(err) => return Err(run.finish_runtime_error(&state, err)),
     };
     let finished = run.finish_success(&state)?;
-    record_success_metrics(&state, &response.usage, streamed, finished.elapsed());
+    let model = response.model.clone();
+    record_success_metrics(
+        &state,
+        finished.request_id(),
+        &model,
+        &response.usage,
+        streamed,
+        finished.elapsed(),
+    );
     let mut response = Json(response).into_response();
     lifecycle::insert_request_id_header(&mut response, finished.request_id());
     Ok(response)

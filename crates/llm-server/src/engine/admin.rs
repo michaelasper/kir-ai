@@ -1,8 +1,9 @@
 use super::{
     AppState, EngineError,
     metrics::{
-        record_artifact_verification_failure_metrics, record_cancellation_metrics,
-        record_model_pull_failure_metrics, record_model_pull_success_metrics,
+        RequestCacheSnapshot, record_artifact_verification_failure_metrics,
+        record_cancellation_metrics, record_model_pull_failure_metrics,
+        record_model_pull_success_metrics,
     },
     requests::CancelRequestResult,
 };
@@ -321,6 +322,10 @@ pub(super) async fn admin_metrics(
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
     let backend_metrics = state.backend_metrics.snapshot();
+    let request_cache = state
+        .request_cache
+        .lock_or_panic("request cache observations")
+        .snapshot();
     let response = AdminMetricsResponse {
         requests_total: metrics.requests_total(),
         successful_requests: metrics.successful_requests(),
@@ -371,6 +376,7 @@ pub(super) async fn admin_metrics(
         tool_schema_validation_ms: LatencySummary::from_metrics(tool_schema_validation),
         tool_finish_ms: LatencySummary::from_metrics(tool_finish),
         validated_tool_call_ms: LatencySummary::from_metrics(validated_tool_call),
+        request_cache,
         tokens: TokenSummary {
             prompt_tokens: tokens.prompt_tokens(),
             completion_tokens: tokens.completion_tokens(),
@@ -442,6 +448,7 @@ pub(super) struct AdminMetricsResponse {
     tool_schema_validation_ms: LatencySummary,
     tool_finish_ms: LatencySummary,
     validated_tool_call_ms: LatencySummary,
+    request_cache: RequestCacheSnapshot,
     tokens: TokenSummary,
 }
 

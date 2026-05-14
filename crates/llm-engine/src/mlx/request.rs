@@ -1,8 +1,7 @@
 use super::{
     client::mlx_endpoint_url,
     protocol::{
-        MlxUpstreamProtocol, mlx_chat_template_kwargs_for_metadata,
-        mlx_upstream_protocol_for_request,
+        MlxUpstreamProtocol, mlx_effective_chat_template_kwargs, mlx_upstream_protocol_for_request,
     },
 };
 use llm_api::ChatMessage;
@@ -44,7 +43,7 @@ pub(super) fn build_upstream_request(
             let tools = mlx_tool_schema(request)?;
             let tool_choice = mlx_tool_choice(request);
             let response_format = mlx_response_format(request);
-            let chat_template_kwargs = mlx_chat_template_kwargs_for_metadata(metadata);
+            let chat_template_kwargs = mlx_effective_chat_template_kwargs(metadata, request);
             client.post(upstream_url).json(&MlxChatCompletionRequest {
                 model: upstream_model,
                 messages,

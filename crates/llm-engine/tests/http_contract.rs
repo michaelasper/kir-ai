@@ -112,6 +112,12 @@ struct StaticBackend {
     text: String,
 }
 
+struct CachedUsageBackend {
+    prompt_tokens: u64,
+    prompt_cached_tokens: Option<u64>,
+    completion_tokens: u64,
+}
+
 struct FamilyStaticBackend {
     model_id: &'static str,
     family: &'static str,
@@ -134,6 +140,35 @@ impl ModelBackend for StaticBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
+            finish_reason: llm_api::FinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for CachedUsageBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cached-usage")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Ok(BackendOutput {
+            text: "cached response".to_owned(),
+            prompt_tokens: self.prompt_tokens,
+            prompt_cached_tokens: self.prompt_cached_tokens,
+            completion_tokens: self.completion_tokens,
             finish_reason: llm_api::FinishReason::Stop,
         })
     }

@@ -82,6 +82,22 @@ fn backend_cache_context_uses_generic_chat_template_identity() {
         context.tool_schema.as_deref(),
         Some(r#"[{"type":"function"}]"#)
     );
+    assert_eq!(context.chat_template_kwargs, None);
+}
+
+#[test]
+fn backend_cache_context_tracks_chat_template_kwargs_identity() {
+    let context = BackendCacheContext::chat_template_with_kwargs(
+        "chatml/qwen/v1",
+        None,
+        Some(r#"{"enable_thinking":false}"#.to_owned()),
+    );
+
+    assert_eq!(context.prompt_template, "chatml/qwen/v1");
+    assert_eq!(
+        context.chat_template_kwargs.as_deref(),
+        Some(r#"{"enable_thinking":false}"#)
+    );
 }
 
 #[test]

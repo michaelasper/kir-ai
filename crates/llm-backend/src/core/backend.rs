@@ -33,6 +33,7 @@ pub type BackendChatRole = ChatRole;
 pub struct BackendCacheContext {
     pub prompt_template: String,
     pub tool_schema: Option<String>,
+    pub chat_template_kwargs: Option<String>,
 }
 
 impl BackendCacheContext {
@@ -40,13 +41,23 @@ impl BackendCacheContext {
         Self {
             prompt_template: "raw-prompt/v1".to_owned(),
             tool_schema: None,
+            chat_template_kwargs: None,
         }
     }
 
     pub fn chat_template(template_id: impl Into<String>, tool_schema: Option<String>) -> Self {
+        Self::chat_template_with_kwargs(template_id, tool_schema, None)
+    }
+
+    pub fn chat_template_with_kwargs(
+        template_id: impl Into<String>,
+        tool_schema: Option<String>,
+        chat_template_kwargs: Option<String>,
+    ) -> Self {
         Self {
             prompt_template: template_id.into(),
             tool_schema,
+            chat_template_kwargs,
         }
     }
 }

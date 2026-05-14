@@ -156,6 +156,14 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   blocking versus streaming generation path.
 - `native_text_metal`: Metal kernel performance counters (e.g., matvec_ns).
 - `native_text_prefix_cache`: Prefix cache hit/miss/eviction metrics.
+- `request_cache`: Bounded per-request prefix-cache observations. `capacity`
+  is fixed at `128`; `recent` contains successful buffered and streaming
+  requests with `request_id`, `model`, `streamed`, `prompt_tokens`,
+  `cached_tokens`, `uncached_tokens`, `cache_status`, and `latency_ms`.
+  `cache_status` is `unknown` when upstream cached-token details are absent,
+  `miss` when cached tokens are `0`, `hit` when cached tokens are greater than
+  or equal to prompt tokens, and `partial` otherwise. Prompts, messages, tool
+  schemas, and request bodies are not stored.
 - `request_latency_ms`: Summary (count, min, max, avg) of total outer kir-ai
   request duration.
 - `non_streamed_request_latency_ms`: Summary of outer kir-ai request duration
@@ -181,6 +189,21 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
     "min": 10.5,
     "max": 500.2,
     "avg": 120.4
+  },
+  "request_cache": {
+    "capacity": 128,
+    "recent": [
+      {
+        "request_id": "req-123",
+        "model": "local-qwen36-mlx",
+        "streamed": true,
+        "prompt_tokens": 2048,
+        "cached_tokens": 1792,
+        "uncached_tokens": 256,
+        "cache_status": "partial",
+        "latency_ms": 95
+      }
+    ]
   },
   "tokens": {
     "prompt_tokens": 5000,

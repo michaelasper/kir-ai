@@ -1,5 +1,6 @@
 use super::{
     admin::ModelStoreUsageCache,
+    metrics::RequestCacheObservations,
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler},
 };
@@ -20,6 +21,7 @@ pub(super) type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 pub(super) struct AppState {
     pub(super) runtime: Arc<EngineRuntime>,
     pub(super) metrics: Arc<Mutex<ServerMetrics>>,
+    pub(super) request_cache: Arc<Mutex<RequestCacheObservations>>,
     pub(super) generation_phases: Arc<GenerationPhaseMetrics>,
     pub(super) model_scheduler: Arc<ModelScheduler>,
     pub(super) active_requests: ActiveRequestRegistry,

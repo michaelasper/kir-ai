@@ -26,6 +26,7 @@ const DEFAULT_CONCURRENT_SAMPLES: usize = 0;
 const DEFAULT_MAX_TOKENS: u32 = 96;
 const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
 const QWEN_MLX_PREFILL_135K_PROFILE: &str = "qwen-mlx-prefill-135k";
+const QWEN_MLX_STABLE_PREFIX_PROFILE: &str = "qwen-mlx-stable-prefix";
 const PROFILE_PROXY_MODEL_ID: &str = "local-qwen36-mlx";
 const PROFILE_CACHE_BYTES_1G: u64 = 1_073_741_824;
 const PREFILL_SWEEP_135K_PROFILE_NAME: &str = "qwen-prefill-sweep-135k";
@@ -120,6 +121,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         comparison: NormalizedComparisonReport::dry_run(),
         agentic_gate: NormalizedAgenticGateReport::dry_run(),
         prefill_sweep: NormalizedPrefillSweepReport::dry_run(),
+        stable_prefix: NormalizedStablePrefixReport::dry_run(),
     };
 
     if dry_run {
@@ -155,6 +157,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     report.comparison = compare_normalized_lanes(&report.lanes, &probes);
     report.agentic_gate = agentic_gate_report(&report.lanes);
     report.prefill_sweep = prefill_sweep_report(&report.lanes, &probes);
+    report.stable_prefix = stable_prefix_report(&report.lanes, &probes);
     report.status = if report.lanes.iter().all(|lane| lane.status == "passed") {
         "passed"
     } else {
@@ -175,8 +178,8 @@ fn print_help() {
 Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
-  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill or qwen-mlx-prefill-135k (requires --snapshot)
-  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, or prefill-sweep-135k
+  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
+  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, prefill-sweep-135k, or stable-agent-prefix
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
   --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,tool_parser=auto|json|qwen-xml][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                 Warmup requests for warm phases [default: 1]
@@ -249,6 +252,7 @@ fn expand_sweep_profile(
     Ok(match profile {
         NormalizedSweepProfile::QwenMlxCachePrefill => qwen_mlx_cache_prefill_lanes(snapshot),
         NormalizedSweepProfile::QwenMlxPrefill135k => qwen_mlx_prefill_135k_lanes(snapshot),
+        NormalizedSweepProfile::QwenMlxStablePrefix => qwen_mlx_stable_prefix_lanes(snapshot),
     })
 }
 
@@ -256,9 +260,7 @@ fn required_profile_snapshot(args: &[String]) -> anyhow::Result<&str> {
     let snapshots = flag_values(args, "--snapshot");
     match snapshots.as_slice() {
         [snapshot] => Ok(snapshot),
-        [] => anyhow::bail!(
-            "--sweep-profile {QWEN_MLX_CACHE_PREFILL_PROFILE} requires --snapshot <path>"
-        ),
+        [] => anyhow::bail!("--sweep-profile requires --snapshot <path>"),
         _ => anyhow::bail!("--snapshot may only be provided once for --sweep-profile"),
     }
 }
@@ -366,6 +368,35 @@ fn qwen_mlx_prefill_135k_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
         ));
     }
     lanes
+}
+
+fn qwen_mlx_stable_prefix_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
+    vec![
+        NormalizedLaneConfig {
+            name: "mlx-stable-prefix".to_owned(),
+            endpoint: "http://127.0.0.1:8080/v1".to_owned(),
+            declared_model_id: snapshot.to_owned(),
+            launched_model_id: Some(snapshot.to_owned()),
+            snapshot_path: Some(PathBuf::from(snapshot)),
+            kind: NormalizedLaneKind::DirectMlx,
+            model_addressing: NormalizedModelAddressing::ServerDefault,
+            template: NormalizedTemplatePolicy::QwenNoThinking,
+            tool_parser: MlxToolParserMode::Auto,
+            mlx_lm_settings: MlxLmSettings::default(),
+        },
+        NormalizedLaneConfig {
+            name: "kir-stable-prefix".to_owned(),
+            endpoint: "http://127.0.0.1:3000".to_owned(),
+            declared_model_id: PROFILE_PROXY_MODEL_ID.to_owned(),
+            launched_model_id: Some(snapshot.to_owned()),
+            snapshot_path: Some(PathBuf::from(snapshot)),
+            kind: NormalizedLaneKind::KirAiProxy,
+            model_addressing: NormalizedModelAddressing::DefaultModel,
+            template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
+            tool_parser: MlxToolParserMode::Auto,
+            mlx_lm_settings: MlxLmSettings::default(),
+        },
+    ]
 }
 
 fn profile_direct_lane(
@@ -1028,6 +1059,7 @@ fn sample_from_validation(
     sample.total_tokens = response.usage.total_tokens;
     sample.cached_tokens_status = response.usage.cached_tokens_status.unwrap_or("missing");
     sample.cached_tokens = response.usage.cached_tokens;
+    sample.request_id = request_id_from_response_headers(&response.response_headers);
     sample.http_status = response.http_status;
     sample.response_headers = response.response_headers;
     sample.finish_reason = response.finish_reason;
@@ -1068,6 +1100,7 @@ fn failed_sample(
     sample.latency_ms = Some(latency.as_millis());
     sample.stream_timing = stream_timing;
     sample.http_status = http_status;
+    sample.request_id = request_id_from_response_headers(&response_headers);
     sample.response_headers = response_headers;
     sample.error = Some(error);
     sample
@@ -1091,6 +1124,17 @@ fn response_headers_map(headers: &reqwest::header::HeaderMap) -> BTreeMap<String
                 .map(|value| (name.as_str().to_owned(), value.to_owned()))
         })
         .collect()
+}
+
+fn request_id_from_response_headers(headers: &Option<BTreeMap<String, String>>) -> Option<String> {
+    let headers = headers.as_ref()?;
+    headers
+        .iter()
+        .find(|(name, _)| {
+            name.eq_ignore_ascii_case("x-request-id")
+                || name.eq_ignore_ascii_case("x-llm-request-id")
+        })
+        .map(|(_, value)| value.clone())
 }
 
 fn probe_request_body(
@@ -1938,6 +1982,194 @@ fn prefill_metric_sort_key(metric: &NormalizedPrefillSweepLaneMetric) -> (bool, 
     )
 }
 
+fn stable_prefix_report(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+) -> NormalizedStablePrefixReport {
+    let mut rows = Vec::new();
+    for &probe in probes {
+        for phase in CachePhase::all() {
+            for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
+                let mut lane_metrics = lanes
+                    .iter()
+                    .filter_map(|lane| stable_prefix_lane_metric(lane, probe, phase, run_mode))
+                    .collect::<Vec<_>>();
+                if lane_metrics.is_empty() {
+                    continue;
+                }
+                let fastest_latency = lane_metrics
+                    .iter()
+                    .filter_map(|metric| metric.p50_elapsed_latency_ms)
+                    .min();
+                let fastest_lane = fastest_latency.and_then(|fastest| {
+                    lane_metrics
+                        .iter()
+                        .find(|metric| metric.p50_elapsed_latency_ms == Some(fastest))
+                        .map(|metric| metric.lane.clone())
+                });
+                if let Some(fastest) = fastest_latency {
+                    for metric in &mut lane_metrics {
+                        metric.latency_delta_vs_fastest_ms = metric
+                            .p50_elapsed_latency_ms
+                            .map(|latency| latency.saturating_sub(fastest));
+                    }
+                }
+                lane_metrics.sort_by(|left, right| {
+                    stable_prefix_metric_sort_key(left).cmp(&stable_prefix_metric_sort_key(right))
+                });
+                rows.push(NormalizedStablePrefixRow {
+                    case: probe.case.name(),
+                    schema_variant: probe.schema_variant.name(),
+                    tool_choice_variant: probe.tool_choice_variant.name(),
+                    cache_phase: phase.name(),
+                    run_mode: run_mode.name(),
+                    fastest_lane,
+                    lanes: lane_metrics,
+                });
+            }
+        }
+    }
+    NormalizedStablePrefixReport {
+        status: if rows.is_empty() {
+            "no_samples"
+        } else {
+            "reported"
+        }
+        .to_owned(),
+        rows,
+    }
+}
+
+fn stable_prefix_lane_metric(
+    lane: &NormalizedLaneReport,
+    probe: NormalizedProbePlan,
+    phase: CachePhase,
+    run_mode: RunMode,
+) -> Option<NormalizedStablePrefixLaneMetric> {
+    let samples = lane_samples(lane)
+        .filter(|sample| {
+            sample.case == probe.case.name()
+                && sample.schema_variant == probe.schema_variant.name()
+                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                && sample.cache_phase == phase.name()
+                && sample.run_mode == run_mode.name()
+        })
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return None;
+    }
+    let passed = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.status == "passed")
+        .collect::<Vec<_>>();
+    Some(NormalizedStablePrefixLaneMetric {
+        lane: lane.name.clone(),
+        lane_kind: lane.kind,
+        sample_count: samples.len(),
+        pass_count: passed.len(),
+        fail_count: samples
+            .iter()
+            .filter(|sample| sample.status == "failed")
+            .count(),
+        p50_first_semantic_delta_latency_ms: percentile_for_samples(&passed, |sample| {
+            sample.stream_timing.first_semantic_delta_latency_ms
+        }),
+        p50_first_tool_delta_latency_ms: percentile_for_samples(&passed, |sample| {
+            sample.stream_timing.first_tool_delta_latency_ms
+        }),
+        p50_elapsed_latency_ms: percentile_for_samples(&passed, |sample| sample.latency_ms),
+        latency_delta_vs_fastest_ms: None,
+        avg_prompt_tokens: average_u64(passed.iter().filter_map(|sample| sample.prompt_tokens)),
+        avg_cached_tokens: average_u64(passed.iter().filter_map(|sample| sample.cached_tokens)),
+        avg_uncached_tokens: average_u64(
+            passed
+                .iter()
+                .filter_map(|sample| sample_uncached_tokens(sample)),
+        ),
+        cache_status_counts: cache_status_counts(&passed),
+        request_cache_observations: matching_request_cache_observations(lane, &samples),
+    })
+}
+
+fn stable_prefix_metric_sort_key(metric: &NormalizedStablePrefixLaneMetric) -> (u128, String) {
+    (
+        metric.p50_elapsed_latency_ms.unwrap_or(u128::MAX),
+        metric.lane.clone(),
+    )
+}
+
+fn cache_status_counts(samples: &[&NormalizedSampleReport]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for sample in samples {
+        *counts
+            .entry(cache_status_from_sample(sample).to_owned())
+            .or_insert(0) += 1;
+    }
+    counts
+}
+
+fn cache_status_from_sample(sample: &NormalizedSampleReport) -> &'static str {
+    if sample.cached_tokens_status != "present" {
+        return "unknown";
+    }
+    match (sample.prompt_tokens, sample.cached_tokens) {
+        (_, Some(0)) => "miss",
+        (Some(prompt), Some(cached)) if cached >= prompt => "hit",
+        (Some(_), Some(_)) => "partial",
+        _ => "unknown",
+    }
+}
+
+fn sample_uncached_tokens(sample: &NormalizedSampleReport) -> Option<u64> {
+    Some(sample.prompt_tokens?.saturating_sub(sample.cached_tokens?))
+}
+
+fn matching_request_cache_observations(
+    lane: &NormalizedLaneReport,
+    samples: &[&NormalizedSampleReport],
+) -> Vec<NormalizedStablePrefixRequestCacheObservation> {
+    if lane.kind != NormalizedLaneKind::KirAiProxy.as_str() {
+        return Vec::new();
+    }
+    let request_ids = samples
+        .iter()
+        .filter_map(|sample| sample.request_id.as_deref())
+        .collect::<Vec<_>>();
+    if request_ids.is_empty() {
+        return Vec::new();
+    }
+    lane.admin_metrics
+        .after
+        .as_ref()
+        .and_then(|metrics| metrics.pointer("/request_cache/recent"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| stable_prefix_request_cache_observation(value, &request_ids))
+        .collect()
+}
+
+fn stable_prefix_request_cache_observation(
+    value: &Value,
+    request_ids: &[&str],
+) -> Option<NormalizedStablePrefixRequestCacheObservation> {
+    let request_id = value.get("request_id")?.as_str()?;
+    if !request_ids.contains(&request_id) {
+        return None;
+    }
+    Some(NormalizedStablePrefixRequestCacheObservation {
+        request_id: request_id.to_owned(),
+        model: value.get("model")?.as_str()?.to_owned(),
+        streamed: value.get("streamed")?.as_bool()?,
+        prompt_tokens: value.get("prompt_tokens")?.as_u64()?,
+        cached_tokens: value.get("cached_tokens").and_then(Value::as_u64),
+        uncached_tokens: value.get("uncached_tokens").and_then(Value::as_u64),
+        cache_status: value.get("cache_status")?.as_str()?.to_owned(),
+        latency_ms: value.get("latency_ms")?.as_u64()?,
+    })
+}
+
 fn normalized_prefill_admin_mlx_timing(
     capture: &NormalizedAdminMetricsCapture,
 ) -> Option<NormalizedPrefillSweepAdminMlxTiming> {
@@ -2440,6 +2672,7 @@ impl NormalizedLaneConfig {
 enum NormalizedSweepProfile {
     QwenMlxCachePrefill,
     QwenMlxPrefill135k,
+    QwenMlxStablePrefix,
 }
 
 impl NormalizedSweepProfile {
@@ -2447,8 +2680,9 @@ impl NormalizedSweepProfile {
         match value {
             QWEN_MLX_CACHE_PREFILL_PROFILE => Ok(Self::QwenMlxCachePrefill),
             QWEN_MLX_PREFILL_135K_PROFILE => Ok(Self::QwenMlxPrefill135k),
+            QWEN_MLX_STABLE_PREFIX_PROFILE => Ok(Self::QwenMlxStablePrefix),
             other => anyhow::bail!(
-                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE} or {QWEN_MLX_PREFILL_135K_PROFILE}"
+                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE}, {QWEN_MLX_PREFILL_135K_PROFILE}, or {QWEN_MLX_STABLE_PREFIX_PROFILE}"
             ),
         }
     }
@@ -2457,6 +2691,7 @@ impl NormalizedSweepProfile {
         match self {
             Self::QwenMlxCachePrefill => QWEN_MLX_CACHE_PREFILL_PROFILE,
             Self::QwenMlxPrefill135k => QWEN_MLX_PREFILL_135K_PROFILE,
+            Self::QwenMlxStablePrefix => QWEN_MLX_STABLE_PREFIX_PROFILE,
         }
     }
 
@@ -2464,6 +2699,7 @@ impl NormalizedSweepProfile {
         match self {
             Self::QwenMlxCachePrefill => NormalizedProbeSuite::FullMatrix,
             Self::QwenMlxPrefill135k => NormalizedProbeSuite::PrefillSweep135k,
+            Self::QwenMlxStablePrefix => NormalizedProbeSuite::StableAgentPrefix,
         }
     }
 }
@@ -2912,6 +3148,7 @@ enum NormalizedProbeSuite {
     FullMatrix,
     FocusedAgenticGate,
     PrefillSweep135k,
+    StableAgentPrefix,
 }
 
 impl NormalizedProbeSuite {
@@ -2920,8 +3157,9 @@ impl NormalizedProbeSuite {
             "full-matrix" | "full_matrix" => Ok(Self::FullMatrix),
             "focused-agentic-gate" | "focused_agentic_gate" => Ok(Self::FocusedAgenticGate),
             "prefill-sweep-135k" | "prefill_sweep_135k" => Ok(Self::PrefillSweep135k),
+            "stable-agent-prefix" | "stable_agent_prefix" => Ok(Self::StableAgentPrefix),
             other => anyhow::bail!(
-                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, or prefill-sweep-135k"
+                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, prefill-sweep-135k, or stable-agent-prefix"
             ),
         }
     }
@@ -2931,6 +3169,7 @@ impl NormalizedProbeSuite {
             Self::FullMatrix => "full_matrix",
             Self::FocusedAgenticGate => "focused_agentic_gate",
             Self::PrefillSweep135k => "prefill_sweep_135k",
+            Self::StableAgentPrefix => "stable_agent_prefix",
         }
     }
 
@@ -2939,6 +3178,7 @@ impl NormalizedProbeSuite {
             Self::FullMatrix => NormalizedProbePlan::all(),
             Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
             Self::PrefillSweep135k => NormalizedProbePlan::prefill_sweep_135k(),
+            Self::StableAgentPrefix => NormalizedProbePlan::stable_agent_prefix(),
         }
     }
 
@@ -2948,7 +3188,9 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|case| case.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k => probe_case_names(probes),
+            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
+                probe_case_names(probes)
+            }
         }
     }
 
@@ -2958,7 +3200,9 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k => probe_schema_variant_names(probes),
+            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
+                probe_schema_variant_names(probes)
+            }
         }
     }
 
@@ -2968,7 +3212,7 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k => {
+            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
                 probe_tool_choice_variant_names(probes)
             }
         }
@@ -3049,6 +3293,26 @@ impl NormalizedProbePlan {
             ),
             Self::new(
                 NormalizedCaseKind::ContextRecallStream135k,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            Self::new(
+                NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+        ]
+    }
+
+    fn stable_agent_prefix() -> Vec<Self> {
+        vec![
+            Self::new(
+                NormalizedCaseKind::ChatStream,
+                SchemaVariant::None,
+                ToolChoiceVariant::None,
+            ),
+            Self::new(
+                NormalizedCaseKind::ToolRequiredStream,
                 SchemaVariant::CanonicalCurrent,
                 ToolChoiceVariant::Required,
             ),
@@ -3421,6 +3685,7 @@ struct NormalizedBenchReport {
     comparison: NormalizedComparisonReport,
     agentic_gate: NormalizedAgenticGateReport,
     prefill_sweep: NormalizedPrefillSweepReport,
+    stable_prefix: NormalizedStablePrefixReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -3690,6 +3955,8 @@ struct NormalizedSampleReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response_headers: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     finish_reason: Option<String>,
@@ -3733,6 +4000,7 @@ impl NormalizedSampleReport {
             cached_tokens_status: "missing",
             cached_tokens: None,
             http_status: None,
+            request_id: None,
             response_headers: None,
             finish_reason: None,
             error: None,
@@ -3873,6 +4141,62 @@ struct NormalizedPrefillSweepAdminMlxTiming {
     stream_first_upstream_byte_ms: NormalizedAdminLatencyMetricReport,
     stream_first_parsed_chunk_ms: NormalizedAdminLatencyMetricReport,
     stream_first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedStablePrefixReport {
+    status: String,
+    rows: Vec<NormalizedStablePrefixRow>,
+}
+
+impl NormalizedStablePrefixReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedStablePrefixRow {
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    fastest_lane: Option<String>,
+    lanes: Vec<NormalizedStablePrefixLaneMetric>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedStablePrefixLaneMetric {
+    lane: String,
+    lane_kind: &'static str,
+    sample_count: usize,
+    pass_count: usize,
+    fail_count: usize,
+    p50_first_semantic_delta_latency_ms: Option<u128>,
+    p50_first_tool_delta_latency_ms: Option<u128>,
+    p50_elapsed_latency_ms: Option<u128>,
+    latency_delta_vs_fastest_ms: Option<u128>,
+    avg_prompt_tokens: Option<f64>,
+    avg_cached_tokens: Option<f64>,
+    avg_uncached_tokens: Option<f64>,
+    cache_status_counts: BTreeMap<String, usize>,
+    request_cache_observations: Vec<NormalizedStablePrefixRequestCacheObservation>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedStablePrefixRequestCacheObservation {
+    request_id: String,
+    model: String,
+    streamed: bool,
+    prompt_tokens: u64,
+    cached_tokens: Option<u64>,
+    uncached_tokens: Option<u64>,
+    cache_status: String,
+    latency_ms: u64,
 }
 
 #[derive(Debug, Serialize)]

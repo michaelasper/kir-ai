@@ -90,6 +90,18 @@ pub(super) fn mlx_chat_template_kwargs_for_metadata(
     }
 }
 
+pub(super) fn mlx_effective_chat_template_kwargs(
+    metadata: &BackendModelMetadata,
+    request: &BackendRequest,
+) -> Option<Value> {
+    request
+        .cache_context
+        .chat_template_kwargs
+        .as_deref()
+        .and_then(|kwargs| serde_json::from_str(kwargs).ok())
+        .or_else(|| mlx_chat_template_kwargs_for_metadata(metadata))
+}
+
 pub(super) fn mlx_upstream_protocol_for_request(
     metadata: &BackendModelMetadata,
     request: &BackendRequest,

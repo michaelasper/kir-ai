@@ -188,6 +188,9 @@ fn engine_state(
     AppState {
         runtime: Arc::new(Runtime::new_with_options(backend, runtime_options)),
         metrics: Arc::new(Mutex::new(ServerMetrics::default())),
+        request_cache: Arc::new(Mutex::new(
+            super::metrics::RequestCacheObservations::default(),
+        )),
         generation_phases: Arc::new(GenerationPhaseMetrics::default()),
         model_scheduler: Arc::new(ModelScheduler::new(ModelSchedulerOptions {
             concurrency_limit: options.concurrency_limit.max(1),

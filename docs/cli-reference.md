@@ -60,6 +60,11 @@ Set `LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1` to enable the same tool-schema
 canonicalization without the flag. Omit the flag/env to preserve existing
 OpenAI-compatible request serialization.
 
+Stable-prefix serving for Qwen agent traffic is `--canonical-tool-schemas` plus
+Qwen family metadata. Kir records Qwen chat-template kwargs as
+`{"enable_thinking":false}` in cache identity and forwards the same kwargs to
+MLX chat-completion sidecars.
+
 Without `--snapshot`, `serve` exits unless protocol test mode is explicitly
 selected and acknowledged. Implicit no-snapshot stub serving was removed.
 
@@ -142,7 +147,7 @@ start MLX sidecars; each lane records the endpoint, request model, optional
 launch model identity, model addressing mode, template/thinking assumption,
 optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
 measured cache phase, aggregate summary rows, and the structured
-`prefill_sweep` ranking report.
+`prefill_sweep` and `stable_prefix` ranking reports.
 
 Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
 disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an
@@ -260,6 +265,41 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-prefill-135k.json
 ```
 
+The stable agent-prefix profile compares one direct MLX sidecar on `8080/v1`
+with one Kir proxy on `3000`. The benchmark does not launch either process.
+Start the direct sidecar with Qwen no-thinking chat-template args:
+
+```sh
+mlx_lm.server \
+  --model "$SNAPSHOT" \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+Start the Kir proxy with canonical tool schemas and the same Qwen/MLX upstream:
+
+```sh
+cargo run -p llm-engine -- serve \
+  --addr 127.0.0.1:3000 \
+  --snapshot "$SNAPSHOT" \
+  --loader mlx \
+  --family qwen \
+  --model-id local-qwen36-mlx \
+  --mlx-endpoint http://127.0.0.1:8080/v1 \
+  --canonical-tool-schemas
+```
+
+Run the stable prefix probes with:
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --sweep-profile qwen-mlx-stable-prefix \
+  --snapshot "$SNAPSHOT" \
+  --samples 3 \
+  --output qwen-mlx-stable-prefix.json
+```
+
 Use `--dry-run` with the same profile to print the exact lane/sample matrix
 without issuing HTTP requests. The profile expands the eight fixed lanes
 `mlx-default`, `mlx-cache-size-4096`, `mlx-cache-bytes-1g`,
@@ -276,10 +316,15 @@ prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
 `kir-prefill-8192` on direct ports `8080` through `8085` and proxy ports
 `3000` through `3005`.
 
+The `qwen-mlx-stable-prefix` profile defaults to `--probe-suite
+stable-agent-prefix` and expands `mlx-stable-prefix` on
+`http://127.0.0.1:8080/v1` plus `kir-stable-prefix` on
+`http://127.0.0.1:3000`.
+
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill` and `qwen-mlx-prefill-135k` require `--snapshot` and use the default MLX/Kir proxy ports above. |
-| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, or `prefill-sweep-135k`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; other modes default to `full-matrix`. |
+| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill`, `qwen-mlx-prefill-135k`, and `qwen-mlx-stable-prefix` require `--snapshot` and use the default MLX/Kir proxy ports above. |
+| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `prefill-sweep-135k`, or `stable-agent-prefix`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
 | `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
 | `--lane <spec>` | none | Adds an explicit lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `launched_model_id`, `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|server_default\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `tool_parser=auto\|json\|qwen-xml`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. Do not combine explicit lanes with `--sweep-profile`. |
 | `--warmups <n>` | `1` | Warmup requests issued before measured samples for `warm_same_prompt` and `warm_same_tool_schema`. `cold` never performs command-issued warmups. |
@@ -340,6 +385,12 @@ elapsed latency, token and cached-token stats, optional Kir MLX upstream admin
 timing, process RSS, stalled-request deltas, and no-progress deltas. Runs are
 flagged invalid when samples fail, TTFT or required stream/tool deltas are
 missing, or Kir admin metrics report stalled/no-progress deltas.
+The `stable_prefix` report groups by probe, cache phase, run mode, and lane. It
+reports p50 first semantic/tool delta, p50 elapsed latency, average
+prompt/cached/uncached tokens, cache status counts (`unknown`, `miss`,
+`partial`, `hit`), lane latency deltas, and matching
+`/admin/metrics.request_cache` observations for Kir proxy samples when
+`x-request-id` and admin access are available.
 The top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.

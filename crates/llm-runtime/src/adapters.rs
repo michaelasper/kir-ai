@@ -107,7 +107,12 @@ pub(crate) trait ChatAdapter {
 
 impl ChatAdapter for SelectedChatAdapter {
     fn cache_context(self, tool_schema: Option<String>) -> BackendCacheContext {
-        BackendCacheContext::chat_template(self.family.adapter().cache_template_id(), tool_schema)
+        let adapter = self.family.adapter();
+        BackendCacheContext::chat_template_with_kwargs(
+            adapter.cache_template_id(),
+            tool_schema,
+            adapter.chat_template_kwargs_json().map(str::to_owned),
+        )
     }
 
     fn backend_chat_context(

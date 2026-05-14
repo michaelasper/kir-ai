@@ -3,10 +3,112 @@ use crate::sync_ext::FailPoisonedMutex;
 use llm_api::Usage;
 use llm_runtime::RuntimeError;
 use llm_telemetry::TokenCounters;
-use std::time::Duration;
+use schemars::JsonSchema;
+use serde::Serialize;
+use std::{collections::VecDeque, time::Duration};
+
+pub(super) const REQUEST_CACHE_OBSERVATION_CAPACITY: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RequestCacheStatus {
+    Unknown,
+    Miss,
+    Partial,
+    Hit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub(super) struct RequestCacheObservation {
+    pub(super) request_id: String,
+    pub(super) model: String,
+    pub(super) streamed: bool,
+    pub(super) prompt_tokens: u64,
+    pub(super) cached_tokens: Option<u64>,
+    pub(super) uncached_tokens: Option<u64>,
+    pub(super) cache_status: RequestCacheStatus,
+    pub(super) latency_ms: u64,
+}
+
+impl RequestCacheObservation {
+    pub(super) fn from_usage(
+        request_id: &str,
+        model: &str,
+        streamed: bool,
+        usage: &Usage,
+        latency: Duration,
+    ) -> Self {
+        let cached_tokens = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|details| details.cached_tokens);
+        let cache_status = match cached_tokens {
+            None => RequestCacheStatus::Unknown,
+            Some(0) => RequestCacheStatus::Miss,
+            Some(cached) if cached >= usage.prompt_tokens => RequestCacheStatus::Hit,
+            Some(_) => RequestCacheStatus::Partial,
+        };
+        Self {
+            request_id: request_id.to_owned(),
+            model: model.to_owned(),
+            streamed,
+            prompt_tokens: usage.prompt_tokens,
+            cached_tokens,
+            uncached_tokens: cached_tokens.map(|cached| usage.prompt_tokens.saturating_sub(cached)),
+            cache_status,
+            latency_ms: duration_millis_u64(latency),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub(super) struct RequestCacheSnapshot {
+    pub(super) capacity: usize,
+    pub(super) recent: Vec<RequestCacheObservation>,
+}
+
+#[derive(Debug)]
+pub(super) struct RequestCacheObservations {
+    capacity: usize,
+    recent: VecDeque<RequestCacheObservation>,
+}
+
+impl Default for RequestCacheObservations {
+    fn default() -> Self {
+        Self::with_capacity(REQUEST_CACHE_OBSERVATION_CAPACITY)
+    }
+}
+
+impl RequestCacheObservations {
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            recent: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    pub(super) fn record(&mut self, observation: RequestCacheObservation) {
+        if self.capacity == 0 {
+            return;
+        }
+        while self.recent.len() >= self.capacity {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(observation);
+    }
+
+    pub(super) fn snapshot(&self) -> RequestCacheSnapshot {
+        RequestCacheSnapshot {
+            capacity: self.capacity,
+            recent: self.recent.iter().cloned().collect(),
+        }
+    }
+}
 
 pub(super) fn record_success_metrics(
     state: &AppState,
+    request_id: &str,
+    model: &str,
     usage: &Usage,
     streamed: bool,
     latency: Duration,
@@ -21,6 +123,16 @@ pub(super) fn record_success_metrics(
         streamed,
         latency,
     );
+    state
+        .request_cache
+        .lock_or_panic("request cache observations")
+        .record(RequestCacheObservation::from_usage(
+            request_id, model, streamed, usage, latency,
+        ));
+}
+
+fn duration_millis_u64(latency: Duration) -> u64 {
+    u64::try_from(latency.as_millis()).unwrap_or(u64::MAX)
 }
 
 pub(super) fn record_failure_metrics(state: &AppState) {
@@ -118,4 +230,86 @@ pub(super) fn record_validated_tool_call_metrics(state: &AppState, latency: Dura
         .metrics
         .lock_or_panic("metrics")
         .record_validated_tool_call(latency);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm_api::Usage;
+
+    #[test]
+    fn request_cache_observation_classifies_cached_token_reuse() {
+        let miss = RequestCacheObservation::from_usage(
+            "miss",
+            "model",
+            false,
+            &Usage::new(10, 1).with_prompt_cached_tokens(Some(0)),
+            Duration::from_millis(7),
+        );
+        let partial = RequestCacheObservation::from_usage(
+            "partial",
+            "model",
+            false,
+            &Usage::new(10, 1).with_prompt_cached_tokens(Some(4)),
+            Duration::from_millis(7),
+        );
+        let hit = RequestCacheObservation::from_usage(
+            "hit",
+            "model",
+            false,
+            &Usage::new(10, 1).with_prompt_cached_tokens(Some(10)),
+            Duration::from_millis(7),
+        );
+        let overshoot = RequestCacheObservation::from_usage(
+            "overshoot",
+            "model",
+            false,
+            &Usage::new(10, 1).with_prompt_cached_tokens(Some(12)),
+            Duration::from_millis(7),
+        );
+        let unknown = RequestCacheObservation::from_usage(
+            "unknown",
+            "model",
+            false,
+            &Usage::new(10, 1),
+            Duration::from_millis(7),
+        );
+
+        assert_eq!(miss.cache_status, RequestCacheStatus::Miss);
+        assert_eq!(miss.uncached_tokens, Some(10));
+        assert_eq!(partial.cache_status, RequestCacheStatus::Partial);
+        assert_eq!(partial.uncached_tokens, Some(6));
+        assert_eq!(hit.cache_status, RequestCacheStatus::Hit);
+        assert_eq!(hit.uncached_tokens, Some(0));
+        assert_eq!(overshoot.cache_status, RequestCacheStatus::Hit);
+        assert_eq!(overshoot.uncached_tokens, Some(0));
+        assert_eq!(unknown.cache_status, RequestCacheStatus::Unknown);
+        assert_eq!(unknown.cached_tokens, None);
+        assert_eq!(unknown.uncached_tokens, None);
+    }
+
+    #[test]
+    fn request_cache_observations_evict_oldest_at_capacity() {
+        let mut observations = RequestCacheObservations::with_capacity(3);
+        for index in 0..4 {
+            observations.record(RequestCacheObservation::from_usage(
+                &format!("request-{index}"),
+                "model",
+                false,
+                &Usage::new(10, 1).with_prompt_cached_tokens(Some(index)),
+                Duration::from_millis(index),
+            ));
+        }
+
+        let snapshot = observations.snapshot();
+        assert_eq!(snapshot.capacity, 3);
+        assert_eq!(
+            snapshot
+                .recent
+                .iter()
+                .map(|observation| observation.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["request-1", "request-2", "request-3"]
+        );
+    }
 }

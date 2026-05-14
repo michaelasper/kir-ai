@@ -1800,6 +1800,9 @@ fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamesp
         manifest_digest: Some(format!("digest-{label}")),
         prompt_template: QwenFamilyAdapter.cache_template_id().to_owned(),
         tool_schema: Some("tool-schema-v1".to_owned()),
+        chat_template_kwargs: QwenFamilyAdapter
+            .chat_template_kwargs_json()
+            .map(str::to_owned),
         request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
         cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
         cache_tokens: 8,

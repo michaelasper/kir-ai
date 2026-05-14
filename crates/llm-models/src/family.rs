@@ -140,6 +140,9 @@ pub trait ModelFamilyAdapter: Send + Sync {
     fn family(&self) -> ModelFamily;
     fn production_backends(&self) -> &'static [BackendKind];
     fn cache_template_id(&self) -> &'static str;
+    fn chat_template_kwargs_json(&self) -> Option<&'static str> {
+        None
+    }
     fn tensor_namespace(&self) -> &'static str;
     fn capabilities(&self) -> FamilyCapabilityFlags;
     fn promotion_stage(&self) -> PromotionStage;
@@ -172,6 +175,10 @@ impl ModelFamilyAdapter for QwenFamilyAdapter {
 
     fn cache_template_id(&self) -> &'static str {
         "chatml/qwen/v1"
+    }
+
+    fn chat_template_kwargs_json(&self) -> Option<&'static str> {
+        Some(r#"{"enable_thinking":false}"#)
     }
 
     fn tensor_namespace(&self) -> &'static str {

@@ -207,6 +207,9 @@
     "validated_tool_call_ms": {
       "$ref": "#/$defs/LatencySummary"
     },
+    "request_cache": {
+      "$ref": "#/$defs/RequestCacheSnapshot"
+    },
     "tokens": {
       "$ref": "#/$defs/TokenSummary"
     }
@@ -261,6 +264,7 @@
     "tool_schema_validation_ms",
     "tool_finish_ms",
     "validated_tool_call_ms",
+    "request_cache",
     "tokens"
   ],
   "$defs": {
@@ -290,6 +294,86 @@
         "min",
         "max",
         "avg"
+      ]
+    },
+    "RequestCacheSnapshot": {
+      "type": "object",
+      "properties": {
+        "capacity": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RequestCacheObservation"
+          }
+        }
+      },
+      "required": [
+        "capacity",
+        "recent"
+      ]
+    },
+    "RequestCacheObservation": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "streamed": {
+          "type": "boolean"
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "uncached_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_status": {
+          "$ref": "#/$defs/RequestCacheStatus"
+        },
+        "latency_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "request_id",
+        "model",
+        "streamed",
+        "prompt_tokens",
+        "cache_status",
+        "latency_ms"
+      ]
+    },
+    "RequestCacheStatus": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "miss",
+        "partial",
+        "hit"
       ]
     },
     "TokenSummary": {

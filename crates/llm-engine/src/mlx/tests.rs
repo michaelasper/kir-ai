@@ -1,12 +1,15 @@
 use super::protocol::{
     MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxToolMarkup,
+    MlxUpstreamProtocol,
 };
 use super::*;
 use llm_api::{ChatMessage, ToolCallDelta};
 use llm_backend::{
-    BackendCacheContext, BackendChatContext, BackendRequest, ModelBackend, SamplingConfig,
+    BackendCacheContext, BackendChatContext, BackendModelMetadata, BackendRequest, ModelBackend,
+    SamplingConfig,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -1207,6 +1210,73 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
     assert_eq!(
         request["chat_template_kwargs"],
         serde_json::json!({"enable_thinking": false})
+    );
+}
+
+#[tokio::test]
+async fn mlx_backend_uses_cache_context_kwargs_for_request_body_and_fingerprint() {
+    let server = FakeMlxServer::start(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    let request = BackendRequest {
+        model: "local-mlx".to_owned(),
+        prompt: "<|im_start|>user\nsay ok<|im_end|>\n<|im_start|>assistant\n".to_owned(),
+        chat_context: Some(BackendChatContext {
+            messages: vec![ChatMessage::user("say ok")],
+        }),
+        max_tokens: Some(12),
+        sampling: SamplingConfig::Greedy,
+        required_tool_choice: None,
+        json_object_mode: false,
+        conversation_mode: true,
+        cache_context: BackendCacheContext::chat_template_with_kwargs(
+            "chatml/qwen/v1",
+            None,
+            Some(r#"{"enable_thinking":true}"#.to_owned()),
+        ),
+    };
+    let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("qwen");
+
+    let chunks = backend
+        .generate_stream(request.clone())
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert!(!chunks.is_empty());
+    let received = server.received_body();
+    assert_eq!(
+        received["chat_template_kwargs"],
+        serde_json::json!({"enable_thinking": true})
+    );
+    let fingerprint = mlx_request_fingerprint(
+        MlxUpstreamProtocol::ChatCompletions,
+        true,
+        &metadata,
+        &request,
+    );
+    let expected_hash = {
+        let bytes = serde_json::to_vec(&serde_json::json!({"enable_thinking": true}))
+            .expect("kwargs serialize");
+        let digest = Sha256::digest(&bytes);
+        format!("{digest:x}")
+    };
+    assert_eq!(
+        fingerprint["chat_template_kwargs_hash"].as_str(),
+        Some(expected_hash.as_str())
     );
 }
 

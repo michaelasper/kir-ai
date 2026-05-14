@@ -271,6 +271,59 @@ async fn runtime_preserves_tool_schema_serialization_by_default() {
 }
 
 #[tokio::test]
+async fn runtime_qwen_cache_context_includes_no_thinking_template_kwargs() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "qwen",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    assert_eq!(
+        observed.cache_context.chat_template_kwargs.as_deref(),
+        Some(r#"{"enable_thinking":false}"#)
+    );
+}
+
+#[tokio::test]
+async fn runtime_non_qwen_cache_context_omits_template_kwargs() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "llama",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    assert_eq!(observed.cache_context.chat_template_kwargs, None);
+}
+
+#[tokio::test]
 async fn runtime_canonicalizes_tool_schema_when_opted_in() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new_with_options(

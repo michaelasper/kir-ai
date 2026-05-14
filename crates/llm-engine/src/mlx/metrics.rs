@@ -1,4 +1,4 @@
-use super::protocol::{MlxUpstreamProtocol, mlx_chat_template_kwargs_for_metadata};
+use super::protocol::{MlxUpstreamProtocol, mlx_effective_chat_template_kwargs};
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{BackendModelMetadata, BackendRequest, BackendToolChoice};
 use llm_telemetry::LatencyMetrics;
@@ -365,7 +365,7 @@ pub(super) fn mlx_request_fingerprint(
             .as_ref()
             .and_then(|context| hash_json(&context.messages)),
         "tool_choice_hash": request.required_tool_choice.as_ref().and_then(hash_tool_choice),
-        "chat_template_kwargs_hash": mlx_chat_template_kwargs_for_metadata(metadata)
+        "chat_template_kwargs_hash": mlx_effective_chat_template_kwargs(metadata, request)
             .as_ref()
             .and_then(hash_json),
         "max_tokens": request.max_tokens,

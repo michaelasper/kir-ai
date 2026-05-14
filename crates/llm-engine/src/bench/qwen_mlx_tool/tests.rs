@@ -177,6 +177,56 @@ fn qwen_mlx_tool_normalized_cache_prefill_profile_requires_snapshot() {
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_stable_prefix_profile_expands_expected_lanes() {
+    let snapshot =
+        "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
+    let args = args(&[
+        "--sweep-profile",
+        "qwen-mlx-stable-prefix",
+        "--snapshot",
+        snapshot,
+    ]);
+    let lanes = parse_lane_specs(&args).expect("stable profile expands");
+
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.name.as_str())
+            .collect::<Vec<_>>(),
+        ["mlx-stable-prefix", "kir-stable-prefix"]
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.endpoint.as_str())
+            .collect::<Vec<_>>(),
+        ["http://127.0.0.1:8080/v1", "http://127.0.0.1:3000"]
+    );
+    assert!(
+        lanes
+            .iter()
+            .all(|lane| lane.launched_model_id.as_deref() == Some(snapshot))
+    );
+    assert_eq!(lanes[0].kind, NormalizedLaneKind::DirectMlx);
+    assert_eq!(lanes[0].template, NormalizedTemplatePolicy::QwenNoThinking);
+    assert_eq!(
+        lanes[0].model_addressing,
+        NormalizedModelAddressing::ServerDefault
+    );
+    assert_eq!(lanes[1].kind, NormalizedLaneKind::KirAiProxy);
+    assert_eq!(
+        lanes[1].template,
+        NormalizedTemplatePolicy::SidecarChatTemplateArgs
+    );
+    assert_eq!(lanes[1].effective_request_model_id(), DEFAULT_MODEL_ID);
+
+    let suite = parse_probe_suite_flag(&args, Some(NormalizedSweepProfile::QwenMlxStablePrefix))
+        .expect("stable profile default suite");
+    assert_eq!(suite, NormalizedProbeSuite::StableAgentPrefix);
+    assert_eq!(suite.name(), "stable_agent_prefix");
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_prefill_135k_profile_expands_direct_proxy_pairs() {
     let snapshot =
         "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
@@ -801,6 +851,73 @@ fn qwen_mlx_tool_normalized_prefill_sweep_stream_bodies_use_expected_tools_and_m
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_stable_suite_bodies_are_streamed_and_canonical() {
+    let direct = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
+    let chat = probe_request_body(
+        &direct,
+        NormalizedProbePlan::new(
+            NormalizedCaseKind::ChatStream,
+            SchemaVariant::None,
+            ToolChoiceVariant::None,
+        ),
+        ProbePrompt::measured(128, 0, None),
+    );
+    assert_eq!(chat["stream"], true);
+    assert_eq!(chat["stream_options"]["include_usage"], true);
+    assert_eq!(
+        chat["chat_template_kwargs"],
+        json!({"enable_thinking": false})
+    );
+    assert!(chat.get("tools").is_none());
+
+    let tool = probe_request_body(
+        &direct,
+        NormalizedProbePlan::new(
+            NormalizedCaseKind::ToolRequiredStream,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        ),
+        ProbePrompt::measured(128, 0, None),
+    );
+    assert_eq!(tool["stream"], true);
+    assert_eq!(tool["stream_options"]["include_usage"], true);
+    assert_eq!(tool["tool_choice"], "required");
+    assert_eq!(
+        tool["tools"][0]["function"]["parameters"]["required"],
+        json!(["case", "probe_id"])
+    );
+    assert_eq!(
+        tool["chat_template_kwargs"],
+        json!({"enable_thinking": false})
+    );
+
+    let warm = probe_request_body(
+        &direct,
+        NormalizedProbePlan::new(
+            NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        ),
+        ProbePrompt::measured(128, 1, None),
+    );
+    assert_eq!(warm["stream"], true);
+    assert_eq!(warm["stream_options"]["include_usage"], true);
+    assert_eq!(
+        warm["tools"][0]["function"]["parameters"]["required"],
+        json!(["case", "probe_id"])
+    );
+    assert_eq!(
+        warm["messages"]
+            .as_array()
+            .expect("warm messages")
+            .iter()
+            .map(|message| message["role"].as_str().expect("role"))
+            .collect::<Vec<_>>(),
+        ["system", "user", "assistant", "tool", "user"]
+    );
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_chat_completions_url_accepts_openai_base_with_or_without_v1() {
     assert_eq!(
         chat_completions_url("http://127.0.0.1:8080/v1"),
@@ -966,6 +1083,13 @@ fn qwen_mlx_tool_normalized_probe_suite_flag_and_profile_defaults() {
             .expect("prefill profile suite");
     assert_eq!(prefill_default, NormalizedProbeSuite::PrefillSweep135k);
 
+    let stable_default = parse_probe_suite_flag(
+        &args(&[]),
+        Some(NormalizedSweepProfile::QwenMlxStablePrefix),
+    )
+    .expect("stable profile suite");
+    assert_eq!(stable_default, NormalizedProbeSuite::StableAgentPrefix);
+
     let prefill_explicit =
         parse_probe_suite_flag(&args(&["--probe-suite", "prefill-sweep-135k"]), None)
             .expect("prefill suite");
@@ -985,6 +1109,31 @@ fn qwen_mlx_tool_normalized_probe_suite_flag_and_profile_defaults() {
             ),
             NormalizedProbePlan::new(
                 NormalizedCaseKind::ContextRecallStream135k,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+            NormalizedProbePlan::new(
+                NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+                SchemaVariant::CanonicalCurrent,
+                ToolChoiceVariant::Required,
+            ),
+        ]
+    );
+
+    let stable_explicit =
+        parse_probe_suite_flag(&args(&["--probe-suite", "stable-agent-prefix"]), None)
+            .expect("stable suite");
+    assert_eq!(stable_explicit.name(), "stable_agent_prefix");
+    assert_eq!(
+        stable_explicit.probes(),
+        vec![
+            NormalizedProbePlan::new(
+                NormalizedCaseKind::ChatStream,
+                SchemaVariant::None,
+                ToolChoiceVariant::None,
+            ),
+            NormalizedProbePlan::new(
+                NormalizedCaseKind::ToolRequiredStream,
                 SchemaVariant::CanonicalCurrent,
                 ToolChoiceVariant::Required,
             ),
@@ -1298,6 +1447,94 @@ fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes()
             .stream_first_upstream_byte_ms
             .count_delta,
         Some(1)
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_stable_prefix_report_tracks_warm_reuse_and_admin_observations() {
+    let direct =
+        lane("name=mlx-stable-prefix,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
+    let proxy =
+        lane("name=kir-stable-prefix,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut direct_report = NormalizedLaneReport::planned(&direct, 0, 0, None);
+    let mut proxy_report = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+        SchemaVariant::CanonicalCurrent,
+        ToolChoiceVariant::Required,
+    );
+
+    direct_report.samples = vec![
+        stable_prefix_sample(probe, CachePhase::Cold, 130, Some(0), None),
+        stable_prefix_sample(probe, CachePhase::WarmSamePrompt, 65, Some(1000), None),
+    ];
+    proxy_report.samples = vec![stable_prefix_sample(
+        probe,
+        CachePhase::WarmSamePrompt,
+        80,
+        Some(750),
+        Some("proxy-warm"),
+    )];
+    proxy_report.admin_metrics = NormalizedAdminMetricsCapture {
+        before: None,
+        after: Some(json!({
+            "request_cache": {
+                "capacity": 128,
+                "recent": [
+                    {
+                        "request_id": "unrelated",
+                        "model": "local-qwen36",
+                        "streamed": true,
+                        "prompt_tokens": 1000,
+                        "cached_tokens": 0,
+                        "uncached_tokens": 1000,
+                        "cache_status": "miss",
+                        "latency_ms": 200
+                    },
+                    {
+                        "request_id": "proxy-warm",
+                        "model": "local-qwen36",
+                        "streamed": true,
+                        "prompt_tokens": 1000,
+                        "cached_tokens": 750,
+                        "uncached_tokens": 250,
+                        "cache_status": "partial",
+                        "latency_ms": 95
+                    }
+                ]
+            }
+        })),
+        error: None,
+    };
+
+    let report = stable_prefix_report(&[direct_report, proxy_report], &[probe]);
+    let row = report
+        .rows
+        .iter()
+        .find(|row| {
+            row.case == "warm_prefix_repeated_turn_stream"
+                && row.cache_phase == "warm_same_prompt"
+                && row.run_mode == "sequential"
+        })
+        .expect("warm stable-prefix row");
+
+    assert_eq!(report.status, "reported");
+    assert_eq!(row.fastest_lane.as_deref(), Some("mlx-stable-prefix"));
+    assert_eq!(row.lanes[0].lane, "mlx-stable-prefix");
+    assert_eq!(row.lanes[0].p50_first_semantic_delta_latency_ms, Some(65));
+    assert_eq!(row.lanes[0].p50_first_tool_delta_latency_ms, Some(65));
+    assert_eq!(row.lanes[0].avg_cached_tokens, Some(1000.0));
+    assert_eq!(row.lanes[0].cache_status_counts.get("hit"), Some(&1));
+    assert_eq!(row.lanes[1].latency_delta_vs_fastest_ms, Some(15));
+    assert_eq!(row.lanes[1].cache_status_counts.get("partial"), Some(&1));
+    assert_eq!(row.lanes[1].request_cache_observations.len(), 1);
+    assert_eq!(
+        row.lanes[1].request_cache_observations[0].request_id,
+        "proxy-warm"
+    );
+    assert_eq!(
+        row.lanes[1].request_cache_observations[0].cache_status,
+        "partial"
     );
 }
 
@@ -1736,6 +1973,39 @@ fn prefill_sweep_sample(
     sample.total_tokens = Some(135_008);
     sample.cached_tokens_status = "present";
     sample.cached_tokens = Some(120_000);
+    sample
+}
+
+fn stable_prefix_sample(
+    probe: NormalizedProbePlan,
+    phase: CachePhase,
+    first_semantic_ms: u128,
+    cached_tokens: Option<u64>,
+    request_id: Option<&str>,
+) -> NormalizedSampleReport {
+    let mut sample =
+        NormalizedSampleReport::base(probe, phase, RunMode::Sequential, 0, None, false, 1000);
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(first_semantic_ms + 15);
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: Some(first_semantic_ms - 10),
+        first_sse_data_latency_ms: Some(first_semantic_ms - 5),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(first_semantic_ms),
+        tool_finish_latency_ms: Some(first_semantic_ms + 10),
+        first_semantic_delta_latency_ms: Some(first_semantic_ms),
+    };
+    sample.prompt_tokens = Some(1000);
+    sample.completion_tokens = Some(10);
+    sample.total_tokens = Some(1010);
+    sample.cached_tokens_status = if cached_tokens.is_some() {
+        "present"
+    } else {
+        "missing"
+    };
+    sample.cached_tokens = cached_tokens;
+    sample.request_id = request_id.map(str::to_owned);
     sample
 }
 

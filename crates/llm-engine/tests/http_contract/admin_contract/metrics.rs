@@ -26,6 +26,14 @@ async fn admin_metrics_endpoint_reports_supplied_request_id() {
     );
     let body = body_json(response.into_body()).await;
     assert!(body.as_object().is_some());
+    assert_eq!(body["request_cache"]["capacity"], 128);
+    assert_eq!(
+        body["request_cache"]["recent"]
+            .as_array()
+            .expect("recent observations is array")
+            .len(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -904,6 +912,120 @@ async fn admin_metrics_accepts_configured_bearer_token() {
     .expect("admin metrics response");
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_metrics_request_cache_records_buffered_observation() {
+    let app = build_router_with_unauthenticated_admin(Box::new(CachedUsageBackend {
+        prompt_tokens: 100,
+        prompt_cached_tokens: Some(64),
+        completion_tokens: 5,
+    }));
+    let request_id = "cache-buffered";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-request-id", request_id)
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let recent = body["request_cache"]["recent"]
+        .as_array()
+        .expect("recent observations");
+    assert_eq!(recent.len(), 1);
+    let observation = &recent[0];
+    assert_eq!(observation["request_id"], request_id);
+    assert_eq!(observation["model"], llm_engine::DEFAULT_MODEL_ID);
+    assert_eq!(observation["streamed"], false);
+    assert_eq!(observation["prompt_tokens"], 100);
+    assert_eq!(observation["cached_tokens"], 64);
+    assert_eq!(observation["uncached_tokens"], 36);
+    assert_eq!(observation["cache_status"], "partial");
+    assert!(observation["latency_ms"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn admin_metrics_request_cache_records_streamed_observation() {
+    let app = build_router_with_unauthenticated_admin(Box::new(CachedUsageBackend {
+        prompt_tokens: 50,
+        prompt_cached_tokens: Some(50),
+        completion_tokens: 3,
+    }));
+    let request_id = "cache-streamed";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-request-id", request_id)
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true,
+                        "stream_options": {"include_usage": true},
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(body.contains("[DONE]"));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let recent = body["request_cache"]["recent"]
+        .as_array()
+        .expect("recent observations");
+    assert_eq!(recent.len(), 1);
+    let observation = &recent[0];
+    assert_eq!(observation["request_id"], request_id);
+    assert_eq!(observation["streamed"], true);
+    assert_eq!(observation["prompt_tokens"], 50);
+    assert_eq!(observation["cached_tokens"], 50);
+    assert_eq!(observation["uncached_tokens"], 0);
+    assert_eq!(observation["cache_status"], "hit");
 }
 
 #[tokio::test]
