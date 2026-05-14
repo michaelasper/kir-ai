@@ -143,7 +143,7 @@ The stop sequence truncates the fixed protocol-test text:
 }
 ```
 
-## 8. Try Streaming With Usage
+## 7. Try Streaming With Usage
 
 ```sh
 curl -N http://127.0.0.1:3000/v1/chat/completions \

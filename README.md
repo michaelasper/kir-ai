@@ -32,7 +32,7 @@
 
 ## Why / The Problem
 
-Many local inference stacks are easiest to ship with ad-hoc Python glue, but that coupling makes behavior harder to audit and scale. `kir-ai` addresses this by making protocol handling and runtime orchestration explicit in a Rust workspace while preserving the API shape your clients already expect.
+Many local inference stacks are easiest to ship with ad-hoc Python glue, but that coupling makes behaviour harder to audit and scale. `kir-ai` addresses this by making protocol handling and runtime orchestration explicit in a Rust workspace while preserving the API shape your clients already expect.
 
 You get an engine that:
 - exposes OpenAI-style endpoints consistently,
@@ -43,7 +43,7 @@ You get an engine that:
 ## Features / Highlights
 
 - **OpenAI-compatible edge** for `/v1/chat/completions`, `/v1/completions`, streaming SSE, and model listing.
-- **Strict capability gating** in request validation and runtime mapping; unsupported features return stable errors instead of silent fallback behavior.
+- **Strict capability gating** in request validation and runtime mapping; unsupported features return stable errors instead of silent fallback behaviour.
 - **Two serving modes**: protocol-test mode for client contract work and snapshot-backed serving for native Metal/MLX paths.
 - **Native Metal first-class support** for Qwen and Gemma text pipelines with bounded prefill and typed cache identities.
 - **Model lifecycle tooling** in `llm-engine`: `model plan`, `model list`, `model inspect`, `model verify`, and `model pull`.
@@ -52,7 +52,7 @@ You get an engine that:
 
 ## When to Use
 
-Use `kir-ai` when you want a local inference server that is explicit about execution mode and protocol behavior. If you are iterating on client integration, choose protocol-test mode first. If you are preparing model-backed inference runs, switch to snapshot-based serving.
+Use `kir-ai` when you want a local inference server that is explicit about execution mode and protocol behaviour. If you are iterating on client integration, choose protocol-test mode first. If you are preparing model-backed inference runs, switch to snapshot-based serving.
 
 Avoid `kir-ai` as a first step if your immediate need is a managed multi-user cloud inference platform.
 
@@ -128,32 +128,8 @@ kirai serve \
 - `POST /admin/requests/{request_id}/cancel`
 - `GET /admin/metrics`
 
-See the full contract in [`docs/http-api-reference.md`][http-api-doc].
-
-### Minimal Chat Request
-
-```sh
-curl -s http://127.0.0.1:3000/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{
-    "model": "local-qwen36",
-    "messages": [{"role": "user", "content": "hello"}],
-    "max_tokens": 8
-  }' | jq
-```
-
-### Streaming Request (Usage Only)
-
-```sh
-curl -N http://127.0.0.1:3000/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{
-    "model": "local-qwen36",
-    "messages": [{"role": "user", "content": "hello"}],
-    "stream": true,
-    "stream_options": {"include_usage": true}
-  }'
-```
+For request and response examples, see [`docs/getting-started.md`][docs-getting-started].
+For the full HTTP contract, see [`docs/http-api-reference.md`][http-api-doc].
 
 ## Native Text Snapshot Flow
 

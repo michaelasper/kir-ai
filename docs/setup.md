@@ -1,21 +1,19 @@
 # Setup
 
-This guide shows how to set up a machine for developing and running `kir-ai`.
-It assumes you are working from the repository root.
+This guide shows how to set up a development machine for `kir-ai`.
+If you want a first-time walkthrough from install to a working response, see
+[`getting-started.md`](getting-started.md) instead.
 
 ## Install With One-Command Script
 
-For a fresh Mac, run:
+The install script sets up the pinned Rust toolchain, `rustfmt`, `clippy`, MLX
+Python packages, and a `kirai` wrapper:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/michaelasper/kir-ai/main/scripts/install-macos.sh | bash
 ```
 
-The script installs the pinned Rust toolchain, adds `rustfmt` and `clippy`,
-installs the MLX Python packages used by the MLX backend, builds the workspace,
-and installs a `kirai` wrapper into your local bin directory (default `~/.local/bin`).
-
-Start the protocol test backend immediately:
+After installation, start the protocol test backend:
 
 ```sh
 kirai

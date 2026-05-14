@@ -77,7 +77,7 @@ with fast, stable responses for:
 - error metadata
 - client compatibility tests
 
-It must not grow prompt-specific chat behavior. Real generation belongs behind
+It must not grow prompt-specific chat behaviour. Real generation belongs behind
 snapshot-backed native backends.
 
 ## Why Native Text Is Opt-In

@@ -84,6 +84,6 @@ Add a test that verifies a conversation with tool messages produces a filtered (
 ## Success Criteria
 
 - Conversations with tool messages produce a non-`None` `chat_context` containing all system/user/assistant messages
-- Conversations without tool messages produce identical results to the current behavior
+- Conversations without tool messages produce identical results to the current behaviour
 - `tracing::debug!` fires when filtering occurs
 - All existing contract tests pass unchanged

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the north star for a no-Python, Rust-first local inference engine for Apple Silicon. The engine exists to replace the current stack of Python servers, Python proxies, and upstream-specific tool parsers with a single native runtime that is optimized for agentic coding workflows.
+This document defines the north star for a no-Python, Rust-first local inference engine for Apple Silicon. The engine exists to replace the current stack of Python servers, Python proxies, and upstream-specific tool parsers with a single native runtime that is optimised for agentic coding workflows.
 
 The product goal is not "an LLM server that can answer prompts." The product goal is a native engine that can run long, growing OMP-style coding sessions against frontier local models while preserving tool-call structure, JSON correctness, cache reuse, streaming semantics, and predictable latency.
 
@@ -48,7 +48,7 @@ Current commits:
 - `6bb686d` - Native Qwen backend uses bounded prompt prefill before lm-head decode.
 - `7dcbda2` - Tracker update for bounded Qwen prefill server smoke.
 - `5e71661` - Hardened Hugging Face snapshot artifact path and digest integrity.
-- `d3b091c` - Correct OpenAI runtime behavior for optional tools, generated tool calls, streaming rejection, and backend error status mapping.
+- `d3b091c` - Correct OpenAI runtime behaviour for optional tools, generated tool calls, streaming rejection, and backend error status mapping.
 - `608dafe` - Qwen first-token attention paths now require and use full-attention norms/keys plus Gated DeltaNet A/dt parameters; safetensors shard files are cached and matvecs read in chunks.
 - `01f6ce4` - Metal vector-add kernel compilation is cached per device, generated placeholder crates were replaced, and unused API/engine dependencies were pruned.
 - `cd3cd41` - Hub download input grouping keeps the strict clippy gate clean.
@@ -197,7 +197,7 @@ Current verified state:
 - `mise exec -- cargo run -p llm-engine -- model plan Qwen/Qwen3.6-35B-A3B --revision main` resolves `main` to commit `995ad96eacd98c81ed38be0c5b274b04031597b0` under profile `qwen36-safetensors-bf16` and plans 71,926,864,255 bytes of selected artifacts without Python.
 - Official Qwen3.6 config/template fixtures are stored under `fixtures/qwen36/`.
 - `llm-models` parses the official Qwen3.6 hybrid Gated DeltaNet plus MoE topology: 40 layers, 30 linear-attention layers, 10 full-attention layers, 256 experts, 8 routed experts per token, 262,144 native context.
-- `llm-tokenizer` renders the Qwen no-thinking assistant prefix as `<think>\n\n</think>\n\n`, matching the official template behavior.
+- `llm-tokenizer` renders the Qwen no-thinking assistant prefix as `<think>\n\n</think>\n\n`, matching the official template behaviour.
 - `llm-engine model pull Qwen/Qwen3.6-35B-A3B --metadata-only --model-home .llm-models` downloads 13 non-weight artifacts through native Rust HTTP, writes a manifest, and promotes snapshot `995ad96eacd98c81ed38be0c5b274b04031597b0` with manifest digest `99e9dbff8de1b239063b12421f276c0b5f67c206844471360a8c69d9a502b825`.
 - `llm-engine model pull Qwen/Qwen3.6-35B-A3B --revision main --model-home .llm-models-full` verifies the full existing 39-file BF16 snapshot through the Rust pull path, rewrites the native manifest, and reports manifest digest `e99b85a85a4a7b2fbd971f8a0be12ea32e35a9a83a9aca075b771273f3be652e`.
 - `llm-engine model inspect-safetensors .llm-models-full/.../model-00001-of-00026.safetensors --tensor model.language_model.embed_tokens.weight` reads the 3,996,199,712-byte shard header without loading payload bytes and validates the embedding tensor as BF16 `[248320, 2048]` over file byte range `2848..1017121568`.
@@ -207,7 +207,7 @@ Current verified state:
 - `llm-engine serve --addr 127.0.0.1:3017 --snapshot .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --model-id local-qwen36 --max-new-tokens 1` starts an OpenAI-compatible server backed by the native Qwen executor. `GET /health` reports `python_runtime: false`, `GET /v1/models` lists `local-qwen36`, and `POST /v1/chat/completions` for `Say the word test.` returns a real Qwen-decoded one-token assistant response with usage `{prompt_tokens: 17, completion_tokens: 1, total_tokens: 18}`.
 - `llm-engine serve --addr 127.0.0.1:3018 --snapshot .llm-models-full/.../snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0 --model-id local-qwen36 --max-new-tokens 1 --max-prefill-tokens 2` exercises the sequence prefill path through the OpenAI-compatible endpoint. The `Say the word test.` smoke returned decoded Qwen token `"#"` with usage `{prompt_tokens: 17, completion_tokens: 1, total_tokens: 18}`.
 - The sequence path has unit coverage for Gated DeltaNet recurrent state updates, full-attention RoPE plus causal softmax, and indexed BF16 batched matvecs. Workspace `fmt-check`, `test`, and `clippy` pass after the bounded-prefill backend change.
-- GitHub issues #1 through #13 have local fixes committed. The fixes cover hub artifact path sanitization, SHA-256 verification, metadata-only cache isolation, optional tool semantics, generated tool-call parsing, fail-closed streaming behavior before native SSE support, backend error status mapping, Metal kernel reuse, placeholder crate replacement, dependency pruning, Qwen full-attention norm/key usage, Gated DeltaNet A/dt usage, and safetensors shard reuse/chunked matvecs. Workspace `mise run fmt-check`, `mise run test`, and `mise run clippy` pass after the issue pass.
+- GitHub issues #1 through #13 have local fixes committed. The fixes cover hub artifact path sanitization, SHA-256 verification, metadata-only cache isolation, optional tool semantics, generated tool-call parsing, fail-closed streaming behaviour before native SSE support, backend error status mapping, Metal kernel reuse, placeholder crate replacement, dependency pruning, Qwen full-attention norm/key usage, Gated DeltaNet A/dt usage, and safetensors shard reuse/chunked matvecs. Workspace `mise run fmt-check`, `mise run test`, and `mise run clippy` pass after the issue pass.
 - `/v1/chat/completions` now supports `stream: true` through native Rust SSE for text completions and parsed Qwen tool calls. The stream emits OpenAI-compatible `chat.completion.chunk` events, preserves a stable completion ID across role/content/tool/final chunks, emits tool-call deltas with JSON argument strings, and emits `data: [DONE]` exactly once.
 - `response_format: {"type":"json_object"}` is now validated in the Rust runtime before non-streaming responses or SSE streams are returned. Assistant content must parse as a JSON object, and parsed tool-call arguments must be JSON objects.
 - OpenAI chat `stop` supports both string and string-array request forms. The runtime applies the earliest stop sequence to parsed assistant content and reports `finish_reason: stop`.
@@ -246,7 +246,7 @@ Current verified state:
 - Safetensors index parsing rejects unsafe shard paths, including absolute paths, parent traversal, Windows-style separators, empty components, and NUL bytes. The shard store also canonicalizes shard paths before opening and rejects symlink escapes outside the snapshot root.
 - The default deterministic/protocol backend now returns valid JSON object content when `response_format.type` is `json_object`, while fixed-text backends still fail response validation if they emit invalid JSON.
 - `NativeQwenBackend::open` treats `llm-engine-manifest.json` as optional for serving. Missing manifests now yield base native metadata with `snapshot_path`, while present manifests still populate artifact identity and digest fields.
-- The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behavior.
+- The default deterministic/protocol chat path now recognizes the poem/critique/rewrite smoke-flow intents in rendered prompts and returns distinct prompt-conditioned responses. Plain deterministic backends and legacy text completions still retain fixed-output behaviour.
 - Model-store promoted snapshot and staging directory names now include a sanitized profile name in addition to repo and resolved commit. Metadata-only snapshots still use a distinct suffix, and full profiles at the same commit no longer share one manifest directory.
 - Streaming HTTP handlers now return SSE responses before backend generation completes, keep the model concurrency permit alive inside the body stream, and forward runtime stream events without prebuilding an SSE vector. `ModelBackend::generate_stream` exposes backend text deltas; runtime and HTTP tests verify that a backend chunk reaches the client before the backend releases its final chunk. Native Qwen serving sends decoded per-token deltas through the same path.
 - Chat and text completion handlers now validate parsed request semantics before acquiring the model semaphore, so malformed or unsupported requests return stable 4xx JSON errors even while the model is busy. Streaming request-validation failures and buffered streaming response-validation failures return JSON errors before SSE starts.
@@ -263,8 +263,8 @@ Current verified state:
 - GitHub issues #45 through #47 have local fixes: native greedy decoding keeps whitespace-only top logits, snapshot verification rejects symlinked manifest artifacts before hashing, and invalid hub endpoints return configuration errors instead of panicking during router construction.
 - GitHub issue #48 has a local docs/config fix: protocol-mode serve examples and `mise run run` use `--protocol-test-backend`, and the docs state that no-snapshot implicit serving was intentionally removed.
 - GitHub issues #49 and #50 have local fixes: Metal command-buffer status failures now surface as `MetalError::Execution` before shared-buffer reads, and native Qwen Metal fallbacks emit de-duplicated tracing plus per-kernel attempt/success/fallback counters under `GET /admin/metrics`.
-- `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behavior.
-- `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behavior.
+- `llm-kv-cache` now includes a reusable fixed-shape full-attention layer KV cache with contiguous key/value storage, append/read APIs, shape validation, capacity enforcement, and clear/reset behaviour.
+- `llm-kv-cache` also includes a linear-attention cache primitive with padded rolling convolution history, recurrent-state storage, shape validation, state replacement, mutation access, and clear/reset behaviour.
 - `SafeTensorShardStore` can now eagerly materialize every unique indexed shard through the same read-only mmap cache, reusing already materialized shards and reporting total mapped bytes.
 - `llm-sampler` now includes a deterministic-draw temperature/top-p sampler primitive with stable nucleus ordering, probability validation, and coverage for low/high draws, minimum one-token nuclei, and invalid controls.
 - Legacy completion SSE now applies stop sequences on the incremental backend stream path, including stop strings split across backend chunks, without falling back to non-streaming generation.
@@ -320,7 +320,7 @@ Current verified state:
 
 Known incomplete items:
 
-- The native Qwen server path currently tokenizes the rendered prompt, pre-fills the full prompt through cancellable sequence-cache chunks into typed per-layer caches, and reuses those caches across bounded multi-token decode. It defaults to 32 retained full-attention KV rows, and full-attention cache allocation is bounded by that retained window. Full-attention cache storage, sequence prefill, and single-token decode have local sliding-window behavior, but attention/recurrent cache lifetime is still CPU-owned and the server still needs Metal-resident cache storage.
+- The native Qwen server path currently tokenizes the rendered prompt, pre-fills the full prompt through cancellable sequence-cache chunks into typed per-layer caches, and reuses those caches across bounded multi-token decode. It defaults to 32 retained full-attention KV rows, and full-attention cache allocation is bounded by that retained window. Full-attention cache storage, sequence prefill, and single-token decode have local sliding-window behaviour, but attention/recurrent cache lifetime is still CPU-owned and the server still needs Metal-resident cache storage.
 - Native Qwen multi-token decode is wired through backend caches and a Metal-capable executor, and MoE selected/shared expert projections now route through BF16 matvec hooks. Attention cache storage/lifetime, recurrent-state cache storage, expert-selection control flow, and remaining control flow are still CPU-owned. The remaining Qwen Metal kernels are not complete.
 - Text and parsed tool-call SSE are implemented, including requested final usage chunks, aggregate streamed-request counts, incremental backend text chunks, heartbeat frames while waiting on backend output, configured stream stall detection, stream-drop backend cancellation, and incremental legacy-completion/text-chat stop handling. Chat tool-call and JSON-object validation paths still buffer where fail-closed semantics require a complete assistant message.
 - Full-attention prefill math has RoPE, grouped-query expansion, causal softmax coverage, plus cache-backed `LayerKvCache` math, shard-backed layer prefill, and shard-backed layer step paths. The native Qwen server path now routes projection/output matvecs, q/k RMSNorm, cache key/value row gathering, q/k score dot products, attention softmax, and value mixing through the Metal-capable executor, but attention cache storage and lifetime remain CPU-owned.
@@ -347,7 +347,7 @@ The reference engines we currently use are:
 
 Those engines are reference points, benchmark baselines, and sources of design lessons. The Rust engine is not a wrapper around any of them. The serving runtime must not import Python, start Python, depend on Python object lifetimes, or delegate request lifecycle decisions to a Python process.
 
-MLX is mandatory production infrastructure, not an optional reference experiment. Every promoted model family must declare its production backend set, and Qwen's set includes both the native Metal path and MLX. Qwen remains the first proving family because it exercises long context, hybrid attention, MoE routing, tool calls, and JSON mode, but Qwen topology, tensor names, prompt rendering, parser behavior, and cache layout must stay behind Qwen family adapters rather than defining the engine-wide architecture.
+MLX is mandatory production infrastructure, not an optional reference experiment. Every promoted model family must declare its production backend set, and Qwen's set includes both the native Metal path and MLX. Qwen remains the first proving family because it exercises long context, hybrid attention, MoE routing, tool calls, and JSON mode, but Qwen topology, tensor names, prompt rendering, parser behaviour, and cache layout must stay behind Qwen family adapters rather than defining the engine-wide architecture.
 
 ## Multi-Agent Orchestration Used For This Spec
 
@@ -386,7 +386,7 @@ Scope:
 Core contribution:
 
 - Do not pretend these models are generic Llama variants.
-- Treat architecture, templates, tools, reasoning channels, and cache behavior as model-family contracts.
+- Treat architecture, templates, tools, reasoning channels, and cache behaviour as model-family contracts.
 - Fail closed when a model/template/parser combination is not explicitly validated.
 
 ### Existing-Engine Lessons Agent
@@ -420,7 +420,7 @@ Scope:
 Core contribution:
 
 - Promotion is gate-based, not score-based.
-- Direct API probes, protocol conformance, OMP transcript behavior, long-context lifecycle, and no-progress classification must pass independently.
+- Direct API probes, protocol conformance, OMP transcript behaviour, long-context lifecycle, and no-progress classification must pass independently.
 - A request that emits thousands of output tokens with no content/tool deltas is a failed agent turn, even if the backend says it finished normally.
 
 ## Hard Product Requirements
@@ -451,7 +451,7 @@ Python is allowed only as an offline development aid for generating golden fixtu
 
 The engine must not assume that models are preinstalled by hand. Model acquisition must be native, reproducible, observable, and explicit.
 
-Required behavior:
+Required behaviour:
 
 - Pull supported model artifacts from Hugging Face.
 - Resolve mutable revisions to immutable commits.
@@ -495,7 +495,7 @@ An optimization that improves cold recall but corrupts tool prompts is not a pro
 
 ### OpenAI Compatibility Is A Contract, Not A Skin
 
-The engine must implement OpenAI-compatible behavior at the semantic level, not only HTTP route names.
+The engine must implement OpenAI-compatible behaviour at the semantic level, not only HTTP route names.
 
 Required surfaces:
 
@@ -527,9 +527,9 @@ The benchmark understanding as of this spec:
 - `vllm-mlx` is the production baseline because Qwen35 135K and 200K profiles pass the broadest OMP workloads.
 - `oMLX` is the strongest cache challenger because its SSD cache design targets the growing-prefix problem directly.
 - `Rapid-MLX` became newly viable at 135K with KV4 prefix reuse, but PFlash is useful only on protected no-tool/no-JSON prompts unless proven otherwise.
-- `llama.cpp` is a critical comparator with mature Metal/GGUF/grammar behavior, but its long 200K latency has been slower than leading MLX contenders.
+- `llama.cpp` is a critical comparator with mature Metal/GGUF/grammar behaviour, but its long 200K latency has been slower than leading MLX contenders.
 - `SwiftLM` is worth watching for native binary deployment, TurboKV, stream experts, and MoE ideas, but it has not beaten the current Qwen35 production evidence.
-- `pmetal` is aligned with the desired Rust/Metal direction, but existing benchmark evidence showed poor OpenAI tool/JSON behavior and server instability.
+- `pmetal` is aligned with the desired Rust/Metal direction, but existing benchmark evidence showed poor OpenAI tool/JSON behaviour and server instability.
 
 The recent OMP wedge sharpened the requirement. The server generated 4096 completion tokens and returned a normal finish, while the client saw no useful assistant content or tool calls. The agent then sat after repeated todo reminders. That kind of "successful no-progress turn" must be impossible to classify as success in the Rust engine.
 
@@ -953,7 +953,7 @@ Not allowed in the serving process:
 - mutating the user-global Hugging Face cache without explicit configuration.
 - starting a download implicitly from an inference request unless `download_on_demand` is explicitly enabled.
 
-The benchmark harness may keep using Python while the engine is under development. The engine itself must treat Python-based Hub tooling as reference behavior only.
+The benchmark harness may keep using Python while the engine is under development. The engine itself must treat Python-based Hub tooling as reference behaviour only.
 
 ### Artifact Identity
 
@@ -1009,7 +1009,7 @@ Examples:
 - Qwen MLX path:
   - include `*.safetensors`, `*.safetensors.index.json`, `config.json`, `tokenizer*`, `generation_config.json`, `*.json`.
   - include MLX-specific weight files for `mlx-community/*` repos.
-  - exclude training artifacts, optimizer states, datasets, examples, images, and large unused alternate formats.
+  - exclude training artifacts, optimiser states, datasets, examples, images, and large unused alternate formats.
 - DeepSeek DSML path:
   - include model config, tokenizer, native message encoder metadata, DSML templates, and supported quantized weights.
   - exclude unused checkpoint formats.
@@ -1113,7 +1113,7 @@ The server should expose read-only model status without exposing whether a priva
 
 The download layer must be robust enough for 10GB to 400GB artifact sets.
 
-Required behavior:
+Required behaviour:
 
 - parallel downloads with configurable concurrency.
 - per-host connection limits.
@@ -1128,10 +1128,10 @@ Required behavior:
 - custom Hugging Face endpoint support for mirrors or enterprise deployments.
 - offline mode that never performs network requests.
 
-Xet-backed storage is now part of normal Hugging Face large-file behavior. The engine should support it in one of two ways:
+Xet-backed storage is now part of normal Hugging Face large-file behaviour. The engine should support it in one of two ways:
 
 - Preferred: integrate directly with a native Rust Xet/CAS client if it is available and stable enough.
-- Fallback: use normal signed file URLs and HTTP range behavior when Hugging Face exposes them for the requested artifact.
+- Fallback: use normal signed file URLs and HTTP range behaviour when Hugging Face exposes them for the requested artifact.
 
 The puller must not require Python `hf_xet`. If the only available implementation for a transfer mode is Python, that mode is not part of the serving runtime.
 
@@ -1347,7 +1347,7 @@ The critical workflow:
 4. The model calls another tool.
 5. The transcript grows for many turns.
 
-The engine must preserve reusable prefix state across these turns without silently corrupting tool behavior.
+The engine must preserve reusable prefix state across these turns without silently corrupting tool behaviour.
 
 ### Cache Key
 
@@ -1753,7 +1753,7 @@ Reasoning must be separated before content emission.
 
 Family-specific reasoning channels:
 
-- Qwen: `<think>...</think>` and implicit think-end behavior.
+- Qwen: `<think>...</think>` and implicit think-end behaviour.
 - DeepSeek: `<think>...</think>` before DSML tool calls or content.
 - Gemma: `<|channel>thought`, `<|channel>content`, `<|channel>final`, and related channel terminators.
 
@@ -1790,7 +1790,7 @@ Avoid:
 - treating direct API success as enough.
 - aggressive settings that pass recall but damage tools.
 - stream buffering that corrupts tool-call arguments.
-- hiding parser behavior inside opaque serving code.
+- hiding parser behaviour inside opaque serving code.
 
 Parity gates:
 
@@ -1822,14 +1822,14 @@ Parity gates:
 
 - match `omlx-qwen-a3b-ssd-cache-ctx-135k`.
 - match `omlx-qwen-a3b-ssd-cache-ctx-200k`.
-- match cache-lifecycle 200K behavior.
+- match cache-lifecycle 200K behaviour.
 - report cache hits/misses, SSD bytes, load/save latency, RSS, cold TTFT, and warm TTFT.
 
 ### `Rapid-MLX`
 
 Copy:
 
-- KV4 prefix reuse behavior.
+- KV4 prefix reuse behaviour.
 - native streaming tool-call focus.
 - protected prompt policy.
 - PFlash skip telemetry.
@@ -1841,7 +1841,7 @@ Avoid:
 - relying on PFlash for tool/JSON prompts.
 - stream-interval 8 in production.
 - silent long prefill stalls.
-- tool-parser behavior that emits valid-looking but no-progress turns.
+- tool-parser behaviour that emits valid-looking but no-progress turns.
 
 Parity gates:
 
@@ -1863,7 +1863,7 @@ Copy:
 - metrics endpoint.
 - continuous batching.
 - grammar/JSON-schema/function-calling infrastructure.
-- reproducible sampler behavior.
+- reproducible sampler behaviour.
 - broad architecture coverage.
 
 Avoid:
@@ -1901,7 +1901,7 @@ Parity gates:
 
 - first exceed SwiftLM 4B/9B smoke while passing JSON.
 - then pass Qwen35 135K read/bash/edit/fix tasks.
-- retest SwiftLM only when its KV/MoE behavior changes.
+- retest SwiftLM only when its KV/MoE behaviour changes.
 
 ### `pmetal`
 
@@ -1918,16 +1918,16 @@ Copy:
 
 Avoid:
 
-- treating current server behavior as production-ready.
+- treating current server behaviour as production-ready.
 - prioritizing FP8/quant experiments before tool/JSON correctness.
-- speed-first benchmarking when tool behavior is zero.
+- speed-first benchmarking when tool behaviour is zero.
 
 Parity gates:
 
 - pass direct canaries.
 - pass OMP read/grep/bash/edit on 4B/9B.
 - only then test Qwen35 32K/135K.
-- speed does not count until structured tool behavior and JSON pass.
+- speed does not count until structured tool behaviour and JSON pass.
 
 ## Production Compatibility Floor
 
@@ -1997,8 +1997,8 @@ Must pass:
 Required fixture repos:
 
 - one tiny public model for CI.
-- one multi-file safetensors model for shard/index behavior.
-- one GGUF fixture for single-file behavior.
+- one multi-file safetensors model for shard/index behaviour.
+- one GGUF fixture for single-file behaviour.
 - one mocked gated repo response for auth/error classification.
 
 ### Protocol Gate
@@ -2030,7 +2030,7 @@ Required invariants:
 - no prose fallback.
 - no duplicate terminal call.
 - valid JSON object arguments.
-- valid finish behavior.
+- valid finish behaviour.
 - exactly one `[DONE]`.
 - TTFT measured from first real delta.
 
@@ -2158,7 +2158,7 @@ Regression classes:
 - empty 4096-token no-content turn.
 - repeated "now writing..." no-tool turns.
 - protected prompt skip.
-- PFlash apply/skip behavior.
+- PFlash apply/skip behaviour.
 
 The replay suite should run without a model and verify classification logic.
 
@@ -2283,7 +2283,7 @@ Pass rule:
 
 Purpose:
 
-- Verify real OMP coding behavior.
+- Verify real OMP coding behaviour.
 
 Includes:
 
@@ -2323,7 +2323,7 @@ Pass rule:
 
 Purpose:
 
-- Verify context behavior by length and request class.
+- Verify context behaviour by length and request class.
 
 Matrix:
 
@@ -2365,7 +2365,7 @@ Pass rule:
 
 Purpose:
 
-- Verify long-running service behavior.
+- Verify long-running service behaviour.
 
 Includes:
 
@@ -2730,7 +2730,7 @@ Mitigation:
 - keep bridge narrow.
 - port only needed loaders.
 - use static fixture parity.
-- do not rely on Python behavior at runtime.
+- do not rely on Python behaviour at runtime.
 
 ### FFI And Metal Lifetime Bugs
 
@@ -2860,7 +2860,7 @@ These model-family references should be rechecked when implementation starts, be
 
 ### External Hub References
 
-The Hugging Face acquisition design should be rechecked before implementation because Hub transfer behavior and Xet integration continue to evolve:
+The Hugging Face acquisition design should be rechecked before implementation because Hub transfer behaviour and Xet integration continue to evolve:
 
 - [Hugging Face Hub download guide](https://huggingface.co/docs/huggingface_hub/guides/download)
 - [Hugging Face Hub file download API reference](https://huggingface.co/docs/huggingface_hub/main/package_reference/file_download)

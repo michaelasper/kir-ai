@@ -1,7 +1,7 @@
 # MLX Verification
 
 Use this checklist to verify that MLX-backed serving is using a real upstream
-MLX server and that adaptive chat behavior is not coming from a fixture.
+MLX server and that adaptive chat behaviour is not coming from a fixture.
 
 ## Live Adaptive Check
 

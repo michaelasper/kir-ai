@@ -38,10 +38,10 @@ Suggested protocol-safe workflow:
 - `kt_read_file <path>`
 - implement minimal changes
 - `kt_git_status` and review
-- if behavior changed, run the protocol validation path
+- if behaviour changed, run the protocol validation path
 - `kt_git_commit "..."`
 
 Guidance:
 - Prefer narrow edits and avoid broad refactors.
 - Keep shared defaults centralized and documented.
-- Keep behavior changes paired with matching assertion updates in contract tests.
+- Keep behaviour changes paired with matching assertion updates in contract tests.
