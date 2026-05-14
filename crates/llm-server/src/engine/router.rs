@@ -31,11 +31,72 @@ use std::sync::{Arc, Mutex};
 /// Fails closed because a production router must be constructed with an
 /// explicit inference backend.
 ///
-/// Use `build_router_with_backend` or `build_router_with_backend_and_options`
-/// for real serving. Use `build_router_with_protocol_test_backend` only
-/// for protocol tests that intentionally do not exercise model inference.
+/// Use `RouterBuilder::new(backend).build()` for real serving. Use
+/// `build_router_with_protocol_test_backend` only for protocol tests that
+/// intentionally do not exercise model inference.
 pub fn build_router() -> Result<Router, EngineConfigError> {
     Err(EngineConfigError::missing_backend())
+}
+
+pub struct RouterBuilder {
+    backend: Box<dyn ModelBackend>,
+    engine_options: EngineOptions,
+    backend_metrics: Option<Arc<dyn ServerBackendMetrics>>,
+    allow_unauthenticated_admin: bool,
+}
+
+impl RouterBuilder {
+    pub fn new(backend: Box<dyn ModelBackend>) -> Self {
+        Self {
+            backend,
+            engine_options: EngineOptions::default(),
+            backend_metrics: None,
+            allow_unauthenticated_admin: false,
+        }
+    }
+
+    pub fn with_options(mut self, options: EngineOptions) -> Self {
+        self.engine_options = options;
+        self
+    }
+
+    pub fn with_engine_options(self, options: EngineOptions) -> Self {
+        self.with_options(options)
+    }
+
+    pub fn with_concurrency(mut self, concurrency_limit: usize) -> Self {
+        self.engine_options.concurrency_limit = concurrency_limit;
+        self
+    }
+
+    pub fn with_metrics(mut self, backend_metrics: Arc<dyn ServerBackendMetrics>) -> Self {
+        self.backend_metrics = Some(backend_metrics);
+        self
+    }
+
+    pub fn with_backend_metrics(self, backend_metrics: Arc<dyn ServerBackendMetrics>) -> Self {
+        self.with_metrics(backend_metrics)
+    }
+
+    pub fn allow_unauthenticated_admin(mut self) -> Self {
+        self.allow_unauthenticated_admin = true;
+        self
+    }
+
+    pub fn with_admin_token(mut self, admin_token: impl Into<String>) -> Self {
+        self.engine_options.admin_token = Some(admin_token.into());
+        self
+    }
+
+    pub fn build(self) -> Result<Router, EngineConfigError> {
+        build_router_from_parts(
+            self.backend,
+            self.engine_options,
+            self.allow_unauthenticated_admin,
+            self.backend_metrics
+                .unwrap_or_else(|| Arc::new(NoopServerBackendMetrics)),
+        )
+    }
 }
 
 #[cfg(feature = "test-utils")]
@@ -44,73 +105,81 @@ pub fn build_router_with_protocol_test_backend() -> Router {
         "protocol test backend initialized — do not use in production; \
          the test-utils feature should never be enabled in release builds"
     );
-    build_router_with_backend_and_options_allowing_unauthenticated_admin(
-        Box::new(protocol_test_backend()),
-        EngineOptions::default(),
-    )
-    .unwrap_or_else(|err| unreachable!("protocol test backend options are valid: {err}"))
+    RouterBuilder::new(Box::new(protocol_test_backend()))
+        .with_options(EngineOptions::default())
+        .allow_unauthenticated_admin()
+        .build()
+        .unwrap_or_else(|err| unreachable!("protocol test backend options are valid: {err}"))
 }
 
+#[deprecated(note = "use RouterBuilder::new(backend).build()")]
 pub fn build_router_with_backend(
     backend: Box<dyn ModelBackend>,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_concurrency(backend, 1)
+    RouterBuilder::new(backend).with_concurrency(1).build()
 }
 
+#[deprecated(note = "use RouterBuilder::new(backend).with_concurrency(limit).build()")]
 pub fn build_router_with_backend_and_concurrency(
     backend: Box<dyn ModelBackend>,
     concurrency_limit: usize,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options(
-        backend,
-        EngineOptions {
-            concurrency_limit,
-            ..EngineOptions::default()
-        },
-    )
+    RouterBuilder::new(backend)
+        .with_concurrency(concurrency_limit)
+        .build()
 }
 
+#[deprecated(note = "use RouterBuilder::new(backend).with_options(options).build()")]
 pub fn build_router_with_backend_and_options(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(
-        backend,
-        options,
-        false,
-        Arc::new(NoopServerBackendMetrics),
-    )
+    RouterBuilder::new(backend).with_options(options).build()
 }
 
+#[deprecated(
+    note = "use RouterBuilder::new(backend).with_options(options).allow_unauthenticated_admin().build()"
+)]
 pub fn build_router_with_backend_and_options_allowing_unauthenticated_admin(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(
-        backend,
-        options,
-        true,
-        Arc::new(NoopServerBackendMetrics),
-    )
+    RouterBuilder::new(backend)
+        .with_options(options)
+        .allow_unauthenticated_admin()
+        .build()
 }
 
+#[deprecated(
+    note = "use RouterBuilder::new(backend).with_options(options).with_metrics(metrics).build()"
+)]
 pub fn build_router_with_backend_and_options_and_backend_metrics(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
     backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(backend, options, false, backend_metrics)
+    RouterBuilder::new(backend)
+        .with_options(options)
+        .with_metrics(backend_metrics)
+        .build()
 }
 
+#[deprecated(
+    note = "use RouterBuilder::new(backend).with_options(options).with_metrics(metrics).allow_unauthenticated_admin().build()"
+)]
 pub fn build_router_with_backend_and_options_allowing_unauthenticated_admin_and_backend_metrics(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
     backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> Result<Router, EngineConfigError> {
-    build_router_with_backend_and_options_impl(backend, options, true, backend_metrics)
+    RouterBuilder::new(backend)
+        .with_options(options)
+        .with_metrics(backend_metrics)
+        .allow_unauthenticated_admin()
+        .build()
 }
 
-fn build_router_with_backend_and_options_impl(
+fn build_router_from_parts(
     backend: Box<dyn ModelBackend>,
     options: EngineOptions,
     allow_unauthenticated_admin: bool,

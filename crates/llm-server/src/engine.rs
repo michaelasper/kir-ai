@@ -19,9 +19,10 @@ mod streaming;
 pub use config::{EngineConfigError, EngineOptions};
 #[cfg(feature = "test-utils")]
 pub use router::build_router_with_protocol_test_backend;
+#[allow(deprecated)]
 pub use router::{
-    build_router, build_router_with_backend, build_router_with_backend_and_concurrency,
-    build_router_with_backend_and_options,
+    RouterBuilder, build_router, build_router_with_backend,
+    build_router_with_backend_and_concurrency, build_router_with_backend_and_options,
     build_router_with_backend_and_options_allowing_unauthenticated_admin,
     build_router_with_backend_and_options_allowing_unauthenticated_admin_and_backend_metrics,
     build_router_with_backend_and_options_and_backend_metrics,

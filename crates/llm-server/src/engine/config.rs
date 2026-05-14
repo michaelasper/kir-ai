@@ -44,7 +44,7 @@ pub struct EngineConfigError {
 impl EngineConfigError {
     pub(super) fn missing_backend() -> Self {
         Self {
-            message: "llm-engine router construction requires an explicit backend; use build_router_with_backend(...) for inference or build_router_with_protocol_test_backend() for protocol tests"
+            message: "llm-engine router construction requires an explicit backend; use RouterBuilder::new(backend).build() for inference or build_router_with_protocol_test_backend() for protocol tests"
                 .to_owned(),
         }
     }

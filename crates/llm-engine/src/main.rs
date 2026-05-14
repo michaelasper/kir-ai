@@ -11,9 +11,8 @@ use llm_backend::{
 use llm_engine::{
     DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
     MlxTimeouts, MlxToolParserMode, NativeTextLoadOptions, NativeTextRuntimeOptions,
-    SnapshotBackendLoader, SnapshotBackendOptions, build_router_with_backend_and_options,
-    build_router_with_backend_and_options_allowing_unauthenticated_admin, open_snapshot_backend,
-    parse_snapshot_model_family,
+    SnapshotBackendLoader, SnapshotBackendOptions, open_snapshot_backend,
+    parse_snapshot_model_family, router_builder,
 };
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
@@ -200,12 +199,11 @@ async fn main() -> anyhow::Result<()> {
                 {
                     tracing::warn!(error = %err, alias = model_id, snapshot = %snapshot_path.display(), "failed to record model alias");
                 }
+                let builder = router_builder(backend).with_options(options);
                 if allow_unauthenticated_admin {
-                    build_router_with_backend_and_options_allowing_unauthenticated_admin(
-                        backend, options,
-                    )?
+                    builder.allow_unauthenticated_admin().build()?
                 } else {
-                    build_router_with_backend_and_options(backend, options)?
+                    builder.build()?
                 }
             } else if protocol_test_backend_flag(&serve_args).is_some() {
                 #[cfg(feature = "test-utils")]
@@ -220,12 +218,11 @@ async fn main() -> anyhow::Result<()> {
                         .with_required_tool_protocol()
                         .with_json_object_protocol(),
                     );
+                    let builder = router_builder(backend).with_options(options);
                     if allow_unauthenticated_admin {
-                        build_router_with_backend_and_options_allowing_unauthenticated_admin(
-                            backend, options,
-                        )?
+                        builder.allow_unauthenticated_admin().build()?
                     } else {
-                        build_router_with_backend_and_options(backend, options)?
+                        builder.build()?
                     }
                 }
                 #[cfg(not(feature = "test-utils"))]

@@ -10,9 +10,7 @@ use llm_backend::{
     BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend,
 };
 use llm_engine::{
-    EngineOptions, build_router, build_router_with_backend_and_options,
-    build_router_with_backend_and_options_allowing_unauthenticated_admin,
-    build_router_with_protocol_test_backend,
+    EngineOptions, build_router, build_router_with_protocol_test_backend, router_builder,
 };
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
@@ -67,7 +65,14 @@ fn build_router_with_unauthenticated_admin(backend: Box<dyn ModelBackend>) -> Ro
 }
 
 fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
-    llm_engine::build_router_with_backend(backend).expect("test router builds")
+    router_builder(backend).build().expect("test router builds")
+}
+
+fn build_router_with_backend_and_options(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+) -> Result<Router, llm_engine::EngineConfigError> {
+    router_builder(backend).with_options(options).build()
 }
 
 fn build_router_with_unauthenticated_admin_and_options(
@@ -75,6 +80,16 @@ fn build_router_with_unauthenticated_admin_and_options(
     options: EngineOptions,
 ) -> Result<Router, llm_engine::EngineConfigError> {
     build_router_with_backend_and_options_allowing_unauthenticated_admin(backend, options)
+}
+
+fn build_router_with_backend_and_options_allowing_unauthenticated_admin(
+    backend: Box<dyn ModelBackend>,
+    options: EngineOptions,
+) -> Result<Router, llm_engine::EngineConfigError> {
+    router_builder(backend)
+        .with_options(options)
+        .allow_unauthenticated_admin()
+        .build()
 }
 
 #[async_trait]
@@ -103,9 +118,11 @@ impl ModelBackend for FailingBackend {
 #[test]
 fn public_router_builders_with_backend_return_config_results() {
     let _: Result<Router, llm_engine::EngineConfigError> =
-        llm_engine::build_router_with_backend(Box::new(FailingBackend));
+        llm_engine::router_builder(Box::new(FailingBackend)).build();
     let _: Result<Router, llm_engine::EngineConfigError> =
-        llm_engine::build_router_with_backend_and_concurrency(Box::new(FailingBackend), 1);
+        llm_engine::router_builder(Box::new(FailingBackend))
+            .with_concurrency(1)
+            .build();
 }
 
 struct StaticBackend {
