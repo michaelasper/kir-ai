@@ -5,7 +5,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeFullAttentionDims {
+pub(crate) struct NativeFullAttentionDims {
     pub hidden_size: usize,
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
@@ -34,7 +34,7 @@ struct NativeFullAttentionShape {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NativeF32Rows<'a>(NativeF32RowsInner<'a>);
+pub(crate) struct NativeF32Rows<'a>(NativeF32RowsInner<'a>);
 
 #[derive(Debug, Clone, Copy)]
 enum NativeF32RowsInner<'a> {
@@ -93,7 +93,7 @@ impl<'a> NativeF32Rows<'a> {
     }
 }
 
-pub struct NativeFullAttentionSequenceParts<'a> {
+pub(crate) struct NativeFullAttentionSequenceParts<'a> {
     pub queries: NativeF32Rows<'a>,
     pub keys: NativeF32Rows<'a>,
     pub values: NativeF32Rows<'a>,
@@ -102,7 +102,7 @@ pub struct NativeFullAttentionSequenceParts<'a> {
     pub score_scale: f32,
 }
 
-pub struct NativeFullAttentionStepParts<'a> {
+pub(crate) struct NativeFullAttentionStepParts<'a> {
     pub query: &'a [f32],
     pub key: &'a [f32],
     pub value: &'a [f32],
@@ -111,7 +111,7 @@ pub struct NativeFullAttentionStepParts<'a> {
     pub score_scale: f32,
 }
 
-pub struct NativeFullAttentionCacheSequenceParts<'a> {
+pub(crate) struct NativeFullAttentionCacheSequenceParts<'a> {
     pub queries: NativeF32Rows<'a>,
     pub gates: Option<NativeF32Rows<'a>>,
     pub source_counts: &'a [usize],
@@ -120,7 +120,7 @@ pub struct NativeFullAttentionCacheSequenceParts<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum NativeOutputProjection<'a> {
+pub(crate) enum NativeOutputProjection<'a> {
     F32(&'a [f32]),
     Bf16Tensor {
         store: &'a SafeTensorShardStore,
@@ -147,7 +147,7 @@ struct NativeFullAttentionCacheSource<'a> {
     count: usize,
 }
 
-pub async fn native_full_attention_sequence_from_parts(
+pub(crate) async fn native_full_attention_sequence_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
 ) -> Result<Vec<Vec<f32>>, MathError> {
@@ -155,7 +155,7 @@ pub async fn native_full_attention_sequence_from_parts(
         .await
 }
 
-pub async fn native_full_attention_sequence_from_parts_with_matvec(
+pub(crate) async fn native_full_attention_sequence_from_parts_with_matvec(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
     matvec: &impl NativeMatvecBackend,
@@ -163,7 +163,7 @@ pub async fn native_full_attention_sequence_from_parts_with_matvec(
     native_full_attention_sequence_impl(dims, parts, None, matvec).await
 }
 
-pub async fn native_full_attention_sequence_with_cache_from_parts(
+pub(crate) async fn native_full_attention_sequence_with_cache_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
     cache: &mut LayerKvCache,
@@ -177,7 +177,7 @@ pub async fn native_full_attention_sequence_with_cache_from_parts(
     .await
 }
 
-pub async fn native_full_attention_sequence_with_cache_from_parts_with_matvec(
+pub(crate) async fn native_full_attention_sequence_with_cache_from_parts_with_matvec(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
     cache: &mut LayerKvCache,
@@ -186,7 +186,7 @@ pub async fn native_full_attention_sequence_with_cache_from_parts_with_matvec(
     native_full_attention_sequence_impl(dims, parts, Some(cache), matvec).await
 }
 
-pub async fn native_full_attention_step_with_cache_from_parts(
+pub(crate) async fn native_full_attention_step_with_cache_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
     cache: &mut LayerKvCache,
@@ -200,7 +200,7 @@ pub async fn native_full_attention_step_with_cache_from_parts(
     .await
 }
 
-pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
+pub(crate) async fn native_full_attention_sequence_from_cache_parts_with_matvec(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionCacheSequenceParts<'_>,
     cache: &LayerKvCache,
@@ -282,7 +282,7 @@ pub async fn native_full_attention_sequence_from_cache_parts_with_matvec(
     Ok(outputs)
 }
 
-pub async fn native_full_attention_step_with_cache_from_parts_with_matvec(
+pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
     cache: &mut LayerKvCache,
@@ -300,7 +300,7 @@ pub async fn native_full_attention_step_with_cache_from_parts_with_matvec(
     Ok(output)
 }
 
-pub async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
+pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
     cache: &mut LayerKvCache,
@@ -451,7 +451,7 @@ async fn native_full_attention_sequence_impl(
     Ok(outputs)
 }
 
-pub async fn native_output_projection_with_matvec(
+pub(crate) async fn native_output_projection_with_matvec(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],
@@ -471,7 +471,7 @@ pub async fn native_output_projection_with_matvec(
     Ok(output)
 }
 
-pub async fn native_output_projection_with_matvec_in_place(
+pub(crate) async fn native_output_projection_with_matvec_in_place(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],

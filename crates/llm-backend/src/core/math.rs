@@ -28,13 +28,13 @@ impl InferenceScratchpad {
     }
 }
 
-pub fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
+pub(crate) fn rms_norm_f32(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, MathError> {
     let mut out = vec![0.0; input.len()];
     rms_norm_f32_in_place(input, weight, eps, &mut out)?;
     Ok(out)
 }
 
-pub fn rms_norm_f32_in_place(
+pub(crate) fn rms_norm_f32_in_place(
     input: &[f32],
     weight: &[f32],
     eps: f32,
@@ -43,7 +43,7 @@ pub fn rms_norm_f32_in_place(
     rms_norm_with_weight_offset_f32_in_place(input, weight, eps, 0.0, output)
 }
 
-pub fn rms_norm_one_centered_f32(
+pub(crate) fn rms_norm_one_centered_f32(
     input: &[f32],
     weight: &[f32],
     eps: f32,
@@ -53,7 +53,7 @@ pub fn rms_norm_one_centered_f32(
     Ok(out)
 }
 
-pub fn rms_norm_one_centered_f32_in_place(
+pub(crate) fn rms_norm_one_centered_f32_in_place(
     input: &[f32],
     weight: &[f32],
     eps: f32,
@@ -104,7 +104,7 @@ pub(crate) fn rms_norm_scale_f32(mean_square: f32, eps: f32) -> f32 {
     }
 }
 
-pub fn matvec_row_major_f32(
+pub(crate) fn matvec_row_major_f32(
     input: &[f32],
     weights: &[f32],
     rows: usize,
@@ -115,7 +115,7 @@ pub fn matvec_row_major_f32(
     Ok(out)
 }
 
-pub fn matvec_row_major_f32_in_place(
+pub(crate) fn matvec_row_major_f32_in_place(
     input: &[f32],
     weights: &[f32],
     rows: usize,
@@ -152,7 +152,7 @@ pub fn matvec_row_major_f32_in_place(
     Ok(())
 }
 
-pub fn matvecs_row_major_f32(
+pub(crate) fn matvecs_row_major_f32(
     inputs: &[Vec<f32>],
     weights: &[f32],
     rows: usize,
@@ -164,7 +164,7 @@ pub fn matvecs_row_major_f32(
         .collect()
 }
 
-pub fn swiglu_mlp_f32(
+pub(crate) fn swiglu_mlp_f32(
     input: &[f32],
     gate_weight: &[f32],
     up_weight: &[f32],
@@ -185,7 +185,7 @@ pub fn swiglu_mlp_f32(
     Ok(out)
 }
 
-pub fn swiglu_mlp_f32_in_place(
+pub(crate) fn swiglu_mlp_f32_in_place(
     input: &[f32],
     gate_weight: &[f32],
     up_weight: &[f32],
@@ -212,7 +212,7 @@ pub fn swiglu_mlp_f32_in_place(
     matvec_row_major_f32_in_place(activated, down_weight, rows, intermediate_size, output)
 }
 
-pub fn silu_f32(value: f32) -> f32 {
+pub(crate) fn silu_f32(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
@@ -386,7 +386,10 @@ pub struct TopKLogit {
     pub logit: f32,
 }
 
-pub fn softmax_top_k_f32(logits: &[f32], top_k: usize) -> Result<Vec<TopKWeight>, MathError> {
+pub(crate) fn softmax_top_k_f32(
+    logits: &[f32],
+    top_k: usize,
+) -> Result<Vec<TopKWeight>, MathError> {
     if top_k == 0 || top_k > logits.len() {
         return Err(MathError::InvalidShape(format!(
             "top_k {top_k} must be in 1..={}",
@@ -510,6 +513,6 @@ pub(crate) fn push_top_logit(top: &mut Vec<TopKLogit>, candidate: TopKLogit, top
     top.truncate(top_k);
 }
 
-pub fn bf16_bits_to_f32(bits: u16) -> f32 {
+pub(crate) fn bf16_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }

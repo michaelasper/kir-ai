@@ -60,7 +60,7 @@ impl NativeBatchedMatvecOutput {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn swiglu_mlp_f32_with_matvec(
+pub(crate) async fn swiglu_mlp_f32_with_matvec(
     input: &[f32],
     gate_weight: &[f32],
     up_weight: &[f32],

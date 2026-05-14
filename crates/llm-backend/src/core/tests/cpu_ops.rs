@@ -1,17 +1,18 @@
-use llm_backend::{
-    BackendCacheContext, NativeF32Rows, NativeOutputProjection, QwenFullAttentionDims,
-    QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts, QwenFullAttentionStepParts,
-    QwenLinearAttentionDims, QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
-    qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
-    qwen_full_attention_sequence_with_cache_from_parts,
+use super::super::backend::BackendCacheContext;
+use super::super::math::{
+    matvec_row_major_f32, rms_norm_f32, rms_norm_one_centered_f32, silu_f32, softmax_top_k_f32,
+    swiglu_mlp_f32,
+};
+use super::super::native_attention::{NativeF32Rows, NativeOutputProjection};
+use super::super::qwen::ops::{
+    QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
+    QwenFullAttentionStepParts, QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
+    QwenLinearAttentionStepParts, qwen_full_attention_first_token_from_parts,
+    qwen_full_attention_sequence_from_parts, qwen_full_attention_sequence_with_cache_from_parts,
     qwen_full_attention_step_with_cache_from_parts, qwen_linear_attention_first_token_from_parts,
     qwen_linear_attention_sequence_from_parts,
     qwen_linear_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_step_with_cache_from_parts,
-};
-use llm_backend::{
-    matvec_row_major_f32, rms_norm_f32, rms_norm_one_centered_f32, silu_f32, softmax_top_k_f32,
-    swiglu_mlp_f32,
 };
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 

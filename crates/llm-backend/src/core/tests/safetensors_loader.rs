@@ -1,17 +1,17 @@
-#![cfg(feature = "slow-tests")]
-#![allow(dead_code)]
-use llm_backend::{
-    CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeMatvecBackend,
+use super::super::math::{InferenceScratchpad, MathError};
+use super::super::native_matvec::{CpuNativeMatvecBackend, NativeMatvecBackend};
+use super::super::qwen::ops::{
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
-    QwenLayerCache, SafeTensorShardStore, TensorLoadError, qwen_decode_token_with_cache,
-    qwen_embedding_and_layer0_norm, qwen_embedding_sequence_for_spec, qwen_final_norm,
-    qwen_final_norm_for_spec, qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
+    QwenLayerCache, qwen_decode_token_with_cache, qwen_embedding_and_layer0_norm,
+    qwen_embedding_sequence_for_spec, qwen_final_norm, qwen_final_norm_for_spec,
+    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
     qwen_layer_full_attention_sequence_with_cache_with_matvec,
     qwen_layer_linear_attention_sequence_with_cache_with_matvec, qwen_lm_head_logits,
     qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
     qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence_with_cache,
     qwen_static_f32_tensors_for_spec,
 };
+use super::super::safetensors::{SafeTensorShardStore, TensorLoadError};
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 use std::sync::{
     Arc,

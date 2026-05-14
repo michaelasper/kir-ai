@@ -2,15 +2,18 @@ use super::super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight, apply_rope_to_head, require_len,
     rms_norm_one_centered_f32, sigmoid_f32, silu_f32, softplus_f32,
 };
-use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeF32Rows,
-    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeFullAttentionStepParts,
-    NativeMatvecBackend, NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
+use super::super::native_attention::{
+    NativeF32Rows, NativeFullAttentionDims, NativeFullAttentionSequenceParts,
+    NativeFullAttentionStepParts, NativeOutputProjection,
     native_full_attention_sequence_from_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
     native_full_attention_step_with_cache_from_parts_with_matvec,
     native_output_projection_with_matvec, native_output_projection_with_matvec_in_place_unchecked,
     native_output_projection_with_matvec_unchecked, require_native_output_projection_shape,
+};
+use super::super::{
+    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
 use super::matvec::{
     l2_normalize_f32_with_matvec, rms_norm_f32_with_matvec, rms_norm_f32_with_matvec_in_place,
@@ -20,57 +23,59 @@ use llm_models::{AttentionKind, QwenModelSpec};
 mod lm_head;
 mod moe;
 
+pub(crate) use moe::qwen_layer_dense_mlp_with_matvec;
 use moe::qwen_layer_feed_forward_with_matvec;
-pub use moe::{
-    qwen_layer_dense_mlp_with_matvec, qwen_layer_moe_forward_with_matvec_in_place,
-    qwen_layer_moe_router_with_matvec,
-};
+pub use moe::{qwen_layer_moe_forward_with_matvec_in_place, qwen_layer_moe_router_with_matvec};
 
 pub use lm_head::{
-    qwen_final_norm, qwen_final_norm_for_spec, qwen_final_norm_for_spec_with_matvec,
-    qwen_final_norm_for_spec_with_matvec_in_place, qwen_final_norm_with_matvec,
-    qwen_final_norm_with_matvec_in_place, qwen_lm_head_logits, qwen_lm_head_logits_for_spec,
-    qwen_lm_head_logits_for_spec_with_matvec, qwen_lm_head_logits_for_spec_with_matvec_in_place,
-    qwen_lm_head_logits_with_matvec, qwen_lm_head_logits_with_matvec_in_place, qwen_lm_head_top_k,
-    qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_for_spec_with_matvec,
-    qwen_lm_head_top_k_with_matvec,
+    qwen_final_norm, qwen_final_norm_for_spec_with_matvec,
+    qwen_lm_head_logits_for_spec_with_matvec, qwen_lm_head_top_k,
+    qwen_lm_head_top_k_for_spec_with_matvec,
+};
+pub(crate) use lm_head::{
+    qwen_final_norm_for_spec, qwen_final_norm_for_spec_with_matvec_in_place,
+    qwen_final_norm_with_matvec, qwen_final_norm_with_matvec_in_place, qwen_lm_head_logits,
+    qwen_lm_head_logits_for_spec, qwen_lm_head_logits_for_spec_with_matvec_in_place,
+    qwen_lm_head_logits_with_matvec, qwen_lm_head_logits_with_matvec_in_place,
+    qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec,
 };
 use lm_head::{qwen_layer_tensor, qwen_linear_attn_tensor};
 
 pub const QWEN_EMBED_TOKENS_WEIGHT: &str = "model.language_model.embed_tokens.weight";
 pub const QWEN_LAYER0_INPUT_NORM_WEIGHT: &str =
     "model.language_model.layers.0.input_layernorm.weight";
-pub const QWEN_LAYER0_LINEAR_IN_PROJ_QKV_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_IN_PROJ_QKV_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_qkv.weight";
-pub const QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_IN_PROJ_Z_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_z.weight";
-pub const QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_IN_PROJ_B_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_b.weight";
-pub const QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_IN_PROJ_A_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.in_proj_a.weight";
-pub const QWEN_LAYER0_LINEAR_CONV1D_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_CONV1D_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.conv1d.weight";
-pub const QWEN_LAYER0_LINEAR_NORM_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_NORM_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.norm.weight";
-pub const QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_LINEAR_OUT_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.linear_attn.out_proj.weight";
-pub const QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_POST_ATTENTION_NORM_WEIGHT: &str =
     "model.language_model.layers.0.post_attention_layernorm.weight";
-pub const QWEN_LAYER0_MLP_GATE_WEIGHT: &str = "model.language_model.layers.0.mlp.gate.weight";
-pub const QWEN_LAYER0_MLP_EXPERTS_GATE_UP_PROJ: &str =
+pub(crate) const QWEN_LAYER0_MLP_GATE_WEIGHT: &str =
+    "model.language_model.layers.0.mlp.gate.weight";
+pub(crate) const QWEN_LAYER0_MLP_EXPERTS_GATE_UP_PROJ: &str =
     "model.language_model.layers.0.mlp.experts.gate_up_proj";
-pub const QWEN_LAYER0_MLP_EXPERTS_DOWN_PROJ: &str =
+pub(crate) const QWEN_LAYER0_MLP_EXPERTS_DOWN_PROJ: &str =
     "model.language_model.layers.0.mlp.experts.down_proj";
-pub const QWEN_LAYER0_MLP_SHARED_GATE_PROJ_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_MLP_SHARED_GATE_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight";
-pub const QWEN_LAYER0_MLP_SHARED_UP_PROJ_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_MLP_SHARED_UP_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert.up_proj.weight";
-pub const QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_MLP_SHARED_DOWN_PROJ_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert.down_proj.weight";
-pub const QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT: &str =
+pub(crate) const QWEN_LAYER0_MLP_SHARED_EXPERT_GATE_WEIGHT: &str =
     "model.language_model.layers.0.mlp.shared_expert_gate.weight";
 pub const QWEN_FINAL_NORM_WEIGHT: &str = "model.language_model.norm.weight";
-pub const QWEN_LM_HEAD_WEIGHT: &str = "lm_head.weight";
+pub(crate) const QWEN_LM_HEAD_WEIGHT: &str = "lm_head.weight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QwenEmbeddingProbe {
@@ -88,14 +93,14 @@ pub struct QwenLinearAttentionProjectionProbe {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct QwenLinearAttentionProjectionSequence {
+pub(crate) struct QwenLinearAttentionProjectionSequence {
     pub qkv: Vec<Vec<f32>>,
     pub z: Vec<Vec<f32>>,
     pub b: Vec<Vec<f32>>,
     pub a: Vec<Vec<f32>>,
 }
 
-pub struct QwenLinearAttentionFirstTokenParts<'a> {
+pub(crate) struct QwenLinearAttentionFirstTokenParts<'a> {
     pub qkv: &'a [f32],
     pub z: &'a [f32],
     pub b: &'a [f32],
@@ -104,7 +109,7 @@ pub struct QwenLinearAttentionFirstTokenParts<'a> {
     pub out_proj_weight: NativeOutputProjection<'a>,
 }
 
-pub struct QwenLinearAttentionSequenceParts<'a> {
+pub(crate) struct QwenLinearAttentionSequenceParts<'a> {
     pub qkv: &'a [Vec<f32>],
     pub z: &'a [Vec<f32>],
     pub b: &'a [Vec<f32>],
@@ -116,7 +121,7 @@ pub struct QwenLinearAttentionSequenceParts<'a> {
     pub out_proj_weight: NativeOutputProjection<'a>,
 }
 
-pub struct QwenLinearAttentionStepParts<'a> {
+pub(crate) struct QwenLinearAttentionStepParts<'a> {
     pub qkv: &'a [f32],
     pub z: &'a [f32],
     pub b: &'a [f32],
@@ -128,7 +133,7 @@ pub struct QwenLinearAttentionStepParts<'a> {
     pub out_proj_weight: NativeOutputProjection<'a>,
 }
 
-pub struct QwenFullAttentionSequenceParts<'a> {
+pub(crate) struct QwenFullAttentionSequenceParts<'a> {
     pub q_proj: NativeF32Rows<'a>,
     pub k_proj: NativeF32Rows<'a>,
     pub v_proj: NativeF32Rows<'a>,
@@ -137,7 +142,7 @@ pub struct QwenFullAttentionSequenceParts<'a> {
     pub o_proj_weight: NativeOutputProjection<'a>,
 }
 
-pub struct QwenFullAttentionStepParts<'a> {
+pub(crate) struct QwenFullAttentionStepParts<'a> {
     pub q_proj: &'a [f32],
     pub k_proj: &'a [f32],
     pub v_proj: &'a [f32],
@@ -147,7 +152,7 @@ pub struct QwenFullAttentionStepParts<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QwenFullAttentionSequenceConfig {
+pub(crate) struct QwenFullAttentionSequenceConfig {
     pub rms_norm_eps: f32,
     pub rope_theta: f32,
     pub partial_rotary_factor: f32,
@@ -170,7 +175,7 @@ pub struct QwenMoeDims {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QwenFullAttentionDims {
+pub(crate) struct QwenFullAttentionDims {
     pub hidden_size: usize,
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
@@ -243,7 +248,7 @@ pub fn qwen_static_f32_tensors_for_spec(spec: &QwenModelSpec) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QwenLinearAttentionDims {
+pub(crate) struct QwenLinearAttentionDims {
     pub hidden_size: usize,
     pub num_key_heads: usize,
     pub num_value_heads: usize,
@@ -413,7 +418,7 @@ pub fn qwen_embedding_and_layer0_norm(
     })
 }
 
-pub fn qwen_embedding_sequence(
+pub(crate) fn qwen_embedding_sequence(
     store: &SafeTensorShardStore,
     token_ids: &[usize],
     hidden_size: usize,
@@ -438,7 +443,7 @@ pub fn qwen_embedding_sequence(
         .collect()
 }
 
-pub fn qwen_embedding_sequence_for_spec(
+pub(crate) fn qwen_embedding_sequence_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     token_ids: &[usize],
@@ -461,7 +466,7 @@ pub fn qwen_embedding_sequence_for_spec(
         .collect()
 }
 
-pub async fn qwen_layer_input_norm(
+pub(crate) async fn qwen_layer_input_norm(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -479,7 +484,7 @@ pub async fn qwen_layer_input_norm(
     .await
 }
 
-pub async fn qwen_layer_input_norm_with_matvec(
+pub(crate) async fn qwen_layer_input_norm_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -624,7 +629,7 @@ async fn qwen_attention_rms_norm_with_matvec(
     }
 }
 
-pub async fn qwen_linear_attention_first_token_from_parts(
+pub(crate) async fn qwen_linear_attention_first_token_from_parts(
     dims: &QwenLinearAttentionDims,
     qkv: &[f32],
     z: &[f32],
@@ -645,7 +650,7 @@ pub async fn qwen_linear_attention_first_token_from_parts(
         .await
 }
 
-pub async fn qwen_linear_attention_first_token_from_parts_with_matvec(
+pub(crate) async fn qwen_linear_attention_first_token_from_parts_with_matvec(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionFirstTokenParts<'_>,
     matvec: &impl NativeMatvecBackend,
@@ -748,7 +753,7 @@ pub async fn qwen_linear_attention_first_token_from_parts_with_matvec(
     .await
 }
 
-pub async fn qwen_linear_attention_sequence_from_parts(
+pub(crate) async fn qwen_linear_attention_sequence_from_parts(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionSequenceParts<'_>,
 ) -> Result<Vec<Vec<f32>>, MathError> {
@@ -756,7 +761,7 @@ pub async fn qwen_linear_attention_sequence_from_parts(
         .await
 }
 
-pub async fn qwen_linear_attention_sequence_from_parts_with_matvec(
+pub(crate) async fn qwen_linear_attention_sequence_from_parts_with_matvec(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionSequenceParts<'_>,
     matvec: &impl NativeMatvecBackend,
@@ -764,7 +769,7 @@ pub async fn qwen_linear_attention_sequence_from_parts_with_matvec(
     qwen_linear_attention_sequence_from_parts_impl(dims, parts, None, matvec).await
 }
 
-pub async fn qwen_linear_attention_sequence_with_cache_from_parts(
+pub(crate) async fn qwen_linear_attention_sequence_with_cache_from_parts(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionSequenceParts<'_>,
     cache: &mut LinearAttentionCache,
@@ -778,7 +783,7 @@ pub async fn qwen_linear_attention_sequence_with_cache_from_parts(
     .await
 }
 
-pub async fn qwen_linear_attention_sequence_with_cache_from_parts_with_matvec(
+pub(crate) async fn qwen_linear_attention_sequence_with_cache_from_parts_with_matvec(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionSequenceParts<'_>,
     cache: &mut LinearAttentionCache,
@@ -787,7 +792,7 @@ pub async fn qwen_linear_attention_sequence_with_cache_from_parts_with_matvec(
     qwen_linear_attention_sequence_from_parts_impl(dims, parts, Some(cache), matvec).await
 }
 
-pub async fn qwen_linear_attention_step_with_cache_from_parts(
+pub(crate) async fn qwen_linear_attention_step_with_cache_from_parts(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionStepParts<'_>,
     cache: &mut LinearAttentionCache,
@@ -801,7 +806,7 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts(
     .await
 }
 
-pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec(
+pub(crate) async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionStepParts<'_>,
     cache: &mut LinearAttentionCache,
@@ -821,7 +826,7 @@ pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec(
     Ok(output)
 }
 
-pub async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_place(
+pub(crate) async fn qwen_linear_attention_step_with_cache_from_parts_with_matvec_in_place(
     dims: &QwenLinearAttentionDims,
     parts: &QwenLinearAttentionStepParts<'_>,
     cache: &mut LinearAttentionCache,
@@ -1325,7 +1330,7 @@ fn require_full_attention_cache_shape(
     Ok(())
 }
 
-pub async fn qwen_full_attention_first_token_from_parts(
+pub(crate) async fn qwen_full_attention_first_token_from_parts(
     dims: &QwenFullAttentionDims,
     q_proj: &[f32],
     v_proj: &[f32],
@@ -1341,7 +1346,7 @@ pub async fn qwen_full_attention_first_token_from_parts(
     .await
 }
 
-pub async fn qwen_full_attention_first_token_from_parts_with_matvec(
+pub(crate) async fn qwen_full_attention_first_token_from_parts_with_matvec(
     dims: &QwenFullAttentionDims,
     q_proj: &[f32],
     v_proj: &[f32],
@@ -1401,7 +1406,7 @@ pub async fn qwen_full_attention_first_token_from_parts_with_matvec(
     .await
 }
 
-pub async fn qwen_full_attention_sequence_from_parts(
+pub(crate) async fn qwen_full_attention_sequence_from_parts(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1415,7 +1420,7 @@ pub async fn qwen_full_attention_sequence_from_parts(
     .await
 }
 
-pub async fn qwen_full_attention_sequence_from_parts_with_matvec(
+pub(crate) async fn qwen_full_attention_sequence_from_parts_with_matvec(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1424,7 +1429,7 @@ pub async fn qwen_full_attention_sequence_from_parts_with_matvec(
     qwen_full_attention_sequence_from_parts_impl(dims, parts, config, None, matvec).await
 }
 
-pub async fn qwen_full_attention_sequence_with_cache_from_parts(
+pub(crate) async fn qwen_full_attention_sequence_with_cache_from_parts(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1440,7 +1445,7 @@ pub async fn qwen_full_attention_sequence_with_cache_from_parts(
     .await
 }
 
-pub async fn qwen_full_attention_sequence_with_cache_from_parts_with_matvec(
+pub(crate) async fn qwen_full_attention_sequence_with_cache_from_parts_with_matvec(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionSequenceParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1450,7 +1455,7 @@ pub async fn qwen_full_attention_sequence_with_cache_from_parts_with_matvec(
     qwen_full_attention_sequence_from_parts_impl(dims, parts, config, Some(cache), matvec).await
 }
 
-pub async fn qwen_full_attention_step_with_cache_from_parts(
+pub(crate) async fn qwen_full_attention_step_with_cache_from_parts(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionStepParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1466,7 +1471,7 @@ pub async fn qwen_full_attention_step_with_cache_from_parts(
     .await
 }
 
-pub async fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
+pub(crate) async fn qwen_full_attention_step_with_cache_from_parts_with_matvec(
     dims: &QwenFullAttentionDims,
     parts: &QwenFullAttentionStepParts<'_>,
     config: QwenFullAttentionSequenceConfig,
@@ -1749,7 +1754,7 @@ pub async fn qwen_layer0_linear_attention_first_token(
     qwen_layer_linear_attention_first_token(store, spec, 0, projections).await
 }
 
-pub async fn qwen_layer_linear_attention_first_token(
+pub(crate) async fn qwen_layer_linear_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1765,7 +1770,7 @@ pub async fn qwen_layer_linear_attention_first_token(
     .await
 }
 
-pub async fn qwen_layer_linear_attention_first_token_with_matvec(
+pub(crate) async fn qwen_layer_linear_attention_first_token_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1810,7 +1815,7 @@ pub async fn qwen_layer_linear_attention_first_token_with_matvec(
     })
 }
 
-pub async fn qwen_layer_linear_attention_sequence(
+pub(crate) async fn qwen_layer_linear_attention_sequence(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1827,7 +1832,7 @@ pub async fn qwen_layer_linear_attention_sequence(
     .await
 }
 
-pub async fn qwen_layer_linear_attention_sequence_with_cache(
+pub(crate) async fn qwen_layer_linear_attention_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1845,7 +1850,7 @@ pub async fn qwen_layer_linear_attention_sequence_with_cache(
     .await
 }
 
-pub async fn qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+pub(crate) async fn qwen_layer_linear_attention_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1940,7 +1945,7 @@ async fn qwen_layer_linear_attention_sequence_impl(
     })
 }
 
-pub async fn qwen_layer_linear_attention_step_with_cache(
+pub(crate) async fn qwen_layer_linear_attention_step_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -1964,7 +1969,7 @@ pub async fn qwen_layer_linear_attention_step_with_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn qwen_layer_linear_attention_step_with_cache_with_matvec(
+pub(crate) async fn qwen_layer_linear_attention_step_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2019,7 +2024,7 @@ pub async fn qwen_layer_linear_attention_step_with_cache_with_matvec(
     })
 }
 
-pub async fn qwen_layer_full_attention_first_token(
+pub(crate) async fn qwen_layer_full_attention_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2035,7 +2040,7 @@ pub async fn qwen_layer_full_attention_first_token(
     .await
 }
 
-pub async fn qwen_layer_full_attention_first_token_with_matvec(
+pub(crate) async fn qwen_layer_full_attention_first_token_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2103,7 +2108,7 @@ pub async fn qwen_layer_full_attention_first_token_with_matvec(
     })
 }
 
-pub async fn qwen_layer_full_attention_sequence(
+pub(crate) async fn qwen_layer_full_attention_sequence(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2120,7 +2125,7 @@ pub async fn qwen_layer_full_attention_sequence(
     .await
 }
 
-pub async fn qwen_layer_full_attention_sequence_with_cache(
+pub(crate) async fn qwen_layer_full_attention_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2138,7 +2143,7 @@ pub async fn qwen_layer_full_attention_sequence_with_cache(
     .await
 }
 
-pub async fn qwen_layer_full_attention_sequence_with_cache_with_matvec(
+pub(crate) async fn qwen_layer_full_attention_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2231,7 +2236,7 @@ async fn qwen_layer_full_attention_sequence_impl(
     })
 }
 
-pub async fn qwen_layer_full_attention_step_with_cache(
+pub(crate) async fn qwen_layer_full_attention_step_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2255,7 +2260,7 @@ pub async fn qwen_layer_full_attention_step_with_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn qwen_layer_full_attention_step_with_cache_with_matvec(
+pub(crate) async fn qwen_layer_full_attention_step_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2347,7 +2352,7 @@ pub async fn qwen_layer0_linear_attention_projections(
     qwen_layer_linear_attention_projections(store, 0, hidden_states).await
 }
 
-pub async fn qwen_layer_linear_attention_projections(
+pub(crate) async fn qwen_layer_linear_attention_projections(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -2361,7 +2366,7 @@ pub async fn qwen_layer_linear_attention_projections(
     .await
 }
 
-pub async fn qwen_layer_linear_attention_projections_with_matvec(
+pub(crate) async fn qwen_layer_linear_attention_projections_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -2417,7 +2422,7 @@ pub async fn qwen_layer0_post_attention_norm(
     .await
 }
 
-pub async fn qwen_layer_post_attention_norm(
+pub(crate) async fn qwen_layer_post_attention_norm(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     residual: &[f32],
@@ -2437,7 +2442,7 @@ pub async fn qwen_layer_post_attention_norm(
     .await
 }
 
-pub async fn qwen_layer_post_attention_norm_with_matvec(
+pub(crate) async fn qwen_layer_post_attention_norm_with_matvec(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     residual: &[f32],
@@ -2597,7 +2602,7 @@ pub async fn qwen_linear_decoder_layer_first_token(
     .await
 }
 
-pub async fn qwen_linear_decoder_layer_first_token_with_matvec(
+pub(crate) async fn qwen_linear_decoder_layer_first_token_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2660,7 +2665,7 @@ pub async fn qwen_linear_decoder_layer_first_token_with_matvec(
         .collect()
 }
 
-pub async fn qwen_full_decoder_layer_first_token(
+pub(crate) async fn qwen_full_decoder_layer_first_token(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2676,7 +2681,7 @@ pub async fn qwen_full_decoder_layer_first_token(
     .await
 }
 
-pub async fn qwen_full_decoder_layer_first_token_with_matvec(
+pub(crate) async fn qwen_full_decoder_layer_first_token_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2752,7 +2757,7 @@ pub async fn qwen_decoder_layer_first_token(
     .await
 }
 
-pub async fn qwen_decoder_layer_first_token_with_matvec(
+pub(crate) async fn qwen_decoder_layer_first_token_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2786,7 +2791,7 @@ pub async fn qwen_decoder_layer_first_token_with_matvec(
     }
 }
 
-pub async fn qwen_decoder_layer_sequence(
+pub(crate) async fn qwen_decoder_layer_sequence(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2805,7 +2810,7 @@ pub async fn qwen_decoder_layer_sequence(
     .await
 }
 
-pub async fn qwen_decoder_layer_sequence_with_cache(
+pub(crate) async fn qwen_decoder_layer_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2825,7 +2830,7 @@ pub async fn qwen_decoder_layer_sequence_with_cache(
     .await
 }
 
-pub async fn qwen_decoder_layer_sequence_with_cache_with_matvec(
+pub(crate) async fn qwen_decoder_layer_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2846,7 +2851,7 @@ pub async fn qwen_decoder_layer_sequence_with_cache_with_matvec(
     .await
 }
 
-pub async fn qwen_decoder_layer_step_with_cache(
+pub(crate) async fn qwen_decoder_layer_step_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -2870,7 +2875,7 @@ pub async fn qwen_decoder_layer_step_with_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn qwen_decoder_layer_step_with_cache_with_matvec(
+pub(crate) async fn qwen_decoder_layer_step_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -3086,7 +3091,7 @@ async fn qwen_decoder_layer_sequence_impl(
     Ok(results)
 }
 
-pub async fn qwen_prefill_sequence(
+pub(crate) async fn qwen_prefill_sequence(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     token_ids: &[usize],
@@ -3098,7 +3103,7 @@ pub async fn qwen_prefill_sequence(
     Ok(hidden_states)
 }
 
-pub async fn qwen_prefill_sequence_with_cache(
+pub(crate) async fn qwen_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     token_ids: &[usize],
@@ -3147,7 +3152,7 @@ pub async fn qwen_prefill_sequence_with_cache_with_matvec(
     Ok(hidden_states)
 }
 
-pub async fn qwen_decode_token_with_cache(
+pub(crate) async fn qwen_decode_token_with_cache(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     token_id: usize,

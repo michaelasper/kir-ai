@@ -109,7 +109,7 @@ pub fn native_layer_caches_for_spec(
     }
 }
 
-pub async fn native_prefill_sequence_with_cache(
+pub(crate) async fn native_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_ids: &[usize],
@@ -127,7 +127,7 @@ pub async fn native_prefill_sequence_with_cache(
     .await
 }
 
-pub async fn native_prefill_sequence_with_cache_with_matvec(
+pub(crate) async fn native_prefill_sequence_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_ids: &[usize],
@@ -172,7 +172,7 @@ pub async fn native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
     }
 }
 
-pub async fn native_decode_token_with_cache(
+pub(crate) async fn native_decode_token_with_cache(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_id: usize,
@@ -190,7 +190,7 @@ pub async fn native_decode_token_with_cache(
     .await
 }
 
-pub async fn native_decode_token_with_cache_with_matvec(
+pub(crate) async fn native_decode_token_with_cache_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     token_id: usize,
@@ -233,7 +233,7 @@ pub async fn native_decode_token_with_cache_for_spec_ref_with_matvec(
     }
 }
 
-pub async fn native_final_norm_for_spec(
+pub(crate) async fn native_final_norm_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -242,7 +242,7 @@ pub async fn native_final_norm_for_spec(
         .await
 }
 
-pub async fn native_final_norm_for_spec_with_matvec(
+pub(crate) async fn native_final_norm_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -269,7 +269,7 @@ pub async fn native_final_norm_for_spec_ref_with_matvec(
     }
 }
 
-pub async fn native_lm_head_top_k_for_spec(
+pub(crate) async fn native_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -287,7 +287,7 @@ pub async fn native_lm_head_top_k_for_spec(
     .await
 }
 
-pub async fn native_lm_head_top_k_for_spec_with_matvec(
+pub(crate) async fn native_lm_head_top_k_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -340,7 +340,7 @@ pub async fn native_lm_head_top_k_for_spec_ref_with_matvec(
     }
 }
 
-pub async fn native_lm_head_logits_for_spec(
+pub(crate) async fn native_lm_head_logits_for_spec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],
@@ -356,7 +356,7 @@ pub async fn native_lm_head_logits_for_spec(
     .await
 }
 
-pub async fn native_lm_head_logits_for_spec_with_matvec(
+pub(crate) async fn native_lm_head_logits_for_spec_with_matvec(
     store: &SafeTensorShardStore,
     spec: &NativeTextModelSpec,
     hidden_states: &[f32],

@@ -3,7 +3,7 @@ use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadE
 use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
 use llm_models::QwenModelSpec;
 
-pub async fn qwen_layer_dense_mlp_with_matvec(
+pub(crate) async fn qwen_layer_dense_mlp_with_matvec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,

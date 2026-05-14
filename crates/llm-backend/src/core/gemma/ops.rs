@@ -2,12 +2,15 @@ use super::super::math::{
     InferenceScratchpad, MathError, TopKLogit, apply_rope_to_head, require_len,
     rms_norm_f32_in_place, rms_norm_scale_f32,
 };
-use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeF32Rows, NativeFullAttentionCacheSequenceParts,
-    NativeFullAttentionDims, NativeFullAttentionSequenceParts, NativeMatvecBackend,
-    NativeOutputProjection, SafeTensorShardStore, TensorLoadError,
+use super::super::native_attention::{
+    NativeF32Rows, NativeFullAttentionCacheSequenceParts, NativeFullAttentionDims,
+    NativeFullAttentionSequenceParts, NativeOutputProjection,
     native_full_attention_sequence_from_cache_parts_with_matvec,
     native_full_attention_sequence_with_cache_from_parts_with_matvec,
+};
+use super::super::{
+    CpuNativeMatvecBackend, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore,
+    TensorLoadError,
 };
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
@@ -155,7 +158,7 @@ fn validate_gemma_token_ids(
     Ok(())
 }
 
-pub async fn gemma_prefill_sequence_with_cache(
+pub(crate) async fn gemma_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     token_ids: &[usize],
@@ -224,7 +227,7 @@ pub async fn gemma_prefill_sequence_with_cache_with_matvec(
     Ok(hidden_states)
 }
 
-pub async fn gemma_decode_token_with_cache(
+pub(crate) async fn gemma_decode_token_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     token_id: usize,
@@ -879,7 +882,7 @@ pub async fn gemma_final_norm_for_spec(
     .map_err(|err| TensorLoadError::integrity(format!("Gemma final RMSNorm failed: {err}")))
 }
 
-pub async fn gemma_lm_head_top_k_for_spec(
+pub(crate) async fn gemma_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     hidden_states: &[f32],
