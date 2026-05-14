@@ -88,8 +88,8 @@ impl SamplingConfig {
     /// Standard multinomial sampling with OpenAI default controls (temperature 1.0, top_p 1.0).
     pub fn standard() -> Self {
         Self::TopP {
-            temperature: 1.0,
-            top_p: 1.0,
+            temperature: llm_util::sampling::DEFAULT_TEMPERATURE,
+            top_p: llm_util::sampling::DEFAULT_TOP_P,
         }
     }
 
@@ -97,26 +97,16 @@ impl SamplingConfig {
         temperature: Option<f32>,
         top_p: Option<f32>,
     ) -> Result<Self, BackendError> {
-        if let Some(t) = temperature
-            && (!t.is_finite() || !(0.0..=2.0).contains(&t))
-        {
-            return Err(BackendError::InvalidSamplingConfig(
-                "temperature must be finite and in [0, 2]".to_owned(),
-            ));
-        }
-        if let Some(p) = top_p
-            && (!p.is_finite() || p <= 0.0 || p > 1.0)
-        {
-            return Err(BackendError::InvalidSamplingConfig(
-                "top_p must be finite and in (0, 1]".to_owned(),
-            ));
-        }
+        llm_util::sampling::validate_sampling_controls(temperature, top_p)
+            .map_err(|err| BackendError::InvalidSamplingConfig(err.to_string()))?;
         Ok(match (temperature, top_p) {
-            (Some(0.0), _) => Self::Greedy,
+            (Some(temperature), _) if temperature == llm_util::sampling::GREEDY_TEMPERATURE => {
+                Self::Greedy
+            }
             (None, None) => Self::standard(),
             (t, p) => Self::TopP {
-                temperature: t.unwrap_or(1.0),
-                top_p: p.unwrap_or(1.0),
+                temperature: t.unwrap_or(llm_util::sampling::DEFAULT_TEMPERATURE),
+                top_p: p.unwrap_or(llm_util::sampling::DEFAULT_TOP_P),
             },
         })
     }

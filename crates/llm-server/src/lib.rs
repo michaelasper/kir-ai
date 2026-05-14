@@ -3,9 +3,8 @@ mod sync_ext;
 
 pub use axum::Router as ServerRouter;
 pub use engine::*;
+pub use llm_util::defaults::DEFAULT_MODEL_ID;
 use serde_json::{Value, json};
-
-pub const DEFAULT_MODEL_ID: &str = "local-qwen36";
 
 #[derive(Clone, Debug)]
 pub struct ServerBackendMetricsSnapshot {

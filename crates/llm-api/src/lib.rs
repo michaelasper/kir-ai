@@ -752,21 +752,8 @@ fn validate_sampling_controls(
     temperature: Option<f32>,
     top_p: Option<f32>,
 ) -> Result<(), ApiError> {
-    if let Some(temperature) = temperature
-        && (!temperature.is_finite() || !(0.0..=2.0).contains(&temperature))
-    {
-        return Err(ApiError::invalid_request(
-            "temperature must be finite and in [0, 2]",
-        ));
-    }
-    if let Some(top_p) = top_p
-        && (!top_p.is_finite() || top_p <= 0.0 || top_p > 1.0)
-    {
-        return Err(ApiError::invalid_request(
-            "top_p must be finite and in (0, 1]",
-        ));
-    }
-    Ok(())
+    llm_util::sampling::validate_sampling_controls(temperature, top_p)
+        .map_err(|err| ApiError::invalid_request(err.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

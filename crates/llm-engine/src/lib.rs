@@ -8,7 +8,7 @@ mod server;
 mod snapshot_backend;
 mod sync_ext;
 
-pub const DEFAULT_MODEL_ID: &str = "local-qwen36";
+pub use llm_util::defaults::DEFAULT_MODEL_ID;
 
 pub mod route {
     #[cfg(feature = "test-utils")]

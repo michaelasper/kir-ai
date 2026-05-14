@@ -13,6 +13,7 @@ members = [
   "crates/llm-telemetry",
   "crates/llm-tokenizer",
   "crates/llm-tool-parser",
+  "crates/llm-util",
 ]
 resolver = "3"
 

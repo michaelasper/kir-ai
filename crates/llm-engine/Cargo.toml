@@ -26,6 +26,7 @@ llm-sampler = { path = "../llm-sampler" }
 llm-server = { path = "../llm-server" }
 llm-telemetry = { path = "../llm-telemetry" }
 llm-tokenizer = { path = "../llm-tokenizer" }
+llm-util = { path = "../llm-util" }
 libc.workspace = true
 rand.workspace = true
 reqwest.workspace = true

@@ -1034,6 +1034,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 name = "llm-api"
 version = "0.1.0"
 dependencies = [
+ "llm-util",
  "schemars",
  "serde",
  "serde_json",
@@ -1049,6 +1050,7 @@ dependencies = [
  "llm-api",
  "llm-kv-cache",
  "llm-models",
+ "llm-util",
  "memmap2",
  "safetensors",
  "serde_json",
@@ -1079,6 +1081,7 @@ dependencies = [
  "llm-server",
  "llm-telemetry",
  "llm-tokenizer",
+ "llm-util",
  "rand",
  "reqwest",
  "serde",
@@ -1176,6 +1179,7 @@ dependencies = [
  "llm-hub",
  "llm-runtime",
  "llm-telemetry",
+ "llm-util",
  "schemars",
  "serde",
  "serde_json",
@@ -1213,6 +1217,10 @@ dependencies = [
  "serde_json",
  "thiserror",
 ]
+
+[[package]]
+name = "llm-util"
+version = "0.1.0"
 
 [[package]]
 name = "lock_api"

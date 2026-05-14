@@ -19,6 +19,7 @@ llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
 llm-runtime = { path = "../llm-runtime" }
 llm-telemetry = { path = "../llm-telemetry" }
+llm-util = { path = "../llm-util" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
