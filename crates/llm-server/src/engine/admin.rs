@@ -121,14 +121,15 @@ pub(super) async fn admin_model_verify(
                 "model verification requires snapshot metadata",
             ))
         })?;
-    let verification = match ModelStore::verify_snapshot(&snapshot.path).await {
+    let snapshot_path = snapshot.path;
+    let verification = match ModelStore::verify_snapshot(&snapshot_path).await {
         Ok(verification) => verification,
         Err(err) => {
             record_artifact_verification_failure_metrics(&state);
             return Err(EngineError::ModelStore(err));
         }
     };
-    ModelStore::mark_snapshot_used(&snapshot.path)
+    ModelStore::mark_snapshot_used(&snapshot_path)
         .await
         .map_err(EngineError::ModelStore)?;
     Ok(Json(AdminModelVerifyResponse {

@@ -328,12 +328,12 @@ fn qwen_full_attention_normalization_uses_configured_matvec_backend() {
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_full_attention_sequence_with_cache(
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
     let after_prefill_norm_calls = matvec.rms_norm_calls.get();
-    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+    let decoded = qwen_layer_full_attention_step_with_cache(
         &store,
         &spec,
         0,
@@ -373,12 +373,12 @@ fn qwen_full_attention_softmax_uses_configured_matvec_backend() {
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_full_attention_sequence_with_cache(
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
     let after_prefill_softmax_calls = matvec.softmax_calls.get();
-    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+    let decoded = qwen_layer_full_attention_step_with_cache(
         &store,
         &spec,
         0,
@@ -416,12 +416,12 @@ fn qwen_full_attention_scores_use_configured_matvec_backend() {
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_full_attention_sequence_with_cache(
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
     let after_prefill_dense_calls = matvec.dense_f32_calls.get();
-    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+    let decoded = qwen_layer_full_attention_step_with_cache(
         &store,
         &spec,
         0,
@@ -459,12 +459,12 @@ fn qwen_full_attention_value_mix_uses_configured_matvec_backend() {
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_full_attention_sequence_with_cache(
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
     let after_prefill_weighted_sum_calls = matvec.weighted_sum_calls.get();
-    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+    let decoded = qwen_layer_full_attention_step_with_cache(
         &store,
         &spec,
         0,
@@ -502,12 +502,12 @@ fn qwen_full_attention_cache_rows_use_configured_matvec_backend() {
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_full_attention_sequence_with_cache(
         &store, &spec, 0, &prefill, &mut cache, &matvec,
     )
     .expect("recording full cached sequence");
     let after_prefill_head_row_calls = matvec.kv_cache_head_row_calls.get();
-    let decoded = qwen_layer_full_attention_step_with_cache_with_matvec(
+    let decoded = qwen_layer_full_attention_step_with_cache(
         &store,
         &spec,
         0,
@@ -865,7 +865,7 @@ fn qwen_linear_attention_normalization_uses_configured_matvec_backend() {
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_linear_attention_sequence_with_cache(
         &store,
         &spec,
         0,
@@ -906,7 +906,7 @@ fn qwen_linear_attention_recurrent_matvecs_use_configured_backend() {
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_linear_attention_sequence_with_cache(
         &store,
         &spec,
         0,
@@ -946,7 +946,7 @@ fn qwen_linear_attention_recurrent_decay_and_update_use_configured_backend() {
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_linear_attention_sequence_with_cache(
         &store,
         &spec,
         0,
@@ -986,7 +986,7 @@ fn qwen_linear_attention_convolution_uses_configured_backend() {
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("recording cache");
     let matvec = RecordingMatvecBackend::default();
 
-    let output = qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+    let output = qwen_layer_linear_attention_sequence_with_cache(
         &store,
         &spec,
         0,

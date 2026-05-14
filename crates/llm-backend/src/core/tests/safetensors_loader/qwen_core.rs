@@ -346,7 +346,7 @@ async fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
         .expect("native text decode");
 
     let mut ref_caches = qwen_layer_caches_for_spec(&qwen_spec, 3).expect("ref caches");
-    let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+    let ref_prefill = native_prefill_sequence_with_cache_for_spec_ref(
         &store,
         (&qwen_spec).into(),
         &[0, 1],
@@ -356,7 +356,7 @@ async fn native_text_dispatch_matches_direct_qwen_prefill_and_decode() {
     )
     .await
     .expect("native text spec-ref prefill");
-    let ref_decode = native_decode_token_with_cache_for_spec_ref_with_matvec(
+    let ref_decode = native_decode_token_with_cache_for_spec_ref(
         &store,
         (&qwen_spec).into(),
         0,
@@ -420,7 +420,7 @@ async fn qwen_prefill_and_decode_use_configured_matvec_backend() {
     let mut recording_caches = qwen_layer_caches_for_spec(&spec, 3).expect("recording caches");
 
     let mut scratch = InferenceScratchpad::default();
-    let output = qwen_prefill_sequence_with_cache_with_matvec(
+    let output = qwen_prefill_sequence_with_cache(
         &store,
         &spec,
         &[0, 1],
@@ -431,7 +431,7 @@ async fn qwen_prefill_and_decode_use_configured_matvec_backend() {
     .await
     .expect("recording cached prefill");
     let decoded =
-        qwen_decode_token_with_cache_with_matvec(&store, &spec, 0, &mut recording_caches, &matvec, &mut scratch)
+        qwen_decode_token_with_cache(&store, &spec, 0, &mut recording_caches, &matvec, &mut scratch)
             .await
             .expect("recording cached decode");
 

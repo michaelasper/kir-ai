@@ -35,13 +35,13 @@ async fn qwen_final_norm_and_lm_head_top_k_use_indexed_weights() {
     .expect("lm head");
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
-    let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0)
+    let normalized = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0, &CpuNativeMatvecBackend)
         .await
         .expect("final norm");
-    let top = qwen_lm_head_top_k(&store, &normalized, 1, 1)
+    let top = qwen_lm_head_top_k(&store, &normalized, 1, 1, &CpuNativeMatvecBackend)
         .await
         .expect("lm head");
-    let logits = qwen_lm_head_logits(&store, &normalized, 1)
+    let logits = qwen_lm_head_logits(&store, &normalized, 1, &CpuNativeMatvecBackend)
         .await
         .expect("lm head logits");
 
@@ -73,10 +73,10 @@ async fn qwen_lm_head_uses_configured_matvec_backend() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let matvec = RecordingMatvecBackend::default();
 
-    let top = qwen_lm_head_top_k_with_matvec(&store, &[1.0, 2.0], 2, 2, &matvec)
+    let top = qwen_lm_head_top_k(&store, &[1.0, 2.0], 2, 2, &matvec)
         .await
         .expect("top-k uses recording matvec");
-    let logits = qwen_lm_head_logits_with_matvec(&store, &[1.0, 2.0], 2, &matvec)
+    let logits = qwen_lm_head_logits(&store, &[1.0, 2.0], 2, &matvec)
         .await
         .expect("full logits use recording matvec");
 
@@ -110,11 +110,11 @@ async fn qwen_final_norm_uses_configured_rms_norm_backend() {
     .expect("norm");
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let matvec = RecordingMatvecBackend::default();
-    let expected = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0)
+    let expected = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0, &CpuNativeMatvecBackend)
         .await
         .expect("cpu final norm");
 
-    let output = qwen_final_norm_with_matvec(&store, &[3.0, 4.0], 2, 0.0, &matvec)
+    let output = qwen_final_norm(&store, &[3.0, 4.0], 2, 0.0, &matvec)
         .await
         .expect("final norm uses recording backend");
 

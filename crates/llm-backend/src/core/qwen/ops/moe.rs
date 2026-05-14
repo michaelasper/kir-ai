@@ -3,7 +3,7 @@ use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadE
 use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
 use llm_models::QwenModelSpec;
 
-pub(crate) async fn qwen_layer_dense_mlp_with_matvec(
+pub(crate) async fn qwen_layer_dense_mlp(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -62,7 +62,7 @@ pub(crate) async fn qwen_layer_dense_mlp_with_matvec(
     Ok(())
 }
 
-pub(super) async fn qwen_layer_feed_forward_with_matvec(
+pub(super) async fn qwen_layer_feed_forward(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
@@ -72,7 +72,7 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
     output: &mut [f32],
 ) -> Result<(), TensorLoadError> {
     if spec.is_qwen3_dense() {
-        return qwen_layer_dense_mlp_with_matvec(
+        return qwen_layer_dense_mlp(
             store,
             spec,
             layer_idx,
@@ -85,7 +85,7 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
     }
 
     // MoE case
-    let router = qwen_layer_moe_router_with_matvec(
+    let router = qwen_layer_moe_router(
         store,
         layer_idx,
         hidden_states,
@@ -94,7 +94,7 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
     )
     .await?;
 
-    qwen_layer_moe_forward_with_matvec_in_place(
+    qwen_layer_moe_forward_in_place(
         store,
         layer_idx,
         &QwenMoeDims::from_spec(spec),
@@ -107,7 +107,7 @@ pub(super) async fn qwen_layer_feed_forward_with_matvec(
     .await
 }
 
-pub async fn qwen_layer_moe_router_with_matvec(
+pub async fn qwen_layer_moe_router(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     hidden_states: &[f32],
@@ -129,7 +129,7 @@ pub async fn qwen_layer_moe_router_with_matvec(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn qwen_layer_moe_forward_with_matvec_in_place(
+pub async fn qwen_layer_moe_forward_in_place(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     dims: &QwenMoeDims,
@@ -197,7 +197,7 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
     }
 
     let mut shared_output = vec![0.0; dims.hidden_size];
-    qwen_layer_shared_expert_forward_with_matvec(
+    qwen_layer_shared_expert_forward(
         store,
         layer_idx,
         dims,
@@ -226,7 +226,7 @@ pub async fn qwen_layer_moe_forward_with_matvec_in_place(
     Ok(())
 }
 
-pub(super) async fn qwen_layer_shared_expert_forward_with_matvec(
+pub(super) async fn qwen_layer_shared_expert_forward(
     store: &SafeTensorShardStore,
     layer_idx: usize,
     dims: &QwenMoeDims,

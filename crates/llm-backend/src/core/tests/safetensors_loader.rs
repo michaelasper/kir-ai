@@ -4,12 +4,10 @@ use super::super::qwen::ops::{
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
     QwenLayerCache, qwen_decode_token_with_cache, qwen_embedding_and_layer0_norm,
     qwen_embedding_sequence_for_spec, qwen_final_norm, qwen_final_norm_for_spec,
-    qwen_final_norm_with_matvec, qwen_layer_caches_for_spec,
-    qwen_layer_full_attention_sequence_with_cache_with_matvec,
-    qwen_layer_linear_attention_sequence_with_cache_with_matvec, qwen_lm_head_logits,
-    qwen_lm_head_logits_for_spec, qwen_lm_head_logits_with_matvec, qwen_lm_head_top_k,
-    qwen_lm_head_top_k_for_spec, qwen_lm_head_top_k_with_matvec, qwen_prefill_sequence_with_cache,
-    qwen_static_f32_tensors_for_spec,
+    qwen_layer_caches_for_spec, qwen_layer_full_attention_sequence_with_cache,
+    qwen_layer_linear_attention_sequence_with_cache, qwen_lm_head_logits,
+    qwen_lm_head_logits_for_spec, qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec,
+    qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
 };
 use super::super::safetensors::{SafeTensorShardStore, TensorLoadError};
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
@@ -288,6 +286,7 @@ async fn qwen_decode_rejects_token_id_outside_configured_vocab() {
         &spec,
         spec.vocab_size as usize,
         &mut caches,
+        &CpuNativeMatvecBackend,
         &mut scratch,
     )
     .await
@@ -347,7 +346,7 @@ async fn qwen_full_attention_output_projection_uses_bf16_matvec() {
     };
     let matvec = RecordingMatvecBackend::default();
 
-    qwen_layer_full_attention_sequence_with_cache_with_matvec(
+    qwen_layer_full_attention_sequence_with_cache(
         &store,
         &spec,
         0,
@@ -382,7 +381,7 @@ async fn qwen_linear_attention_output_projection_uses_bf16_matvec() {
     };
     let matvec = RecordingMatvecBackend::default();
 
-    qwen_layer_linear_attention_sequence_with_cache_with_matvec(
+    qwen_layer_linear_attention_sequence_with_cache(
         &store,
         &spec,
         0,

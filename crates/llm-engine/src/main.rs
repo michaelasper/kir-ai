@@ -3,8 +3,8 @@ use llm_backend::{
     qwen_embedding_and_layer0_norm,
 };
 use llm_backend::{
-    qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer_moe_forward_with_matvec_in_place,
-    qwen_layer_moe_router_with_matvec, qwen_layer0_linear_attention_first_token,
+    qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer_moe_forward_in_place,
+    qwen_layer_moe_router, qwen_layer0_linear_attention_first_token,
     qwen_layer0_linear_attention_projections, qwen_layer0_post_attention_norm,
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
@@ -672,9 +672,14 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 let mut hidden = probe.embedding.clone();
                 let mut layers = Vec::new();
                 for layer_idx in 0..count {
-                    hidden =
-                        qwen_linear_decoder_layer_first_token(&store, &spec, layer_idx, &hidden)
-                            .await?;
+                    hidden = qwen_linear_decoder_layer_first_token(
+                        &store,
+                        &spec,
+                        layer_idx,
+                        &hidden,
+                        &CpuNativeMatvecBackend,
+                    )
+                    .await?;
                     layers.push(serde_json::json!({
                         "layer": layer_idx,
                         "hidden_prefix": hidden.iter().copied().take(limit).collect::<Vec<_>>()
@@ -692,8 +697,14 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 let mut hidden = probe.embedding.clone();
                 let mut layers = Vec::new();
                 for layer_idx in 0..count {
-                    hidden =
-                        qwen_decoder_layer_first_token(&store, &spec, layer_idx, &hidden).await?;
+                    hidden = qwen_decoder_layer_first_token(
+                        &store,
+                        &spec,
+                        layer_idx,
+                        &hidden,
+                        &CpuNativeMatvecBackend,
+                    )
+                    .await?;
                     layers.push(serde_json::json!({
                         "layer": layer_idx,
                         "kind": format!("{:?}", spec.layer_kinds[layer_idx]),
@@ -778,7 +789,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                     .map(str::parse::<usize>)
                     .transpose()?
                     .unwrap_or(spec.num_experts_per_tok as usize);
-                let router = qwen_layer_moe_router_with_matvec(
+                let router = qwen_layer_moe_router(
                     &store,
                     0,
                     &post_attention,
@@ -811,7 +822,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 })?;
                 let mut moe_output = vec![0.0; spec.hidden_size as usize];
                 let mut scratch = InferenceScratchpad::default();
-                qwen_layer_moe_forward_with_matvec_in_place(
+                qwen_layer_moe_forward_in_place(
                     &store,
                     0,
                     &QwenMoeDims::from_spec(&spec),
@@ -1127,10 +1138,17 @@ async fn qwen_lm_head_json(
         hidden_states,
         options.hidden_size,
         options.rms_norm_eps,
+        &CpuNativeMatvecBackend,
     )
     .await?;
-    let top_logits =
-        qwen_lm_head_top_k(store, &final_norm, options.top_k, options.chunk_rows).await?;
+    let top_logits = qwen_lm_head_top_k(
+        store,
+        &final_norm,
+        options.top_k,
+        options.chunk_rows,
+        &CpuNativeMatvecBackend,
+    )
+    .await?;
     let mut logits = Vec::with_capacity(top_logits.len());
     for item in top_logits {
         let decoded = if let Some(tokenizer) = tokenizer {

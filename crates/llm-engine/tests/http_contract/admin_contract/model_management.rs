@@ -63,15 +63,32 @@ async fn admin_model_endpoint_reports_ready_model() {
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_backend_artifact_identity() {
-    let response = build_router_with_unauthenticated_admin(Box::new(MetadataBackend))
-        .oneshot(
-            Request::builder()
-                .uri(format!("/admin/models/{}", llm_engine::DEFAULT_MODEL_ID))
-                .body(Body::empty())
-                .expect("request builds"),
-        )
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_test_snapshot(temp.path()).await;
+    ModelStore::new(temp.path())
+        .record_snapshot_alias(llm_engine::DEFAULT_MODEL_ID, &snapshot_path)
         .await
-        .expect("admin model response");
+        .expect("snapshot alias");
+    let promoted_snapshot = ModelStore::new(temp.path())
+        .resolve_snapshot_alias(llm_engine::DEFAULT_MODEL_ID)
+        .await
+        .expect("promoted snapshot");
+    let response = build_router_with_unauthenticated_admin_and_options(
+        Box::new(MetadataBackend),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .uri(format!("/admin/models/{}", llm_engine::DEFAULT_MODEL_ID))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin model response");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
@@ -81,23 +98,35 @@ async fn admin_model_endpoint_reports_backend_artifact_identity() {
         body["resolved_commit"],
         "0123456789abcdef0123456789abcdef01234567"
     );
-    assert_eq!(
-        body["manifest_digest"],
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
+    assert_eq!(body["loader"], "native-metal");
+    assert_eq!(body["snapshot_path"], snapshot_path.display().to_string());
+    assert_eq!(body["manifest_digest"], promoted_snapshot.manifest_digest);
 }
 
 #[tokio::test]
 async fn admin_model_endpoint_reports_mlx_backend_identity() {
-    let response = build_router_with_unauthenticated_admin(Box::new(MlxMetadataBackend))
-        .oneshot(
-            Request::builder()
-                .uri("/admin/models/local-qwen36-mlx")
-                .body(Body::empty())
-                .expect("request builds"),
-        )
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_mlx_test_snapshot(temp.path()).await;
+    ModelStore::new(temp.path())
+        .record_snapshot_alias("local-qwen36-mlx", &snapshot_path)
         .await
-        .expect("admin model response");
+        .expect("snapshot alias");
+    let response = build_router_with_unauthenticated_admin_and_options(
+        Box::new(MlxMetadataBackend),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .uri("/admin/models/local-qwen36-mlx")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin model response");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response.into_body()).await;
@@ -105,7 +134,7 @@ async fn admin_model_endpoint_reports_mlx_backend_identity() {
     assert_eq!(body["family"], "qwen");
     assert_eq!(body["loader"], "mlx");
     assert_eq!(body["profile"], "qwen36-mlx-4bit");
-    assert_eq!(body["snapshot_path"], "/tmp/local-qwen36-mlx");
+    assert_eq!(body["snapshot_path"], snapshot_path.display().to_string());
 }
 
 #[tokio::test]

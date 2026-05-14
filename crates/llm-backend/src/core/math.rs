@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// This module intentionally retains CPU reference helpers that are exercised by
+// backend unit tests and parity diagnostics after the public API is narrowed.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

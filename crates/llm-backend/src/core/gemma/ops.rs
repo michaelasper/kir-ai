@@ -5,13 +5,10 @@ use super::super::math::{
 use super::super::native_attention::{
     NativeF32Rows, NativeFullAttentionCacheSequenceParts, NativeFullAttentionDims,
     NativeFullAttentionSequenceParts, NativeOutputProjection,
-    native_full_attention_sequence_from_cache_parts_with_matvec,
-    native_full_attention_sequence_with_cache_from_parts_with_matvec,
+    native_full_attention_sequence_from_cache_parts,
+    native_full_attention_sequence_with_cache_from_parts,
 };
-use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError,
-};
+use super::super::{LayerKvCache, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,25 +155,7 @@ fn validate_gemma_token_ids(
     Ok(())
 }
 
-pub(crate) async fn gemma_prefill_sequence_with_cache(
-    store: &SafeTensorShardStore,
-    spec: &GemmaModelSpec,
-    token_ids: &[usize],
-    caches: &mut [GemmaLayerCache],
-    scratch: &mut InferenceScratchpad,
-) -> Result<Vec<Vec<f32>>, TensorLoadError> {
-    gemma_prefill_sequence_with_cache_with_matvec(
-        store,
-        spec,
-        token_ids,
-        caches,
-        &CpuNativeMatvecBackend,
-        scratch,
-    )
-    .await
-}
-
-pub async fn gemma_prefill_sequence_with_cache_with_matvec(
+pub async fn gemma_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     token_ids: &[usize],
@@ -195,7 +174,7 @@ pub async fn gemma_prefill_sequence_with_cache_with_matvec(
     let input_embeddings = gemma_embedding_sequence_for_spec(store, spec, token_ids)?;
     let per_layer_inputs = if spec.uses_per_layer_input() {
         Some(
-            gemma_per_layer_inputs_sequence_with_matvec(
+            gemma_per_layer_inputs_sequence(
                 store,
                 spec,
                 token_ids,
@@ -210,7 +189,7 @@ pub async fn gemma_prefill_sequence_with_cache_with_matvec(
     };
     let mut hidden_states = input_embeddings;
     for layer_idx in 0..spec.num_hidden_layers as usize {
-        hidden_states = gemma_decoder_layer_sequence_with_cache_with_matvec(
+        hidden_states = gemma_decoder_layer_sequence_with_cache(
             store,
             spec,
             layer_idx,
@@ -227,25 +206,7 @@ pub async fn gemma_prefill_sequence_with_cache_with_matvec(
     Ok(hidden_states)
 }
 
-pub(crate) async fn gemma_decode_token_with_cache(
-    store: &SafeTensorShardStore,
-    spec: &GemmaModelSpec,
-    token_id: usize,
-    caches: &mut [GemmaLayerCache],
-    scratch: &mut InferenceScratchpad,
-) -> Result<Vec<f32>, TensorLoadError> {
-    gemma_decode_token_with_cache_with_matvec(
-        store,
-        spec,
-        token_id,
-        caches,
-        &CpuNativeMatvecBackend,
-        scratch,
-    )
-    .await
-}
-
-pub async fn gemma_decode_token_with_cache_with_matvec(
+pub async fn gemma_decode_token_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     token_id: usize,
@@ -253,15 +214,9 @@ pub async fn gemma_decode_token_with_cache_with_matvec(
     matvec: &impl NativeMatvecBackend,
     scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<f32>, TensorLoadError> {
-    let hidden_states = gemma_prefill_sequence_with_cache_with_matvec(
-        store,
-        spec,
-        &[token_id],
-        caches,
-        matvec,
-        scratch,
-    )
-    .await?;
+    let hidden_states =
+        gemma_prefill_sequence_with_cache(store, spec, &[token_id], caches, matvec, scratch)
+            .await?;
     hidden_states
         .into_iter()
         .next()
@@ -294,7 +249,7 @@ fn gemma_embedding_sequence_for_spec(
         .collect()
 }
 
-async fn gemma_per_layer_inputs_sequence_with_matvec(
+async fn gemma_per_layer_inputs_sequence(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     token_ids: &[usize],
@@ -393,7 +348,7 @@ async fn gemma_per_layer_inputs_sequence_with_matvec(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
+async fn gemma_decoder_layer_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     layer_idx: usize,
@@ -410,7 +365,7 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
         "input_layernorm.weight",
         hidden_states,
     )?;
-    let attention_output = gemma_layer_attention_sequence_with_cache_with_matvec(
+    let attention_output = gemma_layer_attention_sequence_with_cache(
         store,
         spec,
         layer_idx,
@@ -438,16 +393,7 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
     let mut mlp_output = Vec::with_capacity(pre_feed_forward.len());
     for hidden in &pre_feed_forward {
         let mut output = vec![0.0; spec.hidden_size as usize];
-        gemma_layer_dense_mlp_with_matvec(
-            store,
-            spec,
-            layer_idx,
-            hidden,
-            matvec,
-            scratch,
-            &mut output,
-        )
-        .await?;
+        gemma_layer_dense_mlp(store, spec, layer_idx, hidden, matvec, scratch, &mut output).await?;
         mlp_output.push(output);
     }
     let post_feed_forward = gemma_norm_sequence_after_projection(
@@ -463,7 +409,7 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
         spec.hidden_size as usize,
     )?;
     if let Some(per_layer_input) = per_layer_input {
-        output = gemma_apply_per_layer_input_sequence_with_matvec(
+        output = gemma_apply_per_layer_input_sequence(
             store,
             spec,
             layer_idx,
@@ -478,7 +424,7 @@ async fn gemma_decoder_layer_sequence_with_cache_with_matvec(
     Ok(output)
 }
 
-async fn gemma_apply_per_layer_input_sequence_with_matvec(
+async fn gemma_apply_per_layer_input_sequence(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     layer_idx: usize,
@@ -560,7 +506,7 @@ async fn gemma_apply_per_layer_input_sequence_with_matvec(
     Ok(results)
 }
 
-async fn gemma_layer_attention_sequence_with_cache_with_matvec(
+async fn gemma_layer_attention_sequence_with_cache(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     layer_idx: usize,
@@ -746,7 +692,7 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
     }
 
     let attention_output = if is_shared_layer {
-        native_full_attention_sequence_from_cache_parts_with_matvec(
+        native_full_attention_sequence_from_cache_parts(
             dims.native(),
             &NativeFullAttentionCacheSequenceParts {
                 queries: NativeF32Rows::flat(&queries, attention_dim)
@@ -764,7 +710,7 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
         )
         .await
     } else {
-        native_full_attention_sequence_with_cache_from_parts_with_matvec(
+        native_full_attention_sequence_with_cache_from_parts(
             dims.native(),
             &NativeFullAttentionSequenceParts {
                 queries: NativeF32Rows::flat(&queries, attention_dim)
@@ -791,7 +737,7 @@ async fn gemma_layer_attention_sequence_with_cache_with_matvec(
     Ok(attention_output)
 }
 
-async fn gemma_layer_dense_mlp_with_matvec(
+async fn gemma_layer_dense_mlp(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     layer_idx: usize,
@@ -882,25 +828,7 @@ pub async fn gemma_final_norm_for_spec(
     .map_err(|err| TensorLoadError::integrity(format!("Gemma final RMSNorm failed: {err}")))
 }
 
-pub(crate) async fn gemma_lm_head_top_k_for_spec(
-    store: &SafeTensorShardStore,
-    spec: &GemmaModelSpec,
-    hidden_states: &[f32],
-    top_k: usize,
-    chunk_rows: usize,
-) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    gemma_lm_head_top_k_for_spec_with_matvec(
-        store,
-        spec,
-        hidden_states,
-        top_k,
-        chunk_rows,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub async fn gemma_lm_head_top_k_for_spec_with_matvec(
+pub async fn gemma_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     hidden_states: &[f32],
@@ -919,7 +847,7 @@ pub async fn gemma_lm_head_top_k_for_spec_with_matvec(
         .await
 }
 
-pub async fn gemma_lm_head_logits_for_spec_with_matvec(
+pub async fn gemma_lm_head_logits_for_spec(
     store: &SafeTensorShardStore,
     spec: &GemmaModelSpec,
     hidden_states: &[f32],

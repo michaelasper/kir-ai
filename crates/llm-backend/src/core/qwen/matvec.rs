@@ -4,18 +4,18 @@ use super::super::math::MathError;
 #[cfg(test)]
 use super::super::CpuNativeMatvecBackend;
 
-pub(super) async fn rms_norm_f32_with_matvec(
+pub(super) async fn rms_norm_f32(
     input: &[f32],
     weight: &[f32],
     eps: f32,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
     let mut output = vec![0.0; input.len()];
-    rms_norm_f32_with_matvec_in_place(input, weight, eps, matvec, &mut output).await?;
+    rms_norm_f32_in_place(input, weight, eps, matvec, &mut output).await?;
     Ok(output)
 }
 
-pub(super) async fn rms_norm_f32_with_matvec_in_place(
+pub(super) async fn rms_norm_f32_in_place(
     input: &[f32],
     weight: &[f32],
     eps: f32,
@@ -32,25 +32,18 @@ pub(super) async fn rms_norm_f32_with_matvec_in_place(
         .await
 }
 
-pub(super) async fn l2_normalize_f32_with_matvec(
+pub(super) async fn l2_normalize_f32(
     input: &[f32],
     eps: f32,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
     let mut qwen_weight = Vec::new();
     let mut output = vec![0.0; input.len()];
-    l2_normalize_f32_with_matvec_and_weight_scratch(
-        input,
-        eps,
-        matvec,
-        &mut qwen_weight,
-        &mut output,
-    )
-    .await?;
+    l2_normalize_f32_and_weight_scratch(input, eps, matvec, &mut qwen_weight, &mut output).await?;
     Ok(output)
 }
 
-pub(super) async fn l2_normalize_f32_with_matvec_and_weight_scratch(
+pub(super) async fn l2_normalize_f32_and_weight_scratch(
     input: &[f32],
     eps: f32,
     matvec: &impl NativeMatvecBackend,
@@ -315,11 +308,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rms_norm_f32_with_matvec_forwards_raw_weight_without_one_center_scratch() {
+    async fn rms_norm_f32_forwards_raw_weight_without_one_center_scratch() {
         let matvec = RecordingRmsNormBackend::default();
         let mut output = vec![0.0; 2];
 
-        rms_norm_f32_with_matvec_in_place(&[3.0, 4.0], &[1.5, 2.5], 0.0, &matvec, &mut output)
+        rms_norm_f32_in_place(&[3.0, 4.0], &[1.5, 2.5], 0.0, &matvec, &mut output)
             .await
             .expect("rms norm succeeds");
 
@@ -334,11 +327,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn l2_normalize_f32_with_matvec_reuses_weight_scratch() {
+    async fn l2_normalize_f32_reuses_weight_scratch() {
         let mut qwen_weight = Vec::with_capacity(8);
         let mut output = vec![0.0; 2];
 
-        l2_normalize_f32_with_matvec_and_weight_scratch(
+        l2_normalize_f32_and_weight_scratch(
             &[3.0, 4.0],
             1e-6,
             &CpuNativeMatvecBackend,

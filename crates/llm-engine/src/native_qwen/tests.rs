@@ -14,7 +14,7 @@ use futures::StreamExt;
 use llm_backend::{
     BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
     NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
-    qwen_prefill_sequence_with_cache_with_matvec, qwen_static_f32_tensors_for_spec,
+    qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -745,7 +745,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
                 .enable_all()
                 .build()
                 .expect("test runtime");
-            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
+            rt.block_on(qwen_prefill_sequence_with_cache(
                 &backend.driver.adapter.store,
                 &backend.driver.adapter.spec,
                 chunk,
@@ -793,7 +793,7 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
                 .enable_all()
                 .build()
                 .expect("test runtime");
-            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
+            rt.block_on(qwen_prefill_sequence_with_cache(
                 &store,
                 &spec,
                 chunk,
@@ -842,7 +842,7 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
                 .enable_all()
                 .build()
                 .expect("test runtime");
-            rt.block_on(qwen_prefill_sequence_with_cache_with_matvec(
+            rt.block_on(qwen_prefill_sequence_with_cache(
                 &store, &spec, chunk, caches, &matvec, scratch,
             ))
             .map_err(|err| BackendError::Other(err.to_string()))

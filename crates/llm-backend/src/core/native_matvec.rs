@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// The native matvec surface keeps CPU fallback and test probes behind
+// crate-private visibility so A6 can restrict exported API without losing them.
+
 use super::math::{
     InferenceScratchpad, MathError, TopKLogit, TopKWeight,
     linear_attention_conv1d_silu_f32_in_place, linear_attention_recurrent_update_f32_in_place,
@@ -60,7 +64,7 @@ impl NativeBatchedMatvecOutput {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn swiglu_mlp_f32_with_matvec(
+pub(crate) async fn swiglu_mlp_f32(
     input: &[f32],
     gate_weight: &[f32],
     up_weight: &[f32],

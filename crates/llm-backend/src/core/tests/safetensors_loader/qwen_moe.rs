@@ -74,7 +74,7 @@ fn qwen_moe_router_uses_configured_top_k_backend() {
     let matvec = RecordingMatvecBackend::default();
 
     let router =
-        qwen_layer_moe_router_with_matvec(&store, 0, &[2.0, 3.0], 2, &matvec).expect("router");
+        qwen_layer_moe_router(&store, 0, &[2.0, 3.0], 2, &matvec).expect("router");
 
     assert_eq!(router.selected[0].index, 1);
     assert_eq!(router.selected[1].index, 2);
@@ -210,7 +210,7 @@ fn qwen_moe_forward_accumulation_uses_configured_backend() {
     let matvec = RecordingMatvecBackend::default();
 
     let output =
-        qwen_layer_moe_forward_with_matvec(&store, 0, &dims, &[1.0, 2.0], &router, &matvec)
+        qwen_layer_moe_forward(&store, 0, &dims, &[1.0, 2.0], &router, &matvec)
             .expect("recording moe");
 
     assert_close(&output, &expected, 1e-6);

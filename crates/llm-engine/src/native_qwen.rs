@@ -15,9 +15,8 @@ use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     InferenceScratchpad, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
     QwenLayerCache, SafeTensorShardStore, SamplingConfig,
-    native_decode_token_with_cache_for_spec_ref_with_matvec,
-    native_prefill_sequence_with_cache_for_spec_ref_with_matvec, qwen_layer_caches_for_spec,
-    qwen_static_f32_tensors_for_spec,
+    native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
+    qwen_layer_caches_for_spec, qwen_static_f32_tensors_for_spec,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::QwenModelSpec;
@@ -339,7 +338,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         caches: &mut [QwenLayerCache],
         scratch: &mut InferenceScratchpad,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        native_prefill_sequence_with_cache_for_spec_ref(
             &self.store,
             (&self.spec).into(),
             token_ids,
@@ -424,7 +423,7 @@ impl NativeQwenDecodeSession {
         token_id: usize,
         scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
-        self.hidden = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        self.hidden = native_decode_token_with_cache_for_spec_ref(
             store,
             spec.into(),
             token_id,

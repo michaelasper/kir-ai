@@ -8,10 +8,18 @@ async fn qwen3_dense_prefill_uses_model_namespace_and_dense_mlp() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let spec = tiny_qwen3_dense_spec();
     let mut caches = caches_for_spec(&spec, 4);
+    let mut scratch = InferenceScratchpad::default();
 
-    let hidden = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
-        .await
-        .expect("prefill");
+    let hidden = qwen_prefill_sequence_with_cache(
+        &store,
+        &spec,
+        &[0, 1],
+        &mut caches,
+        &CpuNativeMatvecBackend,
+        &mut scratch,
+    )
+    .await
+    .expect("prefill");
 
     assert_eq!(hidden.len(), 2);
     assert_eq!(hidden[0].len(), 2);
@@ -35,10 +43,18 @@ async fn qwen3_dense_prefill_rejects_wrong_down_proj_output_width() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let spec = tiny_qwen3_dense_spec();
     let mut caches = caches_for_spec(&spec, 4);
+    let mut scratch = InferenceScratchpad::default();
 
-    let err = qwen_prefill_sequence_with_cache(&store, &spec, &[0, 1], &mut caches)
-        .await
-        .expect_err("bad down projection width must fail closed");
+    let err = qwen_prefill_sequence_with_cache(
+        &store,
+        &spec,
+        &[0, 1],
+        &mut caches,
+        &CpuNativeMatvecBackend,
+        &mut scratch,
+    )
+    .await
+    .expect_err("bad down projection width must fail closed");
 
     assert!(
         err.to_string().contains("down output length"),
@@ -55,15 +71,17 @@ async fn qwen3_dense_final_norm_and_tied_lm_head_use_model_namespace() {
     let store = SafeTensorShardStore::open(&root).expect("store opens");
     let spec = tiny_qwen3_dense_spec();
 
-    let normalized = qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0])
+    let normalized = qwen_final_norm_for_spec(&store, &spec, &[1.0, 0.0], &CpuNativeMatvecBackend)
         .await
         .expect("final norm uses model.norm");
-    let top = qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2)
-        .await
-        .expect("tied top-k works");
-    let logits = qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2)
-        .await
-        .expect("tied logits work");
+    let top =
+        qwen_lm_head_top_k_for_spec(&store, &spec, &normalized, 2, 2, &CpuNativeMatvecBackend)
+            .await
+            .expect("tied top-k works");
+    let logits =
+        qwen_lm_head_logits_for_spec(&store, &spec, &normalized, 2, &CpuNativeMatvecBackend)
+            .await
+            .expect("tied logits work");
 
     assert_close(&normalized, &[std::f32::consts::SQRT_2, 0.0], 1e-5);
     assert_eq!(top[0].index, 0);

@@ -792,12 +792,34 @@ async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
 }
 
 async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
+    write_verified_test_snapshot_with_profile(
+        root,
+        "Qwen/Qwen3.6-35B-A3B",
+        ModelProfile::qwen36_safetensors_bf16(),
+    )
+    .await
+}
+
+async fn write_verified_mlx_test_snapshot(root: &Path) -> PathBuf {
+    write_verified_test_snapshot_with_profile(
+        root,
+        "mlx-community/Qwen3.6-35B-A3B-4bit",
+        ModelProfile::qwen36_mlx_4bit(),
+    )
+    .await
+}
+
+async fn write_verified_test_snapshot_with_profile(
+    root: &Path,
+    repo_id: &str,
+    profile: ModelProfile,
+) -> PathBuf {
     let store = ModelStore::new(root);
     let plan = build_download_plan(
-        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        HubRepoId::model(repo_id).expect("repo id"),
         "main",
         "0123456789abcdef0123456789abcdef01234567",
-        ModelProfile::qwen36_safetensors_bf16(),
+        profile,
         vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
         &[],
     )

@@ -1,7 +1,7 @@
 use llm_backend::{
     BackendError, NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore,
-    SamplingConfig, native_final_norm_for_spec_ref_with_matvec,
-    native_lm_head_logits_for_spec_ref_with_matvec, native_lm_head_top_k_for_spec_ref_with_matvec,
+    SamplingConfig, native_final_norm_for_spec_ref, native_lm_head_logits_for_spec_ref,
+    native_lm_head_top_k_for_spec_ref,
 };
 use llm_sampler::TopPSamplerScratch;
 use rand::{Rng as _, SeedableRng, rngs::SmallRng};
@@ -164,12 +164,11 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         sampling_draw: Option<f32>,
         top_p_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError> {
-        let final_norm =
-            native_final_norm_for_spec_ref_with_matvec(self.store, self.spec, hidden, self.matvec)
-                .await
-                .map_err(|err| BackendError::Other(err.to_string()))?;
+        let final_norm = native_final_norm_for_spec_ref(self.store, self.spec, hidden, self.matvec)
+            .await
+            .map_err(|err| BackendError::Other(err.to_string()))?;
         if !sampling.is_greedy() {
-            let logits = native_lm_head_logits_for_spec_ref_with_matvec(
+            let logits = native_lm_head_logits_for_spec_ref(
                 self.store,
                 self.spec,
                 &final_norm,
@@ -196,7 +195,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         }
 
         let top_k = self.top_k.min(self.spec.vocab_size() as usize).max(1);
-        let top_logits = native_lm_head_top_k_for_spec_ref_with_matvec(
+        let top_logits = native_lm_head_top_k_for_spec_ref(
             self.store,
             self.spec,
             &final_norm,

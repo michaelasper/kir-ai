@@ -1,7 +1,11 @@
+#![allow(dead_code)]
+// Attention helpers include crate-private reference paths used by backend tests
+// and native parity probes, not only the production call graph.
+
 use super::math::{MathError, require_len, sigmoid_f32};
 use super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeBatchedMatvecOutput, NativeKvCacheTensor,
-    NativeMatvecBackend, SafeTensorShardStore,
+    LayerKvCache, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
+    SafeTensorShardStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,14 +154,6 @@ struct NativeFullAttentionCacheSource<'a> {
 pub(crate) async fn native_full_attention_sequence_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
-) -> Result<Vec<Vec<f32>>, MathError> {
-    native_full_attention_sequence_from_parts_with_matvec(dims, parts, &CpuNativeMatvecBackend)
-        .await
-}
-
-pub(crate) async fn native_full_attention_sequence_from_parts_with_matvec(
-    dims: NativeFullAttentionDims,
-    parts: &NativeFullAttentionSequenceParts<'_>,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, MathError> {
     native_full_attention_sequence_impl(dims, parts, None, matvec).await
@@ -167,40 +163,12 @@ pub(crate) async fn native_full_attention_sequence_with_cache_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionSequenceParts<'_>,
     cache: &mut LayerKvCache,
-) -> Result<Vec<Vec<f32>>, MathError> {
-    native_full_attention_sequence_with_cache_from_parts_with_matvec(
-        dims,
-        parts,
-        cache,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub(crate) async fn native_full_attention_sequence_with_cache_from_parts_with_matvec(
-    dims: NativeFullAttentionDims,
-    parts: &NativeFullAttentionSequenceParts<'_>,
-    cache: &mut LayerKvCache,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, MathError> {
     native_full_attention_sequence_impl(dims, parts, Some(cache), matvec).await
 }
 
-pub(crate) async fn native_full_attention_step_with_cache_from_parts(
-    dims: NativeFullAttentionDims,
-    parts: &NativeFullAttentionStepParts<'_>,
-    cache: &mut LayerKvCache,
-) -> Result<Vec<f32>, MathError> {
-    native_full_attention_step_with_cache_from_parts_with_matvec(
-        dims,
-        parts,
-        cache,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub(crate) async fn native_full_attention_sequence_from_cache_parts_with_matvec(
+pub(crate) async fn native_full_attention_sequence_from_cache_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionCacheSequenceParts<'_>,
     cache: &LayerKvCache,
@@ -269,7 +237,7 @@ pub(crate) async fn native_full_attention_sequence_from_cache_parts_with_matvec(
         )
         .await?;
         outputs.push(
-            native_output_projection_with_matvec_unchecked(
+            native_output_projection_unchecked(
                 matvec,
                 parts.output_projection,
                 &attended,
@@ -282,14 +250,14 @@ pub(crate) async fn native_full_attention_sequence_from_cache_parts_with_matvec(
     Ok(outputs)
 }
 
-pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec(
+pub(crate) async fn native_full_attention_step_with_cache_from_parts(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
     cache: &mut LayerKvCache,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, MathError> {
     let mut output = vec![0.0; dims.hidden_size];
-    native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
+    native_full_attention_step_with_cache_from_parts_in_place(
         dims,
         parts,
         cache,
@@ -300,7 +268,7 @@ pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec
     Ok(output)
 }
 
-pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec_in_place(
+pub(crate) async fn native_full_attention_step_with_cache_from_parts_in_place(
     dims: NativeFullAttentionDims,
     parts: &NativeFullAttentionStepParts<'_>,
     cache: &mut LayerKvCache,
@@ -341,7 +309,7 @@ pub(crate) async fn native_full_attention_step_with_cache_from_parts_with_matvec
         matvec,
     )
     .await?;
-    native_output_projection_with_matvec_in_place_unchecked(
+    native_output_projection_in_place_unchecked(
         matvec,
         parts.output_projection,
         &attended,
@@ -437,7 +405,7 @@ async fn native_full_attention_sequence_impl(
             .await?
         };
         outputs.push(
-            native_output_projection_with_matvec_unchecked(
+            native_output_projection_unchecked(
                 matvec,
                 parts.output_projection,
                 &attended,
@@ -451,7 +419,7 @@ async fn native_full_attention_sequence_impl(
     Ok(outputs)
 }
 
-pub(crate) async fn native_output_projection_with_matvec(
+pub(crate) async fn native_output_projection(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],
@@ -459,19 +427,12 @@ pub(crate) async fn native_output_projection_with_matvec(
     columns: usize,
 ) -> Result<Vec<f32>, MathError> {
     let mut output = vec![0.0; rows];
-    native_output_projection_with_matvec_in_place(
-        matvec,
-        projection,
-        input,
-        rows,
-        columns,
-        &mut output,
-    )
-    .await?;
+    native_output_projection_in_place(matvec, projection, input, rows, columns, &mut output)
+        .await?;
     Ok(output)
 }
 
-pub(crate) async fn native_output_projection_with_matvec_in_place(
+pub(crate) async fn native_output_projection_in_place(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],
@@ -480,13 +441,11 @@ pub(crate) async fn native_output_projection_with_matvec_in_place(
     output: &mut [f32],
 ) -> Result<(), MathError> {
     require_native_output_projection_shape(projection, rows, columns)?;
-    native_output_projection_with_matvec_in_place_unchecked(
-        matvec, projection, input, rows, columns, output,
-    )
-    .await
+    native_output_projection_in_place_unchecked(matvec, projection, input, rows, columns, output)
+        .await
 }
 
-pub(crate) async fn native_output_projection_with_matvec_unchecked(
+pub(crate) async fn native_output_projection_unchecked(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],
@@ -494,7 +453,7 @@ pub(crate) async fn native_output_projection_with_matvec_unchecked(
     columns: usize,
 ) -> Result<Vec<f32>, MathError> {
     let mut output = vec![0.0; rows];
-    native_output_projection_with_matvec_in_place_unchecked(
+    native_output_projection_in_place_unchecked(
         matvec,
         projection,
         input,
@@ -506,7 +465,7 @@ pub(crate) async fn native_output_projection_with_matvec_unchecked(
     Ok(output)
 }
 
-pub(crate) async fn native_output_projection_with_matvec_in_place_unchecked(
+pub(crate) async fn native_output_projection_in_place_unchecked(
     matvec: &impl NativeMatvecBackend,
     projection: NativeOutputProjection<'_>,
     input: &[f32],
@@ -662,7 +621,7 @@ async fn native_full_attention_mix_from_cache(
                 dims.head_dim,
             )
             .await?;
-        let scores = scaled_full_attention_scores_with_matvec(
+        let scores = scaled_full_attention_scores(
             &input.query[q_start..q_start + dims.head_dim],
             &key_rows,
             source.count,
@@ -718,7 +677,7 @@ async fn native_full_attention_mix_from_inline(
             let key = source.keys.row(source_idx);
             key_rows.extend_from_slice(&key[kv_start..kv_start + dims.head_dim]);
         }
-        let scores = scaled_full_attention_scores_with_matvec(
+        let scores = scaled_full_attention_scores(
             &input.query[q_start..q_start + dims.head_dim],
             &key_rows,
             source.count,
@@ -745,7 +704,7 @@ async fn native_full_attention_mix_from_inline(
     Ok(attended)
 }
 
-async fn scaled_full_attention_scores_with_matvec(
+async fn scaled_full_attention_scores(
     query_head: &[f32],
     key_rows: &[f32],
     row_count: usize,
@@ -763,7 +722,7 @@ async fn scaled_full_attention_scores_with_matvec(
 
 #[cfg(test)]
 mod tests {
-    use super::super::TensorLoadError;
+    use super::super::{CpuNativeMatvecBackend, TensorLoadError};
     use super::*;
     use std::{
         path::PathBuf,
@@ -967,7 +926,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
 
-        let output = native_full_attention_sequence_from_parts_with_matvec(
+        let output = native_full_attention_sequence_from_parts(
             dims,
             &NativeFullAttentionSequenceParts {
                 queries: NativeF32Rows::from_rows(&queries),
@@ -1013,6 +972,7 @@ mod tests {
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
+            &CpuNativeMatvecBackend,
         )
         .await
         .expect("attention succeeds");
@@ -1044,6 +1004,7 @@ mod tests {
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
+            &CpuNativeMatvecBackend,
         )
         .await
         .expect("attention succeeds");
@@ -1074,13 +1035,19 @@ mod tests {
             score_scale: 1.0,
         };
 
-        let uncached = native_full_attention_sequence_from_parts(dims, &parts)
-            .await
-            .expect("uncached succeeds");
+        let uncached =
+            native_full_attention_sequence_from_parts(dims, &parts, &CpuNativeMatvecBackend)
+                .await
+                .expect("uncached succeeds");
         let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
-        let cached = native_full_attention_sequence_with_cache_from_parts(dims, &parts, &mut cache)
-            .await
-            .expect("cached succeeds");
+        let cached = native_full_attention_sequence_with_cache_from_parts(
+            dims,
+            &parts,
+            &mut cache,
+            &CpuNativeMatvecBackend,
+        )
+        .await
+        .expect("cached succeeds");
 
         assert_eq!(uncached.len(), cached.len());
         for (uncached, cached) in uncached.iter().zip(cached) {
@@ -1113,6 +1080,7 @@ mod tests {
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 0.0,
             },
+            &CpuNativeMatvecBackend,
         )
         .await
         .expect("flat scale attention succeeds");
@@ -1126,6 +1094,7 @@ mod tests {
                 output_projection: NativeOutputProjection::F32(&output_projection),
                 score_scale: 1.0,
             },
+            &CpuNativeMatvecBackend,
         )
         .await
         .expect("sharp scale attention succeeds");
@@ -1156,7 +1125,7 @@ mod tests {
         let source_counts = vec![1, 2];
         let output_projection = vec![1.0];
 
-        let output = native_full_attention_sequence_from_cache_parts_with_matvec(
+        let output = native_full_attention_sequence_from_cache_parts(
             dims,
             &NativeFullAttentionCacheSequenceParts {
                 queries: NativeF32Rows::from_rows(&queries),
@@ -1364,7 +1333,7 @@ mod tests {
         let output_projection = vec![1.0, 0.0, 0.0, 1.0];
         let backend = FusedCacheMixBackend::default();
 
-        let output = native_full_attention_sequence_from_cache_parts_with_matvec(
+        let output = native_full_attention_sequence_from_cache_parts(
             dims,
             &NativeFullAttentionCacheSequenceParts {
                 queries: NativeF32Rows::from_rows(&queries),

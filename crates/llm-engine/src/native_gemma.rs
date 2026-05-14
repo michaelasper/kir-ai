@@ -17,8 +17,7 @@ use llm_backend::{
     GemmaLayerCache, InferenceScratchpad, ModelBackend, NativeMatvecBackend,
     NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec,
     gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
-    native_decode_token_with_cache_for_spec_ref_with_matvec,
-    native_prefill_sequence_with_cache_for_spec_ref_with_matvec,
+    native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
 };
 use llm_hub::SnapshotManifest;
 use llm_models::GemmaModelSpec;
@@ -319,7 +318,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         caches: &mut [GemmaLayerCache],
         scratch: &mut InferenceScratchpad,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        native_prefill_sequence_with_cache_for_spec_ref_with_matvec(
+        native_prefill_sequence_with_cache_for_spec_ref(
             &self.store,
             (&self.spec).into(),
             token_ids,
@@ -404,7 +403,7 @@ impl NativeGemmaDecodeSession {
         token_id: usize,
         scratch: &mut InferenceScratchpad,
     ) -> Result<(), BackendError> {
-        self.hidden = native_decode_token_with_cache_for_spec_ref_with_matvec(
+        self.hidden = native_decode_token_with_cache_for_spec_ref(
             store,
             spec.into(),
             token_id,

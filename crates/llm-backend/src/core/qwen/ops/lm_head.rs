@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// LM-head logits helpers are kept for backend parity tests and optional
+// diagnostics while the stable public API exposes only selected entry points.
+
 use super::*;
 
 pub(super) fn qwen_layer_tensor(layer_idx: usize, suffix: &str) -> String {
@@ -13,29 +17,10 @@ pub async fn qwen_final_norm(
     hidden_states: &[f32],
     hidden_size: usize,
     rms_norm_eps: f32,
-) -> Result<Vec<f32>, TensorLoadError> {
-    let mut output = vec![0.0; hidden_size];
-    qwen_final_norm_with_matvec_in_place(
-        store,
-        hidden_states,
-        hidden_size,
-        rms_norm_eps,
-        &CpuNativeMatvecBackend,
-        &mut output,
-    )
-    .await?;
-    Ok(output)
-}
-
-pub(crate) async fn qwen_final_norm_with_matvec(
-    store: &SafeTensorShardStore,
-    hidden_states: &[f32],
-    hidden_size: usize,
-    rms_norm_eps: f32,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let mut output = vec![0.0; hidden_size];
-    qwen_final_norm_with_matvec_in_place(
+    qwen_final_norm_in_place(
         store,
         hidden_states,
         hidden_size,
@@ -47,7 +32,7 @@ pub(crate) async fn qwen_final_norm_with_matvec(
     Ok(output)
 }
 
-pub(crate) async fn qwen_final_norm_with_matvec_in_place(
+pub(crate) async fn qwen_final_norm_in_place(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     hidden_size: usize,
@@ -73,36 +58,18 @@ pub(crate) async fn qwen_final_norm_with_matvec_in_place(
         .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 
-pub(crate) async fn qwen_final_norm_for_spec(
-    store: &SafeTensorShardStore,
-    spec: &QwenModelSpec,
-    hidden_states: &[f32],
-) -> Result<Vec<f32>, TensorLoadError> {
-    let mut output = vec![0.0; spec.hidden_size as usize];
-    qwen_final_norm_for_spec_with_matvec_in_place(
-        store,
-        spec,
-        hidden_states,
-        &CpuNativeMatvecBackend,
-        &mut output,
-    )
-    .await?;
-    Ok(output)
-}
-
-pub async fn qwen_final_norm_for_spec_with_matvec(
+pub async fn qwen_final_norm_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     let mut output = vec![0.0; spec.hidden_size as usize];
-    qwen_final_norm_for_spec_with_matvec_in_place(store, spec, hidden_states, matvec, &mut output)
-        .await?;
+    qwen_final_norm_for_spec_in_place(store, spec, hidden_states, matvec, &mut output).await?;
     Ok(output)
 }
 
-pub(crate) async fn qwen_final_norm_for_spec_with_matvec_in_place(
+pub(crate) async fn qwen_final_norm_for_spec_in_place(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -117,34 +84,12 @@ pub(crate) async fn qwen_final_norm_for_spec_with_matvec_in_place(
         )));
     }
     let norm_weight = store.bf16_tensor_f32_cached_arc(&spec.final_norm_weight())?;
-    qwen_rms_norm_for_spec_with_matvec_in_place(
-        spec,
-        hidden_states,
-        norm_weight.as_ref(),
-        matvec,
-        output,
-    )
-    .await
-    .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
+    qwen_rms_norm_for_spec_in_place(spec, hidden_states, norm_weight.as_ref(), matvec, output)
+        .await
+        .map_err(|err| TensorLoadError::integrity(format!("Qwen final RMSNorm failed: {err}")))
 }
 
 pub async fn qwen_lm_head_top_k(
-    store: &SafeTensorShardStore,
-    hidden_states: &[f32],
-    top_k: usize,
-    chunk_rows: usize,
-) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    qwen_lm_head_top_k_with_matvec(
-        store,
-        hidden_states,
-        top_k,
-        chunk_rows,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub(crate) async fn qwen_lm_head_top_k_with_matvec(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     top_k: usize,
@@ -156,25 +101,7 @@ pub(crate) async fn qwen_lm_head_top_k_with_matvec(
         .await
 }
 
-pub(crate) async fn qwen_lm_head_top_k_for_spec(
-    store: &SafeTensorShardStore,
-    spec: &QwenModelSpec,
-    hidden_states: &[f32],
-    top_k: usize,
-    chunk_rows: usize,
-) -> Result<Vec<TopKLogit>, TensorLoadError> {
-    qwen_lm_head_top_k_for_spec_with_matvec(
-        store,
-        spec,
-        hidden_states,
-        top_k,
-        chunk_rows,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub async fn qwen_lm_head_top_k_for_spec_with_matvec(
+pub async fn qwen_lm_head_top_k_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -197,14 +124,6 @@ pub(crate) async fn qwen_lm_head_logits(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     chunk_rows: usize,
-) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_lm_head_logits_with_matvec(store, hidden_states, chunk_rows, &CpuNativeMatvecBackend).await
-}
-
-pub(crate) async fn qwen_lm_head_logits_with_matvec(
-    store: &SafeTensorShardStore,
-    hidden_states: &[f32],
-    chunk_rows: usize,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<f32>, TensorLoadError> {
     matvec
@@ -212,7 +131,7 @@ pub(crate) async fn qwen_lm_head_logits_with_matvec(
         .await
 }
 
-pub(crate) async fn qwen_lm_head_logits_with_matvec_in_place(
+pub(crate) async fn qwen_lm_head_logits_in_place(
     store: &SafeTensorShardStore,
     hidden_states: &[f32],
     chunk_rows: usize,
@@ -230,23 +149,7 @@ pub(crate) async fn qwen_lm_head_logits_with_matvec_in_place(
         .await
 }
 
-pub(crate) async fn qwen_lm_head_logits_for_spec(
-    store: &SafeTensorShardStore,
-    spec: &QwenModelSpec,
-    hidden_states: &[f32],
-    chunk_rows: usize,
-) -> Result<Vec<f32>, TensorLoadError> {
-    qwen_lm_head_logits_for_spec_with_matvec(
-        store,
-        spec,
-        hidden_states,
-        chunk_rows,
-        &CpuNativeMatvecBackend,
-    )
-    .await
-}
-
-pub async fn qwen_lm_head_logits_for_spec_with_matvec(
+pub async fn qwen_lm_head_logits_for_spec(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],
@@ -258,7 +161,7 @@ pub async fn qwen_lm_head_logits_for_spec_with_matvec(
         .await
 }
 
-pub(crate) async fn qwen_lm_head_logits_for_spec_with_matvec_in_place(
+pub(crate) async fn qwen_lm_head_logits_for_spec_in_place(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     hidden_states: &[f32],

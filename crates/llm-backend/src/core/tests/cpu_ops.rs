@@ -1,3 +1,4 @@
+use super::super::CpuNativeMatvecBackend;
 use super::super::backend::BackendCacheContext;
 use super::super::math::{
     matvec_row_major_f32, rms_norm_f32, rms_norm_one_centered_f32, silu_f32, softmax_top_k_f32,
@@ -6,9 +7,10 @@ use super::super::math::{
 use super::super::native_attention::{NativeF32Rows, NativeOutputProjection};
 use super::super::qwen::ops::{
     QwenFullAttentionDims, QwenFullAttentionSequenceConfig, QwenFullAttentionSequenceParts,
-    QwenFullAttentionStepParts, QwenLinearAttentionDims, QwenLinearAttentionSequenceParts,
-    QwenLinearAttentionStepParts, qwen_full_attention_first_token_from_parts,
-    qwen_full_attention_sequence_from_parts, qwen_full_attention_sequence_with_cache_from_parts,
+    QwenFullAttentionStepParts, QwenLinearAttentionDims, QwenLinearAttentionFirstTokenParts,
+    QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
+    qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
+    qwen_full_attention_sequence_with_cache_from_parts,
     qwen_full_attention_step_with_cache_from_parts, qwen_linear_attention_first_token_from_parts,
     qwen_linear_attention_sequence_from_parts,
     qwen_linear_attention_sequence_with_cache_from_parts,
@@ -128,12 +130,15 @@ async fn qwen_linear_attention_first_token_matches_simplified_reference() {
 
     let output = qwen_linear_attention_first_token_from_parts(
         &dims,
-        &[1.0, 1.0, 4.0],
-        &[1.0],
-        &[0.0],
-        &[1.0, 1.0, 1.0],
-        &[1.0],
-        &[2.0],
+        &QwenLinearAttentionFirstTokenParts {
+            qkv: &[1.0, 1.0, 4.0],
+            z: &[1.0],
+            b: &[0.0],
+            conv1d_weight: &[1.0, 1.0, 1.0],
+            norm_weight: &[1.0],
+            out_proj_weight: NativeOutputProjection::F32(&[2.0]),
+        },
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("linear attention output");
@@ -175,6 +180,7 @@ async fn qwen_linear_attention_sequence_updates_recurrent_state() {
             norm_weight: &norm_weight,
             out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("linear attention sequence");
@@ -237,12 +243,18 @@ async fn qwen_linear_attention_sequence_updates_linear_cache() {
     };
     let mut cache = LinearAttentionCache::new(1, 4, 1, 1, 2).expect("cache shape");
 
-    let output = qwen_linear_attention_sequence_with_cache_from_parts(&dims, &parts, &mut cache)
-        .await
-        .expect("linear attention sequence with cache");
-    let expected = qwen_linear_attention_sequence_from_parts(&dims, &parts)
-        .await
-        .expect("linear attention sequence");
+    let output = qwen_linear_attention_sequence_with_cache_from_parts(
+        &dims,
+        &parts,
+        &mut cache,
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("linear attention sequence with cache");
+    let expected =
+        qwen_linear_attention_sequence_from_parts(&dims, &parts, &CpuNativeMatvecBackend)
+            .await
+            .expect("linear attention sequence");
     let k0 = l2_scalar(silu_f32(1.0));
     let v0 = [silu_f32(2.0), silu_f32(4.0)];
     let k1 = l2_scalar(silu_f32(1.0));
@@ -305,6 +317,7 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
         &dims,
         &expected_parts,
         &mut expected_cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full cached prefill");
@@ -324,9 +337,14 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
         out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut cache = LinearAttentionCache::new(2, 4, 1, 1, 2).expect("cache shape");
-    qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
-        .await
-        .expect("initial cached prefill");
+    qwen_linear_attention_sequence_with_cache_from_parts(
+        &dims,
+        &prefill_parts,
+        &mut cache,
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("initial cached prefill");
 
     let output = qwen_linear_attention_step_with_cache_from_parts(
         &dims,
@@ -342,6 +360,7 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
             out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("linear attention decode step");
@@ -365,9 +384,15 @@ async fn qwen_full_attention_first_token_matches_single_key_reference() {
         head_dim: 1,
     };
 
-    let output = qwen_full_attention_first_token_from_parts(&dims, &[0.0, 0.0], &[8.0], &[3.0])
-        .await
-        .expect("full attention output");
+    let output = qwen_full_attention_first_token_from_parts(
+        &dims,
+        &[0.0, 0.0],
+        &[8.0],
+        &[3.0],
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("full attention output");
 
     assert_close(&output, &[12.0], 1e-6);
 }
@@ -404,6 +429,7 @@ async fn qwen_full_attention_sequence_applies_rope_and_causal_softmax() {
             q_projection_gate: true,
             one_centered_rms_norm: true,
         },
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full attention sequence");
@@ -456,6 +482,7 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full attention sequence with cache");
@@ -471,6 +498,7 @@ async fn qwen_full_attention_sequence_writes_and_reads_layer_kv_cache() {
             o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
         },
         config,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full attention sequence");
@@ -520,6 +548,7 @@ async fn qwen_full_attention_sequence_with_small_cache_uses_sliding_window() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("small cache uses sliding attention");
@@ -564,6 +593,7 @@ async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("prefill fills cache");
@@ -580,6 +610,7 @@ async fn qwen_full_attention_step_with_full_cache_uses_sliding_window() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full cache evicts oldest token during decode");
@@ -629,6 +660,7 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         &expected_parts,
         config,
         &mut expected_cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full cached prefill");
@@ -644,9 +676,15 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
-    qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
-        .await
-        .expect("initial cached prefill");
+    qwen_full_attention_sequence_with_cache_from_parts(
+        &dims,
+        &prefill_parts,
+        config,
+        &mut cache,
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("initial cached prefill");
 
     let output = qwen_full_attention_step_with_cache_from_parts(
         &dims,
@@ -660,6 +698,7 @@ async fn qwen_full_attention_step_uses_existing_layer_kv_cache() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full attention decode step");
@@ -709,6 +748,7 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         &expected_parts,
         config,
         &mut expected_cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full cached sequence with qk norm");
@@ -724,9 +764,15 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         o_proj_weight: NativeOutputProjection::F32(&o_proj_weight),
     };
     let mut cache = LayerKvCache::new(3, 1, 2).expect("cache shape");
-    qwen_full_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, config, &mut cache)
-        .await
-        .expect("prefill with qk norm");
+    qwen_full_attention_sequence_with_cache_from_parts(
+        &dims,
+        &prefill_parts,
+        config,
+        &mut cache,
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("prefill with qk norm");
 
     let output = qwen_full_attention_step_with_cache_from_parts(
         &dims,
@@ -740,6 +786,7 @@ async fn qwen_full_attention_step_matches_sequence_with_qk_norm() {
         },
         config,
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full attention step with qk norm");
@@ -795,6 +842,7 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
         &dims,
         &expected_parts,
         &mut expected_cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("full cached prefill");
@@ -814,9 +862,14 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
         out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
     };
     let mut cache = LinearAttentionCache::new(1, 6, 1, 2, 2).expect("cache shape");
-    qwen_linear_attention_sequence_with_cache_from_parts(&dims, &prefill_parts, &mut cache)
-        .await
-        .expect("initial cached prefill");
+    qwen_linear_attention_sequence_with_cache_from_parts(
+        &dims,
+        &prefill_parts,
+        &mut cache,
+        &CpuNativeMatvecBackend,
+    )
+    .await
+    .expect("initial cached prefill");
 
     let output = qwen_linear_attention_step_with_cache_from_parts(
         &dims,
@@ -832,6 +885,7 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
             out_proj_weight: NativeOutputProjection::F32(&out_proj_weight),
         },
         &mut cache,
+        &CpuNativeMatvecBackend,
     )
     .await
     .expect("linear attention decode step");
