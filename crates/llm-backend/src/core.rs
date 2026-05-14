@@ -22,9 +22,10 @@ mod tests {
 }
 
 pub use backend::{
-    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole, BackendError,
-    BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk, BackendToolChoice,
-    ModelBackend, SamplingConfig,
+    BackendCacheContext, BackendCacheKey, BackendChatContext, BackendChatMessage, BackendChatRole,
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    BackendToolCall, BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
+    BackendToolCallType, BackendToolChoice, ModelBackend, SamplingConfig,
 };
 pub use gemma::{
     GemmaLayerCache, gemma_cache_count_for_spec, gemma_decode_token_with_cache_with_matvec,

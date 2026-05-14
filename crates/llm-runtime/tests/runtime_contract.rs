@@ -1,11 +1,12 @@
 use futures::StreamExt;
 use llm_api::{
-    ChatCompletionRequest, ChatMessage, ChatRole, CompletionRequest, FinishReason, ResponseFormat,
+    ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    BackendToolChoice, ModelBackend, ProtocolTestBackend, SamplingConfig,
+    BackendCacheContext, BackendChatRole, BackendError, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendStreamChunk, BackendToolCallDelta, BackendToolCallFunctionDelta,
+    BackendToolCallType, BackendToolChoice, ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
@@ -205,7 +206,6 @@ impl ModelBackend for MlxQwenMetadataBackend {
     fn model_metadata(&self) -> BackendModelMetadata {
         let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
         metadata.family = Some("qwen".to_owned());
-        metadata.loader = Some("mlx".to_owned());
         metadata
     }
 
@@ -242,7 +242,6 @@ impl ModelBackend for MlxGemmaMetadataBackend {
     fn model_metadata(&self) -> BackendModelMetadata {
         let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
         metadata.family = Some("gemma".to_owned());
-        metadata.loader = Some("mlx".to_owned());
         metadata
     }
 
@@ -279,7 +278,6 @@ impl ModelBackend for MlxDeepSeekMetadataBackend {
     fn model_metadata(&self) -> BackendModelMetadata {
         let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
         metadata.family = Some("deep_seek".to_owned());
-        metadata.loader = Some("mlx".to_owned());
         metadata
     }
 
@@ -316,7 +314,6 @@ impl ModelBackend for MlxLlamaMetadataBackend {
     fn model_metadata(&self) -> BackendModelMetadata {
         let mut metadata = BackendModelMetadata::new(self.model_id(), "mlx");
         metadata.family = Some("llama".to_owned());
-        metadata.loader = Some("mlx".to_owned());
         metadata
     }
 
@@ -454,8 +451,8 @@ struct StructuredToolDeltaStreamBackend {
     finish: Arc<Semaphore>,
     model_id: &'static str,
     family: &'static str,
-    first_delta: llm_api::ToolCallDelta,
-    final_delta: llm_api::ToolCallDelta,
+    first_delta: BackendToolCallDelta,
+    final_delta: BackendToolCallDelta,
 }
 
 struct CancellableStreamBackend {

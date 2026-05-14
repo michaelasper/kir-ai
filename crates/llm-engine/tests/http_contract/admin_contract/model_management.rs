@@ -112,9 +112,18 @@ async fn admin_model_endpoint_reports_mlx_backend_identity() {
 async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot_path = write_verified_test_snapshot(temp.path()).await;
-    let response = build_router_with_unauthenticated_admin(Box::new(SnapshotMetadataBackend {
-        snapshot_path: snapshot_path.clone(),
-    }))
+    ModelStore::new(temp.path())
+        .record_snapshot_alias(llm_engine::DEFAULT_MODEL_ID, &snapshot_path)
+        .await
+        .expect("snapshot alias");
+    let response = build_router_with_unauthenticated_admin_and_options(
+        Box::new(SnapshotMetadataBackend),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
     .oneshot(
         Request::builder()
             .method("POST")

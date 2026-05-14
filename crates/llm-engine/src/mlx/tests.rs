@@ -3,10 +3,11 @@ use super::protocol::{
     MlxUpstreamProtocol,
 };
 use super::*;
-use llm_api::{ChatMessage, ToolCallDelta};
+use llm_api::ChatMessage;
 use llm_backend::{
-    BackendCacheContext, BackendChatContext, BackendModelMetadata, BackendRequest, ModelBackend,
-    SamplingConfig,
+    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
+    BackendModelMetadata, BackendRequest, BackendToolCall, BackendToolCallDelta,
+    BackendToolCallFunction, BackendToolCallType, ModelBackend, SamplingConfig,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,11 +22,43 @@ use tempfile::TempDir;
 
 type ParsedMlxChunkForTest = (
     String,
-    Vec<ToolCallDelta>,
+    Vec<BackendToolCallDelta>,
     u64,
     u64,
     Option<llm_api::FinishReason>,
 );
+
+fn backend_messages(messages: Vec<ChatMessage>) -> Vec<BackendChatMessage> {
+    messages.into_iter().map(backend_message).collect()
+}
+
+fn backend_message(message: ChatMessage) -> BackendChatMessage {
+    BackendChatMessage {
+        role: match message.role {
+            llm_api::ChatRole::System => BackendChatRole::System,
+            llm_api::ChatRole::User => BackendChatRole::User,
+            llm_api::ChatRole::Assistant => BackendChatRole::Assistant,
+            llm_api::ChatRole::Tool => BackendChatRole::Tool,
+        },
+        content: message.content,
+        name: message.name,
+        tool_call_id: message.tool_call_id,
+        tool_calls: message
+            .tool_calls
+            .into_iter()
+            .map(|tool_call| BackendToolCall {
+                id: tool_call.id,
+                call_type: match tool_call.call_type {
+                    llm_api::ToolCallType::Function => BackendToolCallType::Function,
+                },
+                function: BackendToolCallFunction {
+                    name: tool_call.function.name,
+                    arguments: tool_call.function.arguments,
+                },
+            })
+            .collect(),
+    }
+}
 
 fn parse_mlx_sse_for_test(
     chunks: &[&str],
@@ -145,7 +178,7 @@ fn mlx_sse_parser_streams_split_qwen_xml_as_schema_aware_tool_deltas() {
         .iter()
         .find(|delta| delta.id.as_deref() == Some("call_0"))
         .expect("tool header delta");
-    assert_eq!(header.call_type, Some(llm_api::ToolCallType::Function));
+    assert_eq!(header.call_type, Some(BackendToolCallType::Function));
     assert_eq!(
         header
             .function
@@ -277,29 +310,32 @@ fn mlx_tool_parser_auto_detects_qwen36_and_keeps_older_qwen_json() {
     let mut qwen36 = BackendModelMetadata::new("local-qwen36", "mlx").with_family("qwen");
     qwen36.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
     assert_eq!(
-        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::Auto).expect("auto resolves"),
+        mlx_tool_markup_for_metadata(&qwen36, None, MlxToolParserMode::Auto)
+            .expect("auto resolves"),
         MlxToolMarkup::QwenXml
     );
 
     let mut qwen35 = BackendModelMetadata::new("local-qwen35", "mlx").with_family("qwen");
     qwen35.profile = Some("qwen3_5_moe-mlx-4bit".to_owned());
     assert_eq!(
-        mlx_tool_markup_for_metadata(&qwen35, MlxToolParserMode::Auto).expect("auto resolves"),
+        mlx_tool_markup_for_metadata(&qwen35, None, MlxToolParserMode::Auto)
+            .expect("auto resolves"),
         MlxToolMarkup::QwenXml
     );
 
-    let mut snapshot = BackendModelMetadata::new("local-qwen", "mlx").with_family("qwen");
-    snapshot.snapshot_path = Some(std::path::PathBuf::from(
+    let snapshot = BackendModelMetadata::new("local-qwen", "mlx").with_family("qwen");
+    let snapshot_path = std::path::Path::new(
         "/models/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef",
-    ));
+    );
     assert_eq!(
-        mlx_tool_markup_for_metadata(&snapshot, MlxToolParserMode::Auto).expect("auto resolves"),
+        mlx_tool_markup_for_metadata(&snapshot, Some(snapshot_path), MlxToolParserMode::Auto)
+            .expect("auto resolves"),
         MlxToolMarkup::QwenXml
     );
 
     let qwen3 = BackendModelMetadata::new("local-qwen3", "mlx").with_family("qwen");
     assert_eq!(
-        mlx_tool_markup_for_metadata(&qwen3, MlxToolParserMode::Auto).expect("auto resolves"),
+        mlx_tool_markup_for_metadata(&qwen3, None, MlxToolParserMode::Auto).expect("auto resolves"),
         MlxToolMarkup::Json
     );
 }
@@ -309,17 +345,18 @@ fn mlx_tool_parser_override_controls_or_rejects_qwen_xml() {
     let mut qwen36 = BackendModelMetadata::new("local-qwen36", "mlx").with_family("qwen");
     qwen36.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
     assert_eq!(
-        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::Json).expect("json resolves"),
+        mlx_tool_markup_for_metadata(&qwen36, None, MlxToolParserMode::Json)
+            .expect("json resolves"),
         MlxToolMarkup::Json
     );
     assert_eq!(
-        mlx_tool_markup_for_metadata(&qwen36, MlxToolParserMode::QwenXml)
+        mlx_tool_markup_for_metadata(&qwen36, None, MlxToolParserMode::QwenXml)
             .expect("qwen xml resolves"),
         MlxToolMarkup::QwenXml
     );
 
     let gemma = BackendModelMetadata::new("local-gemma", "mlx").with_family("gemma");
-    let err = mlx_tool_markup_for_metadata(&gemma, MlxToolParserMode::QwenXml)
+    let err = mlx_tool_markup_for_metadata(&gemma, None, MlxToolParserMode::QwenXml)
         .expect_err("Gemma cannot use Qwen XML parser");
     assert!(
         err.to_string().contains("qwen-xml"),
@@ -472,7 +509,7 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
             model: "local-mlx".to_owned(),
             prompt: "read a file".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("read Cargo.toml")],
+                messages: backend_messages(vec![ChatMessage::user("read Cargo.toml")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -573,7 +610,7 @@ async fn mlx_backend_streaming_chat_requests_include_usage_by_default() {
             model: "local-mlx".to_owned(),
             prompt: "hello mlx".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("hello mlx")],
+                messages: backend_messages(vec![ChatMessage::user("hello mlx")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -709,7 +746,7 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
             model: "local-mlx".to_owned(),
             prompt: "use lookup".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("use lookup")],
+                messages: backend_messages(vec![ChatMessage::user("use lookup")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -947,10 +984,10 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
             model: "local-mlx".to_owned(),
             prompt: "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![
+                messages: backend_messages(vec![
                     ChatMessage::system("You are Kir."),
                     ChatMessage::user("hello gemma"),
-                ],
+                ]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1000,7 +1037,7 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
             model: "local-mlx".to_owned(),
             prompt: "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("use lookup")],
+                messages: backend_messages(vec![ChatMessage::user("use lookup")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1051,7 +1088,7 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
             model: "local-mlx".to_owned(),
             prompt: "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("hello")],
+                messages: backend_messages(vec![ChatMessage::user("hello")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1106,7 +1143,7 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
                 model: "local-mlx".to_owned(),
                 prompt: "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
                 chat_context: Some(BackendChatContext {
-                    messages: vec![ChatMessage::user("hello")],
+                    messages: backend_messages(vec![ChatMessage::user("hello")]),
                 }),
                 max_tokens: Some(12),
                 sampling: SamplingConfig::Greedy,
@@ -1188,7 +1225,7 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
             model: "local-mlx".to_owned(),
             prompt: "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("return json")],
+                messages: backend_messages(vec![ChatMessage::user("return json")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1214,7 +1251,7 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
 }
 
 #[tokio::test]
-async fn mlx_backend_uses_cache_context_kwargs_for_request_body_and_fingerprint() {
+async fn mlx_backend_uses_metadata_kwargs_for_request_body_and_fingerprint() {
     let server = FakeMlxServer::start(
         "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
     );
@@ -1233,18 +1270,14 @@ async fn mlx_backend_uses_cache_context_kwargs_for_request_body_and_fingerprint(
         model: "local-mlx".to_owned(),
         prompt: "<|im_start|>user\nsay ok<|im_end|>\n<|im_start|>assistant\n".to_owned(),
         chat_context: Some(BackendChatContext {
-            messages: vec![ChatMessage::user("say ok")],
+            messages: backend_messages(vec![ChatMessage::user("say ok")]),
         }),
         max_tokens: Some(12),
         sampling: SamplingConfig::Greedy,
         required_tool_choice: None,
         json_object_mode: false,
         conversation_mode: true,
-        cache_context: BackendCacheContext::chat_template_with_kwargs(
-            "chatml/qwen/v1",
-            None,
-            Some(r#"{"enable_thinking":true}"#.to_owned()),
-        ),
+        cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
     };
     let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("qwen");
 
@@ -1260,7 +1293,7 @@ async fn mlx_backend_uses_cache_context_kwargs_for_request_body_and_fingerprint(
     let received = server.received_body();
     assert_eq!(
         received["chat_template_kwargs"],
-        serde_json::json!({"enable_thinking": true})
+        serde_json::json!({"enable_thinking": false})
     );
     let fingerprint = mlx_request_fingerprint(
         MlxUpstreamProtocol::ChatCompletions,
@@ -1269,7 +1302,7 @@ async fn mlx_backend_uses_cache_context_kwargs_for_request_body_and_fingerprint(
         &request,
     );
     let expected_hash = {
-        let bytes = serde_json::to_vec(&serde_json::json!({"enable_thinking": true}))
+        let bytes = serde_json::to_vec(&serde_json::json!({"enable_thinking": false}))
             .expect("kwargs serialize");
         let digest = Sha256::digest(&bytes);
         format!("{digest:x}")
@@ -1621,7 +1654,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
             model: "local-mlx".to_owned(),
             prompt: "read a file".to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![ChatMessage::user("read a file")],
+                messages: backend_messages(vec![ChatMessage::user("read a file")]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1681,7 +1714,7 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
             prompt: "rendered prompt fallback should not be used for structured MLX chat"
                 .to_owned(),
             chat_context: Some(BackendChatContext {
-                messages: vec![
+                messages: backend_messages(vec![
                     ChatMessage::user("read src/lib.rs"),
                     ChatMessage::assistant_tool_call(
                         "call_read_1",
@@ -1690,7 +1723,7 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
                     ),
                     tool_result,
                     ChatMessage::user("summarize what you read"),
-                ],
+                ]),
             }),
             max_tokens: Some(12),
             sampling: SamplingConfig::Greedy,
@@ -1819,10 +1852,7 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
         "completions"
     );
     assert_eq!(metrics["last_request_fingerprint"]["stream"], true);
-    assert_eq!(
-        metrics["last_request_fingerprint"]["prompt_template_id"],
-        "raw-prompt/v1"
-    );
+    assert!(metrics["last_request_fingerprint"]["cache_key"].is_string());
     assert!(metrics["last_request_fingerprint"]["prompt_hash"].is_string());
 }
 
@@ -2103,7 +2133,6 @@ async fn mlx_backend_accepts_gemma_requested_family() {
     .expect("Gemma MLX backend opens");
 
     assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
-    assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
 }
 
 #[tokio::test]
@@ -2145,7 +2174,6 @@ async fn mlx_backend_accepts_llama_requested_family() {
     .expect("Llama MLX backend opens");
 
     assert_eq!(backend.model_metadata().family.as_deref(), Some("llama"));
-    assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
 }
 
 #[tokio::test]

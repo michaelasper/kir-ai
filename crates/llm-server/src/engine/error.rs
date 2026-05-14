@@ -1,5 +1,4 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use llm_backend::BackendError;
 use llm_hub::HubError;
 use llm_runtime::RuntimeError;
 use serde_json::json;
@@ -20,28 +19,26 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
             "request_validation",
             false,
         ),
-        RuntimeError::Backend(BackendError::ModelNotFound { .. }) => (
+        RuntimeError::ModelNotFound { .. } => (
             StatusCode::NOT_FOUND,
             "model_not_found",
             "model_resolution",
             false,
         ),
-        RuntimeError::Backend(BackendError::UnsupportedRequest(_)) => (
+        RuntimeError::UnsupportedCapability(_) => (
             StatusCode::BAD_REQUEST,
             "unsupported_capability",
             "request_validation",
             false,
         ),
-        RuntimeError::Backend(BackendError::Cancelled) => {
-            (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false)
-        }
-        RuntimeError::Backend(BackendError::InvalidSamplingConfig(_)) => (
+        RuntimeError::Cancelled => (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false),
+        RuntimeError::InvalidRequest(_) => (
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "request_validation",
             false,
         ),
-        RuntimeError::Backend(BackendError::Other(_)) => (
+        RuntimeError::BackendExecution(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "backend_execution_failed",
             "decode",

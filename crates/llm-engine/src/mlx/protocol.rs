@@ -2,6 +2,7 @@ use super::MlxToolParserMode;
 use llm_backend::{BackendModelMetadata, BackendRequest};
 use llm_models::ModelFamily;
 use serde_json::Value;
+use std::path::Path;
 
 pub(super) const MLX_QWEN_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
 pub(super) const MLX_DEEPSEEK_CONTROL_STOP_TOKENS: &[&str] =
@@ -46,6 +47,7 @@ pub(super) fn mlx_control_stop_tokens_for_metadata(
 
 pub(super) fn mlx_tool_markup_for_metadata(
     metadata: &BackendModelMetadata,
+    snapshot_path: Option<&Path>,
     mode: MlxToolParserMode,
 ) -> anyhow::Result<MlxToolMarkup> {
     let family = metadata_family(metadata);
@@ -68,7 +70,7 @@ pub(super) fn mlx_tool_markup_for_metadata(
             Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
             Some(ModelFamily::Llama) => MlxToolMarkup::Json,
             Some(ModelFamily::Qwen) | None => {
-                if metadata_looks_like_qwen_xml_model(metadata) {
+                if metadata_looks_like_qwen_xml_model(metadata, snapshot_path) {
                     MlxToolMarkup::QwenXml
                 } else {
                     MlxToolMarkup::Json
@@ -92,14 +94,9 @@ pub(super) fn mlx_chat_template_kwargs_for_metadata(
 
 pub(super) fn mlx_effective_chat_template_kwargs(
     metadata: &BackendModelMetadata,
-    request: &BackendRequest,
+    _request: &BackendRequest,
 ) -> Option<Value> {
-    request
-        .cache_context
-        .chat_template_kwargs
-        .as_deref()
-        .and_then(|kwargs| serde_json::from_str(kwargs).ok())
-        .or_else(|| mlx_chat_template_kwargs_for_metadata(metadata))
+    mlx_chat_template_kwargs_for_metadata(metadata)
 }
 
 pub(super) fn mlx_upstream_protocol_for_request(
@@ -129,7 +126,10 @@ fn metadata_family(metadata: &BackendModelMetadata) -> Option<ModelFamily> {
         .and_then(|family| ModelFamily::parse_slug(family).ok())
 }
 
-fn metadata_looks_like_qwen_xml_model(metadata: &BackendModelMetadata) -> bool {
+fn metadata_looks_like_qwen_xml_model(
+    metadata: &BackendModelMetadata,
+    snapshot_path: Option<&Path>,
+) -> bool {
     if metadata
         .repo_id
         .as_deref()
@@ -141,12 +141,8 @@ fn metadata_looks_like_qwen_xml_model(metadata: &BackendModelMetadata) -> bool {
     {
         return true;
     }
-    if let Some(snapshot_path) = metadata
-        .snapshot_path
-        .as_ref()
-        .map(|path| path.display().to_string())
-    {
-        return looks_like_qwen35_or_qwen36(&snapshot_path);
+    if let Some(snapshot_path) = snapshot_path {
+        return looks_like_qwen35_or_qwen36(&snapshot_path.display().to_string());
     }
     false
 }

@@ -705,15 +705,12 @@ mod tests {
             model_id: format!("model-{label}"),
             backend: "native-test".to_owned(),
             family: Some("test".to_owned()),
-            loader: Some("native-metal".to_owned()),
             quantization: Some("bf16".to_owned()),
             repo_id: Some("org/model".to_owned()),
             resolved_commit: Some("abc123".to_owned()),
             profile: Some(label.to_owned()),
-            manifest_digest: Some("digest".to_owned()),
-            prompt_template: "raw".to_owned(),
+            cache_key: format!("cache-key-{label}"),
             tool_schema: None,
-            chat_template_kwargs: None,
             request_mode: "conversation=false,json_object=false,required_tool=None".to_owned(),
             cache_layout_version: 1,
             cache_tokens: 16,
@@ -802,12 +799,10 @@ mod tests {
     #[test]
     fn prefix_namespace_copies_metadata_and_request_context() {
         let mut metadata = BackendModelMetadata::new("model-a", "native-test").with_family("test");
-        metadata.loader = Some("native-metal".to_owned());
         metadata.quantization = Some("bf16".to_owned());
         metadata.repo_id = Some("org/model".to_owned());
         metadata.resolved_commit = Some("abc123".to_owned());
         metadata.profile = Some("profile-a".to_owned());
-        metadata.manifest_digest = Some("digest-a".to_owned());
         let request = BackendRequest {
             model: "model-a".to_owned(),
             prompt: "hello".to_owned(),
@@ -817,12 +812,13 @@ mod tests {
             required_tool_choice: None,
             json_object_mode: true,
             conversation_mode: true,
-            cache_context: llm_backend::BackendCacheContext {
-                prompt_template: String::new(),
-                tool_schema: Some("schema-a".to_owned()),
-                chat_template_kwargs: Some(r#"{"enable_thinking":false}"#.to_owned()),
-            },
+            cache_context: llm_backend::BackendCacheContext::chat_template_with_kwargs(
+                "chatml/qwen/v1",
+                Some("schema-a".to_owned()),
+                Some(r#"{"enable_thinking":false}"#.to_owned()),
+            ),
         };
+        let expected_cache_key = request.cache_context.key.as_str().to_owned();
 
         let namespace = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
@@ -836,18 +832,12 @@ mod tests {
         assert_eq!(namespace.model_id, "model-a");
         assert_eq!(namespace.backend, "native-test");
         assert_eq!(namespace.family.as_deref(), Some("test"));
-        assert_eq!(namespace.loader.as_deref(), Some("native-metal"));
         assert_eq!(namespace.quantization.as_deref(), Some("bf16"));
         assert_eq!(namespace.repo_id.as_deref(), Some("org/model"));
         assert_eq!(namespace.resolved_commit.as_deref(), Some("abc123"));
         assert_eq!(namespace.profile.as_deref(), Some("profile-a"));
-        assert_eq!(namespace.manifest_digest.as_deref(), Some("digest-a"));
-        assert_eq!(namespace.prompt_template, "raw-prompt/v1");
+        assert_eq!(namespace.cache_key, expected_cache_key);
         assert_eq!(namespace.tool_schema.as_deref(), Some("schema-a"));
-        assert_eq!(
-            namespace.chat_template_kwargs.as_deref(),
-            Some(r#"{"enable_thinking":false}"#)
-        );
         assert_eq!(
             namespace.request_mode,
             "conversation=true,json_object=true,required_tool=None"
@@ -890,14 +880,7 @@ mod tests {
         });
 
         assert_ne!(no_thinking, thinking);
-        assert_eq!(
-            no_thinking.chat_template_kwargs.as_deref(),
-            Some(r#"{"enable_thinking":false}"#)
-        );
-        assert_eq!(
-            thinking.chat_template_kwargs.as_deref(),
-            Some(r#"{"enable_thinking":true}"#)
-        );
+        assert_ne!(no_thinking.cache_key, thinking.cache_key);
     }
 
     #[test]
@@ -1282,7 +1265,7 @@ mod tests {
         assert_eq!(hit.caches, caches);
 
         let incompatible = NativeTextPrefixCacheNamespace {
-            prompt_template: "different".to_owned(),
+            cache_key: "different".to_owned(),
             ..namespace
         };
         assert!(cache.lookup(&incompatible, &[1, 2], &metrics).is_none());

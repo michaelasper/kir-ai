@@ -1,7 +1,7 @@
 use llm_backend::BackendModelMetadata;
 use llm_hub::SnapshotManifest;
 use llm_models::{BackendKind, ModelFamily};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) async fn mlx_metadata(
     model_id: &str,
@@ -9,7 +9,6 @@ pub(super) async fn mlx_metadata(
     requested_family: Option<ModelFamily>,
 ) -> anyhow::Result<BackendModelMetadata> {
     let mut metadata = BackendModelMetadata::new(model_id.to_owned(), "mlx");
-    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
     match crate::fs_util::read_optional_bytes(&manifest_path).await? {
         None => {
@@ -19,7 +18,6 @@ pub(super) async fn mlx_metadata(
                 )
             })?;
             validate_mlx_serving_family(family)?;
-            metadata.loader = Some("mlx".to_owned());
             metadata.family = Some(family.canonical_slug().to_owned());
             Ok(metadata)
         }
@@ -44,12 +42,10 @@ pub(super) async fn mlx_metadata(
             }
             validate_mlx_serving_family(manifest_family)?;
             metadata.family = Some(manifest_family.canonical_slug().to_owned());
-            metadata.loader = Some(manifest_loader.canonical_slug().to_owned());
             metadata.quantization = Some(manifest.quantization.clone());
             metadata.repo_id = Some(manifest.repo_id.clone());
             metadata.resolved_commit = Some(manifest.resolved_commit.clone());
             metadata.profile = Some(manifest.profile.clone());
-            metadata.manifest_digest = Some(manifest.digest());
             Ok(metadata)
         }
     }

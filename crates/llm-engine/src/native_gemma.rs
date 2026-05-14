@@ -25,7 +25,7 @@ use llm_models::GemmaModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
@@ -433,8 +433,6 @@ async fn native_gemma_metadata(
     let manifest_path = snapshot_path.join("llm-engine-manifest.json");
     let mut metadata =
         BackendModelMetadata::new(model_id.to_owned(), "native-gemma").with_family("gemma");
-    metadata.loader = Some("native-metal".to_owned());
-    metadata.snapshot_path = Some(PathBuf::from(snapshot_path));
     let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
         return Ok(metadata);
     };
@@ -452,12 +450,10 @@ async fn native_gemma_metadata(
         );
     }
     metadata.family = Some(manifest.family.clone());
-    metadata.loader = Some(manifest.loader.clone());
     metadata.quantization = Some(manifest.quantization.clone());
     metadata.repo_id = Some(manifest.repo_id.clone());
     metadata.resolved_commit = Some(manifest.resolved_commit.clone());
     metadata.profile = Some(manifest.profile.clone());
-    metadata.manifest_digest = Some(manifest.digest());
     Ok(metadata)
 }
 
@@ -527,6 +523,7 @@ mod tests {
     use llm_backend::{BackendCacheContext, LayerKvCache};
     use serde_json::json;
     use std::{
+        path::PathBuf,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -701,10 +698,6 @@ mod tests {
         );
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
-        assert_eq!(
-            backend.model_metadata().loader.as_deref(),
-            Some("native-metal")
-        );
         std::fs::remove_dir_all(snapshot).ok();
     }
 

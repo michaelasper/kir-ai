@@ -18,6 +18,7 @@ use llm_backend::{
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -878,8 +879,6 @@ fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
     );
     assert_eq!(metadata.id, crate::DEFAULT_MODEL_ID);
     assert_eq!(metadata.backend, "native-qwen");
-    assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
-    assert!(metadata.manifest_digest.is_none());
     assert!(metadata.repo_id.is_none());
     std::fs::remove_dir_all(snapshot).ok();
 }
@@ -1792,17 +1791,21 @@ fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamesp
         model_id: format!("model-{label}"),
         backend: "native-qwen".to_owned(),
         family: Some("qwen".to_owned()),
-        loader: Some("safetensors".to_owned()),
         quantization: Some("bf16".to_owned()),
         repo_id: Some("local/test".to_owned()),
         resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
         profile: Some("qwen-test".to_owned()),
-        manifest_digest: Some(format!("digest-{label}")),
-        prompt_template: QwenFamilyAdapter.cache_template_id().to_owned(),
+        cache_key: BackendCacheContext::chat_template_with_kwargs(
+            QwenFamilyAdapter.cache_template_id(),
+            Some("tool-schema-v1".to_owned()),
+            QwenFamilyAdapter
+                .chat_template_kwargs_json()
+                .map(str::to_owned),
+        )
+        .key
+        .as_str()
+        .to_owned(),
         tool_schema: Some("tool-schema-v1".to_owned()),
-        chat_template_kwargs: QwenFamilyAdapter
-            .chat_template_kwargs_json()
-            .map(str::to_owned),
         request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
         cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
         cache_tokens: 8,

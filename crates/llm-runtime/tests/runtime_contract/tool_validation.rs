@@ -51,7 +51,7 @@ async fn runtime_preserves_structured_chat_context_when_tools_are_declared() {
         .chat_context
         .expect("structured chat context is available for MLX chat sidecars");
     assert_eq!(chat_context.messages.len(), 1);
-    assert_eq!(chat_context.messages[0].role, ChatRole::User);
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::User);
     assert_eq!(
         chat_context.messages[0].content.as_deref(),
         Some("lookup rust")
@@ -362,17 +362,17 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
         5,
         "should preserve the original system, user, assistant tool call, tool result, and follow-up user messages"
     );
-    assert_eq!(chat_context.messages[0].role, ChatRole::System);
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
     assert_eq!(
         chat_context.messages[0].content.as_deref(),
         Some("You are a helpful assistant.")
     );
-    assert_eq!(chat_context.messages[1].role, ChatRole::User);
+    assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
     assert_eq!(
         chat_context.messages[1].content.as_deref(),
         Some("lookup rust")
     );
-    assert_eq!(chat_context.messages[2].role, ChatRole::Assistant);
+    assert_eq!(chat_context.messages[2].role, BackendChatRole::Assistant);
     assert_eq!(chat_context.messages[2].content, None);
     assert_eq!(chat_context.messages[2].tool_calls.len(), 1);
     assert_eq!(chat_context.messages[2].tool_calls[0].id, "call_1");
@@ -384,7 +384,7 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
         chat_context.messages[2].tool_calls[0].function.arguments,
         json!({"query": "rust"})
     );
-    assert_eq!(chat_context.messages[3].role, ChatRole::Tool);
+    assert_eq!(chat_context.messages[3].role, BackendChatRole::Tool);
     assert_eq!(
         chat_context.messages[3].tool_call_id.as_deref(),
         Some("call_1")
@@ -394,7 +394,7 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
         chat_context.messages[3].content.as_deref(),
         Some("Rust is a systems programming language.")
     );
-    assert_eq!(chat_context.messages[4].role, ChatRole::User);
+    assert_eq!(chat_context.messages[4].role, BackendChatRole::User);
     assert_eq!(
         chat_context.messages[4].content.as_deref(),
         Some("tell me more")

@@ -7,7 +7,7 @@ use axum::{
 use futures::StreamExt;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend,
+    BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend,
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_backend_and_options,
@@ -679,23 +679,13 @@ impl ModelBackend for MetadataBackend {
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata {
-            id: llm_engine::DEFAULT_MODEL_ID.to_owned(),
-            backend: "native-qwen".to_owned(),
-            family: Some("qwen".to_owned()),
-            loader: Some("native-metal".to_owned()),
-            quantization: Some("bf16".to_owned()),
-            repo_id: Some("Qwen/Qwen3.6-35B-A3B".to_owned()),
-            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
-            profile: Some("qwen36-safetensors-bf16".to_owned()),
-            snapshot_path: Some(std::path::PathBuf::from(format!(
-                "/tmp/{}",
-                llm_engine::DEFAULT_MODEL_ID
-            ))),
-            manifest_digest: Some(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
-            ),
-        }
+        let mut metadata = BackendModelMetadata::new(llm_engine::DEFAULT_MODEL_ID, "native-qwen")
+            .with_family("qwen");
+        metadata.quantization = Some("bf16".to_owned());
+        metadata.repo_id = Some("Qwen/Qwen3.6-35B-A3B".to_owned());
+        metadata.resolved_commit = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        metadata.profile = Some("qwen36-safetensors-bf16".to_owned());
+        metadata
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -726,20 +716,12 @@ impl ModelBackend for MlxMetadataBackend {
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata {
-            id: "local-qwen36-mlx".to_owned(),
-            backend: "mlx".to_owned(),
-            family: Some("qwen".to_owned()),
-            loader: Some("mlx".to_owned()),
-            quantization: Some("4bit".to_owned()),
-            repo_id: Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned()),
-            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
-            profile: Some("qwen36-mlx-4bit".to_owned()),
-            snapshot_path: Some(std::path::PathBuf::from("/tmp/local-qwen36-mlx")),
-            manifest_digest: Some(
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
-            ),
-        }
+        let mut metadata = BackendModelMetadata::new("local-qwen36-mlx", "mlx").with_family("qwen");
+        metadata.quantization = Some("4bit".to_owned());
+        metadata.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
+        metadata.resolved_commit = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        metadata.profile = Some("qwen36-mlx-4bit".to_owned());
+        metadata
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -761,9 +743,7 @@ impl ModelBackend for MlxMetadataBackend {
     }
 }
 
-struct SnapshotMetadataBackend {
-    snapshot_path: PathBuf,
-}
+struct SnapshotMetadataBackend;
 
 #[async_trait]
 impl ModelBackend for SnapshotMetadataBackend {
@@ -772,18 +752,13 @@ impl ModelBackend for SnapshotMetadataBackend {
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        BackendModelMetadata {
-            id: llm_engine::DEFAULT_MODEL_ID.to_owned(),
-            backend: "native-qwen".to_owned(),
-            family: Some("qwen".to_owned()),
-            loader: Some("native-metal".to_owned()),
-            quantization: Some("bf16".to_owned()),
-            repo_id: Some("Qwen/Qwen3.6-35B-A3B".to_owned()),
-            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
-            profile: Some("qwen36-safetensors-bf16".to_owned()),
-            snapshot_path: Some(self.snapshot_path.clone()),
-            manifest_digest: None,
-        }
+        let mut metadata = BackendModelMetadata::new(llm_engine::DEFAULT_MODEL_ID, "native-qwen")
+            .with_family("qwen");
+        metadata.quantization = Some("bf16".to_owned());
+        metadata.repo_id = Some("Qwen/Qwen3.6-35B-A3B".to_owned());
+        metadata.resolved_commit = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        metadata.profile = Some("qwen36-safetensors-bf16".to_owned());
+        metadata
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {

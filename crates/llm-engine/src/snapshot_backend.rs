@@ -242,7 +242,6 @@ mod tests {
         let metadata = backend.model_metadata();
 
         assert_eq!(metadata.backend, "mlx");
-        assert_eq!(metadata.loader.as_deref(), Some("mlx"));
         assert_eq!(metadata.profile.as_deref(), Some("qwen36-mlx-4bit"));
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -270,7 +269,6 @@ mod tests {
         let metadata = backend.model_metadata();
 
         assert_eq!(metadata.backend, "mlx");
-        assert_eq!(metadata.loader.as_deref(), Some("mlx"));
         assert_eq!(metadata.family.as_deref(), Some("qwen"));
         std::fs::remove_dir_all(snapshot).ok();
     }
@@ -296,9 +294,7 @@ mod tests {
         let metadata = backend.model_metadata();
 
         assert_eq!(metadata.backend, "native-qwen");
-        assert_eq!(metadata.loader.as_deref(), Some("native-metal"));
         assert_eq!(metadata.family.as_deref(), Some("qwen"));
-        assert_eq!(metadata.snapshot_path.as_deref(), Some(snapshot.as_path()));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -408,7 +404,6 @@ mod tests {
         .expect("Gemma MLX snapshot opens");
 
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
-        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -437,7 +432,6 @@ mod tests {
             backend.model_metadata().family.as_deref(),
             Some("deep_seek")
         );
-        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -463,7 +457,6 @@ mod tests {
         .expect("Llama MLX snapshot opens");
 
         assert_eq!(backend.model_metadata().family.as_deref(), Some("llama"));
-        assert_eq!(backend.model_metadata().loader.as_deref(), Some("mlx"));
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -576,10 +569,6 @@ mod tests {
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
-        assert_eq!(
-            backend.model_metadata().loader.as_deref(),
-            Some("native-metal")
-        );
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -597,10 +586,6 @@ mod tests {
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
-        assert_eq!(
-            backend.model_metadata().loader.as_deref(),
-            Some("native-metal")
-        );
         std::fs::remove_dir_all(snapshot).ok();
     }
 

@@ -82,9 +82,18 @@ async fn admin_metrics_report_artifact_verification_failures() {
     tokio::fs::write(snapshot_path.join("config.json"), "bad")
         .await
         .expect("corrupt config");
-    let app = build_router_with_unauthenticated_admin(Box::new(SnapshotMetadataBackend {
-        snapshot_path,
-    }));
+    ModelStore::new(temp.path())
+        .record_snapshot_alias(llm_engine::DEFAULT_MODEL_ID, &snapshot_path)
+        .await
+        .expect("snapshot alias");
+    let app = build_router_with_unauthenticated_admin_and_options(
+        Box::new(SnapshotMetadataBackend),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
 
     let response = app
         .clone()

@@ -12,7 +12,6 @@ use axum::{
     response::Response,
 };
 use llm_api::{ChatCompletionRequest, CompletionRequest};
-use llm_backend::BackendError;
 use llm_runtime::RuntimeError;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -219,9 +218,9 @@ fn mark_active_request_running(
         RequestStartResult::Finished | RequestStartResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            Err(RuntimeError::Backend(BackendError::Other(
+            Err(RuntimeError::BackendExecution(
                 "request lifecycle was not runnable after scheduler admission".to_owned(),
-            ))
+            )
             .into())
         }
     }
@@ -245,9 +244,9 @@ fn mark_active_request_finished_for_success(
         RequestFinishResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            Err(RuntimeError::Backend(BackendError::Other(
+            Err(RuntimeError::BackendExecution(
                 "request lifecycle was missing before response delivery".to_owned(),
-            ))
+            )
             .into())
         }
     }
@@ -276,9 +275,9 @@ fn mark_active_request_finished_for_runtime_error(
         RequestFinishResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            RuntimeError::Backend(BackendError::Other(
+            RuntimeError::BackendExecution(
                 "request lifecycle was missing before error delivery".to_owned(),
-            ))
+            )
             .into()
         }
     }
@@ -311,7 +310,7 @@ fn completion_scheduler_classes(
 }
 
 pub(super) fn mark_scheduler_runtime_error(permit: &mut SchedulerPermit, err: &RuntimeError) {
-    if matches!(err, RuntimeError::Backend(BackendError::Cancelled)) {
+    if matches!(err, RuntimeError::Cancelled) {
         permit.mark_cancelled();
     } else {
         permit.mark_failed();

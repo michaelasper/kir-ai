@@ -5,7 +5,10 @@ use super::{
     },
 };
 use llm_api::ChatMessage;
-use llm_backend::{BackendError, BackendModelMetadata, BackendRequest, SamplingConfig};
+use llm_backend::{
+    BackendChatMessage, BackendChatRole, BackendError, BackendModelMetadata, BackendRequest,
+    BackendToolCall, BackendToolCallFunction, BackendToolCallType, SamplingConfig,
+};
 use serde::Serialize;
 use serde_json::Value;
 use url::Url;
@@ -101,9 +104,49 @@ struct MlxStreamOptions {
 
 fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {
     if let Some(chat_context) = &request.chat_context {
-        return chat_context.messages.clone();
+        return chat_context.messages.iter().map(mlx_chat_message).collect();
     }
     vec![ChatMessage::user(request.prompt.clone())]
+}
+
+fn mlx_chat_message(message: &BackendChatMessage) -> ChatMessage {
+    ChatMessage {
+        role: mlx_chat_role(&message.role),
+        content: message.content.clone(),
+        name: message.name.clone(),
+        tool_call_id: message.tool_call_id.clone(),
+        tool_calls: message.tool_calls.iter().map(mlx_tool_call).collect(),
+    }
+}
+
+fn mlx_chat_role(role: &BackendChatRole) -> llm_api::ChatRole {
+    match role {
+        BackendChatRole::System => llm_api::ChatRole::System,
+        BackendChatRole::User => llm_api::ChatRole::User,
+        BackendChatRole::Assistant => llm_api::ChatRole::Assistant,
+        BackendChatRole::Tool => llm_api::ChatRole::Tool,
+    }
+}
+
+fn mlx_tool_call(tool_call: &BackendToolCall) -> llm_api::ToolCall {
+    llm_api::ToolCall {
+        id: tool_call.id.clone(),
+        call_type: mlx_tool_call_type(&tool_call.call_type),
+        function: mlx_tool_call_function(&tool_call.function),
+    }
+}
+
+fn mlx_tool_call_type(call_type: &BackendToolCallType) -> llm_api::ToolCallType {
+    match call_type {
+        BackendToolCallType::Function => llm_api::ToolCallType::Function,
+    }
+}
+
+fn mlx_tool_call_function(function: &BackendToolCallFunction) -> llm_api::ToolCallFunction {
+    llm_api::ToolCallFunction {
+        name: function.name.clone(),
+        arguments: function.arguments.clone(),
+    }
 }
 
 fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendError> {

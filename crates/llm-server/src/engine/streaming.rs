@@ -16,7 +16,6 @@ use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::{ChatCompletionStreamResponse, CompletionStreamResponse, Usage};
-use llm_backend::BackendError;
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
 };
@@ -342,10 +341,8 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Missing => {
                 self.scheduler_slot.mark_failed();
                 record_failure_metrics(&self.state);
-                Err(runtime_error_stream_events(RuntimeError::Backend(
-                    BackendError::Other(
-                        "request lifecycle was missing before response delivery".to_owned(),
-                    ),
+                Err(runtime_error_stream_events(RuntimeError::BackendExecution(
+                    "request lifecycle was missing before response delivery".to_owned(),
                 )))
             }
         }
@@ -373,9 +370,9 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Missing => {
                 self.scheduler_slot.mark_failed();
                 record_failure_metrics(&self.state);
-                runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                runtime_error_stream_events(RuntimeError::BackendExecution(
                     "request lifecycle was missing before error delivery".to_owned(),
-                )))
+                ))
             }
         }
     }
@@ -396,9 +393,9 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Missing => {
                 self.scheduler_slot.mark_failed();
                 record_failure_metrics(&self.state);
-                runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                runtime_error_stream_events(RuntimeError::BackendExecution(
                     "request lifecycle was missing before stream cancellation".to_owned(),
-                )))
+                ))
             }
         }
     }
@@ -423,9 +420,9 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Missing => {
                 self.scheduler_slot.mark_failed();
                 record_failure_metrics(&self.state);
-                runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                runtime_error_stream_events(RuntimeError::BackendExecution(
                     "request lifecycle was missing before stream stall".to_owned(),
-                )))
+                ))
             }
         }
     }
@@ -449,9 +446,9 @@ impl StreamRunLifecycle {
             super::requests::RequestFinishResult::Missing => {
                 self.scheduler_slot.mark_failed();
                 record_failure_metrics(&self.state);
-                runtime_error_stream_events(RuntimeError::Backend(BackendError::Other(
+                runtime_error_stream_events(RuntimeError::BackendExecution(
                     "request lifecycle was missing before stream completion".to_owned(),
-                )))
+                ))
             }
         }
     }

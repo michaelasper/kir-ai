@@ -103,7 +103,8 @@ impl MlxBackend {
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = mlx_metadata(&model_id, snapshot_path, options.family).await?;
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
-        let tool_markup = mlx_tool_markup_for_metadata(&metadata, options.tool_parser)?;
+        let tool_markup =
+            mlx_tool_markup_for_metadata(&metadata, Some(snapshot_path), options.tool_parser)?;
         let client = build_http_client(options.timeouts);
         let timeouts = options.timeouts;
         let include_stream_usage = options.include_stream_usage;

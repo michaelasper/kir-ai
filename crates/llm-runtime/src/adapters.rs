@@ -1,5 +1,8 @@
 use llm_api::{ApiError, ChatMessage, ToolDefinition};
-use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata};
+use llm_backend::{
+    BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
+    BackendModelMetadata, BackendToolCall, BackendToolCallFunction, BackendToolCallType,
+};
 use llm_models::ModelFamily;
 use llm_tokenizer::render_family_chat_template;
 use llm_tool_parser::{ParsedAssistant, parse_assistant_for_family};
@@ -121,7 +124,7 @@ impl ChatAdapter for SelectedChatAdapter {
         _tools: &[ToolDefinition],
     ) -> Option<BackendChatContext> {
         (!messages.is_empty()).then(|| BackendChatContext {
-            messages: messages.to_vec(),
+            messages: messages.iter().map(backend_chat_message).collect(),
         })
     }
 
@@ -177,4 +180,40 @@ pub(crate) fn chat_adapter_for_metadata(
 fn parse_metadata_family(family: &str) -> Result<ModelFamily, RuntimeError> {
     ModelFamily::parse_slug(family)
         .map_err(|err| ApiError::unsupported_capability(format!("{err} for chat rendering")).into())
+}
+
+fn backend_chat_message(message: &ChatMessage) -> BackendChatMessage {
+    BackendChatMessage {
+        role: backend_chat_role(&message.role),
+        content: message.content.clone(),
+        name: message.name.clone(),
+        tool_call_id: message.tool_call_id.clone(),
+        tool_calls: message
+            .tool_calls
+            .iter()
+            .map(|tool_call| BackendToolCall {
+                id: tool_call.id.clone(),
+                call_type: backend_tool_call_type(&tool_call.call_type),
+                function: BackendToolCallFunction {
+                    name: tool_call.function.name.clone(),
+                    arguments: tool_call.function.arguments.clone(),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn backend_chat_role(role: &llm_api::ChatRole) -> BackendChatRole {
+    match role {
+        llm_api::ChatRole::System => BackendChatRole::System,
+        llm_api::ChatRole::User => BackendChatRole::User,
+        llm_api::ChatRole::Assistant => BackendChatRole::Assistant,
+        llm_api::ChatRole::Tool => BackendChatRole::Tool,
+    }
+}
+
+fn backend_tool_call_type(tool_type: &llm_api::ToolCallType) -> BackendToolCallType {
+    match tool_type {
+        llm_api::ToolCallType::Function => BackendToolCallType::Function,
+    }
 }

@@ -1,6 +1,8 @@
 use super::protocol::MlxToolMarkup;
-use llm_api::{ToolCallDelta, ToolCallFunctionDelta, ToolCallType};
-use llm_backend::{BackendError, BackendOutput, BackendStreamChunk};
+use llm_backend::{
+    BackendError, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
+    BackendToolCallFunctionDelta, BackendToolCallType,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -30,7 +32,7 @@ struct MlxToolCall {
     index: Option<usize>,
     id: Option<String>,
     #[serde(rename = "type")]
-    call_type: Option<llm_api::ToolCallType>,
+    call_type: Option<BackendToolCallType>,
     function: Option<MlxToolCallFunction>,
 }
 
@@ -313,7 +315,11 @@ impl MlxSseParser {
         chunks
     }
 
-    fn chunk(&self, text: String, tool_call_deltas: Vec<ToolCallDelta>) -> BackendStreamChunk {
+    fn chunk(
+        &self,
+        text: String,
+        tool_call_deltas: Vec<BackendToolCallDelta>,
+    ) -> BackendStreamChunk {
         BackendStreamChunk {
             text,
             tool_call_deltas,
@@ -351,7 +357,7 @@ impl MlxSseParser {
     fn push_tool_calls(
         &mut self,
         tool_calls: &[MlxToolCall],
-    ) -> Result<Vec<ToolCallDelta>, BackendError> {
+    ) -> Result<Vec<BackendToolCallDelta>, BackendError> {
         let mut deltas = Vec::new();
         for call in tool_calls {
             let index = call.index.unwrap_or(self.tool_calls.len());
@@ -368,13 +374,13 @@ impl MlxSseParser {
                 if let Some(arguments) = &function.arguments {
                     accumulator.arguments.push_str(arguments);
                 }
-                function_delta = Some(ToolCallFunctionDelta {
+                function_delta = Some(BackendToolCallFunctionDelta {
                     name: function.name.clone(),
                     arguments: function.arguments.clone(),
                 });
             }
             if self.emit_structured_tool_deltas {
-                deltas.push(ToolCallDelta {
+                deltas.push(BackendToolCallDelta {
                     index: u32::try_from(index).map_err(|err| {
                         BackendError::Other(format!("MLX tool call index does not fit u32: {err}"))
                     })?,
@@ -456,7 +462,7 @@ enum QwenXmlState {
 #[derive(Debug)]
 struct QwenXmlEmission {
     text: String,
-    tool_call_deltas: Vec<ToolCallDelta>,
+    tool_call_deltas: Vec<BackendToolCallDelta>,
 }
 
 impl QwenXmlEmission {
@@ -467,7 +473,7 @@ impl QwenXmlEmission {
         }
     }
 
-    fn delta(delta: ToolCallDelta) -> Self {
+    fn delta(delta: BackendToolCallDelta) -> Self {
         Self {
             text: String::new(),
             tool_call_deltas: vec![delta],
@@ -685,11 +691,11 @@ impl QwenXmlToolParser {
             .ok_or_else(|| qwen_xml_error("tool call index overflow"))?;
         self.current_call = Some(QwenXmlActiveCall::new(index, name.clone()));
         if self.structured_deltas {
-            emissions.push(QwenXmlEmission::delta(ToolCallDelta {
+            emissions.push(QwenXmlEmission::delta(BackendToolCallDelta {
                 index,
                 id: Some(format!("call_{index}")),
-                call_type: Some(ToolCallType::Function),
-                function: Some(ToolCallFunctionDelta {
+                call_type: Some(BackendToolCallType::Function),
+                function: Some(BackendToolCallFunctionDelta {
                     name: Some(name),
                     arguments: None,
                 }),
@@ -897,11 +903,11 @@ impl QwenXmlToolParser {
             .ok_or_else(|| qwen_xml_error("argument fragment without active function"))?;
         call.arguments_json.push_str(fragment);
         if self.structured_deltas && !fragment.is_empty() {
-            emissions.push(QwenXmlEmission::delta(ToolCallDelta {
+            emissions.push(QwenXmlEmission::delta(BackendToolCallDelta {
                 index: call.index,
                 id: None,
                 call_type: None,
-                function: Some(ToolCallFunctionDelta {
+                function: Some(BackendToolCallFunctionDelta {
                     name: None,
                     arguments: Some(fragment.to_owned()),
                 }),

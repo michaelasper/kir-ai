@@ -1,9 +1,9 @@
 use super::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendToolChoice,
-    ModelBackend,
+    BackendChatRole, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendToolChoice, ModelBackend,
 };
 use async_trait::async_trait;
-use llm_api::{ChatRole, FinishReason, ToolDefinition};
+use llm_api::{FinishReason, ToolDefinition};
 use llm_models::ModelFamily;
 use tokio_util::sync::CancellationToken;
 
@@ -135,7 +135,7 @@ fn request_last_user_message(family: ModelFamily, request: &BackendRequest) -> S
                 .messages
                 .iter()
                 .rev()
-                .find(|message| message.role == ChatRole::User)
+                .find(|message| message.role == BackendChatRole::User)
         })
         .and_then(|message| message.content.as_deref())
     {

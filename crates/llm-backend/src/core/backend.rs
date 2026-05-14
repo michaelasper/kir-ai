@@ -3,8 +3,9 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use llm_api::{ChatMessage, ChatRole, FinishReason, ToolCallDelta};
-use std::path::PathBuf;
+use llm_api::FinishReason;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -23,25 +24,88 @@ pub struct BackendRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendChatContext {
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<BackendChatMessage>,
 }
 
-pub type BackendChatMessage = ChatMessage;
-pub type BackendChatRole = ChatRole;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackendChatMessage {
+    pub role: BackendChatRole,
+    pub content: Option<String>,
+    pub name: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_calls: Vec<BackendToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendChatRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackendToolCall {
+    pub id: String,
+    pub call_type: BackendToolCallType,
+    pub function: BackendToolCallFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendToolCallType {
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackendToolCallFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {
-    pub prompt_template: String,
+    pub key: BackendCacheKey,
     pub tool_schema: Option<String>,
-    pub chat_template_kwargs: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BackendCacheKey {
+    value: String,
+}
+
+impl BackendCacheKey {
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    fn from_identity(
+        prompt_template: &str,
+        tool_schema: Option<&str>,
+        chat_template_kwargs: Option<&str>,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        update_cache_key_component(
+            &mut hasher,
+            "cache-context-version",
+            Some("backend-cache-context/v1"),
+        );
+        update_cache_key_component(&mut hasher, "prompt-template", Some(prompt_template));
+        update_cache_key_component(&mut hasher, "tool-schema", tool_schema);
+        update_cache_key_component(&mut hasher, "chat-template-kwargs", chat_template_kwargs);
+        Self {
+            value: format!("sha256:{:x}", hasher.finalize()),
+        }
+    }
 }
 
 impl BackendCacheContext {
     pub fn raw_prompt() -> Self {
+        let prompt_template = "raw-prompt/v1";
         Self {
-            prompt_template: "raw-prompt/v1".to_owned(),
+            key: BackendCacheKey::from_identity(prompt_template, None, None),
             tool_schema: None,
-            chat_template_kwargs: None,
         }
     }
 
@@ -54,17 +118,32 @@ impl BackendCacheContext {
         tool_schema: Option<String>,
         chat_template_kwargs: Option<String>,
     ) -> Self {
-        Self {
-            prompt_template: template_id.into(),
-            tool_schema,
-            chat_template_kwargs,
-        }
+        let template_id = template_id.into();
+        let key = BackendCacheKey::from_identity(
+            &template_id,
+            tool_schema.as_deref(),
+            chat_template_kwargs.as_deref(),
+        );
+        Self { key, tool_schema }
     }
 }
 
 impl Default for BackendCacheContext {
     fn default() -> Self {
         Self::raw_prompt()
+    }
+}
+
+fn update_cache_key_component(hasher: &mut Sha256, name: &str, value: Option<&str>) {
+    hasher.update((name.len() as u64).to_le_bytes());
+    hasher.update(name.as_bytes());
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        None => hasher.update([0]),
     }
 }
 
@@ -132,11 +211,25 @@ pub struct BackendOutput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendStreamChunk {
     pub text: String,
-    pub tool_call_deltas: Vec<ToolCallDelta>,
+    pub tool_call_deltas: Vec<BackendToolCallDelta>,
     pub prompt_tokens: u64,
     pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
     pub finish_reason: Option<FinishReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendToolCallDelta {
+    pub index: u32,
+    pub id: Option<String>,
+    pub call_type: Option<BackendToolCallType>,
+    pub function: Option<BackendToolCallFunctionDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendToolCallFunctionDelta {
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,13 +237,10 @@ pub struct BackendModelMetadata {
     pub id: String,
     pub backend: String,
     pub family: Option<String>,
-    pub loader: Option<String>,
     pub quantization: Option<String>,
     pub repo_id: Option<String>,
     pub resolved_commit: Option<String>,
     pub profile: Option<String>,
-    pub snapshot_path: Option<PathBuf>,
-    pub manifest_digest: Option<String>,
 }
 
 impl BackendModelMetadata {
@@ -159,13 +249,10 @@ impl BackendModelMetadata {
             id: id.into(),
             backend: backend.into(),
             family: None,
-            loader: None,
             quantization: None,
             repo_id: None,
             resolved_commit: None,
             profile: None,
-            snapshot_path: None,
-            manifest_digest: None,
         }
     }
 

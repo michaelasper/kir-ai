@@ -1,5 +1,5 @@
 use crate::sync_ext::FailPoisonedMutex;
-use llm_backend::{BackendCacheContext, BackendModelMetadata, BackendRequest};
+use llm_backend::{BackendModelMetadata, BackendRequest};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -37,15 +37,12 @@ pub(crate) struct NativeTextPrefixCacheNamespace {
     pub(crate) model_id: String,
     pub(crate) backend: String,
     pub(crate) family: Option<String>,
-    pub(crate) loader: Option<String>,
     pub(crate) quantization: Option<String>,
     pub(crate) repo_id: Option<String>,
     pub(crate) resolved_commit: Option<String>,
     pub(crate) profile: Option<String>,
-    pub(crate) manifest_digest: Option<String>,
-    pub(crate) prompt_template: String,
+    pub(crate) cache_key: String,
     pub(crate) tool_schema: Option<String>,
-    pub(crate) chat_template_kwargs: Option<String>,
     pub(crate) request_mode: String,
     pub(crate) cache_layout_version: u32,
     pub(crate) cache_tokens: usize,
@@ -68,15 +65,12 @@ pub(crate) fn native_text_prefix_namespace(
         model_id: context.model_id.to_owned(),
         backend: context.metadata.backend.clone(),
         family: context.metadata.family.clone(),
-        loader: context.metadata.loader.clone(),
         quantization: context.metadata.quantization.clone(),
         repo_id: context.metadata.repo_id.clone(),
         resolved_commit: context.metadata.resolved_commit.clone(),
         profile: context.metadata.profile.clone(),
-        manifest_digest: context.metadata.manifest_digest.clone(),
-        prompt_template: native_text_cache_prompt_template(context.request),
+        cache_key: context.request.cache_context.key.as_str().to_owned(),
         tool_schema: context.request.cache_context.tool_schema.clone(),
-        chat_template_kwargs: context.request.cache_context.chat_template_kwargs.clone(),
         request_mode: native_text_prefix_request_mode(context.request),
         cache_layout_version: context.cache_layout_version,
         cache_tokens: context.cache_tokens,
@@ -89,14 +83,6 @@ pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> Strin
         "conversation={},json_object={},required_tool={:?}",
         request.conversation_mode, request.json_object_mode, request.required_tool_choice
     )
-}
-
-fn native_text_cache_prompt_template(request: &BackendRequest) -> String {
-    if request.cache_context.prompt_template.is_empty() {
-        BackendCacheContext::raw_prompt().prompt_template
-    } else {
-        request.cache_context.prompt_template.clone()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

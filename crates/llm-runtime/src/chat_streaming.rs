@@ -16,7 +16,10 @@ use crate::tool_call::{
 use crate::tool_schema::validate_tool_calls_against_request;
 use futures::{StreamExt, stream::BoxStream};
 use llm_api::{ChatCompletionDelta, ChatCompletionRequest, ChatRole, ResponseFormat};
-use llm_backend::{BackendError, BackendStreamChunk};
+use llm_backend::{
+    BackendError, BackendStreamChunk, BackendToolCallDelta, BackendToolCallFunctionDelta,
+    BackendToolCallType,
+};
 use tokio_util::sync::CancellationToken;
 
 enum DeferredEmission {
@@ -110,17 +113,21 @@ pub(crate) fn streaming_chat_stream<'a>(
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
             if !chunk.tool_call_deltas.is_empty() {
-                for delta in &chunk.tool_call_deltas {
+                let api_tool_call_deltas = chunk
+                    .tool_call_deltas
+                    .iter()
+                    .map(api_tool_call_delta)
+                    .collect::<Vec<_>>();
+                for delta in &api_tool_call_deltas {
                     structured_tool_assembler.push(delta)?;
                 }
                 let tool_call_deltas = if buffer_structured_tool_arguments {
-                    chunk
-                        .tool_call_deltas
+                    api_tool_call_deltas
                         .iter()
                         .filter_map(structured_tool_delta_without_arguments)
                         .collect::<Vec<_>>()
                 } else {
-                    chunk.tool_call_deltas.clone()
+                    api_tool_call_deltas
                 };
                 if !tool_call_deltas.is_empty() {
                     yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -363,4 +370,28 @@ pub(crate) fn streaming_chat_stream<'a>(
         yield ChatCompletionStreamEvent::Complete(usage);
     };
     ChatCompletionStream::new(events.boxed())
+}
+
+fn api_tool_call_delta(delta: &BackendToolCallDelta) -> llm_api::ToolCallDelta {
+    llm_api::ToolCallDelta {
+        index: delta.index,
+        id: delta.id.clone(),
+        call_type: delta.call_type.as_ref().map(api_tool_call_type),
+        function: delta.function.as_ref().map(api_tool_call_function_delta),
+    }
+}
+
+fn api_tool_call_type(call_type: &BackendToolCallType) -> llm_api::ToolCallType {
+    match call_type {
+        BackendToolCallType::Function => llm_api::ToolCallType::Function,
+    }
+}
+
+fn api_tool_call_function_delta(
+    function: &BackendToolCallFunctionDelta,
+) -> llm_api::ToolCallFunctionDelta {
+    llm_api::ToolCallFunctionDelta {
+        name: function.name.clone(),
+        arguments: function.arguments.clone(),
+    }
 }

@@ -15,8 +15,8 @@ use axum::{
     response::IntoResponse,
 };
 use llm_api::{ApiError, ModelCard, ModelList};
-use llm_backend::{BackendError, BackendModelMetadata};
-use llm_hub::{DownloadPlan, HubRepoId, ModelProfile, ModelStore};
+use llm_backend::BackendModelMetadata;
+use llm_hub::{DownloadPlan, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot};
 use llm_runtime::RuntimeError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,9 +65,10 @@ pub(super) async fn admin_models(
 ) -> Result<Json<AdminModelListResponse>, EngineError> {
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
+    let status = admin_model_status(&state, &metadata).await;
     Ok(Json(AdminModelListResponse {
         object: "list".to_owned(),
-        data: vec![admin_model_status(&metadata)],
+        data: vec![status],
     }))
 }
 
@@ -79,13 +80,13 @@ pub(super) async fn admin_model(
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
-        return Err(RuntimeError::Backend(BackendError::ModelNotFound {
+        return Err(RuntimeError::ModelNotFound {
             requested: alias,
             available: metadata.id,
-        })
+        }
         .into());
     }
-    Ok(Json(admin_model_status(&metadata)))
+    Ok(Json(admin_model_status(&state, &metadata).await))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -107,25 +108,27 @@ pub(super) async fn admin_model_verify(
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
-        return Err(RuntimeError::Backend(BackendError::ModelNotFound {
+        return Err(RuntimeError::ModelNotFound {
             requested: alias,
             available: metadata.id,
-        })
+        }
         .into());
     }
-    let snapshot_path = metadata.snapshot_path.ok_or_else(|| {
-        RuntimeError::Api(ApiError::unsupported_capability(
-            "model verification requires snapshot metadata",
-        ))
-    })?;
-    let verification = match ModelStore::verify_snapshot(&snapshot_path).await {
+    let snapshot = model_snapshot_for_alias(&state, &metadata.id)
+        .await
+        .ok_or_else(|| {
+            RuntimeError::Api(ApiError::unsupported_capability(
+                "model verification requires snapshot metadata",
+            ))
+        })?;
+    let verification = match ModelStore::verify_snapshot(&snapshot.path).await {
         Ok(verification) => verification,
         Err(err) => {
             record_artifact_verification_failure_metrics(&state);
             return Err(EngineError::ModelStore(err));
         }
     };
-    ModelStore::mark_snapshot_used(&snapshot_path)
+    ModelStore::mark_snapshot_used(&snapshot.path)
         .await
         .map_err(EngineError::ModelStore)?;
     Ok(Json(AdminModelVerifyResponse {
@@ -254,10 +257,10 @@ fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError>
     if alias == model_id {
         return Ok(());
     }
-    Err(RuntimeError::Backend(BackendError::ModelNotFound {
+    Err(RuntimeError::ModelNotFound {
         requested: alias.to_owned(),
         available: model_id.to_owned(),
-    })
+    }
     .into())
 }
 
@@ -279,7 +282,11 @@ pub(super) struct AdminModelStatusResponse {
     manifest_digest: Option<String>,
 }
 
-fn admin_model_status(metadata: &BackendModelMetadata) -> AdminModelStatusResponse {
+async fn admin_model_status(
+    state: &AppState,
+    metadata: &BackendModelMetadata,
+) -> AdminModelStatusResponse {
+    let snapshot = model_snapshot_for_alias(state, &metadata.id).await;
     AdminModelStatusResponse {
         id: metadata.id.clone(),
         object: "admin.model".to_owned(),
@@ -288,17 +295,25 @@ fn admin_model_status(metadata: &BackendModelMetadata) -> AdminModelStatusRespon
         python_runtime: false,
         backend: metadata.backend.clone(),
         family: metadata.family.clone(),
-        loader: metadata.loader.clone(),
+        loader: snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.manifest.loader.clone()),
         quantization: metadata.quantization.clone(),
         repo_id: metadata.repo_id.clone(),
         resolved_commit: metadata.resolved_commit.clone(),
         profile: metadata.profile.clone(),
-        snapshot_path: metadata
-            .snapshot_path
+        snapshot_path: snapshot
             .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
-        manifest_digest: metadata.manifest_digest.clone(),
+            .map(|snapshot| snapshot.path.to_string_lossy().into_owned()),
+        manifest_digest: snapshot.map(|snapshot| snapshot.manifest_digest),
     }
+}
+
+async fn model_snapshot_for_alias(state: &AppState, alias: &str) -> Option<PromotedSnapshot> {
+    ModelStore::new(&state.model_home)
+        .resolve_snapshot_alias(alias)
+        .await
+        .ok()
 }
 
 pub(super) async fn admin_metrics(

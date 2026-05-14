@@ -989,12 +989,12 @@ fn http_structured_tool_delta(
     id: Option<&str>,
     name: Option<&str>,
     arguments: Option<&str>,
-) -> llm_api::ToolCallDelta {
-    llm_api::ToolCallDelta {
+) -> BackendToolCallDelta {
+    BackendToolCallDelta {
         index,
         id: id.map(str::to_owned),
-        call_type: id.map(|_| llm_api::ToolCallType::Function),
-        function: (name.is_some() || arguments.is_some()).then(|| llm_api::ToolCallFunctionDelta {
+        call_type: id.map(|_| BackendToolCallType::Function),
+        function: (name.is_some() || arguments.is_some()).then(|| BackendToolCallFunctionDelta {
             name: name.map(str::to_owned),
             arguments: arguments.map(str::to_owned),
         }),

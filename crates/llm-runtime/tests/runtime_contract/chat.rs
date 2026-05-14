@@ -207,14 +207,14 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
         .chat_context
         .expect("structured chat context is carried");
     assert_eq!(chat_context.messages.len(), 3);
-    assert_eq!(chat_context.messages[0].role, ChatRole::System);
+    assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
     assert_eq!(
         chat_context.messages[0].content.as_deref(),
         Some("You are Kir.")
     );
-    assert_eq!(chat_context.messages[1].role, ChatRole::User);
+    assert_eq!(chat_context.messages[1].role, BackendChatRole::User);
     assert_eq!(chat_context.messages[1].content.as_deref(), Some("say hi"));
-    assert_eq!(chat_context.messages[2].role, ChatRole::Assistant);
+    assert_eq!(chat_context.messages[2].role, BackendChatRole::Assistant);
     assert_eq!(
         chat_context.messages[2].content.as_deref(),
         Some("previous answer")
@@ -292,9 +292,14 @@ async fn runtime_qwen_cache_context_includes_no_thinking_template_kwargs() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
+    let expected = BackendCacheContext::chat_template_with_kwargs(
+        "chatml/qwen/v1",
+        None,
+        Some(r#"{"enable_thinking":false}"#.to_owned()),
+    );
     assert_eq!(
-        observed.cache_context.chat_template_kwargs.as_deref(),
-        Some(r#"{"enable_thinking":false}"#)
+        observed.cache_context.key, expected.key,
+        "Qwen no-thinking kwargs should participate in the opaque backend cache key"
     );
 }
 
@@ -320,7 +325,8 @@ async fn runtime_non_qwen_cache_context_omits_template_kwargs() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
-    assert_eq!(observed.cache_context.chat_template_kwargs, None);
+    let expected = BackendCacheContext::chat_template("llama3/instruct/v1", None);
+    assert_eq!(observed.cache_context.key, expected.key);
 }
 
 #[tokio::test]

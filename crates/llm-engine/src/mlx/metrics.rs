@@ -357,7 +357,7 @@ pub(super) fn mlx_request_fingerprint(
     json!({
         "protocol": protocol_label(protocol),
         "stream": stream,
-        "prompt_template_id": request.cache_context.prompt_template.as_str(),
+        "cache_key": request.cache_context.key.as_str(),
         "prompt_hash": hash_str(&request.prompt),
         "tool_schema_hash": request.cache_context.tool_schema.as_deref().map(hash_str),
         "messages_hash": request
