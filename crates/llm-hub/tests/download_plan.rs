@@ -317,12 +317,17 @@ fn plan_rejects_mutable_revision_without_resolved_commit() {
 
 #[test]
 fn parses_hugging_face_model_info_with_lfs_sizes() {
+    let lfs_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let info = HubModelInfo::from_api_json(json!({
         "id": "Qwen/Qwen3.6-35B-A3B",
         "sha": "53c43178507d69762986fbfa314f6e8d4d859409",
         "siblings": [
             {"rfilename": "config.json", "size": 3690},
-            {"rfilename": "model-00001-of-00026.safetensors", "lfs": {"size": 4_294_967_296_u64, "oid": "abc"}}
+            {
+                "rfilename": "model-00001-of-00026.safetensors",
+                "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "lfs": {"size": 4_294_967_296_u64, "oid": lfs_sha256}
+            }
         ]
     }))
     .expect("hf model info parses");
@@ -333,7 +338,23 @@ fn parses_hugging_face_model_info_with_lfs_sizes() {
     );
     assert_eq!(info.files[0].path, "config.json");
     assert_eq!(info.files[1].size, 4_294_967_296);
-    assert_eq!(info.files[1].etag.as_deref(), Some("abc"));
+    assert_eq!(info.files[1].etag.as_deref(), Some(lfs_sha256));
+
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        &info.resolved_commit,
+        ModelProfile::qwen36_mlx_4bit(),
+        info.files,
+        &[],
+    )
+    .expect("plan builds with LFS sha256");
+    let weights = plan
+        .files_to_download
+        .iter()
+        .find(|file| file.path.ends_with(".safetensors"))
+        .expect("weight file is planned");
+    assert_eq!(weights.sha256.as_deref(), Some(lfs_sha256));
 }
 
 #[test]

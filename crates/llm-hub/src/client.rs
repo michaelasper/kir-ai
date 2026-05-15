@@ -56,10 +56,10 @@ impl HubModelInfo {
                 .and_then(Value::as_u64)
                 .or_else(|| lfs.and_then(|lfs| lfs.get("size")).and_then(Value::as_u64))
                 .unwrap_or(0);
-            let etag = sibling
-                .get("blobId")
+            let etag = lfs
+                .and_then(|lfs| lfs.get("oid"))
+                .or_else(|| sibling.get("blobId"))
                 .or_else(|| sibling.get("blob_id"))
-                .or_else(|| lfs.and_then(|lfs| lfs.get("oid")))
                 .and_then(Value::as_str);
             files.push(HubFile::new(path, size, etag));
         }
