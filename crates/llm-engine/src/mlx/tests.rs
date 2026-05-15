@@ -2223,6 +2223,61 @@ async fn mlx_backend_streams_gemma_tool_deltas_without_synthetic_markup() {
 }
 
 #[tokio::test]
+async fn mlx_backend_records_zero_output_gemma_stream_success() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"input_tokens\":128000,\"output_tokens\":0}}\n\ndata:[DONE]\n\n",
+    );
+    let mut backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    backend.metrics = Arc::new(MlxBackendMetrics::default());
+    let metrics = backend.metrics.clone();
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "recall long context".to_owned(),
+            chat_context: None,
+            max_tokens: Some(64),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: true,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].text, "");
+    assert_eq!(chunks[0].completion_tokens, 0);
+    assert_eq!(chunks[0].finish_reason, Some(BackendFinishReason::Stop));
+
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics["zero_output_successes"], 1);
+    let observation = &metrics["last_zero_output_success"];
+    assert_eq!(observation["model"], "local-mlx");
+    assert_eq!(observation["family"], "gemma");
+    assert_eq!(observation["streamed"], true);
+    assert_eq!(observation["prompt_tokens"], 128000);
+    assert_eq!(observation["completion_tokens"], 0);
+    assert_eq!(observation["finish_reason"], "stop");
+    assert_eq!(observation["stream_chunks"], 1);
+    assert!(observation["response_bytes"].as_u64().unwrap_or_default() > 0);
+}
+
+#[tokio::test]
 async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
     let server = FakeMlxServer::start(
         "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"metal\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",

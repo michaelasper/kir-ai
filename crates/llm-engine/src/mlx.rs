@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    ModelBackend,
+    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, ModelBackend,
 };
 use llm_models::ModelFamily;
+use serde_json::json;
 use std::{path::Path, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -22,10 +23,12 @@ use client::{MLX_STALL_PREFIX, build_http_client, format_duration, is_loopback_e
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{
-    MlxBackendFailureKind, MlxBackendMetrics, MlxBackendRequestKind, mlx_backend_metrics,
-    mlx_request_fingerprint,
+    MlxBackendFailureKind, MlxBackendMetrics, MlxBackendRequestKind, MlxBackendRequestMetrics,
+    mlx_backend_metrics, mlx_protocol_label, mlx_request_fingerprint,
 };
-use protocol::{mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata};
+use protocol::{
+    MlxUpstreamProtocol, mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata,
+};
 use request::build_upstream_request;
 use sse::{MlxSseParser, parse_mlx_completion_body};
 
@@ -255,6 +258,16 @@ impl MlxBackend {
                 return Err(err);
             }
         };
+        let output_observation =
+            MlxOutputObservation::from_output(&output, chunk_count as u64, body.len() as u64);
+        maybe_record_zero_output_success(
+            &request_metrics,
+            &self.metadata,
+            &request.model,
+            upstream_protocol,
+            false,
+            &output_observation,
+        );
         request_metrics.record_stream_chunks(chunk_count);
         request_metrics.finish_success();
         Ok(output)
@@ -320,6 +333,7 @@ impl MlxBackend {
                         request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
                     })?;
                 }
+                let mut output_observation = MlxOutputObservation::default();
                 let mut saw_first_byte = false;
                 loop {
                     let item = if saw_first_byte {
@@ -355,6 +369,7 @@ impl MlxBackend {
                         }
                     };
                     saw_first_byte = true;
+                    output_observation.response_bytes += bytes.len() as u64;
                     request_metrics.record_first_upstream_byte();
                     request_metrics.record_response_bytes(bytes.len());
                     let chunk = match std::str::from_utf8(&bytes) {
@@ -371,8 +386,10 @@ impl MlxBackend {
                             Err(err)?
                         }
                     };
+                    output_observation.stream_chunks += parsed_chunks.len() as u64;
                     request_metrics.record_stream_chunks(parsed_chunks.len());
                     for parsed in parsed_chunks {
+                        output_observation.observe_chunk(&parsed);
                         request_metrics.record_first_parsed_chunk();
                         if !parsed.tool_call_deltas.is_empty() {
                             request_metrics.record_first_tool_delta();
@@ -392,7 +409,19 @@ impl MlxBackend {
                         Err(err)?
                     }
                 };
+                output_observation.stream_chunks += final_chunks.len() as u64;
                 request_metrics.record_stream_chunks(final_chunks.len());
+                for parsed in &final_chunks {
+                    output_observation.observe_chunk(parsed);
+                }
+                maybe_record_zero_output_success(
+                    &request_metrics,
+                    &self.metadata,
+                    &request.model,
+                    upstream_protocol,
+                    true,
+                    &output_observation,
+                );
                 request_metrics.finish_success();
                 for parsed in final_chunks {
                     request_metrics.record_first_parsed_chunk();
@@ -426,6 +455,82 @@ impl MlxBackend {
         }
         .boxed()
     }
+}
+
+#[derive(Debug, Default)]
+struct MlxOutputObservation {
+    saw_text: bool,
+    saw_tool_delta: bool,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    finish_reason: Option<BackendFinishReason>,
+    stream_chunks: u64,
+    response_bytes: u64,
+}
+
+impl MlxOutputObservation {
+    fn from_output(output: &BackendOutput, stream_chunks: u64, response_bytes: u64) -> Self {
+        Self {
+            saw_text: !output.text.is_empty(),
+            saw_tool_delta: false,
+            prompt_tokens: output.prompt_tokens,
+            completion_tokens: output.completion_tokens,
+            finish_reason: Some(output.finish_reason),
+            stream_chunks,
+            response_bytes,
+        }
+    }
+
+    fn observe_chunk(&mut self, chunk: &BackendStreamChunk) {
+        self.saw_text |= !chunk.text.is_empty();
+        self.saw_tool_delta |= !chunk.tool_call_deltas.is_empty();
+        self.prompt_tokens = self.prompt_tokens.max(chunk.prompt_tokens);
+        self.completion_tokens += chunk.completion_tokens;
+        if let Some(finish_reason) = chunk.finish_reason {
+            self.finish_reason = Some(finish_reason);
+        }
+    }
+
+    fn is_zero_output_success(&self) -> bool {
+        !self.saw_text && !self.saw_tool_delta && self.completion_tokens == 0
+    }
+}
+
+fn maybe_record_zero_output_success(
+    request_metrics: &MlxBackendRequestMetrics,
+    metadata: &BackendModelMetadata,
+    model: &str,
+    protocol: MlxUpstreamProtocol,
+    streamed: bool,
+    observation: &MlxOutputObservation,
+) {
+    if !observation.is_zero_output_success() {
+        return;
+    }
+    let protocol = mlx_protocol_label(protocol);
+    tracing::warn!(
+        model = model,
+        family = metadata.family.as_deref().unwrap_or("unknown"),
+        protocol,
+        streamed,
+        prompt_tokens = observation.prompt_tokens,
+        completion_tokens = observation.completion_tokens,
+        finish_reason = ?observation.finish_reason,
+        stream_chunks = observation.stream_chunks,
+        response_bytes = observation.response_bytes,
+        "MLX successful response produced no completion output"
+    );
+    request_metrics.record_zero_output_success(json!({
+        "model": model,
+        "family": metadata.family.as_deref(),
+        "protocol": protocol,
+        "streamed": streamed,
+        "prompt_tokens": observation.prompt_tokens,
+        "completion_tokens": observation.completion_tokens,
+        "finish_reason": observation.finish_reason,
+        "stream_chunks": observation.stream_chunks,
+        "response_bytes": observation.response_bytes,
+    }));
 }
 
 fn mlx_stream_stall_error(read_timeout: std::time::Duration) -> BackendError {

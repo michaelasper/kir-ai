@@ -40,6 +40,8 @@ struct MlxBackendMetricCounters {
     stream_first_tool_delta_latency: LatencyMetrics,
     stream_upstream_complete_latency: LatencyMetrics,
     last_request_fingerprint: Option<Value>,
+    zero_output_successes: u64,
+    last_zero_output_success: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +143,8 @@ impl MlxBackendMetrics {
                 counters.stream_upstream_complete_latency,
             ),
             "last_request_fingerprint": counters.last_request_fingerprint,
+            "zero_output_successes": counters.zero_output_successes,
+            "last_zero_output_success": counters.last_zero_output_success,
         })
     }
 
@@ -166,6 +170,12 @@ impl MlxBackendMetrics {
         self.counters
             .lock_or_panic("MLX backend metrics")
             .last_request_fingerprint = Some(fingerprint);
+    }
+
+    fn record_zero_output_success(&self, observation: Value) {
+        let mut counters = self.counters.lock_or_panic("MLX backend metrics");
+        counters.zero_output_successes += 1;
+        counters.last_zero_output_success = Some(observation);
     }
 
     fn record_stream_response_headers(&self, latency: Duration) {
@@ -264,6 +274,10 @@ impl MlxBackendRequestMetrics {
         self.metrics.record_request_fingerprint(fingerprint);
     }
 
+    pub(super) fn record_zero_output_success(&self, observation: Value) {
+        self.metrics.record_zero_output_success(observation);
+    }
+
     pub(super) fn record_stream_response_headers(&self) {
         self.metrics
             .record_stream_response_headers(self.started.elapsed());
@@ -355,7 +369,7 @@ pub(super) fn mlx_request_fingerprint(
     request: &BackendRequest,
 ) -> Value {
     json!({
-        "protocol": protocol_label(protocol),
+        "protocol": mlx_protocol_label(protocol),
         "stream": stream,
         "cache_key": request.cache_context.key.as_str(),
         "prompt_hash": hash_str(&request.prompt),
@@ -372,7 +386,7 @@ pub(super) fn mlx_request_fingerprint(
     })
 }
 
-fn protocol_label(protocol: MlxUpstreamProtocol) -> &'static str {
+pub(super) fn mlx_protocol_label(protocol: MlxUpstreamProtocol) -> &'static str {
     match protocol {
         MlxUpstreamProtocol::Completions => "completions",
         MlxUpstreamProtocol::ChatCompletions => "chat_completions",
