@@ -278,6 +278,45 @@ fn mlx_sse_parser_handles_adjacent_qwen_xml_tool_calls() {
 }
 
 #[test]
+fn mlx_sse_parser_ignores_qwen_reasoning_markers_around_xml_tool_calls() {
+    let frame = mlx_text_sse_frame(
+        "<think>Need a tool; mention <tool_call> only as text.</think><tool_call><think>Pick the reader.</think>\n<function=record><parameter=path>Cargo.toml</parameter></function></tool_call>",
+        Some("tool_calls"),
+    );
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test(&[&frame, done], MlxToolMarkup::QwenXml)
+        .expect("Qwen XML tool call with reasoning parses");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| chunk.0.as_str())
+        .collect::<String>();
+    assert!(text.contains("<think>Need a tool"));
+    assert!(
+        !text.contains("<function=record>"),
+        "XML tool markup should not leak as content: {text}"
+    );
+
+    let deltas = chunks.iter().flat_map(|chunk| &chunk.1).collect::<Vec<_>>();
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.name.as_deref())
+            .collect::<Vec<_>>(),
+        ["record"]
+    );
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.arguments.as_deref())
+            .collect::<String>(),
+        r#"{"path":"Cargo.toml"}"#
+    );
+}
+
+#[test]
 fn mlx_non_streaming_qwen_xml_converts_to_canonical_tool_markup() {
     let schema = qwen_xml_test_tool_schema();
     let body = serde_json::json!({
@@ -403,6 +442,33 @@ fn mlx_sse_parser_emits_structured_tool_call_deltas_without_synthetic_markup() {
     assert_eq!(
         chunks.last().and_then(|chunk| chunk.4),
         Some(BackendFinishReason::ToolCalls)
+    );
+}
+
+#[test]
+fn mlx_sse_parser_accepts_usage_only_empty_choices_chunk() {
+    let chunks = parse_mlx_sse_for_test(
+        &[
+            "data:{\"choices\":[{\"text\":\"hello\",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4}}\n\n",
+            "data:{\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n",
+            "data:{\"choices\":[{\"text\":\"\",\"finish_reason\":\"stop\"}]}\n\n",
+            "data:[DONE]\n\n",
+        ],
+        MlxToolMarkup::Json,
+    )
+    .expect("usage-only empty choices chunk parses");
+
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.0.as_str())
+            .collect::<String>(),
+        "hello"
+    );
+    assert_eq!(chunks.iter().map(|chunk| chunk.3).sum::<u64>(), 2);
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.4),
+        Some(BackendFinishReason::Stop)
     );
 }
 

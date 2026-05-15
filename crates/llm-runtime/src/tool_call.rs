@@ -5,7 +5,7 @@ use llm_api::{
     ToolCallFunctionDelta, ToolCallType, ToolChoice,
 };
 use llm_backend::BackendToolChoice;
-use llm_tool_parser::ParsedAssistant;
+use llm_tool_parser::{ParsedAssistant, split_reasoning};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ToolSchemaNormalization {
@@ -79,9 +79,10 @@ impl StructuredToolDeltaAssembler {
                 },
             });
         }
+        let (reasoning, content) = split_reasoning(content)?;
         Ok(ParsedAssistant {
-            reasoning: None,
-            content: content.to_owned(),
+            reasoning,
+            content,
             tool_calls,
         })
     }
@@ -225,5 +226,35 @@ pub(crate) fn required_backend_tool_choice(
             Some(BackendToolChoice::RequiredFunction(name.clone()))
         }
         Some(ToolChoice::Auto | ToolChoice::None) | None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_tool_delta_assembler_preserves_reasoning_from_visible_text() {
+        let mut assembler = StructuredToolDeltaAssembler::default();
+        assembler
+            .push(&ToolCallDelta {
+                index: 0,
+                id: Some("call_0".to_owned()),
+                call_type: Some(ToolCallType::Function),
+                function: Some(ToolCallFunctionDelta {
+                    name: Some("read_file".to_owned()),
+                    arguments: Some(r#"{"path":"Cargo.toml"}"#.to_owned()),
+                }),
+            })
+            .expect("delta is valid");
+
+        let parsed = assembler
+            .into_parsed("<think>Need the manifest.</think>")
+            .expect("structured deltas parse");
+
+        assert_eq!(parsed.reasoning.as_deref(), Some("Need the manifest."));
+        assert_eq!(parsed.content, "");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].function.name, "read_file");
     }
 }

@@ -41,6 +41,10 @@ pub fn parse_assistant_for_parser_family(
     }
 }
 
+pub fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {
+    common::split_reasoning(text)
+}
+
 fn parse_assistant_auto(text: &str) -> Result<ParsedAssistant, ParserError> {
     if text.contains("<|tool_call>") || text.contains("<|channel>thought\n") {
         return GemmaParser.parse_complete(text);

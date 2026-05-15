@@ -56,15 +56,6 @@ struct MlxPromptTokensDetails {
     cached_tokens: Option<u64>,
 }
 
-impl MlxCompletionResponse {
-    fn first_choice(self) -> Result<MlxCompletionChoice, BackendError> {
-        self.choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| BackendError::other("MLX completion response had no choices".to_owned()))
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct MlxSseParser {
     prompt_tokens: u64,
@@ -237,7 +228,11 @@ impl MlxSseParser {
             .usage
             .as_ref()
             .and_then(|usage| usage.completion_tokens);
-        let choice = completion.first_choice()?;
+        let Some(choice) = completion.choices.into_iter().next() else {
+            let mut chunks = Vec::new();
+            self.finalize_completion_chunks(&mut chunks, usage_completion_tokens, None, false);
+            return Ok(chunks);
+        };
         let tool_call_deltas = if let Some(tool_calls) = choice
             .delta
             .as_ref()
@@ -438,6 +433,8 @@ const QWEN_XML_FUNCTION_START: &str = "<function=";
 const QWEN_XML_FUNCTION_END: &str = "</function>";
 const QWEN_XML_PARAMETER_START: &str = "<parameter=";
 const QWEN_XML_PARAMETER_END: &str = "</parameter>";
+const QWEN_REASONING_START: &str = "<think>";
+const QWEN_REASONING_END: &str = "</think>";
 
 #[derive(Debug)]
 struct QwenXmlToolParser {
@@ -640,15 +637,30 @@ impl QwenXmlToolParser {
         &mut self,
         emissions: &mut Vec<QwenXmlEmission>,
     ) -> Result<bool, BackendError> {
-        if let Some(index) = self.buffer.find(QWEN_XML_TOOL_START) {
-            if index > 0 {
-                emissions.push(QwenXmlEmission::text(self.buffer.drain(..index).collect()));
+        match earliest_qwen_marker(&self.buffer) {
+            Some((index, QwenXmlOutsideMarker::ToolStart)) => {
+                if index > 0 {
+                    emissions.push(QwenXmlEmission::text(self.buffer.drain(..index).collect()));
+                    return Ok(true);
+                }
+                self.buffer.drain(..QWEN_XML_TOOL_START.len());
+                self.state = QwenXmlState::ExpectFunction;
+                return Ok(true);
             }
-            self.buffer.drain(..QWEN_XML_TOOL_START.len());
-            self.state = QwenXmlState::ExpectFunction;
-            return Ok(true);
+            Some((index, QwenXmlOutsideMarker::ReasoningStart)) => {
+                if index > 0 {
+                    emissions.push(QwenXmlEmission::text(self.buffer.drain(..index).collect()));
+                    return Ok(true);
+                }
+                if self.drain_leading_reasoning_block(emissions)? {
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            None => {}
         }
-        let pending = pending_tag_prefix_len(&self.buffer, QWEN_XML_TOOL_START);
+        let pending = pending_tag_prefix_len(&self.buffer, QWEN_XML_TOOL_START)
+            .max(pending_tag_prefix_len(&self.buffer, QWEN_REASONING_START));
         let emit_len = self.buffer.len().saturating_sub(pending);
         if emit_len > 0 {
             emissions.push(QwenXmlEmission::text(
@@ -666,13 +678,23 @@ impl QwenXmlToolParser {
         if self.drain_leading_whitespace() {
             return Ok(true);
         }
-        if self.buffer.is_empty() || is_partial_tag_prefix(&self.buffer, QWEN_XML_FUNCTION_START) {
+        if self.drain_leading_reasoning_block(emissions)? {
+            return Ok(true);
+        }
+        if self.buffer.is_empty()
+            || is_partial_tag_prefix(&self.buffer, QWEN_XML_FUNCTION_START)
+            || is_partial_tag_prefix(&self.buffer, QWEN_REASONING_START)
+        {
             return Ok(false);
         }
+        if let Some(index) = self.buffer.find(QWEN_XML_FUNCTION_START)
+            && index > 0
+        {
+            emissions.push(QwenXmlEmission::text(self.buffer.drain(..index).collect()));
+            return Ok(true);
+        }
         if !self.buffer.starts_with(QWEN_XML_FUNCTION_START) {
-            return Err(qwen_xml_error(format!(
-                "expected `{QWEN_XML_FUNCTION_START}...>` after `{QWEN_XML_TOOL_START}`"
-            )));
+            return Ok(false);
         }
         let Some(end) = self.buffer.find('>') else {
             return Ok(false);
@@ -926,6 +948,44 @@ impl QwenXmlToolParser {
             false
         }
     }
+
+    fn drain_leading_reasoning_block(
+        &mut self,
+        emissions: &mut Vec<QwenXmlEmission>,
+    ) -> Result<bool, BackendError> {
+        if !self.buffer.starts_with(QWEN_REASONING_START) {
+            return Ok(false);
+        }
+        let body_start = QWEN_REASONING_START.len();
+        let Some(end_rel) = self.buffer[body_start..].find(QWEN_REASONING_END) else {
+            return Ok(false);
+        };
+        let end = body_start + end_rel + QWEN_REASONING_END.len();
+        emissions.push(QwenXmlEmission::text(self.buffer.drain(..end).collect()));
+        Ok(true)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QwenXmlOutsideMarker {
+    ToolStart,
+    ReasoningStart,
+}
+
+fn earliest_qwen_marker(buffer: &str) -> Option<(usize, QwenXmlOutsideMarker)> {
+    [
+        (
+            buffer.find(QWEN_XML_TOOL_START),
+            QwenXmlOutsideMarker::ToolStart,
+        ),
+        (
+            buffer.find(QWEN_REASONING_START),
+            QwenXmlOutsideMarker::ReasoningStart,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(index, marker)| index.map(|index| (index, marker)))
+    .min_by_key(|(index, _)| *index)
 }
 
 fn pending_tag_prefix_len(buffer: &str, tag: &str) -> usize {
