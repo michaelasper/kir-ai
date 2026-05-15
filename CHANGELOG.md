@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.0](https://github.com/michaelasper/kir-ai/compare/v1.14.7...v1.15.0) (2026-05-15)
+
+### Features
+
+* **mlx:** surface zero-output successes ([090cacb](https://github.com/michaelasper/kir-ai/commit/090cacb81c7aa895c16815599196cf9013b255bf))
+
 ## [1.14.7](https://github.com/michaelasper/kir-ai/compare/v1.14.6...v1.14.7) (2026-05-15)
 
 ### Bug Fixes
