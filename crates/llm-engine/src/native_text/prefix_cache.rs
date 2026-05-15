@@ -141,11 +141,22 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn lookup(
         &self,
         namespace: &NativeTextPrefixCacheNamespace,
         tokens: &[usize],
         metrics: &NativeTextPrefixCacheMetrics,
+    ) -> Option<NativeTextPrefixCacheHit<C>> {
+        self.lookup_compatible(namespace, tokens, metrics, |_| true)
+    }
+
+    pub(crate) fn lookup_compatible(
+        &self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        metrics: &NativeTextPrefixCacheMetrics,
+        mut is_compatible: impl FnMut(&[C]) -> bool,
     ) -> Option<NativeTextPrefixCacheHit<C>> {
         let hit = {
             let mut inner = self.inner.lock_or_panic("native text prefix cache");
@@ -160,6 +171,7 @@ where
                 if key.namespace == *namespace
                     && key.tokens.len() > best_len
                     && tokens.starts_with(&key.tokens)
+                    && is_compatible(&entry.payload.caches)
                 {
                     best_len = key.tokens.len();
                     best_entry = Some(entry);

@@ -1,7 +1,8 @@
 use super::{
     NativeStreamTextDeltas, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
     NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, NativeTextSamplingRng,
-    native_text_cache_token_capacity, native_text_worker_stream, resolve_native_text_max_tokens,
+    native_text_cache_namespace_token_bucket, native_text_cache_token_capacity,
+    native_text_worker_stream, resolve_native_text_max_tokens,
 };
 use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
@@ -67,6 +68,13 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace;
+    fn prefix_cache_hit_is_compatible(
+        &self,
+        _caches: &[Self::LayerCache],
+        _cache_tokens: usize,
+    ) -> bool {
+        true
+    }
     fn layer_count(&self) -> usize;
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<Self::LayerCache>, BackendError>;
     async fn prefill_chunk_with_cache(
@@ -643,15 +651,27 @@ where
             self.adapter.max_position_embeddings(),
             self.adapter.family_display_name(),
         )?;
-        let namespace = self.adapter.prefix_cache_namespace(request, cache_tokens);
+        let namespace_cache_tokens = native_text_cache_namespace_token_bucket(
+            cache_tokens,
+            self.adapter.max_position_embeddings(),
+            self.adapter.family_display_name(),
+        )?;
+        let namespace = self
+            .adapter
+            .prefix_cache_namespace(request, namespace_cache_tokens);
         let layer_count = self.adapter.layer_count();
         let mut cached_prefix_len = 0_usize;
         let mut cache_report = NativeTextRequestCacheReport::miss(context_tokens.len());
-        let (mut hidden, mut caches) = if let Some(hit) = self.adapter.prefix_cache().lookup(
-            &namespace,
-            context_tokens,
-            self.adapter.prefix_cache_metrics(),
-        ) {
+        let (mut hidden, mut caches) = if let Some(hit) =
+            self.adapter.prefix_cache().lookup_compatible(
+                &namespace,
+                context_tokens,
+                self.adapter.prefix_cache_metrics(),
+                |caches| {
+                    self.adapter
+                        .prefix_cache_hit_is_compatible(caches, cache_tokens)
+                },
+            ) {
             if hit.caches.len() != layer_count {
                 return Err(BackendError::other(format!(
                     "native {} prefix cache entry had {} layers, expected {layer_count}",

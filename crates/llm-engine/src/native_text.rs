@@ -29,8 +29,8 @@ pub(crate) use generation::native_text_prefill_context_with_cache;
 pub(crate) use generation::sample_token_id_with_draw;
 #[allow(unused_imports)]
 pub(crate) use generation::{
-    NativeTextNextTokenContext, NativeTextSamplingRng, native_text_cache_token_capacity,
-    resolve_native_text_max_tokens,
+    NativeTextNextTokenContext, NativeTextSamplingRng, native_text_cache_namespace_token_bucket,
+    native_text_cache_token_capacity, resolve_native_text_max_tokens,
 };
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
@@ -1306,6 +1306,17 @@ mod tests {
     }
 
     #[test]
+    fn cache_namespace_token_bucket_keeps_prefix_identity_stable() {
+        let capacity = native_text_cache_token_capacity(40, 8, 32, 64, "Test")
+            .expect("context and generation budget fits");
+        let bucket = native_text_cache_namespace_token_bucket(capacity, 64, "Test")
+            .expect("namespace bucket fits");
+
+        assert_eq!(capacity, 48);
+        assert_eq!(bucket, 64);
+    }
+
+    #[test]
     fn cache_token_capacity_rejects_invalid_position_limits() {
         let err = native_text_cache_token_capacity(0, 1, 1, 0, "Test")
             .expect_err("zero position limit fails closed");
@@ -1342,6 +1353,34 @@ mod tests {
             ..namespace
         };
         assert!(cache.lookup(&incompatible, &[1, 2], &metrics).is_none());
+    }
+
+    #[test]
+    fn prefix_cache_lookup_skips_capacity_incompatible_entries() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let namespace = namespace("capacity");
+        let caches = vec![TestCache {
+            bytes: 11,
+            marker: 7,
+        }];
+
+        cache.store(namespace.clone(), &[1, 2], &[0.5, 1.5], &caches, &metrics);
+
+        assert!(
+            cache
+                .lookup_compatible(&namespace, &[1, 2, 3], &metrics, |caches| {
+                    caches.iter().all(|cache| cache.marker != 7)
+                })
+                .is_none()
+        );
+
+        let hit = cache
+            .lookup_compatible(&namespace, &[1, 2, 3], &metrics, |caches| {
+                caches.iter().all(|cache| cache.marker == 7)
+            })
+            .expect("compatible entry is reusable");
+        assert_eq!(hit.token_count, 2);
     }
 
     #[test]

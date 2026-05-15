@@ -66,6 +66,22 @@ pub(crate) fn native_text_cache_token_capacity(
     Ok(required.min(max_position_embeddings))
 }
 
+pub(crate) fn native_text_cache_namespace_token_bucket(
+    cache_tokens: usize,
+    max_position_embeddings: u32,
+    family_display_name: &str,
+) -> Result<usize, BackendError> {
+    let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
+        BackendError::other(format!(
+            "native {family_display_name} max_position_embeddings does not fit usize: {err}"
+        ))
+    })?;
+    Ok(cache_tokens
+        .checked_next_power_of_two()
+        .unwrap_or(max_position_embeddings)
+        .min(max_position_embeddings))
+}
+
 #[cfg(test)]
 use llm_backend::InferenceScratchpad;
 

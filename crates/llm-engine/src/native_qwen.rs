@@ -325,6 +325,17 @@ impl NativeTextAdapter for NativeQwenAdapter {
         })
     }
 
+    fn prefix_cache_hit_is_compatible(
+        &self,
+        caches: &[QwenLayerCache],
+        cache_tokens: usize,
+    ) -> bool {
+        caches.iter().all(|cache| match cache {
+            QwenLayerCache::Full(cache) => cache.max_tokens() >= cache_tokens,
+            QwenLayerCache::Linear(_) => true,
+        })
+    }
+
     fn layer_count(&self) -> usize {
         self.spec.num_hidden_layers as usize
     }

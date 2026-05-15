@@ -300,6 +300,16 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         })
     }
 
+    fn prefix_cache_hit_is_compatible(
+        &self,
+        caches: &[GemmaLayerCache],
+        cache_tokens: usize,
+    ) -> bool {
+        caches.iter().all(|cache| match cache {
+            GemmaLayerCache::Attention(cache) => cache.max_tokens() >= cache_tokens,
+        })
+    }
+
     fn layer_count(&self) -> usize {
         gemma_cache_count_for_spec(&self.spec).unwrap_or(self.spec.num_hidden_layers as usize)
     }
