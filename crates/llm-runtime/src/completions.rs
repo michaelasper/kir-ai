@@ -36,7 +36,7 @@ where
         request: CompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<CompletionResponse, RuntimeError> {
-        request.validate()?;
+        request.validate_with_limits(self.options.request_limits)?;
         if request.stream {
             return Err(ApiError::unsupported_capability(
                 "streaming text completion requests must use Runtime::completion_stream",
@@ -71,7 +71,7 @@ where
         request: CompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
-        request.validate()?;
+        request.validate_with_limits(self.options.request_limits)?;
         let include_usage = request.stream_options.include_usage;
         let stop = request.stop.clone();
         let completion = RuntimeCompletionSeed {
@@ -107,7 +107,7 @@ where
         request: CompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<RuntimeCompletion, RuntimeError> {
-        request.validate()?;
+        request.validate_with_limits(self.options.request_limits)?;
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend

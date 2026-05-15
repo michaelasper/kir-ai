@@ -5,6 +5,7 @@ use super::{
     scheduler::{GenerationPhaseMetrics, ModelScheduler},
 };
 use crate::ServerBackendMetrics;
+use llm_api::RequestLimits;
 use llm_backend::ModelBackend;
 use llm_hub::HubClient;
 use llm_runtime::Runtime;
@@ -33,4 +34,5 @@ pub(super) struct AppState {
     pub(super) hub_client: HubClient,
     pub(super) hf_token: Option<Arc<str>>,
     pub(super) stream_stall_timeout: Option<Duration>,
+    pub(super) request_limits: RequestLimits,
 }

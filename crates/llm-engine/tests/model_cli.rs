@@ -1095,6 +1095,18 @@ fn serve_help_prints_without_backend_validation() {
         "stdout should document the usable native generation default: {stdout}"
     );
     assert!(
+        stdout.contains("--max-json-body-bytes <bytes>"),
+        "serve help should document configurable JSON body limits: {stdout}"
+    );
+    assert!(
+        stdout.contains("--max-message-content-bytes <bytes>"),
+        "serve help should document configurable chat message limits: {stdout}"
+    );
+    assert!(
+        stdout.contains("--max-completion-prompt-bytes <bytes>"),
+        "serve help should document configurable completion prompt limits: {stdout}"
+    );
+    assert!(
         stdout.contains("--canonical-tool-schemas"),
         "serve help should document production opt-in tool schema canonicalization: {stdout}"
     );

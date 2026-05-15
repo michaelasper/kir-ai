@@ -1,16 +1,19 @@
 use crate::{
-    ApiError, ChatMessage, MAX_MESSAGE_CONTENT_BYTES, MAX_NAME_BYTES, MAX_STOP_SEQUENCE_BYTES,
-    MAX_STOP_SEQUENCES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE,
-    MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_SCHEMA_BYTES, ToolDefinition,
+    ApiError, ChatMessage, MAX_NAME_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
+    MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_DESCRIPTION_BYTES,
+    MAX_TOOL_SCHEMA_BYTES, RequestLimits, ToolDefinition,
 };
 use serde_json::Value;
 use std::io::{self, Write};
 
-pub(super) fn validate_chat_messages(messages: &[ChatMessage]) -> Result<(), ApiError> {
+pub(super) fn validate_chat_messages(
+    messages: &[ChatMessage],
+    limits: RequestLimits,
+) -> Result<(), ApiError> {
     for (index, message) in messages.iter().enumerate() {
         let label = format!("messages[{index}].content");
         if let Some(content) = &message.content {
-            validate_string_bytes(&label, content, MAX_MESSAGE_CONTENT_BYTES)?;
+            validate_string_bytes(&label, content, limits.message_content_bytes)?;
         }
         if let Some(name) = &message.name {
             validate_string_bytes(&format!("messages[{index}].name"), name, MAX_NAME_BYTES)?;

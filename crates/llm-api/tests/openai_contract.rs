@@ -4,8 +4,8 @@ use llm_api::{
     CompletionStreamResponse, FinishReason, MAX_CHAT_MESSAGES, MAX_COMPLETION_PROMPT_BYTES,
     MAX_MESSAGE_CONTENT_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
     MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_SCHEMA_BYTES, MAX_TOOLS,
-    ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest, canonical_tool_schema_json,
-    canonicalize_tool_schemas,
+    RequestLimits, ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
+    canonical_tool_schema_json, canonicalize_tool_schemas,
 };
 use serde_json::json;
 
@@ -187,6 +187,29 @@ fn request_limits_reject_oversized_chat_message_content() {
 }
 
 #[test]
+fn request_limits_allow_long_context_chat_message_by_default() {
+    let legacy_limit = 1024 * 1024;
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("x".repeat(legacy_limit + 1))],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("default request limits accept long-context chat messages");
+
+    let err = request
+        .validate_with_limits(RequestLimits {
+            message_content_bytes: legacy_limit,
+            ..RequestLimits::default()
+        })
+        .expect_err("custom lower message limit rejects the same request");
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].content"));
+}
+
+#[test]
 fn request_limits_reject_too_many_tools() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -315,6 +338,29 @@ fn request_limits_reject_oversized_completion_prompt() {
         .validate()
         .expect_err("completion prompt bytes must be capped");
 
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("prompt"));
+}
+
+#[test]
+fn request_limits_allow_long_context_completion_prompt_by_default() {
+    let legacy_limit = 1024 * 1024;
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "x".repeat(legacy_limit + 1),
+        ..CompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("default request limits accept long-context completion prompts");
+
+    let err = request
+        .validate_with_limits(RequestLimits {
+            completion_prompt_bytes: legacy_limit,
+            ..RequestLimits::default()
+        })
+        .expect_err("custom lower completion prompt limit rejects the same request");
     assert_eq!(err.code(), "invalid_request");
     assert!(err.message().contains("prompt"));
 }

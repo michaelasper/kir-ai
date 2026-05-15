@@ -83,7 +83,7 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
-        request.validate()?;
+        request.validate_with_limits(self.options.request_limits)?;
         let include_usage = request.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
         let (cache_context, prompt, chat_context) = self.prepare_chat_backend(adapter, &request)?;
@@ -142,7 +142,7 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
-        request.validate()?;
+        request.validate_with_limits(self.options.request_limits)?;
         let adapter = self.chat_adapter()?;
         let (cache_context, prompt, chat_context) = self.prepare_chat_backend(adapter, &request)?;
         let required_tool_choice = required_backend_tool_choice(&request);

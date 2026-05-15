@@ -30,24 +30,38 @@ async fn chat_completions_rejects_zero_max_tokens() {
 
 #[tokio::test]
 async fn chat_completions_rejects_body_above_json_body_limit() {
-    let oversized_content = "x".repeat(llm_api::MAX_JSON_BODY_BYTES);
-    let response = build_router_with_protocol_test_backend()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": llm_engine::DEFAULT_MODEL_ID,
-                        "messages": [{"role": "user", "content": oversized_content}]
-                    })
-                    .to_string(),
-                ))
-                .expect("request builds"),
-        )
-        .await
-        .expect("chat response");
+    let request_limits = llm_api::RequestLimits {
+        json_body_bytes: 512,
+        message_content_bytes: 4096,
+        completion_prompt_bytes: 4096,
+    };
+    let oversized_content = "x".repeat(request_limits.json_body_bytes);
+    let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
+        Box::new(StaticBackend {
+            text: "small response".to_owned(),
+        }),
+        EngineOptions {
+            request_limits,
+            ..EngineOptions::default()
+        },
+    )
+    .expect("custom-limit router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [{"role": "user", "content": oversized_content}]
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response.into_body()).await;
@@ -59,6 +73,78 @@ async fn chat_completions_rejects_body_above_json_body_limit() {
             .expect("error message")
             .contains("length limit"),
         "body limit rejection should happen before deserializing the JSON body"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_accepts_long_context_message_over_legacy_limit() {
+    let legacy_limit = 1024 * 1024;
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "x".repeat(legacy_limit + 1)}],
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn chat_completions_honors_custom_message_content_limit() {
+    let request_limits = llm_api::RequestLimits {
+        json_body_bytes: 4096,
+        message_content_bytes: 32,
+        completion_prompt_bytes: 4096,
+    };
+    let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
+        Box::new(StaticBackend {
+            text: "small response".to_owned(),
+        }),
+        EngineOptions {
+            request_limits,
+            ..EngineOptions::default()
+        },
+    )
+    .expect("custom-limit router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [{"role": "user", "content": "x".repeat(33)}]
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("messages[0].content must be at most 32 bytes"),
+        "custom chat message limit should be reported: {body}"
     );
 }
 

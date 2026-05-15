@@ -339,6 +339,7 @@ async fn runtime_canonicalizes_tool_schema_when_opted_in() {
         },
         RuntimeOptions {
             tool_schema_normalization: ToolSchemaNormalization::Canonical,
+            ..RuntimeOptions::default()
         },
     );
     let tools = vec![ToolDefinition::function(

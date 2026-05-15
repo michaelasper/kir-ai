@@ -157,8 +157,10 @@ fn validate_api_request<T: ValidateRequest>(
     request: &T,
     state: &AppState,
 ) -> Result<(), EngineError> {
-    request.validate().map_err(|err| {
-        record_failure_metrics(state);
-        RuntimeError::Api(err).into()
-    })
+    request
+        .validate_with_limits(state.request_limits)
+        .map_err(|err| {
+            record_failure_metrics(state);
+            RuntimeError::Api(err).into()
+        })
 }

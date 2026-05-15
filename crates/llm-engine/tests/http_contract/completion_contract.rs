@@ -80,6 +80,78 @@ async fn completions_endpoint_rejects_malformed_json_with_stable_error() {
 }
 
 #[tokio::test]
+async fn completions_endpoint_accepts_prompt_over_legacy_limit() {
+    let legacy_limit = 1024 * 1024;
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "prompt": "x".repeat(legacy_limit + 1),
+                        "max_tokens": 8
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn completions_endpoint_honors_custom_prompt_limit() {
+    let request_limits = llm_api::RequestLimits {
+        json_body_bytes: 4096,
+        message_content_bytes: 4096,
+        completion_prompt_bytes: 32,
+    };
+    let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
+        Box::new(StaticBackend {
+            text: "small response".to_owned(),
+        }),
+        EngineOptions {
+            request_limits,
+            ..EngineOptions::default()
+        },
+    )
+    .expect("custom-limit router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "prompt": "x".repeat(33)
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("completion response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("prompt must be at most 32 bytes"),
+        "custom completion prompt limit should be reported: {body}"
+    );
+}
+
+#[tokio::test]
 async fn streaming_completion_validation_errors_return_json_error() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(

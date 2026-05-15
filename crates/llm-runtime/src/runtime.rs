@@ -1,6 +1,8 @@
 use crate::adapters::{ChatAdapter, SelectedChatAdapter, chat_adapter_for_metadata};
 use crate::{RuntimeError, ToolSchemaNormalization};
-use llm_api::{ToolDefinition, canonical_tool_schema_json, canonicalize_tool_schemas};
+use llm_api::{
+    RequestLimits, ToolDefinition, canonical_tool_schema_json, canonicalize_tool_schemas,
+};
 use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata, ModelBackend};
 use std::borrow::Cow;
 
@@ -13,6 +15,7 @@ pub struct Runtime<B> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeOptions {
     pub tool_schema_normalization: ToolSchemaNormalization,
+    pub request_limits: RequestLimits,
 }
 
 impl<B> Runtime<B>

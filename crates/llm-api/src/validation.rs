@@ -1,8 +1,8 @@
 mod helpers;
 
 use crate::{
-    ApiError, ChatCompletionRequest, CompletionRequest, MAX_CHAT_MESSAGES,
-    MAX_COMPLETION_PROMPT_BYTES, MAX_TOOLS, ResponseFormat, ToolChoice,
+    ApiError, ChatCompletionRequest, CompletionRequest, MAX_CHAT_MESSAGES, MAX_TOOLS,
+    RequestLimits, ResponseFormat, ToolChoice,
 };
 use helpers::{
     validate_chat_messages, validate_choice_count, validate_len_at_most, validate_neutral_penalty,
@@ -14,11 +14,15 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub trait ValidateRequest {
-    fn validate(&self) -> Result<(), ApiError>;
+    fn validate(&self) -> Result<(), ApiError> {
+        self.validate_with_limits(RequestLimits::default())
+    }
+
+    fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError>;
 }
 
 impl ValidateRequest for ChatCompletionRequest {
-    fn validate(&self) -> Result<(), ApiError> {
+    fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError> {
         if self.model.trim().is_empty() {
             return Err(ApiError::invalid_request("model is required"));
         }
@@ -26,7 +30,7 @@ impl ValidateRequest for ChatCompletionRequest {
             return Err(ApiError::invalid_request("messages must not be empty"));
         }
         validate_len_at_most("messages", self.messages.len(), MAX_CHAT_MESSAGES)?;
-        validate_chat_messages(&self.messages)?;
+        validate_chat_messages(&self.messages, limits)?;
         validate_len_at_most("tools", self.tools.len(), MAX_TOOLS)?;
         validate_tools(&self.tools)?;
         validate_stop_sequence_values(&self.stop)?;
@@ -97,14 +101,14 @@ impl ValidateRequest for ChatCompletionRequest {
 }
 
 impl ValidateRequest for CompletionRequest {
-    fn validate(&self) -> Result<(), ApiError> {
+    fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError> {
         if self.model.trim().is_empty() {
             return Err(ApiError::invalid_request("model is required"));
         }
         if self.prompt.is_empty() {
             return Err(ApiError::invalid_request("prompt must not be empty"));
         }
-        validate_string_bytes("prompt", &self.prompt, MAX_COMPLETION_PROMPT_BYTES)?;
+        validate_string_bytes("prompt", &self.prompt, limits.completion_prompt_bytes)?;
         validate_stop_sequence_values(&self.stop)?;
         validate_sampling_controls(self.temperature, self.top_p)?;
         validate_neutral_penalty("presence_penalty", self.presence_penalty)?;

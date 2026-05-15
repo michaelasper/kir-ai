@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine model <subcommand> ...
@@ -51,6 +51,9 @@ llm-engine serve \
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native text generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `32` | Native text prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
+| `--max-json-body-bytes <usize>` | `16777216` | HTTP JSON request body cap for API and admin JSON routes. Values below `1` are rejected. |
+| `--max-message-content-bytes <usize>` | `8388608` | Per-message chat `content` byte cap after JSON parsing. Values below `1` are rejected. |
+| `--max-completion-prompt-bytes <usize>` | `8388608` | Text completion `prompt` byte cap after JSON parsing. Values below `1` are rejected. |
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` or `mlx_vlm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
@@ -64,6 +67,10 @@ Stable-prefix serving for Qwen agent traffic is `--canonical-tool-schemas` plus
 Qwen family metadata. Kir records Qwen chat-template kwargs as
 `{"enable_thinking":false}` in cache identity and forwards the same kwargs to
 MLX chat-completion sidecars.
+
+The default request-size limits accept the current long-context benchmark
+payloads, including the synthetic 135k stable-prefix probe. Lower the three
+request-limit flags for small deployments that need stricter ingress bounds.
 
 Without `--snapshot`, `serve` exits unless protocol test mode is explicitly
 selected and acknowledged. Implicit no-snapshot stub serving was removed.

@@ -1,3 +1,4 @@
+use llm_api::RequestLimits;
 #[cfg(feature = "diagnostics")]
 use llm_backend::{
     CpuNativeMatvecBackend, InferenceScratchpad, QwenMoeDims, SafeTensorFile, SafeTensorShardStore,
@@ -79,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
             let canonical_tool_schemas = canonical_tool_schemas_enabled(&serve_args)?;
+            let request_limits = request_limits_from_args(&serve_args)?;
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
@@ -92,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
                 hub_endpoint,
                 hf_token: std::env::var("HF_TOKEN").ok(),
                 canonical_tool_schemas,
+                request_limits,
                 ..EngineOptions::default()
             };
             let snapshot_alias = flag_value(&serve_args, "--snapshot-alias")
@@ -288,6 +291,9 @@ Options:
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text maximum prefill tokens
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
+  --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
+  --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
+  --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
@@ -304,6 +310,38 @@ Options:
   -h, --help                                 Print help",
         DEFAULT_MODEL_ID
     );
+}
+
+fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
+    let defaults = RequestLimits::default();
+    Ok(RequestLimits {
+        json_body_bytes: parse_positive_usize_flag(
+            args,
+            "--max-json-body-bytes",
+            defaults.json_body_bytes,
+        )?,
+        message_content_bytes: parse_positive_usize_flag(
+            args,
+            "--max-message-content-bytes",
+            defaults.message_content_bytes,
+        )?,
+        completion_prompt_bytes: parse_positive_usize_flag(
+            args,
+            "--max-completion-prompt-bytes",
+            defaults.completion_prompt_bytes,
+        )?,
+    })
+}
+
+fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> anyhow::Result<usize> {
+    let Some(value) = flag_value(args, flag) else {
+        return Ok(default);
+    };
+    let parsed = value.parse::<usize>()?;
+    if parsed == 0 {
+        anyhow::bail!("{flag} must be greater than 0");
+    }
+    Ok(parsed)
 }
 
 fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {

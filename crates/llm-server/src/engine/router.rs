@@ -202,6 +202,7 @@ fn build_router_from_parts(
 
 fn router_for_state(state: AppState) -> Router {
     let request_id_state = state.clone();
+    let json_body_limit = state.request_limits.json_body_bytes;
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
@@ -219,7 +220,7 @@ fn router_for_state(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .with_state(state.clone())
-        .layer(DefaultBodyLimit::max(llm_api::MAX_JSON_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(json_body_limit))
         .layer(middleware::from_fn_with_state(
             request_id_state,
             attach_request_id_header,
@@ -253,6 +254,7 @@ fn engine_state(
         } else {
             ToolSchemaNormalization::Preserve
         },
+        request_limits: options.request_limits,
     };
     AppState {
         runtime: Arc::new(Runtime::new_with_options(backend, runtime_options)),
@@ -277,5 +279,6 @@ fn engine_state(
         hub_client,
         hf_token: options.hf_token.map(Arc::from),
         stream_stall_timeout: options.stream_stall_timeout,
+        request_limits: options.request_limits,
     }
 }

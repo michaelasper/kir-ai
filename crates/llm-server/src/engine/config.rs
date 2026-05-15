@@ -1,3 +1,4 @@
+use llm_api::RequestLimits;
 use llm_hub::HubClient;
 use std::{path::PathBuf, time::Duration};
 
@@ -16,6 +17,7 @@ pub struct EngineOptions {
     pub hf_token: Option<String>,
     pub stream_stall_timeout: Option<Duration>,
     pub canonical_tool_schemas: bool,
+    pub request_limits: RequestLimits,
 }
 
 impl Default for EngineOptions {
@@ -32,6 +34,7 @@ impl Default for EngineOptions {
             hf_token: None,
             stream_stall_timeout: Some(DEFAULT_STREAM_STALL_TIMEOUT),
             canonical_tool_schemas: false,
+            request_limits: RequestLimits::default(),
         }
     }
 }
