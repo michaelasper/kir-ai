@@ -30,6 +30,7 @@ impl NativeTextCacheMirrorIds {
         self.kv.push(id);
     }
 
+    #[cfg(feature = "native-qwen")]
     pub(crate) fn push_linear(&mut self, id: u64) {
         self.linear.push(id);
     }

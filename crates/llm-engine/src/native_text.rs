@@ -1,7 +1,7 @@
-use crate::{
-    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, NativeGemmaAdapter, NativeGemmaBackend,
-    NativeGemmaLoadOptions, NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions,
-};
+#[cfg(feature = "native-gemma")]
+use crate::{NativeGemmaAdapter, NativeGemmaBackend, NativeGemmaLoadOptions};
+#[cfg(feature = "native-qwen")]
+use crate::{NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
@@ -42,12 +42,14 @@ pub(crate) use prefix_cache::{
 };
 pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
 
-pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS;
+pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeTextLoadOptions {
     pub family: Option<ModelFamily>,
+    #[cfg(feature = "native-qwen")]
     pub qwen: NativeQwenLoadOptions,
+    #[cfg(feature = "native-gemma")]
     pub gemma: NativeGemmaLoadOptions,
 }
 
@@ -58,6 +60,7 @@ pub struct NativeTextRuntimeOptions {
     pub warm_metal_weight_cache: bool,
 }
 
+#[cfg(feature = "native-qwen")]
 impl From<NativeTextRuntimeOptions> for NativeQwenLoadOptions {
     fn from(value: NativeTextRuntimeOptions) -> Self {
         Self {
@@ -68,6 +71,7 @@ impl From<NativeTextRuntimeOptions> for NativeQwenLoadOptions {
     }
 }
 
+#[cfg(feature = "native-gemma")]
 impl From<NativeTextRuntimeOptions> for NativeGemmaLoadOptions {
     fn from(value: NativeTextRuntimeOptions) -> Self {
         Self {
@@ -82,14 +86,18 @@ impl NativeTextLoadOptions {
     pub fn with_runtime_options(runtime: NativeTextRuntimeOptions) -> Self {
         Self {
             family: None,
+            #[cfg(feature = "native-qwen")]
             qwen: runtime.into(),
+            #[cfg(feature = "native-gemma")]
             gemma: runtime.into(),
         }
     }
 
+    #[cfg(feature = "native-qwen")]
     pub fn with_qwen_options(qwen: NativeQwenLoadOptions) -> Self {
         Self {
             family: None,
+            #[cfg(feature = "native-gemma")]
             gemma: NativeGemmaLoadOptions {
                 eager_materialize_shards: qwen.eager_materialize_shards,
                 metal_weight_cache_bytes: qwen.metal_weight_cache_bytes,
@@ -112,10 +120,17 @@ pub(crate) fn native_text_metal_metrics_snapshot() -> serde_json::Value {
 pub(crate) fn native_text_prefix_cache_metrics_snapshot(
     qwen_snapshot: serde_json::Value,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "qwen": qwen_snapshot,
-        "gemma": crate::native_gemma::native_gemma_prefix_cache_metrics_snapshot(),
-    })
+    let mut metrics = serde_json::Map::new();
+    #[cfg(feature = "native-qwen")]
+    metrics.insert("qwen".to_owned(), qwen_snapshot);
+    #[cfg(not(feature = "native-qwen"))]
+    let _ = qwen_snapshot;
+    #[cfg(feature = "native-gemma")]
+    metrics.insert(
+        "gemma".to_owned(),
+        crate::native_gemma::native_gemma_prefix_cache_metrics_snapshot(),
+    );
+    serde_json::Value::Object(metrics)
 }
 
 #[derive(Clone)]
@@ -125,7 +140,9 @@ pub struct NativeTextBackend {
 
 #[derive(Clone)]
 enum NativeTextBackendInner {
+    #[cfg(feature = "native-qwen")]
     Qwen(NativeTextDriver<NativeQwenAdapter>),
+    #[cfg(feature = "native-gemma")]
     Gemma(NativeTextDriver<NativeGemmaAdapter>),
 }
 
@@ -142,6 +159,7 @@ impl NativeTextBackend {
         snapshot_path: impl AsRef<Path>,
         options: NativeTextLoadOptions,
     ) -> anyhow::Result<Self> {
+        let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let family = match options.family {
             Some(family) => family,
@@ -149,13 +167,25 @@ impl NativeTextBackend {
         };
         match family {
             ModelFamily::Gemma => {
-                let driver =
-                    NativeGemmaBackend::open_with_options(model_id, snapshot_path, options.gemma)
-                        .await?
-                        .into_driver();
-                Ok(Self {
-                    inner: NativeTextBackendInner::Gemma(driver),
-                })
+                #[cfg(feature = "native-gemma")]
+                {
+                    let driver = NativeGemmaBackend::open_with_options(
+                        model_id,
+                        snapshot_path,
+                        options.gemma,
+                    )
+                    .await?
+                    .into_driver();
+                    Ok(Self {
+                        inner: NativeTextBackendInner::Gemma(driver),
+                    })
+                }
+                #[cfg(not(feature = "native-gemma"))]
+                {
+                    anyhow::bail!(
+                        "native text execution for family `gemma` is disabled; rebuild llm-engine with --features native-gemma"
+                    );
+                }
             }
             ModelFamily::DeepSeek => {
                 anyhow::bail!(
@@ -168,22 +198,33 @@ impl NativeTextBackend {
                 );
             }
             ModelFamily::Qwen => {
-                let driver =
-                    NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)
-                        .await?
-                        .into_driver();
-                Ok(Self {
-                    inner: NativeTextBackendInner::Qwen(driver),
-                })
+                #[cfg(feature = "native-qwen")]
+                {
+                    let driver =
+                        NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)
+                            .await?
+                            .into_driver();
+                    Ok(Self {
+                        inner: NativeTextBackendInner::Qwen(driver),
+                    })
+                }
+                #[cfg(not(feature = "native-qwen"))]
+                {
+                    anyhow::bail!(
+                        "native text execution for family `qwen` is disabled; rebuild llm-engine with --features native-qwen"
+                    );
+                }
             }
         }
     }
 
     pub fn with_max_new_tokens(mut self, max_new_tokens: u32) -> Self {
         self.inner = match self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(driver) => {
                 NativeTextBackendInner::Qwen(driver.with_max_new_tokens(max_new_tokens))
             }
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(driver) => {
                 NativeTextBackendInner::Gemma(driver.with_max_new_tokens(max_new_tokens))
             }
@@ -193,9 +234,11 @@ impl NativeTextBackend {
 
     pub fn with_max_prefill_tokens(mut self, max_prefill_tokens: usize) -> Self {
         self.inner = match self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(driver) => {
                 NativeTextBackendInner::Qwen(driver.with_max_prefill_tokens(max_prefill_tokens))
             }
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(driver) => {
                 NativeTextBackendInner::Gemma(driver.with_max_prefill_tokens(max_prefill_tokens))
             }
@@ -219,21 +262,27 @@ pub(crate) async fn infer_native_text_family(snapshot_path: &Path) -> anyhow::Re
 impl ModelBackend for NativeTextBackend {
     fn model_id(&self) -> &str {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => backend.model_id(),
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => backend.model_id(),
         }
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => backend.model_metadata(),
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => backend.model_metadata(),
         }
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => backend.generate(request).await,
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => backend.generate(request).await,
         }
     }
@@ -244,9 +293,11 @@ impl ModelBackend for NativeTextBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => {
                 backend.generate_with_cancel(request, cancellation).await
             }
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => {
                 backend.generate_with_cancel(request, cancellation).await
             }
@@ -258,7 +309,9 @@ impl ModelBackend for NativeTextBackend {
         request: BackendRequest,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => backend.generate_stream(request),
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => backend.generate_stream(request),
         }
     }
@@ -269,9 +322,11 @@ impl ModelBackend for NativeTextBackend {
         cancellation: CancellationToken,
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         match &self.inner {
+            #[cfg(feature = "native-qwen")]
             NativeTextBackendInner::Qwen(backend) => {
                 backend.generate_stream_with_cancel(request, cancellation)
             }
+            #[cfg(feature = "native-gemma")]
             NativeTextBackendInner::Gemma(backend) => {
                 backend.generate_stream_with_cancel(request, cancellation)
             }
@@ -279,7 +334,7 @@ impl ModelBackend for NativeTextBackend {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native-qwen", feature = "native-gemma"))]
 mod tests {
     use super::*;
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};

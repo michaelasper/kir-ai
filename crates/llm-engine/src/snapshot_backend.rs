@@ -1,7 +1,10 @@
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use crate::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, MlxBackend, MlxBackendOptions, NativeTextBackend,
-    NativeTextLoadOptions, native_text::infer_native_text_family,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, NativeTextBackend, NativeTextLoadOptions,
+    native_text::infer_native_text_family,
 };
+#[cfg(feature = "mlx")]
+use crate::{MlxBackend, MlxBackendOptions};
 use llm_backend::ModelBackend;
 use llm_hub::SnapshotManifest;
 use llm_models::{BackendKind, ModelFamily};
@@ -21,9 +24,13 @@ pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<ModelFamily> {
 pub struct SnapshotBackendOptions {
     pub loader: Option<SnapshotBackendLoader>,
     pub family: Option<ModelFamily>,
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
     pub native_text: NativeTextLoadOptions,
+    #[cfg(feature = "mlx")]
     pub mlx: MlxBackendOptions,
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
     pub max_new_tokens: u32,
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
     pub max_prefill_tokens: usize,
 }
 
@@ -32,9 +39,13 @@ impl Default for SnapshotBackendOptions {
         Self {
             loader: None,
             family: None,
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
             native_text: NativeTextLoadOptions::default(),
+            #[cfg(feature = "mlx")]
             mlx: MlxBackendOptions::default(),
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
             max_new_tokens: DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
             max_prefill_tokens: 32,
         }
     }
@@ -45,10 +56,13 @@ pub async fn open_snapshot_backend(
     snapshot_path: impl AsRef<Path>,
     options: SnapshotBackendOptions,
 ) -> anyhow::Result<Box<dyn ModelBackend>> {
-    let model_id = model_id.into();
     let snapshot_path = snapshot_path.as_ref();
     let manifest = snapshot_manifest(snapshot_path).await?;
-    let requested_family = options.family.or(options.mlx.family);
+    let requested_family = options.family;
+    #[cfg(feature = "mlx")]
+    let requested_family = requested_family.or(options.mlx.family);
+    #[cfg(not(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma")))]
+    let _ = &model_id;
     let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
     let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
     let detected_family =
@@ -59,23 +73,43 @@ pub async fn open_snapshot_backend(
     validate_snapshot_loader_family(loader, effective_family)?;
     match loader {
         SnapshotBackendLoader::Mlx => {
-            let mut mlx_options = options.mlx;
-            mlx_options.family = effective_family;
-            Ok(Box::new(
-                MlxBackend::open_with_options(model_id, snapshot_path, mlx_options).await?,
-            ))
+            #[cfg(feature = "mlx")]
+            {
+                let model_id = model_id.into();
+                let mut mlx_options = options.mlx;
+                mlx_options.family = effective_family;
+                Ok(Box::new(
+                    MlxBackend::open_with_options(model_id, snapshot_path, mlx_options).await?,
+                ))
+            }
+            #[cfg(not(feature = "mlx"))]
+            {
+                anyhow::bail!(
+                    "snapshot loader `mlx` is disabled; rebuild llm-engine with --features mlx"
+                );
+            }
         }
         SnapshotBackendLoader::NativeMetal => {
-            let mut native_options = options.native_text;
-            if let Some(family) = effective_family {
-                native_options = native_options.with_family(family);
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+            {
+                let model_id = model_id.into();
+                let mut native_options = options.native_text;
+                if let Some(family) = effective_family {
+                    native_options = native_options.with_family(family);
+                }
+                Ok(Box::new(
+                    NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)
+                        .await?
+                        .with_max_new_tokens(options.max_new_tokens)
+                        .with_max_prefill_tokens(options.max_prefill_tokens),
+                ))
             }
-            Ok(Box::new(
-                NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)
-                    .await?
-                    .with_max_new_tokens(options.max_new_tokens)
-                    .with_max_prefill_tokens(options.max_prefill_tokens),
-            ))
+            #[cfg(not(any(feature = "native-qwen", feature = "native-gemma")))]
+            {
+                anyhow::bail!(
+                    "snapshot loader `native-metal` is disabled; rebuild llm-engine with --features native-qwen and/or native-gemma"
+                );
+            }
         }
     }
 }
@@ -90,8 +124,10 @@ async fn detect_snapshot_family(
         && manifest_family.is_none()
         && requested_family.is_none()
     {
+        #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
         return Ok(Some(infer_native_text_family(snapshot_path).await?));
     }
+    let _ = snapshot_path;
     Ok(None)
 }
 
@@ -200,7 +236,12 @@ async fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<Snapsh
     Ok(Some(manifest))
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    feature = "mlx",
+    feature = "native-qwen",
+    feature = "native-gemma"
+))]
 mod tests {
     use super::*;
 

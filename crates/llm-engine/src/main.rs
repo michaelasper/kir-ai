@@ -9,11 +9,15 @@ use llm_backend::{
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_MODEL_ID, DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, EngineOptions, MlxBackendOptions,
-    MlxTimeouts, MlxToolParserMode, NativeTextLoadOptions, NativeTextRuntimeOptions,
-    SnapshotBackendLoader, SnapshotBackendOptions, open_snapshot_backend,
-    parse_snapshot_model_family, router_builder,
+    DEFAULT_MODEL_ID, EngineOptions, SnapshotBackendLoader, SnapshotBackendOptions,
+    open_snapshot_backend, parse_snapshot_model_family, router_builder,
 };
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+use llm_engine::{
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, NativeTextLoadOptions, NativeTextRuntimeOptions,
+};
+#[cfg(feature = "mlx")]
+use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
 use llm_hub::{
     DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
     ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
@@ -107,18 +111,22 @@ async fn main() -> anyhow::Result<()> {
                 let model_id = flag_value(&serve_args, "--model-id")
                     .or(snapshot_alias)
                     .unwrap_or(DEFAULT_MODEL_ID);
+                #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
                     .map(str::parse::<u32>)
                     .transpose()?
                     .unwrap_or(DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS);
+                #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
                     .map(str::parse::<usize>)
                     .transpose()?
                     .unwrap_or(32);
+                #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let native_metal_weight_cache_bytes =
                     flag_value(&serve_args, "--native-metal-weight-cache-bytes")
                         .map(str::parse::<u64>)
                         .transpose()?;
+                #[cfg(feature = "mlx")]
                 let mlx_endpoint = if let Some(endpoint) = flag_value(&serve_args, "--mlx-endpoint")
                 {
                     url::Url::parse(endpoint)?
@@ -127,8 +135,11 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     MlxBackendOptions::default().endpoint
                 };
+                #[cfg(feature = "mlx")]
                 let mlx_stream_usage = mlx_stream_usage_enabled(&serve_args)?;
+                #[cfg(feature = "mlx")]
                 let mlx_tool_parser = mlx_tool_parser_mode_from_args(&serve_args)?;
+                #[cfg(feature = "mlx")]
                 let mlx_timeouts = {
                     let defaults = MlxTimeouts::default();
                     let connect = flag_value(&serve_args, "--mlx-connect-timeout")
@@ -165,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
                     SnapshotBackendOptions {
                         loader,
                         family,
+                        #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                         native_text: NativeTextLoadOptions::with_runtime_options(
                             NativeTextRuntimeOptions {
                                 eager_materialize_shards: has_flag(
@@ -178,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
                                 ),
                             },
                         ),
+                        #[cfg(feature = "mlx")]
                         mlx: MlxBackendOptions {
                             endpoint: mlx_endpoint,
                             timeouts: mlx_timeouts,
@@ -185,7 +198,9 @@ async fn main() -> anyhow::Result<()> {
                             tool_parser: mlx_tool_parser,
                             ..MlxBackendOptions::default()
                         },
+                        #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                         max_new_tokens,
+                        #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                         max_prefill_tokens,
                     },
                 )
@@ -294,20 +309,16 @@ fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {
     let Some(value) = std::env::var("LLM_ENGINE_CANONICAL_TOOL_SCHEMAS").ok() else {
         return Ok(false);
     };
-    match value.as_str() {
-        "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
-        "0" | "false" | "FALSE" | "no" | "NO" => Ok(false),
-        other => anyhow::bail!(
-            "LLM_ENGINE_CANONICAL_TOOL_SCHEMAS must be 1/0 or true/false, got `{other}`"
-        ),
-    }
+    parse_bool_config("LLM_ENGINE_CANONICAL_TOOL_SCHEMAS", &value)
 }
 
+#[cfg(feature = "mlx")]
 fn mlx_stream_usage_enabled(args: &[String]) -> anyhow::Result<bool> {
     let env_value = std::env::var("LLM_ENGINE_MLX_STREAM_USAGE").ok();
     mlx_stream_usage_enabled_from_env(args, env_value.as_deref())
 }
 
+#[cfg(feature = "mlx")]
 fn mlx_tool_parser_mode_from_args(args: &[String]) -> anyhow::Result<MlxToolParserMode> {
     let Some(value) = flag_value(args, "--mlx-tool-parser") else {
         return Ok(MlxToolParserMode::Auto);
@@ -317,6 +328,7 @@ fn mlx_tool_parser_mode_from_args(args: &[String]) -> anyhow::Result<MlxToolPars
     })
 }
 
+#[cfg(feature = "mlx")]
 fn mlx_stream_usage_enabled_from_env(
     args: &[String],
     env_value: Option<&str>,
@@ -341,6 +353,7 @@ fn parse_bool_config(name: &str, value: &str) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_stream_usage_defaults_true_and_parses_flag() {
         assert!(mlx_stream_usage_enabled_from_env(&[], None).expect("default parses"));
@@ -360,6 +373,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_stream_usage_parses_env_value() {
         assert!(
@@ -370,6 +384,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_tool_parser_mode_defaults_auto_and_parses_flag() {
         assert_eq!(

@@ -1,11 +1,17 @@
 mod fs_util;
+#[cfg(feature = "mlx")]
 mod mlx;
+#[cfg(feature = "native-gemma")]
 mod native_gemma;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 mod native_matvec;
+#[cfg(feature = "native-qwen")]
 mod native_qwen;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 mod native_text;
 mod server;
 mod snapshot_backend;
+#[cfg(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma"))]
 mod sync_ext;
 
 pub use llm_util::defaults::DEFAULT_MODEL_ID;
@@ -21,9 +27,13 @@ pub mod route {
     };
 }
 
+#[cfg(feature = "mlx")]
 pub use mlx::*;
+#[cfg(feature = "native-gemma")]
 pub use native_gemma::*;
+#[cfg(feature = "native-qwen")]
 pub use native_qwen::*;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 pub use native_text::*;
 pub use server::*;
 pub use snapshot_backend::*;
