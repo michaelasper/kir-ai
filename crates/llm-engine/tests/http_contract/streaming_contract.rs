@@ -159,7 +159,7 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
 }
 
 #[tokio::test]
-async fn chat_stream_reports_backend_stall_after_configured_timeout() {
+async fn chat_stream_does_not_stall_before_first_backend_output() {
     let release = Arc::new(Semaphore::new(0));
     let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(DelayedStreamBackend {
@@ -171,6 +171,11 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
         },
     )
     .expect("router builds");
+    let delayed_release = release.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        delayed_release.add_permits(1);
+    });
     let response = app
         .clone()
         .oneshot(
@@ -192,15 +197,21 @@ async fn chat_stream_reports_backend_stall_after_configured_timeout() {
         .expect("stream response");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
+    let body = tokio::time::timeout(Duration::from_millis(400), body_text(response.into_body()))
         .await
-        .expect("stall response completes");
-    assert!(body.contains("\"code\":\"stream_stalled\""));
+        .expect("stream should survive slow prefill before first output");
+    assert!(body.contains("\"content\":\"released\""), "body: {body}");
+    assert!(
+        !body.contains("\"code\":\"stream_stalled\""),
+        "body: {body}"
+    );
     assert_eq!(body.matches("data: [DONE]").count(), 1);
-    let metrics = wait_for_metrics(&app, |body| body["stream_stalled_requests"] == 1).await;
+    let metrics = wait_for_metrics(&app, |body| body["successful_requests"] == 1).await;
+    assert_eq!(metrics["stream_stalled_requests"], 0);
     assert_eq!(metrics["stream_client_disconnected_requests"], 0);
-    assert_eq!(metrics["failed_requests"], 1);
-    assert_eq!(metrics["scheduler_failed_requests"], 1);
+    assert_eq!(metrics["failed_requests"], 0);
+    assert_eq!(metrics["scheduler_failed_requests"], 0);
+    assert_eq!(metrics["scheduler_completed_requests"], 1);
 }
 
 #[tokio::test]

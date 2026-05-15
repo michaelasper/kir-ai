@@ -496,7 +496,7 @@ impl StreamStallDeadline {
     fn new(timeout: Option<Duration>) -> Self {
         Self {
             timeout,
-            deadline: timeout.map(|timeout| TokioInstant::now() + timeout),
+            deadline: None,
             seen_progress: false,
             bytes_since_deadline_reset: 0,
         }
