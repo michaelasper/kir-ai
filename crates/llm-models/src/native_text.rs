@@ -1,4 +1,6 @@
-use crate::{GemmaModelSpec, ModelFamily, ModelSpecError, QwenModelSpec, SafetensorsIndex};
+use crate::{
+    GemmaModelSpec, ModelFamily, ModelSpec, ModelSpecError, QwenModelSpec, SafetensorsIndex,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NativeTextModelSpec {
@@ -54,58 +56,94 @@ impl NativeTextModelSpec {
     }
 
     pub fn family(&self) -> ModelFamily {
-        match self {
-            Self::Qwen(spec) => spec.family,
-            Self::Gemma(spec) => spec.family,
-        }
+        <Self as ModelSpec>::family(self)
     }
 
     pub fn max_position_embeddings(&self) -> u32 {
-        match self {
-            Self::Qwen(spec) => spec.max_position_embeddings,
-            Self::Gemma(spec) => spec.max_position_embeddings,
-        }
+        <Self as ModelSpec>::max_position_embeddings(self)
     }
 
     pub fn num_hidden_layers(&self) -> u32 {
-        match self {
-            Self::Qwen(spec) => spec.num_hidden_layers,
-            Self::Gemma(spec) => spec.num_hidden_layers,
-        }
+        <Self as ModelSpec>::num_hidden_layers(self)
     }
 
     pub fn hidden_size(&self) -> u32 {
-        match self {
-            Self::Qwen(spec) => spec.hidden_size,
-            Self::Gemma(spec) => spec.hidden_size,
-        }
+        <Self as ModelSpec>::hidden_size(self)
     }
 
     pub fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
-        match self {
-            Self::Qwen(spec) => index.validate_qwen_text_weights(spec),
-            Self::Gemma(spec) => index.validate_gemma4_text_weights(spec),
-        }
-    }
-
-    pub fn as_qwen(&self) -> Option<&QwenModelSpec> {
-        match self {
-            Self::Qwen(spec) => Some(spec),
-            Self::Gemma(_) => None,
-        }
-    }
-
-    pub fn as_gemma(&self) -> Option<&GemmaModelSpec> {
-        match self {
-            Self::Gemma(spec) => Some(spec),
-            _ => None,
-        }
+        <Self as ModelSpec>::validate_text_weights(self, index)
     }
 
     pub fn is_qwen3_dense(&self) -> bool {
         match self {
             Self::Qwen(spec) => spec.is_qwen3_dense(),
             Self::Gemma(_) => false,
+        }
+    }
+}
+
+impl ModelSpec for NativeTextModelSpec {
+    fn family(&self) -> ModelFamily {
+        match self {
+            Self::Qwen(spec) => spec.family(),
+            Self::Gemma(spec) => spec.family(),
+        }
+    }
+
+    fn architecture(&self) -> &str {
+        match self {
+            Self::Qwen(spec) => spec.architecture(),
+            Self::Gemma(spec) => spec.architecture(),
+        }
+    }
+
+    fn model_type(&self) -> &str {
+        match self {
+            Self::Qwen(spec) => spec.model_type(),
+            Self::Gemma(spec) => spec.model_type(),
+        }
+    }
+
+    fn text_model_type(&self) -> &str {
+        match self {
+            Self::Qwen(spec) => spec.text_model_type(),
+            Self::Gemma(spec) => spec.text_model_type(),
+        }
+    }
+
+    fn max_position_embeddings(&self) -> u32 {
+        match self {
+            Self::Qwen(spec) => spec.max_position_embeddings(),
+            Self::Gemma(spec) => spec.max_position_embeddings(),
+        }
+    }
+
+    fn num_hidden_layers(&self) -> u32 {
+        match self {
+            Self::Qwen(spec) => spec.num_hidden_layers(),
+            Self::Gemma(spec) => spec.num_hidden_layers(),
+        }
+    }
+
+    fn hidden_size(&self) -> u32 {
+        match self {
+            Self::Qwen(spec) => spec.hidden_size(),
+            Self::Gemma(spec) => spec.hidden_size(),
+        }
+    }
+
+    fn vocab_size(&self) -> u32 {
+        match self {
+            Self::Qwen(spec) => spec.vocab_size(),
+            Self::Gemma(spec) => spec.vocab_size(),
+        }
+    }
+
+    fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
+        match self {
+            Self::Qwen(spec) => spec.validate_text_weights(index),
+            Self::Gemma(spec) => spec.validate_text_weights(index),
         }
     }
 }

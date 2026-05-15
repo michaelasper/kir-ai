@@ -95,7 +95,7 @@ fn native_text_model_spec_routes_qwen_config_through_family_contract() {
     assert_eq!(spec.num_hidden_layers(), 2);
     assert_eq!(spec.hidden_size(), 1024);
     assert!(spec.is_qwen3_dense());
-    assert!(spec.as_qwen().is_some());
+    assert!(matches!(spec, NativeTextModelSpec::Qwen(_)));
 }
 
 #[test]

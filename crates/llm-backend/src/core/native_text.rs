@@ -10,21 +10,9 @@ use crate::{
     qwen_final_norm_for_spec, qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec,
     qwen_lm_head_top_k_for_spec, qwen_prefill_sequence_with_cache,
 };
-use llm_models::ModelFamily;
+use llm_models::{ModelFamily, ModelSpec};
 
-pub enum NativeTextModelSpec {
-    Qwen(llm_models::QwenModelSpec),
-    Gemma(llm_models::GemmaModelSpec),
-}
-
-impl NativeTextModelSpec {
-    pub fn family(&self) -> ModelFamily {
-        match self {
-            Self::Qwen(_) => ModelFamily::Qwen,
-            Self::Gemma(_) => ModelFamily::Gemma,
-        }
-    }
-}
+pub use llm_models::NativeTextModelSpec;
 
 pub enum NativeTextLayerCaches {
     Qwen(Vec<QwenLayerCache>),
@@ -84,15 +72,15 @@ impl<'a> From<&'a llm_models::GemmaModelSpec> for NativeTextModelSpecRef<'a> {
 impl NativeTextModelSpecRef<'_> {
     pub fn family(&self) -> ModelFamily {
         match self {
-            Self::Qwen(_) => ModelFamily::Qwen,
-            Self::Gemma(_) => ModelFamily::Gemma,
+            Self::Qwen(spec) => spec.family(),
+            Self::Gemma(spec) => spec.family(),
         }
     }
 
     pub fn vocab_size(&self) -> u32 {
         match self {
-            Self::Qwen(spec) => spec.vocab_size,
-            Self::Gemma(spec) => spec.vocab_size,
+            Self::Qwen(spec) => spec.vocab_size(),
+            Self::Gemma(spec) => spec.vocab_size(),
         }
     }
 }

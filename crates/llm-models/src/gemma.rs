@@ -1,4 +1,4 @@
-use crate::{ModelFamily, ModelSpecError, SafetensorsIndex};
+use crate::{ModelFamily, ModelSpec, ModelSpecError, SafetensorsIndex};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +273,44 @@ impl GemmaModelSpec {
             self.layer_kinds[layer_idx],
             GemmaAttentionKind::FullAttention
         ) || !self.attention_k_eq_v
+    }
+}
+
+impl ModelSpec for GemmaModelSpec {
+    fn family(&self) -> ModelFamily {
+        self.family
+    }
+
+    fn architecture(&self) -> &str {
+        &self.architecture
+    }
+
+    fn model_type(&self) -> &str {
+        &self.model_type
+    }
+
+    fn text_model_type(&self) -> &str {
+        &self.text_model_type
+    }
+
+    fn max_position_embeddings(&self) -> u32 {
+        self.max_position_embeddings
+    }
+
+    fn num_hidden_layers(&self) -> u32 {
+        self.num_hidden_layers
+    }
+
+    fn hidden_size(&self) -> u32 {
+        self.hidden_size
+    }
+
+    fn vocab_size(&self) -> u32 {
+        self.vocab_size
+    }
+
+    fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
+        index.validate_gemma4_text_weights(self)
     }
 }
 
