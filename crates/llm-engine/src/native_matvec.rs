@@ -11,6 +11,7 @@ use std::{
 };
 
 pub(crate) const DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const METAL_KV_CACHE_MIRROR_BLOCK_TOKENS: usize = 256;
 
 pub(crate) struct NativeTextMetalState {
     pub(crate) device: llm_metal::MetalDevice,
@@ -348,14 +349,12 @@ impl NativeTextMetalState {
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
         let keys = cache.keys();
         let values = cache.values();
-        let storage_key_len = cache.key_storage().len();
-        let storage_value_len = cache.value_storage().len();
+        let storage_len = kv_cache_mirror_storage_len(cache, METAL_KV_CACHE_MIRROR_BLOCK_TOKENS)?;
         let live_byte_len = kv_cache_live_byte_len(cache)?;
         let mut caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror)
-                if mirror.keys.len() == storage_key_len
-                    && mirror.values.len() == storage_value_len =>
+                if mirror.keys.len() >= keys.len() && mirror.values.len() >= values.len() =>
             {
                 match kv_cache_sync_plan(cache, mirror.progress()) {
                     KvCacheSyncPlan::Noop => Ok(()),
@@ -390,8 +389,8 @@ impl NativeTextMetalState {
                 }
             }
             Some(mirror) => {
-                mirror.keys = self.device.new_f32_buffer_len(storage_key_len)?;
-                mirror.values = self.device.new_f32_buffer_len(storage_value_len)?;
+                mirror.keys = self.device.new_f32_buffer_len(storage_len)?;
+                mirror.values = self.device.new_f32_buffer_len(storage_len)?;
                 self.device.write_f32_buffer_range(&mirror.keys, 0, keys)?;
                 self.device
                     .write_f32_buffer_range(&mirror.values, 0, values)?;
@@ -401,8 +400,8 @@ impl NativeTextMetalState {
                 Ok(())
             }
             None => {
-                let key_buffer = self.device.new_f32_buffer_len(storage_key_len)?;
-                let value_buffer = self.device.new_f32_buffer_len(storage_value_len)?;
+                let key_buffer = self.device.new_f32_buffer_len(storage_len)?;
+                let value_buffer = self.device.new_f32_buffer_len(storage_len)?;
                 self.device.write_f32_buffer_range(&key_buffer, 0, keys)?;
                 self.device
                     .write_f32_buffer_range(&value_buffer, 0, values)?;
@@ -664,6 +663,33 @@ fn kv_cache_live_byte_len(cache: &LayerKvCache) -> Result<u64, llm_metal::MetalE
     cache_resident_byte_len(cache.keys().len() + cache.values().len())
 }
 
+fn kv_cache_mirror_storage_len(
+    cache: &LayerKvCache,
+    block_tokens: usize,
+) -> Result<usize, llm_metal::MetalError> {
+    let block_tokens = block_tokens.max(1);
+    let live_tokens = cache.token_count();
+    if live_tokens == 0 {
+        return Ok(0);
+    }
+    let storage_tokens = live_tokens
+        .div_ceil(block_tokens)
+        .checked_mul(block_tokens)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal KV cache mirror block count overflows usize".to_owned(),
+            )
+        })?
+        .min(cache.max_tokens());
+    storage_tokens
+        .checked_mul(cache.vector_len())
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal KV cache mirror storage length overflows usize".to_owned(),
+            )
+        })
+}
+
 fn kv_cache_pair_byte_len(elements_per_tensor: usize) -> Result<u64, llm_metal::MetalError> {
     cache_resident_byte_len(elements_per_tensor.checked_mul(2).ok_or_else(|| {
         llm_metal::MetalError::InvalidShape(
@@ -813,6 +839,39 @@ mod kv_cache_sync_tests {
         };
 
         assert_eq!(kv_cache_sync_plan(&cache, previous), KvCacheSyncPlan::Noop);
+    }
+
+    #[test]
+    fn kv_cache_metal_mirror_storage_grows_by_token_blocks() {
+        let mut cache = LayerKvCache::new(10, 1, 2).expect("cache shape is valid");
+        cache
+            .append(&[1.0, 2.0], &[10.0, 20.0])
+            .expect("first token appends");
+
+        assert_eq!(
+            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
+            8
+        );
+
+        for token in 2..=5 {
+            cache
+                .append(&[token as f32, token as f32], &[token as f32, token as f32])
+                .expect("token appends");
+        }
+        assert_eq!(
+            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
+            16
+        );
+
+        while cache.remaining_tokens() > 0 {
+            cache
+                .append(&[9.0, 9.0], &[9.0, 9.0])
+                .expect("token appends");
+        }
+        assert_eq!(
+            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
+            cache.key_storage().len()
+        );
     }
 }
 
