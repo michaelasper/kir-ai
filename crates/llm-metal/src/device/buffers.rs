@@ -73,6 +73,113 @@ impl F32Buffer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct F16Buffer {
+    pub(crate) buffer: Option<Buffer>,
+    pub(crate) len: usize,
+    pub(crate) byte_len: usize,
+}
+
+impl F16Buffer {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.byte_len
+    }
+}
+
+pub(crate) fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+
+    if exponent == 0xff {
+        if mantissa == 0 {
+            return sign | 0x7c00;
+        }
+        return sign | 0x7e00;
+    }
+
+    let mut half_exponent = exponent - 127 + 15;
+    if half_exponent >= 0x1f {
+        return sign | 0x7c00;
+    }
+
+    if half_exponent <= 0 {
+        if half_exponent < -10 {
+            return sign;
+        }
+        let mantissa = mantissa | 0x0080_0000;
+        let shift = (14 - half_exponent) as u32;
+        let mut half_mantissa = (mantissa >> shift) as u16;
+        let round_bit = 1_u32 << (shift - 1);
+        let remainder = mantissa & (round_bit - 1);
+        if (mantissa & round_bit) != 0 && (remainder != 0 || (half_mantissa & 1) != 0) {
+            half_mantissa = half_mantissa.saturating_add(1);
+        }
+        return sign | half_mantissa;
+    }
+
+    let mut half_mantissa = (mantissa >> 13) as u16;
+    let round = mantissa & 0x0000_1fff;
+    if round > 0x1000 || (round == 0x1000 && (half_mantissa & 1) != 0) {
+        half_mantissa += 1;
+        if half_mantissa == 0x0400 {
+            half_mantissa = 0;
+            half_exponent += 1;
+            if half_exponent >= 0x1f {
+                return sign | 0x7c00;
+            }
+        }
+    }
+
+    sign | ((half_exponent as u16) << 10) | half_mantissa
+}
+
+#[cfg(test)]
+mod f16_tests {
+    use super::*;
+
+    #[test]
+    fn f32_to_f16_bits_handles_common_values_and_rounding() {
+        assert_eq!(f32_to_f16_bits(0.0), 0x0000);
+        assert_eq!(f32_to_f16_bits(-0.0), 0x8000);
+        assert_eq!(f32_to_f16_bits(1.0), 0x3c00);
+        assert_eq!(f32_to_f16_bits(-2.0), 0xc000);
+        assert_eq!(f32_to_f16_bits(65_504.0), 0x7bff);
+        assert_eq!(f32_to_f16_bits(f32::INFINITY), 0x7c00);
+        assert_eq!(f32_to_f16_bits(f32::NEG_INFINITY), 0xfc00);
+        assert_ne!(f32_to_f16_bits(f32::NAN) & 0x03ff, 0);
+
+        let half_ulp_at_one = 2.0_f32.powi(-10);
+        assert_eq!(f32_to_f16_bits(1.0 + half_ulp_at_one / 2.0), 0x3c00);
+        assert_eq!(
+            f32_to_f16_bits(1.0 + half_ulp_at_one + half_ulp_at_one / 2.0),
+            0x3c02
+        );
+    }
+
+    #[test]
+    fn f16_buffer_len_uses_two_bytes_per_element() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal initializes") else {
+            eprintln!("no Metal device available; skipping f16 buffer test");
+            return;
+        };
+
+        let buffer = device.new_f16_buffer_len(9).expect("buffer length fits");
+
+        assert_eq!(buffer.len(), 9);
+        assert_eq!(buffer.byte_len(), 18);
+    }
+}
+
 impl MetalDevice {
     pub(crate) fn take_scratch_f32_buffer(&self, values: &[f32]) -> Buffer {
         let byte_len = std::mem::size_of_val(values) as u64;
@@ -168,6 +275,96 @@ impl MetalDevice {
             len,
             byte_len,
         })
+    }
+
+    pub fn new_f16_buffer_from_f32(&self, values: &[f32]) -> Result<F16Buffer, MetalError> {
+        let bits = values
+            .iter()
+            .copied()
+            .map(f32_to_f16_bits)
+            .collect::<Vec<_>>();
+        let byte_len = bits
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or_else(|| {
+                MetalError::InvalidShape("f16 buffer byte length overflows usize".to_owned())
+            })?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(self.device.new_buffer_with_data(
+                bits.as_ptr().cast::<c_void>(),
+                byte_len as u64,
+                MTLResourceOptions::StorageModeShared,
+            ))
+        };
+        Ok(F16Buffer {
+            buffer,
+            len: values.len(),
+            byte_len,
+        })
+    }
+
+    pub fn new_f16_buffer_len(&self, len: usize) -> Result<F16Buffer, MetalError> {
+        let byte_len = len.checked_mul(std::mem::size_of::<u16>()).ok_or_else(|| {
+            MetalError::InvalidShape("f16 buffer byte length overflows usize".to_owned())
+        })?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(
+                self.device
+                    .new_buffer(byte_len as u64, MTLResourceOptions::StorageModeShared),
+            )
+        };
+        Ok(F16Buffer {
+            buffer,
+            len,
+            byte_len,
+        })
+    }
+
+    pub fn write_f16_buffer_range_from_f32(
+        &self,
+        buffer: &F16Buffer,
+        start: usize,
+        values: &[f32],
+    ) -> Result<(), MetalError> {
+        let end = start.checked_add(values.len()).ok_or_else(|| {
+            MetalError::InvalidShape("f16 buffer write range overflows usize".to_owned())
+        })?;
+        if end > buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "f16 buffer write range {start}..{end} exceeds buffer length {}",
+                buffer.len
+            )));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f16 buffer range write requires a Metal buffer".to_owned(),
+            ));
+        };
+        let bits = values
+            .iter()
+            .copied()
+            .map(f32_to_f16_bits)
+            .collect::<Vec<_>>();
+        let _cpu_access = self.synchronization.begin_cpu_access();
+        // SAFETY: the destination range is bounds-checked above against the
+        // f16 element length used to allocate the StorageModeShared buffer. The
+        // synchronization guard waits for in-flight GPU commands and prevents
+        // new submissions during this copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bits.as_ptr(),
+                metal_buffer.contents().cast::<u16>().add(start),
+                bits.len(),
+            );
+        }
+        Ok(())
     }
 
     pub fn write_f32_buffer(&self, buffer: &F32Buffer, values: &[f32]) -> Result<(), MetalError> {

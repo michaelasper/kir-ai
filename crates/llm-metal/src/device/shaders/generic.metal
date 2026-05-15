@@ -86,6 +86,37 @@ kernel void attention_scores_f32(
     scores[(head * row_count) + row] = dot * score_scale;
 }
 
+kernel void attention_scores_f16(
+    device const float* query [[buffer(0)]],
+    device const half* keys [[buffer(1)]],
+    constant uint& row_count [[buffer(2)]],
+    constant uint& num_attention_heads [[buffer(3)]],
+    constant uint& num_key_value_heads [[buffer(4)]],
+    constant uint& head_dim [[buffer(5)]],
+    constant uint& groups [[buffer(6)]],
+    constant float& score_scale [[buffer(7)]],
+    device float* scores [[buffer(8)]],
+    uint2 id [[thread_position_in_grid]]
+) {
+    uint row = id.x;
+    uint head = id.y;
+    if (row >= row_count || head >= num_attention_heads) {
+        return;
+    }
+    uint kv_head = head / groups;
+    if (kv_head >= num_key_value_heads) {
+        return;
+    }
+    uint query_start = head * head_dim;
+    uint kv_vector_len = num_key_value_heads * head_dim;
+    uint key_start = (row * kv_vector_len) + (kv_head * head_dim);
+    float dot = 0.0;
+    for (uint offset = 0; offset < head_dim; offset++) {
+        dot += query[query_start + offset] * float(keys[key_start + offset]);
+    }
+    scores[(head * row_count) + row] = dot * score_scale;
+}
+
 kernel void softmax_rows_f32(
     device const float* scores [[buffer(0)]],
     constant uint& row_count [[buffer(1)]],
@@ -163,6 +194,36 @@ kernel void attention_weighted_sum_f32(
     output[(head * head_dim) + offset] = sum;
 }
 
+kernel void attention_weighted_sum_f16(
+    device const half* values [[buffer(0)]],
+    device const float* weights [[buffer(1)]],
+    constant uint& row_count [[buffer(2)]],
+    constant uint& num_attention_heads [[buffer(3)]],
+    constant uint& num_key_value_heads [[buffer(4)]],
+    constant uint& head_dim [[buffer(5)]],
+    constant uint& groups [[buffer(6)]],
+    device float* output [[buffer(7)]],
+    uint2 id [[thread_position_in_grid]]
+) {
+    uint offset = id.x;
+    uint head = id.y;
+    if (offset >= head_dim || head >= num_attention_heads) {
+        return;
+    }
+    uint kv_head = head / groups;
+    if (kv_head >= num_key_value_heads) {
+        return;
+    }
+    uint kv_vector_len = num_key_value_heads * head_dim;
+    uint value_offset = (kv_head * head_dim) + offset;
+    float sum = 0.0;
+    for (uint row = 0; row < row_count; row++) {
+        float weight = weights[(head * row_count) + row];
+        sum += float(values[(row * kv_vector_len) + value_offset]) * weight;
+    }
+    output[(head * head_dim) + offset] = sum;
+}
+
 kernel void weighted_sum_f32(
     device const float* values [[buffer(0)]],
     device const float* weights [[buffer(1)]],
@@ -196,4 +257,21 @@ kernel void select_head_rows_f32(
     uint row = index / head_len;
     uint offset = index % head_len;
     output[index] = values[(row * row_len) + head_start + offset];
+}
+
+kernel void select_head_rows_f16(
+    device const half* values [[buffer(0)]],
+    constant uint& row_len [[buffer(1)]],
+    constant uint& head_start [[buffer(2)]],
+    constant uint& head_len [[buffer(3)]],
+    constant uint& output_len [[buffer(4)]],
+    device float* output [[buffer(5)]],
+    uint index [[thread_position_in_grid]]
+) {
+    if (index >= output_len) {
+        return;
+    }
+    uint row = index / head_len;
+    uint offset = index % head_len;
+    output[index] = float(values[(row * row_len) + head_start + offset]);
 }
