@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.5](https://github.com/michaelasper/kir-ai/compare/v1.14.4...v1.14.5) (2026-05-15)
+
+### Bug Fixes
+
+* **native:** keep prefix cache identity bucketed ([2751842](https://github.com/michaelasper/kir-ai/commit/27518426cf29f19546ce88b1daa34b3e1223dfa2))
+
 ## [1.14.4](https://github.com/michaelasper/kir-ai/compare/v1.14.3...v1.14.4) (2026-05-15)
 
 ### Bug Fixes
