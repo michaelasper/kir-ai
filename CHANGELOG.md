@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.4](https://github.com/michaelasper/kir-ai/compare/v1.14.3...v1.14.4) (2026-05-15)
+
+### Bug Fixes
+
+* **bench:** remove unsupported gemma vlm max tokens flag ([9babb42](https://github.com/michaelasper/kir-ai/commit/9babb42fd15a7d12816c2784831a3db1cd54f72d))
+
+### Performance Improvements
+
+* **native:** sync only live kv cache tokens ([ef3dc9f](https://github.com/michaelasper/kir-ai/commit/ef3dc9f9d22e05c783341e2817d2d0754c9f9eb1))
+
 ## [1.14.3](https://github.com/michaelasper/kir-ai/compare/v1.14.2...v1.14.3) (2026-05-15)
 
 ### Bug Fixes
