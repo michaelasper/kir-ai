@@ -63,10 +63,7 @@ pub(crate) fn native_text_cache_token_capacity(
         )));
     }
     let required = requested_context.max(min_cache_tokens.max(1));
-    Ok(required
-        .checked_next_power_of_two()
-        .unwrap_or(max_position_embeddings)
-        .min(max_position_embeddings))
+    Ok(required.min(max_position_embeddings))
 }
 
 #[cfg(test)]

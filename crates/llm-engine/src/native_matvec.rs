@@ -344,23 +344,32 @@ impl NativeTextMetalState {
     }
 
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
-        let byte_len =
-            cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())?;
+        let keys = cache.keys();
+        let values = cache.values();
+        let byte_len = kv_cache_live_byte_len(cache)?;
         let mut caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
         match caches.get_mut(&cache.id()) {
             Some(mirror) if mirror.revision == cache.revision() => Ok(()),
-            Some(mirror) => {
-                self.device
-                    .write_f32_buffer(&mirror.keys, cache.key_storage())?;
-                self.device
-                    .write_f32_buffer(&mirror.values, cache.value_storage())?;
+            Some(mirror)
+                if mirror.keys.len() == keys.len() && mirror.values.len() == values.len() =>
+            {
+                self.device.write_f32_buffer(&mirror.keys, keys)?;
+                self.device.write_f32_buffer(&mirror.values, values)?;
                 mirror.revision = cache.revision();
                 native_text_metal_metrics().record_kv_cache_sync(byte_len);
                 Ok(())
             }
+            Some(mirror) => {
+                mirror.keys = self.device.new_f32_buffer(keys)?;
+                mirror.values = self.device.new_f32_buffer(values)?;
+                mirror.revision = cache.revision();
+                native_text_metal_metrics().record_kv_cache_sync(byte_len);
+                self.record_kv_cache_residency_locked(&caches);
+                Ok(())
+            }
             None => {
-                let keys = self.device.new_f32_buffer(cache.key_storage())?;
-                let values = self.device.new_f32_buffer(cache.value_storage())?;
+                let keys = self.device.new_f32_buffer(keys)?;
+                let values = self.device.new_f32_buffer(values)?;
                 caches.insert(
                     cache.id(),
                     MetalLayerKvCacheMirror {
@@ -611,6 +620,34 @@ fn cache_resident_byte_len(elements: usize) -> Result<u64, llm_metal::MetalError
                 "Metal resident cache byte length overflows usize".to_owned(),
             )
         })
+}
+
+fn kv_cache_live_byte_len(cache: &LayerKvCache) -> Result<u64, llm_metal::MetalError> {
+    cache_resident_byte_len(cache.keys().len() + cache.values().len())
+}
+
+#[cfg(test)]
+mod kv_cache_sync_tests {
+    use super::*;
+
+    #[test]
+    fn kv_cache_live_byte_len_counts_only_used_tokens() {
+        let mut cache = LayerKvCache::new(8, 2, 2).expect("cache shape is valid");
+        cache
+            .append(&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0])
+            .expect("first token appends");
+        cache
+            .append(&[9.0, 10.0, 11.0, 12.0], &[13.0, 14.0, 15.0, 16.0])
+            .expect("second token appends");
+
+        let live_bytes = kv_cache_live_byte_len(&cache).expect("byte length fits");
+        let storage_bytes =
+            cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())
+                .expect("storage byte length fits");
+
+        assert_eq!(live_bytes, 64);
+        assert_eq!(storage_bytes, 256);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -1298,11 +1298,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_token_capacity_rounds_budget_within_position_limit() {
+    fn cache_token_capacity_uses_exact_budget_within_position_limit() {
         let capacity = native_text_cache_token_capacity(40, 8, 32, 64, "Test")
             .expect("context and generation budget fits");
 
-        assert_eq!(capacity, 64);
+        assert_eq!(capacity, 48);
     }
 
     #[test]
