@@ -283,5 +283,5 @@ cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36 \
   --max-new-tokens 256 \
-  --max-prefill-tokens 32
+  --max-prefill-tokens 2048
 ```

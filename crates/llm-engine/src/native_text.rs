@@ -43,6 +43,7 @@ pub(crate) use prefix_cache::{
 pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
+pub const DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 2048;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeTextLoadOptions {

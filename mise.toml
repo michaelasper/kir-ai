@@ -69,7 +69,7 @@ cargo run -p llm-engine -- serve \
   "${family_args[@]}" \
   "${mlx_args[@]}" \
   --max-new-tokens "${LLM_ENGINE_MAX_NEW_TOKENS:-256}" \
-  --max-prefill-tokens "${LLM_ENGINE_MAX_PREFILL_TOKENS:-32}"
+  --max-prefill-tokens "${LLM_ENGINE_MAX_PREFILL_TOKENS:-2048}"
 '
 """
 

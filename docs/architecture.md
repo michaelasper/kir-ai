@@ -150,7 +150,7 @@ probes to Metal kernels without changing API or model-store semantics.
   metadata; Qwen and Gemma native text execution are implemented, while other
   families fail closed until their adapters exist.
 - Native model execution is BF16 safetensors-oriented.
-- Native text uses `--max-prefill-tokens` as a prefill chunk size; retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
+- Native text uses `--max-prefill-tokens` as a prefill chunk size; the default is sized for long-context prefill throughput, while smaller values are mainly useful for memory-constrained probes. Retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
 - Multi-token decode recomputes bounded context instead of maintaining reusable
   KV or recurrent state caches.
 - The server does not use downloaded `generation_config.json` sampling settings.

@@ -1,5 +1,5 @@
 use crate::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
         NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
         NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
@@ -151,7 +151,7 @@ impl NativeGemmaBackend {
             spec,
             store,
             matvec,
-            max_prefill_tokens: 32,
+            max_prefill_tokens: DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeGemmaPrefixCache::new(

@@ -17,7 +17,8 @@ use llm_engine::{
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, NativeTextLoadOptions, NativeTextRuntimeOptions,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
+    NativeTextLoadOptions, NativeTextRuntimeOptions,
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
@@ -127,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
                 let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
                     .map(str::parse::<usize>)
                     .transpose()?
-                    .unwrap_or(32);
+                    .unwrap_or(DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS);
                 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let native_metal_weight_cache_bytes =
                     flag_value(&serve_args, "--native-metal-weight-cache-bytes")
@@ -289,7 +290,7 @@ Options:
   --family <qwen|deep_seek|gemma|llama>      Model family for raw snapshots without a Kir manifest
                                              Raw native snapshots infer Qwen/Gemma from config.json; raw MLX requires --family
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
-  --max-prefill-tokens <n>                   Native text maximum prefill tokens
+  --max-prefill-tokens <n>                   Native text prefill chunk size [default: 2048; lower only for memory-constrained correctness probes]
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]

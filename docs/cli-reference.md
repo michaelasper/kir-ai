@@ -35,7 +35,7 @@ llm-engine serve \
   --snapshot <snapshot-path> \
   --model-id local-qwen36 \
   --max-new-tokens 256 \
-  --max-prefill-tokens 32 \
+  --max-prefill-tokens 2048 \
   --native-metal-weight-cache-bytes 8589934592
 ```
 
@@ -50,7 +50,7 @@ llm-engine serve \
 | `--family <qwen\|deep_seek\|gemma\|llama>` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
 | `--max-new-tokens <u32>` | `256` | Native text generation cap per request. Values below `1` are clamped to `1`. |
-| `--max-prefill-tokens <usize>` | `32` | Native text prefill chunk size. Values below `1` are clamped to `1`; prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. |
+| `--max-prefill-tokens <usize>` | `2048` | Native text prefill chunk size. Long-context native serving depends on a large value here because prefill runs sequentially by chunk; values below `1` are clamped to `1`, and prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. Lower this only for memory-constrained correctness probes. |
 | `--max-json-body-bytes <usize>` | `16777216` | HTTP JSON request body cap for API and admin JSON routes. Values below `1` are rejected. |
 | `--max-message-content-bytes <usize>` | `8388608` | Per-message chat `content` byte cap after JSON parsing. Values below `1` are rejected. |
 | `--max-completion-prompt-bytes <usize>` | `8388608` | Text completion `prompt` byte cap after JSON parsing. Values below `1` are rejected. |

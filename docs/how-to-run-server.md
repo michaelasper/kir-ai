@@ -57,7 +57,7 @@ cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
   --model-id local-qwen36 \
   --max-new-tokens 256 \
-  --max-prefill-tokens 32 \
+  --max-prefill-tokens 2048 \
   --native-metal-weight-cache-bytes 8589934592
 ```
 
@@ -168,9 +168,11 @@ native MLX bridge.
 is clamped to at least `1`.
 
 `--max-prefill-tokens` controls the native prefill chunk size. It defaults to
-`32` and is clamped to at least `1`. Native text backends retain the accepted
-prompt context by sizing full-attention caches from prompt length plus
-generation budget, and reject requests that exceed the model context limit.
+`2048` and is clamped to at least `1`. Long-context native serving depends on a
+large value here because prompt prefill runs sequentially by chunk. Native text
+backends retain the accepted prompt context by sizing full-attention caches from
+prompt length plus generation budget, and reject requests that exceed the model
+context limit.
 
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
@@ -180,7 +182,8 @@ set to `0` to disable weight-buffer caching.
 at startup until the configured budget is full. Leave it off when you want
 minimum startup time or when first-request latency is not the bottleneck.
 
-Use small values while probing correctness:
+Override to small values only while probing correctness or reducing memory
+pressure:
 
 ```sh
 cargo run -p llm-engine -- serve \
@@ -189,14 +192,14 @@ cargo run -p llm-engine -- serve \
   --max-prefill-tokens 8
 ```
 
-Use a larger prefill chunk only when you expect the current CPU-bound path to
-benefit from fewer prefill calls:
+Keep the default, or tune upward when the host has enough memory and long-context
+TTFT is the bottleneck:
 
 ```sh
 cargo run -p llm-engine -- serve \
   --snapshot "$SNAPSHOT" \
   --max-new-tokens 256 \
-  --max-prefill-tokens 64
+  --max-prefill-tokens 4096
 ```
 
 ## Call Chat Completions

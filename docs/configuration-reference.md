@@ -18,7 +18,7 @@ generation options.
 | `LLM_ENGINE_MODEL` | `mise run run-inference` | Served model id. Defaults to the snapshot alias or `local-qwen36`. |
 | `LLM_ENGINE_ADDR` | `mise run run-inference` | Listen address. Defaults to `127.0.0.1:3000`. |
 | `LLM_ENGINE_MAX_NEW_TOKENS` | `mise run run-inference` | Generation cap passed to `--max-new-tokens`. Defaults to `256`. |
-| `LLM_ENGINE_MAX_PREFILL_TOKENS` | `mise run run-inference` | Native prefill chunk size passed to `--max-prefill-tokens`. Defaults to `32`. |
+| `LLM_ENGINE_MAX_PREFILL_TOKENS` | `mise run run-inference` | Native prefill chunk size passed to `--max-prefill-tokens`. Defaults to `2048`; lowering it is mainly for memory-constrained correctness probes. |
 | `MLX_LM_ENDPOINT` | `serve`, `mise run run-inference` | Loopback MLX sidecar `/v1` endpoint when `--mlx-endpoint` is omitted. |
 
 ## Workspace Tooling
@@ -55,7 +55,7 @@ Mise tasks:
 | `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
-| `--max-prefill-tokens` | `usize` | `32` | Native prefill chunk size. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
+| `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
 | `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Chat requests use `/v1/chat/completions` with lossless OpenAI message history; legacy text completions use a completions-capable sidecar endpoint when the selected family exposes one. Qwen, DeepSeek, and Llama use `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |

@@ -100,7 +100,7 @@ kirai serve \
   --snapshot .llm-models/<manifest-snapshot-path> \
   --model-id local-qwen36 \
   --max-new-tokens 256 \
-  --max-prefill-tokens 32
+  --max-prefill-tokens 2048
 ```
 
 For MLX manifests, set the loopback endpoint:

@@ -1095,6 +1095,18 @@ fn serve_help_prints_without_backend_validation() {
         "stdout should document the usable native generation default: {stdout}"
     );
     assert!(
+        stdout.contains("--max-prefill-tokens <n>"),
+        "stdout should document native prefill chunk sizing: {stdout}"
+    );
+    assert!(
+        stdout.contains("[default: 2048"),
+        "stdout should document the long-context native prefill default: {stdout}"
+    );
+    assert!(
+        stdout.contains("memory-constrained correctness probes"),
+        "stdout should make low native prefill chunks an explicit probe-only override: {stdout}"
+    );
+    assert!(
         stdout.contains("--max-json-body-bytes <bytes>"),
         "serve help should document configurable JSON body limits: {stdout}"
     );

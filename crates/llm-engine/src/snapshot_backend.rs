@@ -1,7 +1,7 @@
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use crate::{
-    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, NativeTextBackend, NativeTextLoadOptions,
-    native_text::infer_native_text_family,
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS, NativeTextBackend,
+    NativeTextLoadOptions, native_text::infer_native_text_family,
 };
 #[cfg(feature = "mlx")]
 use crate::{MlxBackend, MlxBackendOptions};
@@ -46,7 +46,7 @@ impl Default for SnapshotBackendOptions {
             #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
             max_new_tokens: DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
             #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-            max_prefill_tokens: 32,
+            max_prefill_tokens: DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
         }
     }
 }
@@ -258,6 +258,15 @@ mod tests {
             .build()
             .expect("test runtime");
         rt.block_on(open_snapshot_backend(model_id, snapshot_path, options))
+    }
+
+    #[test]
+    fn snapshot_backend_default_prefill_tokens_match_long_context_default() {
+        assert_eq!(
+            SnapshotBackendOptions::default().max_prefill_tokens,
+            crate::DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS
+        );
+        assert_eq!(crate::DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS, 2048);
     }
 
     #[test]
