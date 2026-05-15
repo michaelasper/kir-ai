@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.3](https://github.com/michaelasper/kir-ai/compare/v1.14.2...v1.14.3) (2026-05-15)
+
+### Bug Fixes
+
+* **mlx:** tolerate qwen streaming parser edge cases ([b045882](https://github.com/michaelasper/kir-ai/commit/b0458824e84aa3c46c1815c463a9e728d5f88736))
+
 ## [1.14.2](https://github.com/michaelasper/kir-ai/compare/v1.14.1...v1.14.2) (2026-05-15)
 
 ### Bug Fixes
