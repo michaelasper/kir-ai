@@ -270,6 +270,12 @@ impl MlxSseParser {
         if !text.is_empty() {
             chunks.extend(self.push_text_chunks(&text)?);
         }
+        if matches!(finish_reason, Some(BackendFinishReason::Length))
+            && let Some(qwen_xml) = &mut self.qwen_xml
+        {
+            let emissions = qwen_xml.finish_truncated()?;
+            chunks.extend(self.qwen_xml_emissions_to_chunks(emissions));
+        }
         if matches!(finish_reason, Some(BackendFinishReason::ToolCalls))
             && !self.emit_structured_tool_deltas
             && !self.tool_calls.is_empty()
@@ -629,6 +635,61 @@ impl QwenXmlToolParser {
         let mut emissions = Vec::new();
         if !self.buffer.is_empty() {
             emissions.push(QwenXmlEmission::text(std::mem::take(&mut self.buffer)));
+        }
+        Ok(emissions)
+    }
+
+    fn finish_truncated(&mut self) -> Result<Vec<QwenXmlEmission>, BackendError> {
+        let mut emissions = Vec::new();
+        match self.state {
+            QwenXmlState::Outside => {}
+            QwenXmlState::ExpectFunction => {
+                self.current_call = None;
+                self.current_parameter = None;
+                self.buffer.clear();
+                self.state = QwenXmlState::Outside;
+            }
+            QwenXmlState::InFunction => {
+                self.buffer.clear();
+                if self.current_call.is_some() {
+                    self.finish_function(&mut emissions)?;
+                }
+                self.state = QwenXmlState::Outside;
+            }
+            QwenXmlState::InParameter => {
+                let final_piece = std::mem::take(&mut self.buffer);
+                let parameter_kind = self
+                    .current_parameter
+                    .as_ref()
+                    .map(|parameter| parameter.kind);
+                match parameter_kind {
+                    Some(QwenXmlParameterKind::String) => {
+                        self.finish_parameter(&final_piece, &mut emissions)?;
+                    }
+                    Some(QwenXmlParameterKind::Json) => {
+                        let parsed = self.finish_parameter(&final_piece, &mut emissions);
+                        if parsed.is_err() {
+                            self.current_parameter = None;
+                            if let Some(call) = &mut self.current_call {
+                                call.argument_count = call.argument_count.saturating_sub(1);
+                            }
+                        } else {
+                            parsed?;
+                        }
+                    }
+                    None => {}
+                }
+                if self.current_call.is_some() {
+                    self.finish_function(&mut emissions)?;
+                }
+                self.state = QwenXmlState::Outside;
+            }
+            QwenXmlState::ExpectToolClose => {
+                self.buffer.clear();
+                self.current_call = None;
+                self.current_parameter = None;
+                self.state = QwenXmlState::Outside;
+            }
         }
         Ok(emissions)
     }

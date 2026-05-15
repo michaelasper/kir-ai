@@ -235,6 +235,53 @@ fn mlx_sse_parser_rejects_truncated_active_qwen_xml_tool_call() {
 }
 
 #[test]
+fn mlx_sse_parser_allows_length_truncated_qwen_xml_before_function() {
+    let frame = mlx_text_sse_frame("<tool_call>", Some("length"));
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test(&[&frame, done], MlxToolMarkup::QwenXml)
+        .expect("length-truncated XML start degrades without backend failure");
+
+    assert!(chunks.iter().all(|chunk| chunk.1.is_empty()));
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.4),
+        Some(BackendFinishReason::Length)
+    );
+}
+
+#[test]
+fn mlx_sse_parser_finishes_length_truncated_qwen_xml_string_parameter() {
+    let frame = mlx_text_sse_frame(
+        "<tool_call><function=record><parameter=path>Cargo",
+        Some("length"),
+    );
+    let done = "data:[DONE]\n\n";
+    let chunks = parse_mlx_sse_for_test(&[&frame, done], MlxToolMarkup::QwenXml)
+        .expect("length-truncated XML parameter produces best-effort deltas");
+
+    let deltas = chunks.iter().flat_map(|chunk| &chunk.1).collect::<Vec<_>>();
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.name.as_deref())
+            .collect::<Vec<_>>(),
+        ["record"]
+    );
+    assert_eq!(
+        deltas
+            .iter()
+            .filter_map(|delta| delta.function.as_ref())
+            .filter_map(|function| function.arguments.as_deref())
+            .collect::<String>(),
+        r#"{"path":"Cargo"}"#
+    );
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.4),
+        Some(BackendFinishReason::Length)
+    );
+}
+
+#[test]
 fn mlx_sse_parser_handles_adjacent_qwen_xml_tool_calls() {
     let frame = mlx_text_sse_frame(
         "<tool_call><function=first></function></tool_call><tool_call><function=second><parameter=path>src/lib.rs</parameter></function></tool_call>",

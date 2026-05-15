@@ -670,6 +670,7 @@ fn qwen_mlx_tool_normalized_request_bodies_cover_tool_stream_and_json_with_defau
         ProbePrompt::measured(128, 0, None),
     );
     assert_eq!(tool["model"], "qwen");
+    assert_eq!(tool["max_tokens"], 512);
     assert_eq!(tool["tool_choice"], "required");
     assert_eq!(
         tool["tools"][0]["function"]["name"],
@@ -687,6 +688,7 @@ fn qwen_mlx_tool_normalized_request_bodies_cover_tool_stream_and_json_with_defau
         ),
         ProbePrompt::measured(128, 0, None),
     );
+    assert_eq!(stream["max_tokens"], 512);
     assert_eq!(stream["stream"], true);
     assert_eq!(stream["stream_options"]["include_usage"], true);
     assert_eq!(stream["chat_template_kwargs"]["enable_thinking"], false);
