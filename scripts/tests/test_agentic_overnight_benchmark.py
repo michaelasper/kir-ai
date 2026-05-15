@@ -43,6 +43,7 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
         for lane in gemma_lanes:
             command = bench.sidecar_command(lane, 8123)
             self.assertIn("mlx_vlm.server", command)
+            self.assertIn("--prompt-cache-size", command)
             self.assertIn("--prefill-step-size", command)
             self.assertNotIn("--max-tokens", command)
 

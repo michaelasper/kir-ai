@@ -193,15 +193,21 @@ impl MlxBackend {
 
         let mut bytes = response.bytes_stream();
         let mut body = Vec::new();
+        let mut saw_first_byte = false;
         loop {
-            let item = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                    result.map_err(|_| BackendError::other(format!(
-                        "{MLX_STALL_PREFIX} stream stalled for {} without data",
-                        format_duration(self.timeouts.read)
-                    )))
+            let item = if saw_first_byte {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
+                    result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                        result.map_err(|_| mlx_stream_stall_error(self.timeouts.read))
+                    }
+                }
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
+                    item = bytes.next() => Ok(item),
                 }
             };
             let item = match item {
@@ -223,6 +229,7 @@ impl MlxBackend {
                     )));
                 }
             };
+            saw_first_byte = true;
             request_metrics.record_response_bytes(bytes.len());
             body.extend_from_slice(&bytes);
         }
@@ -313,15 +320,21 @@ impl MlxBackend {
                         request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
                     })?;
                 }
+                let mut saw_first_byte = false;
                 loop {
-                    let item = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                        result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                            result.map_err(|_| BackendError::other(format!(
-                                "{MLX_STALL_PREFIX} stream stalled for {} without data",
-                                format_duration(self.timeouts.read)
-                            )))
+                    let item = if saw_first_byte {
+                        tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
+                            result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                                result.map_err(|_| mlx_stream_stall_error(self.timeouts.read))
+                            }
+                        }
+                    } else {
+                        tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
+                            item = bytes.next() => Ok(item),
                         }
                     };
                     let item = match item {
@@ -341,6 +354,7 @@ impl MlxBackend {
                             Err(BackendError::other(format!("MLX stream read failed: {err}")))?
                         }
                     };
+                    saw_first_byte = true;
                     request_metrics.record_first_upstream_byte();
                     request_metrics.record_response_bytes(bytes.len());
                     let chunk = match std::str::from_utf8(&bytes) {
@@ -412,6 +426,13 @@ impl MlxBackend {
         }
         .boxed()
     }
+}
+
+fn mlx_stream_stall_error(read_timeout: std::time::Duration) -> BackendError {
+    BackendError::other(format!(
+        "{MLX_STALL_PREFIX} stream stalled for {} without data",
+        format_duration(read_timeout)
+    ))
 }
 
 fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
