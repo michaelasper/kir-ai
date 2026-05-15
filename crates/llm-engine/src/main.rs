@@ -1,7 +1,9 @@
+#[cfg(feature = "diagnostics")]
 use llm_backend::{
     CpuNativeMatvecBackend, InferenceScratchpad, QwenMoeDims, SafeTensorFile, SafeTensorShardStore,
     qwen_embedding_and_layer0_norm,
 };
+#[cfg(feature = "diagnostics")]
 use llm_backend::{
     qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer_moe_forward_in_place,
     qwen_layer_moe_router, qwen_layer0_linear_attention_first_token,
@@ -23,7 +25,9 @@ use llm_hub::{
     ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
     SnapshotRecord,
 };
+#[cfg(feature = "diagnostics")]
 use llm_models::QwenModelSpec;
+#[cfg(feature = "diagnostics")]
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::Path};
@@ -349,11 +353,10 @@ fn parse_bool_config(name: &str, value: &str) -> anyhow::Result<bool> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mlx"))]
 mod tests {
     use super::*;
 
-    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_stream_usage_defaults_true_and_parses_flag() {
         assert!(mlx_stream_usage_enabled_from_env(&[], None).expect("default parses"));
@@ -373,7 +376,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_stream_usage_parses_env_value() {
         assert!(
@@ -384,7 +386,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mlx")]
     #[test]
     fn mlx_tool_parser_mode_defaults_auto_and_parses_flag() {
         assert_eq!(
@@ -457,6 +458,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        #[cfg(feature = "diagnostics")]
         "inspect" => {
             let snapshot_path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect <snapshot-path>")
@@ -499,6 +501,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 Err(snapshot_err) => return Err(snapshot_err.into()),
             }
         }
+        #[cfg(not(feature = "diagnostics"))]
+        "inspect" => diagnostics_feature_required("inspect")?,
         "verify" => {
             let snapshot_path = args
                 .get(1)
@@ -544,6 +548,7 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 serde_json::to_string_pretty(&prune_output_json(dry_run, &plan, report.as_ref()))?
             );
         }
+        #[cfg(feature = "diagnostics")]
         "inspect-safetensors" => {
             let path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect-safetensors <path>")
@@ -600,6 +605,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        #[cfg(not(feature = "diagnostics"))]
+        "inspect-safetensors" => diagnostics_feature_required("inspect-safetensors")?,
+        #[cfg(feature = "diagnostics")]
         "inspect-tensor" => {
             let snapshot_path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -641,6 +649,9 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        #[cfg(not(feature = "diagnostics"))]
+        "inspect-tensor" => diagnostics_feature_required("inspect-tensor")?,
+        #[cfg(feature = "diagnostics")]
         "inspect-qwen-input" => {
             let snapshot_path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -913,6 +924,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
                 }))?
             );
         }
+        #[cfg(not(feature = "diagnostics"))]
+        "inspect-qwen-input" => diagnostics_feature_required("inspect-qwen-input")?,
         "plan" | "pull" => {
             let repo = args
                 .get(1)
@@ -955,6 +968,13 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         other => anyhow::bail!("unknown model subcommand `{other}`"),
     }
     Ok(())
+}
+
+#[cfg(not(feature = "diagnostics"))]
+fn diagnostics_feature_required(subcommand: &str) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "llm-engine model {subcommand} requires the llm-engine `diagnostics` feature; rebuild with --features diagnostics"
+    )
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -1130,6 +1150,7 @@ fn path_string(path: &Path) -> String {
     path.display().to_string()
 }
 
+#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Copy)]
 struct QwenLmHeadJsonOptions {
     hidden_size: usize,
@@ -1139,6 +1160,7 @@ struct QwenLmHeadJsonOptions {
     limit: usize,
 }
 
+#[cfg(feature = "diagnostics")]
 async fn qwen_lm_head_json(
     store: &SafeTensorShardStore,
     tokenizer: Option<&HuggingFaceTokenizer>,

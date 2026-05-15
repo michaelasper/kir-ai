@@ -1165,6 +1165,25 @@ fn bench_command_without_feature_errors_clearly() {
     );
 }
 
+#[test]
+#[cfg(not(feature = "diagnostics"))]
+fn diagnostics_command_without_feature_errors_clearly() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["model", "inspect", "/tmp/missing-snapshot"])
+        .output()
+        .expect("run llm-engine model inspect without diagnostics feature");
+
+    assert!(
+        !output.status.success(),
+        "diagnostics command unexpectedly succeeded without diagnostics feature"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires the llm-engine `diagnostics` feature"),
+        "stderr did not explain missing diagnostics feature: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn serve_with_missing_snapshot_alias_fails_before_binding() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -1395,6 +1414,7 @@ async fn model_list_outputs_promoted_snapshots() {
 }
 
 #[tokio::test]
+#[cfg(feature = "diagnostics")]
 async fn model_inspect_outputs_snapshot_manifest_summary() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
@@ -1628,6 +1648,7 @@ async fn model_prune_confirm_deletes_same_candidates_as_dry_run() {
 }
 
 #[tokio::test]
+#[cfg(feature = "diagnostics")]
 async fn model_list_and_inspect_show_quarantined_snapshots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
