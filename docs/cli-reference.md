@@ -238,6 +238,14 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-tool-sweep.json
 ```
 
+Use `--dry-run` with the same cache-prefill profile to print the exact
+lane/sample matrix without issuing HTTP requests. The profile expands the eight
+fixed lanes `mlx-default`, `mlx-cache-size-4096`, `mlx-cache-bytes-1g`,
+`mlx-prefill-2048`, `mlx-prefill-4096`, `mlx-prefill-8192`,
+`mlx-concurrent-4x2`, and `kir-proxy` on ports `8080` through `8086` and
+`3000`. Use explicit `--lane` specs instead of `--sweep-profile` when a sidecar
+uses custom ports or experiment-specific knobs.
+
 The focused Qwen3.6 35B A3B 135K prefill sweep uses paired direct MLX and Kir
 proxy lanes. The benchmark still does not launch sidecars; start one direct MLX
 server per prefill setting and one Kir proxy per matching upstream:
@@ -306,14 +314,6 @@ llm-engine bench qwen-mlx-tool-normalized \
   --samples 3 \
   --output qwen-mlx-stable-prefix.json
 ```
-
-Use `--dry-run` with the same profile to print the exact lane/sample matrix
-without issuing HTTP requests. The profile expands the eight fixed lanes
-`mlx-default`, `mlx-cache-size-4096`, `mlx-cache-bytes-1g`,
-`mlx-prefill-2048`, `mlx-prefill-4096`, `mlx-prefill-8192`,
-`mlx-concurrent-4x2`, and `kir-proxy` on ports `8080` through `8086` and
-`3000`. Use explicit `--lane` specs instead of `--sweep-profile` when a sidecar
-uses custom ports or experiment-specific knobs.
 
 The `qwen-mlx-prefill-135k` profile defaults to `--probe-suite
 prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
@@ -401,6 +401,13 @@ prompt/cached/uncached tokens, cache status counts (`unknown`, `miss`,
 The top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.
+
+For long unattended agentic workflow runs across Qwen 27B, Qwen 35B, Gemma 4,
+direct stable-prefix probes, and opencode coding tasks, use
+[`scripts/agentic_overnight_benchmark.py`](../scripts/agentic_overnight_benchmark.py)
+as documented in [Agentic Overnight Benchmark](agentic-overnight-benchmark.md).
+That script intentionally launches sidecars and Kir proxies itself; the Rust
+benchmark command above remains a focused externally managed harness.
 
 ## `model list`
 
