@@ -2154,6 +2154,75 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
 }
 
 #[tokio::test]
+async fn mlx_backend_streams_gemma_tool_deltas_without_synthetic_markup() {
+    let server = FakeMlxServer::start(
+        "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_lookup_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"rust\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":5}}\n\ndata:[DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let chunks = backend
+        .generate_stream(BackendRequest {
+            model: "local-mlx".to_owned(),
+            prompt: "lookup rust".to_owned(),
+            chat_context: None,
+            max_tokens: Some(12),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: true,
+            cache_context: BackendCacheContext::raw_prompt(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    let text = chunks
+        .iter()
+        .map(|chunk| chunk.text.as_str())
+        .collect::<String>();
+    assert!(
+        !text.contains("<|tool_call>"),
+        "Gemma streaming should trust structured deltas instead of synthetic markup: {text}"
+    );
+    let deltas = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.tool_call_deltas)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].id.as_deref(), Some("call_lookup_1"));
+    assert_eq!(
+        deltas[0]
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("lookup")
+    );
+    assert_eq!(
+        deltas[0]
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(r#"{"query":"rust"}"#)
+    );
+    assert_eq!(
+        chunks.last().and_then(|chunk| chunk.finish_reason),
+        Some(BackendFinishReason::ToolCalls)
+    );
+}
+
+#[tokio::test]
 async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
     let server = FakeMlxServer::start(
         "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"metal\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata:[DONE]\n\n",
