@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, InferenceScratchpad, ModelBackend, SamplingConfig,
+    BackendStreamChunk, BackendStreamProgress, InferenceScratchpad, ModelBackend, SamplingConfig,
 };
 use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -398,6 +398,7 @@ where
                 &request,
                 &cancellation,
                 &mut scratch,
+                None,
             )
             .await?;
         let cache_report = start.cache_report;
@@ -500,6 +501,7 @@ where
                 &request,
                 &cancellation,
                 &mut scratch,
+                Some(&tx),
             )
             .await
         {
@@ -564,6 +566,7 @@ where
                     prompt_cached_tokens: cache_report.prompt_cached_tokens(),
                     completion_tokens: std::mem::take(&mut unreported_completion_tokens),
                     finish_reason: None,
+                    progress: None,
                 }))
                 .await
                 .map_err(|err| BackendError::other(err.to_string()))?;
@@ -593,6 +596,7 @@ where
             prompt_cached_tokens: cache_report.prompt_cached_tokens(),
             completion_tokens: std::mem::take(&mut unreported_completion_tokens),
             finish_reason: Some(finish_reason),
+            progress: None,
         }))
         .await
         .map_err(|err| BackendError::other(err.to_string()))?;
@@ -628,6 +632,7 @@ where
             request,
             cancellation,
             scratch,
+            None,
         )
         .await
         .map(|start| start.session)
@@ -640,6 +645,7 @@ where
         request: &BackendRequest,
         cancellation: &CancellationToken,
         scratch: &mut InferenceScratchpad,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>>,
     ) -> Result<NativeTextDecodeStart<A::DecodeSession>, BackendError> {
         if cancellation.is_cancelled() {
             return Err(BackendError::cancelled());
@@ -694,7 +700,12 @@ where
         if cached_prefix_len < context_tokens.len() {
             let mut prefill_hidden = None;
             let prefill_chunk_tokens = self.adapter.max_prefill_tokens();
-            for chunk in context_tokens[cached_prefix_len..].chunks(prefill_chunk_tokens.max(1)) {
+            let prefill_chunk_tokens = prefill_chunk_tokens.max(1);
+            let uncached_prefill_tokens = context_tokens.len() - cached_prefix_len;
+            let total_prefill_chunks = uncached_prefill_tokens.div_ceil(prefill_chunk_tokens);
+            let mut completed_prefill_chunks = 0_usize;
+            let mut completed_prefill_tokens = 0_usize;
+            for chunk in context_tokens[cached_prefix_len..].chunks(prefill_chunk_tokens) {
                 if cancellation.is_cancelled() {
                     cache_cleanup.cleanup(&caches);
                     return Err(BackendError::cancelled());
@@ -715,6 +726,28 @@ where
                     return Err(BackendError::cancelled());
                 }
                 prefill_hidden = hidden_states.last().cloned();
+                completed_prefill_chunks += 1;
+                completed_prefill_tokens += chunk.len();
+                if let Some(progress_tx) = progress_tx {
+                    progress_tx
+                        .send(Ok(BackendStreamChunk {
+                            text: String::new(),
+                            tool_call_deltas: Vec::new(),
+                            prompt_tokens: cache_report.prompt_tokens,
+                            prompt_cached_tokens: cache_report.prompt_cached_tokens(),
+                            completion_tokens: 0,
+                            finish_reason: None,
+                            progress: Some(BackendStreamProgress::PrefillProgress {
+                                chunk: completed_prefill_chunks as u64,
+                                total: total_prefill_chunks as u64,
+                                tokens: completed_prefill_tokens as u64,
+                                total_tokens: uncached_prefill_tokens as u64,
+                            }),
+                        }))
+                        .await
+                        .map_err(|err| BackendError::other(err.to_string()))?;
+                }
+                tokio::task::yield_now().await;
             }
             hidden = Some(prefill_hidden.ok_or_else(|| {
                 cache_cleanup.cleanup(&caches);

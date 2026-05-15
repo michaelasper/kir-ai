@@ -225,6 +225,18 @@ pub struct BackendStreamChunk {
     pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
     pub finish_reason: Option<BackendFinishReason>,
+    pub progress: Option<BackendStreamProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BackendStreamProgress {
+    PrefillProgress {
+        chunk: u64,
+        total: u64,
+        tokens: u64,
+        total_tokens: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +318,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                     prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,
                     finish_reason: Some(output.finish_reason),
+                    progress: None,
                 })
         })
         .boxed()
@@ -326,6 +339,7 @@ pub trait ModelBackend: Send + Sync + 'static {
                     prompt_cached_tokens: output.prompt_cached_tokens,
                     completion_tokens: output.completion_tokens,
                     finish_reason: Some(output.finish_reason),
+                    progress: None,
                 })
         })
         .boxed()

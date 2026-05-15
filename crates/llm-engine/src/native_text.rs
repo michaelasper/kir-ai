@@ -339,7 +339,7 @@ impl ModelBackend for NativeTextBackend {
 mod tests {
     use super::*;
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
-    use llm_backend::SamplingConfig;
+    use llm_backend::{BackendStreamProgress, SamplingConfig};
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
         sync::{
@@ -411,6 +411,7 @@ mod tests {
         next_token_calls: Arc<AtomicUsize>,
         sampling_draws: Arc<Mutex<Vec<Option<f32>>>>,
         decoded_token_total: Arc<AtomicUsize>,
+        encoded_prompt: std::sync::Arc<[u32]>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
     }
@@ -427,6 +428,7 @@ mod tests {
                 next_token_calls: Arc::new(AtomicUsize::new(0)),
                 sampling_draws: Arc::new(Mutex::new(Vec::new())),
                 decoded_token_total: Arc::new(AtomicUsize::new(0)),
+                encoded_prompt: std::sync::Arc::from([42_u32]),
                 next_token_delay: None,
                 fail_prefill: false,
             }
@@ -444,6 +446,11 @@ mod tests {
 
         fn with_next_token_delay(mut self, delay: Duration) -> Self {
             self.next_token_delay = Some(delay);
+            self
+        }
+
+        fn with_encoded_prompt(mut self, encoded_prompt: impl Into<std::sync::Arc<[u32]>>) -> Self {
+            self.encoded_prompt = encoded_prompt.into();
             self
         }
 
@@ -486,7 +493,7 @@ mod tests {
             _tokenizer: &HuggingFaceTokenizer,
             _request: &BackendRequest,
         ) -> Result<Vec<u32>, BackendError> {
-            Ok(vec![42])
+            Ok(self.encoded_prompt.to_vec())
         }
 
         fn decode_output(
@@ -1130,6 +1137,51 @@ mod tests {
 
         assert_eq!(first.prompt_cached_tokens, Some(0));
         assert_eq!(second.prompt_cached_tokens, Some(1));
+    }
+
+    #[test]
+    fn streaming_generation_emits_prefill_progress_after_each_uncached_chunk() {
+        let driver = driver_for_test(
+            TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11, 12, 13, 14]),
+        )
+        .with_max_prefill_tokens(2);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        driver
+            .generate_blocking_stream(driver_test_request(1), tx, CancellationToken::new())
+            .expect("streaming generation succeeds");
+
+        let mut progress = Vec::new();
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk is ok");
+            if let Some(event) = chunk.progress {
+                progress.push(event);
+            }
+        }
+
+        assert_eq!(
+            progress,
+            vec![
+                BackendStreamProgress::PrefillProgress {
+                    chunk: 1,
+                    total: 3,
+                    tokens: 2,
+                    total_tokens: 5,
+                },
+                BackendStreamProgress::PrefillProgress {
+                    chunk: 2,
+                    total: 3,
+                    tokens: 4,
+                    total_tokens: 5,
+                },
+                BackendStreamProgress::PrefillProgress {
+                    chunk: 3,
+                    total: 3,
+                    tokens: 5,
+                    total_tokens: 5,
+                },
+            ]
+        );
     }
 
     #[test]

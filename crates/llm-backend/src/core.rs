@@ -15,9 +15,9 @@ mod safetensors;
 pub use backend::{
     BackendCacheContext, BackendCacheKey, BackendChatContext, BackendChatMessage, BackendChatRole,
     BackendError, BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendStreamChunk, BackendToolCall, BackendToolCallDelta,
-    BackendToolCallFunction, BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice,
-    ModelBackend, SamplingConfig,
+    BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
+    BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
+    BackendToolCallType, BackendToolChoice, ModelBackend, SamplingConfig,
 };
 pub use gemma::{
     GemmaLayerCache, gemma_cache_count_for_spec, gemma_decode_token_with_cache,

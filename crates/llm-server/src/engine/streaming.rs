@@ -16,6 +16,7 @@ use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::{ChatCompletionStreamResponse, CompletionStreamResponse, Usage};
+use llm_backend::BackendStreamProgress;
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
 };
@@ -89,6 +90,18 @@ where
                         }
                         stall_deadline.record_chunk(&chunk);
                         yield sse_json_event(chunk);
+                    }
+                    EngineStreamStep::Progress(progress) => {
+                        if lifecycle.active_request.cancellation.is_cancelled() {
+                            for event in lifecycle.finish_cancellation(
+                                "request was cancelled before stream progress delivery",
+                                "prefill",
+                            ) {
+                                yield event;
+                            }
+                            return;
+                        }
+                        yield sse_json_event(progress);
                     }
                     EngineStreamStep::ToolStage(stage) => {
                         if lifecycle.active_request.cancellation.is_cancelled() {
@@ -578,6 +591,7 @@ pub(super) trait EngineStreamEvent {
 
 pub(super) enum EngineStreamStep<C> {
     Chunk(C),
+    Progress(BackendStreamProgress),
     ToolStage(ChatCompletionStreamStage),
     Complete(Usage),
 }
@@ -597,6 +611,7 @@ impl EngineStreamEvent for ChatCompletionStreamEvent {
     ) -> EngineStreamStep<<ChatCompletionStreamEvent as EngineStreamEvent>::Chunk> {
         match self {
             Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
+            Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::Stage(stage) => EngineStreamStep::ToolStage(stage),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }
@@ -609,6 +624,7 @@ impl EngineStreamEvent for CompletionStreamEvent {
     fn into_step(self) -> EngineStreamStep<<CompletionStreamEvent as EngineStreamEvent>::Chunk> {
         match self {
             Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
+            Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }
     }

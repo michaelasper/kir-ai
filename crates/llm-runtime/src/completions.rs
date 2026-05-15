@@ -178,6 +178,9 @@ fn streaming_completion_stream<'a>(
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
+            if let Some(progress) = chunk.progress.clone() {
+                yield CompletionStreamEvent::Progress(progress);
+            }
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
                 if let Some(stop_at) = earliest_stop_index(&raw_text, &stop) {

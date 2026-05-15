@@ -328,6 +328,7 @@ impl MlxSseParser {
             prompt_cached_tokens: self.prompt_cached_tokens,
             completion_tokens: 0,
             finish_reason: None,
+            progress: None,
         }
     }
 
@@ -351,6 +352,7 @@ impl MlxSseParser {
                 prompt_cached_tokens: self.prompt_cached_tokens,
                 completion_tokens,
                 finish_reason,
+                progress: None,
             });
         }
     }

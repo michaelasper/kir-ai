@@ -251,6 +251,7 @@ async fn streaming_json_object_response_format_rejects_text_content() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid JSON stream should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
@@ -319,6 +320,7 @@ async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid tool markup should not complete successfully");
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
@@ -363,6 +365,7 @@ async fn streaming_required_tool_rejects_text_fallback_without_emitting_content(
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("text fallback should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
@@ -421,6 +424,7 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid tool call should not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
             Err(err) => break err,
         }
@@ -608,6 +612,7 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
                 prompt_cached_tokens: Some(6),
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             yield BackendStreamChunk {
                 text: String::new(),
@@ -616,6 +621,7 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
                 prompt_cached_tokens: Some(6),
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
             };
         }
         .boxed()
@@ -1080,6 +1086,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool call should arrive before completion")
@@ -1118,6 +1125,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
                     .and_then(|choice| choice.finish_reason.as_ref())
                     == Some(&FinishReason::ToolCalls);
             }
+            llm_runtime::ChatCompletionStreamEvent::Progress(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Stage(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
         }
@@ -1176,6 +1184,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("partial tool delta should arrive before completion")
@@ -1211,6 +1220,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                     .and_then(|choice| choice.finish_reason.as_ref())
                     == Some(&FinishReason::ToolCalls);
             }
+            llm_runtime::ChatCompletionStreamEvent::Progress(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Stage(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Complete(final_usage) => {
                 usage = Some(final_usage);
@@ -1294,6 +1304,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
                     return chunk;
                 }
                 Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(_)) => {}
+                Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool progress should arrive before completion")
@@ -1352,6 +1363,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
                     }
                 }
             }
+            llm_runtime::ChatCompletionStreamEvent::Progress(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Stage(stage) => stages.push(stage),
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
         }
@@ -1471,6 +1483,7 @@ async fn runtime_rejects_invalid_structured_omp_args_without_argument_delta_or_f
             Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                 panic!("invalid final tool call must not complete successfully")
             }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Err(err) => break err,
         }
     };

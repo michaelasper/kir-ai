@@ -113,6 +113,9 @@ pub(crate) fn streaming_chat_stream<'a>(
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
+            if let Some(progress) = chunk.progress.clone() {
+                yield ChatCompletionStreamEvent::Progress(progress);
+            }
             if !chunk.tool_call_deltas.is_empty() {
                 let api_tool_call_deltas = chunk
                     .tool_call_deltas

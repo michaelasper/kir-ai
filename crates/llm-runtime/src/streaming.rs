@@ -4,7 +4,7 @@ use llm_api::{
     ChatCompletionDelta, ChatCompletionStreamChoice, ChatCompletionStreamResponse,
     CompletionChoice, CompletionStreamResponse, Usage,
 };
-use llm_backend::BackendFinishReason;
+use llm_backend::{BackendFinishReason, BackendStreamProgress};
 use llm_tool_parser::ParsedAssistant;
 use std::fmt;
 use tokio_util::sync::CancellationToken;
@@ -39,6 +39,7 @@ impl<'a> ChatCompletionStream<'a> {
         while let Some(event) = events.next().await {
             match event? {
                 ChatCompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
+                ChatCompletionStreamEvent::Progress(_) => {}
                 ChatCompletionStreamEvent::Stage(_) => {}
                 ChatCompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
             }
@@ -75,6 +76,7 @@ impl<'a> CompletionStream<'a> {
         while let Some(event) = events.next().await {
             match event? {
                 CompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
+                CompletionStreamEvent::Progress(_) => {}
                 CompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
             }
         }
@@ -85,6 +87,7 @@ impl<'a> CompletionStream<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatCompletionStreamEvent {
     Chunk(ChatCompletionStreamResponse),
+    Progress(BackendStreamProgress),
     Stage(ChatCompletionStreamStage),
     Complete(Usage),
 }
@@ -99,6 +102,7 @@ pub enum ChatCompletionStreamStage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionStreamEvent {
     Chunk(CompletionStreamResponse),
+    Progress(BackendStreamProgress),
     Complete(Usage),
 }
 

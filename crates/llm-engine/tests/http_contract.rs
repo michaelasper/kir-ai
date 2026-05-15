@@ -7,8 +7,8 @@ use axum::{
 use futures::StreamExt;
 use llm_backend::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType,
-    ModelBackend,
+    BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta, BackendToolCallFunctionDelta,
+    BackendToolCallType, ModelBackend,
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_protocol_test_backend, router_builder,
@@ -545,6 +545,7 @@ impl ModelBackend for TwoStageStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             finish.notified().await;
             yield BackendStreamChunk {
@@ -554,6 +555,7 @@ impl ModelBackend for TwoStageStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
             };
         }
         .boxed()
@@ -621,6 +623,7 @@ impl ModelBackend for CancellableStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             futures::future::pending::<()>().await;
         }
@@ -670,6 +673,7 @@ impl ModelBackend for FailingStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             Err(BackendError::other("stream failed".to_owned()))?;
         }

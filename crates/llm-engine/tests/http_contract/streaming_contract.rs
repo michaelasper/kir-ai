@@ -388,6 +388,39 @@ async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
 }
 
 #[tokio::test]
+async fn chat_stream_emits_prefill_progress_sse_events() {
+    let response = build_router_with_backend(Box::new(PrefillProgressStreamBackend))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    assert!(
+        body.contains(
+            "data: {\"type\":\"prefill_progress\",\"chunk\":1,\"total\":3,\"tokens\":2,\"total_tokens\":5}"
+        ),
+        "body: {body}"
+    );
+    assert!(body.contains("\"content\":\"done\""), "body: {body}");
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
+#[tokio::test]
 async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
@@ -796,6 +829,69 @@ async fn dropping_admin_cancelled_stream_does_not_count_as_client_disconnect() {
     assert_eq!(metrics["scheduler_completed_requests"], 0);
 }
 
+struct PrefillProgressStreamBackend;
+
+#[async_trait]
+impl ModelBackend for PrefillProgressStreamBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "prefill-progress-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "prefill progress HTTP test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 5,
+                prompt_cached_tokens: Some(0),
+                completion_tokens: 0,
+                finish_reason: None,
+                progress: Some(BackendStreamProgress::PrefillProgress {
+                    chunk: 1,
+                    total: 3,
+                    tokens: 2,
+                    total_tokens: 5,
+                }),
+            };
+            yield BackendStreamChunk {
+                text: "done".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 5,
+                prompt_cached_tokens: Some(0),
+                completion_tokens: 1,
+                finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
+            };
+        }
+        .boxed()
+    }
+}
+
 struct SlowDripStreamBackend {
     delay: Duration,
     cancelled: Arc<Notify>,
@@ -848,6 +944,7 @@ impl ModelBackend for SlowDripStreamBackend {
                     prompt_cached_tokens: None,
                     completion_tokens: 1,
                     finish_reason: None,
+                    progress: None,
                 };
             }
         }
@@ -976,6 +1073,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             yield BackendStreamChunk {
                 text: String::new(),
@@ -989,6 +1087,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::ToolCalls),
+                progress: None,
             };
         }
         .boxed()

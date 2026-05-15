@@ -592,6 +592,7 @@ impl ModelBackend for TwoChunkStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             finish.notified().await;
             yield BackendStreamChunk {
@@ -601,6 +602,7 @@ impl ModelBackend for TwoChunkStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
             };
         }
         .boxed()
@@ -657,6 +659,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             let _permit = finish.acquire().await.expect("finish semaphore open");
             yield BackendStreamChunk {
@@ -666,6 +669,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 0,
                 finish_reason: Some(BackendFinishReason::ToolCalls),
+                progress: None,
             };
         }
         .boxed()
@@ -723,6 +727,7 @@ impl ModelBackend for StructuredToolDeltaStreamBackend {
                 prompt_cached_tokens: Some(7),
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             let _permit = finish.acquire().await.expect("finish semaphore open");
             yield BackendStreamChunk {
@@ -732,6 +737,7 @@ impl ModelBackend for StructuredToolDeltaStreamBackend {
                 prompt_cached_tokens: Some(7),
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::ToolCalls),
+                progress: None,
             };
         }
         .boxed()
@@ -815,6 +821,7 @@ impl ModelBackend for StopStreamingBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: None,
+                progress: None,
             };
             yield BackendStreamChunk {
                 text: "OP ignored".to_owned(),
@@ -823,6 +830,7 @@ impl ModelBackend for StopStreamingBackend {
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
             };
         }
         .boxed()
