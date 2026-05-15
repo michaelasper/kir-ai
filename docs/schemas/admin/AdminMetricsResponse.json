@@ -172,11 +172,10 @@
       "type": "number",
       "format": "double"
     },
-    "mlx": true,
-    "native_text_metal": true,
-    "native_text_prefix_cache": true,
-    "native_qwen_metal": true,
-    "native_qwen_prefix_cache": true,
+    "backend_metrics": {
+      "type": "object",
+      "additionalProperties": true
+    },
     "request_latency_ms": {
       "$ref": "#/$defs/LatencySummary"
     },
@@ -249,11 +248,7 @@
     "artifact_verification_failures",
     "process_rss_bytes",
     "tokens_per_second",
-    "mlx",
-    "native_text_metal",
-    "native_text_prefix_cache",
-    "native_qwen_metal",
-    "native_qwen_prefix_cache",
+    "backend_metrics",
     "request_latency_ms",
     "non_streamed_request_latency_ms",
     "streamed_request_latency_ms",

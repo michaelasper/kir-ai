@@ -8,7 +8,6 @@ use crate::native_text::{
 };
 use llm_backend::ModelBackend;
 use llm_server::{RouterBuilder, ServerBackendMetrics, ServerBackendMetricsSnapshot, ServerRouter};
-use serde_json::Value;
 use std::sync::Arc;
 
 pub use llm_server::{EngineConfigError, EngineOptions};
@@ -84,61 +83,45 @@ struct EngineServerBackendMetrics;
 
 impl ServerBackendMetrics for EngineServerBackendMetrics {
     fn snapshot(&self) -> ServerBackendMetricsSnapshot {
-        let native_text_metal = engine_native_text_metal_metrics_snapshot();
-        let native_qwen_prefix_cache = engine_native_qwen_prefix_cache_metrics_snapshot();
-        let native_text_prefix_cache =
-            engine_native_text_prefix_cache_metrics_snapshot(native_qwen_prefix_cache.clone());
-        ServerBackendMetricsSnapshot {
-            mlx: engine_mlx_backend_metrics_snapshot(),
-            native_text_metal: native_text_metal.clone(),
-            native_text_prefix_cache,
-            native_qwen_metal: native_text_metal,
-            native_qwen_prefix_cache,
+        #[cfg(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma"))]
+        {
+            let mut metrics = std::collections::HashMap::new();
+            #[cfg(feature = "mlx")]
+            {
+                metrics.insert("mlx".to_owned(), mlx_backend_metrics_snapshot());
+            }
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+            {
+                let native_text_metal = native_text_metal_metrics_snapshot();
+                metrics.insert("native_text_metal".to_owned(), native_text_metal.clone());
+                #[cfg(feature = "native-qwen")]
+                {
+                    metrics.insert("native_qwen_metal".to_owned(), native_text_metal);
+                }
+            }
+            #[cfg(feature = "native-qwen")]
+            let native_qwen_prefix_cache = native_qwen_prefix_cache_metrics_snapshot();
+            #[cfg(feature = "native-qwen")]
+            {
+                metrics.insert(
+                    "native_qwen_prefix_cache".to_owned(),
+                    native_qwen_prefix_cache.clone(),
+                );
+            }
+            #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+            {
+                #[cfg(not(feature = "native-qwen"))]
+                let native_qwen_prefix_cache = serde_json::json!({});
+                metrics.insert(
+                    "native_text_prefix_cache".to_owned(),
+                    native_text_prefix_cache_metrics_snapshot(native_qwen_prefix_cache),
+                );
+            }
+            ServerBackendMetricsSnapshot { metrics }
         }
-    }
-}
-
-fn engine_mlx_backend_metrics_snapshot() -> Value {
-    #[cfg(feature = "mlx")]
-    {
-        mlx_backend_metrics_snapshot()
-    }
-    #[cfg(not(feature = "mlx"))]
-    {
-        serde_json::json!({})
-    }
-}
-
-fn engine_native_text_metal_metrics_snapshot() -> Value {
-    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-    {
-        native_text_metal_metrics_snapshot()
-    }
-    #[cfg(not(any(feature = "native-qwen", feature = "native-gemma")))]
-    {
-        serde_json::json!({})
-    }
-}
-
-fn engine_native_qwen_prefix_cache_metrics_snapshot() -> Value {
-    #[cfg(feature = "native-qwen")]
-    {
-        native_qwen_prefix_cache_metrics_snapshot()
-    }
-    #[cfg(not(feature = "native-qwen"))]
-    {
-        serde_json::json!({})
-    }
-}
-
-fn engine_native_text_prefix_cache_metrics_snapshot(qwen_snapshot: Value) -> Value {
-    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-    {
-        native_text_prefix_cache_metrics_snapshot(qwen_snapshot)
-    }
-    #[cfg(not(any(feature = "native-qwen", feature = "native-gemma")))]
-    {
-        let _ = qwen_snapshot;
-        serde_json::json!({})
+        #[cfg(not(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma")))]
+        {
+            ServerBackendMetricsSnapshot::default()
+        }
     }
 }

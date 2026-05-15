@@ -149,13 +149,15 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `artifact_verification_failures`: Cumulative checksum/signature verification failures.
 - `process_rss_bytes`: Resident set size of the process (when supported).
 - `tokens_per_second`: Current aggregate throughput.
-- `mlx`: Platform-specific MLX backend metrics. For MLX sidecar diagnostics,
-  `mlx.upstream_request_latency_ms` reports sidecar request duration,
-  while `mlx.blocking_upstream_request_latency_ms` and
-  `mlx.streaming_upstream_request_latency_ms` split that duration by kir-ai
-  blocking versus streaming generation path.
-- `native_text_metal`: Metal kernel performance counters (e.g., matvec_ns).
-- `native_text_prefix_cache`: Prefix cache hit/miss/eviction metrics.
+- `backend_metrics`: Platform-specific backend metrics keyed by compiled
+  backend/compatibility name. Common keys include `mlx`,
+  `native_text_metal`, `native_text_prefix_cache`, `native_qwen_metal`, and
+  `native_qwen_prefix_cache`, when those backends are compiled in. For MLX
+  sidecar diagnostics, `backend_metrics.mlx.upstream_request_latency_ms`
+  reports sidecar request duration, while
+  `backend_metrics.mlx.blocking_upstream_request_latency_ms` and
+  `backend_metrics.mlx.streaming_upstream_request_latency_ms` split that
+  duration by kir-ai blocking versus streaming generation path.
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`
   is fixed at `128`; `recent` contains successful buffered and streaming
   requests with `request_id`, `model`, `streamed`, `prompt_tokens`,

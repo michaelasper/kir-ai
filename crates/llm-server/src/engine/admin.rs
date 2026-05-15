@@ -22,6 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::Path,
     time::{Duration, Instant},
 };
@@ -325,7 +326,7 @@ pub(super) async fn admin_metrics(
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
-    let backend_metrics = state.backend_metrics.snapshot();
+    let backend_metrics = state.backend_metrics.snapshot().metrics;
     let request_cache = state
         .request_cache
         .lock_or_panic("request cache observations")
@@ -365,11 +366,7 @@ pub(super) async fn admin_metrics(
         artifact_verification_failures: metrics.artifact_verification_failures(),
         process_rss_bytes: process_rss_bytes(),
         tokens_per_second: metrics.tokens_per_second(),
-        mlx: backend_metrics.mlx,
-        native_text_metal: backend_metrics.native_text_metal,
-        native_text_prefix_cache: backend_metrics.native_text_prefix_cache,
-        native_qwen_metal: backend_metrics.native_qwen_metal,
-        native_qwen_prefix_cache: backend_metrics.native_qwen_prefix_cache,
+        backend_metrics,
         request_latency_ms: LatencySummary::from_metrics(request_latency),
         non_streamed_request_latency_ms: LatencySummary::from_metrics(non_streamed_request_latency),
         streamed_request_latency_ms: LatencySummary::from_metrics(streamed_request_latency),
@@ -398,7 +395,14 @@ pub(super) async fn admin_mlx_metrics(
     headers: HeaderMap,
 ) -> Result<Json<Value>, EngineError> {
     require_admin(&state, &headers)?;
-    Ok(Json(state.backend_metrics.snapshot().mlx))
+    let metrics = state
+        .backend_metrics
+        .snapshot()
+        .metrics
+        .get("mlx")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Ok(Json(metrics))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -437,11 +441,7 @@ pub(super) struct AdminMetricsResponse {
     artifact_verification_failures: u64,
     process_rss_bytes: u64,
     tokens_per_second: f64,
-    mlx: Value,
-    native_text_metal: Value,
-    native_text_prefix_cache: Value,
-    native_qwen_metal: Value,
-    native_qwen_prefix_cache: Value,
+    backend_metrics: HashMap<String, Value>,
     request_latency_ms: LatencySummary,
     non_streamed_request_latency_ms: LatencySummary,
     streamed_request_latency_ms: LatencySummary,

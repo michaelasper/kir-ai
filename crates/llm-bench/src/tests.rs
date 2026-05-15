@@ -49,47 +49,49 @@ fn all_profile_selection_includes_256k_characterization() {
 #[test]
 fn cache_metrics_summary_extracts_admin_cache_counters() {
     let admin = serde_json::json!({
-        "native_text_prefix_cache": {
-            "qwen": {
-                "hits": 3,
-                "misses": 1,
-                "stores": 2,
-                "evictions": 1,
-                "rejected": 0,
-                "reused_tokens": 42,
-                "resident_bytes": 1024,
-                "resident_entries": 2
-            }
-        },
-        "native_text_metal": {
-            "bf16_matrix_cache": {
-                "hits": 7,
-                "misses": 3,
-                "uploads": 3,
-                "bytes_uploaded": 2048,
-                "evictions": 1,
-                "bytes_evicted": 512,
-                "resident_bytes": 1536,
-                "resident_buffers": 4,
-                "budget_bytes": 4096
+        "backend_metrics": {
+            "native_text_prefix_cache": {
+                "qwen": {
+                    "hits": 3,
+                    "misses": 1,
+                    "stores": 2,
+                    "evictions": 1,
+                    "rejected": 0,
+                    "reused_tokens": 42,
+                    "resident_bytes": 1024,
+                    "resident_entries": 2
+                }
             },
-            "kv_cache": {
-                "allocations": 2,
-                "syncs": 4,
-                "evictions": 1,
-                "bytes_uploaded": 4096,
-                "bytes_evicted": 1024,
-                "resident_bytes": 3072,
-                "resident_buffers": 2
-            },
-            "linear_attention_cache": {
-                "allocations": 1,
-                "syncs": 3,
-                "evictions": 0,
-                "bytes_uploaded": 2048,
-                "bytes_evicted": 0,
-                "resident_bytes": 2048,
-                "resident_buffers": 1
+            "native_text_metal": {
+                "bf16_matrix_cache": {
+                    "hits": 7,
+                    "misses": 3,
+                    "uploads": 3,
+                    "bytes_uploaded": 2048,
+                    "evictions": 1,
+                    "bytes_evicted": 512,
+                    "resident_bytes": 1536,
+                    "resident_buffers": 4,
+                    "budget_bytes": 4096
+                },
+                "kv_cache": {
+                    "allocations": 2,
+                    "syncs": 4,
+                    "evictions": 1,
+                    "bytes_uploaded": 4096,
+                    "bytes_evicted": 1024,
+                    "resident_bytes": 3072,
+                    "resident_buffers": 2
+                },
+                "linear_attention_cache": {
+                    "allocations": 1,
+                    "syncs": 3,
+                    "evictions": 0,
+                    "bytes_uploaded": 2048,
+                    "bytes_evicted": 0,
+                    "resident_bytes": 2048,
+                    "resident_buffers": 1
+                }
             }
         }
     });

@@ -4,25 +4,18 @@ mod sync_ext;
 pub use axum::Router as ServerRouter;
 pub use engine::*;
 pub use llm_util::defaults::DEFAULT_MODEL_ID;
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct ServerBackendMetricsSnapshot {
-    pub mlx: Value,
-    pub native_text_metal: Value,
-    pub native_text_prefix_cache: Value,
-    pub native_qwen_metal: Value,
-    pub native_qwen_prefix_cache: Value,
+    pub metrics: HashMap<String, Value>,
 }
 
 impl Default for ServerBackendMetricsSnapshot {
     fn default() -> Self {
         Self {
-            mlx: json!({}),
-            native_text_metal: json!({}),
-            native_text_prefix_cache: json!({}),
-            native_qwen_metal: json!({}),
-            native_qwen_prefix_cache: json!({}),
+            metrics: HashMap::new(),
         }
     }
 }

@@ -342,78 +342,81 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
             > 0.0
     );
     assert!(
-        body["native_text_metal"]["kernels"].is_object(),
+        body["backend_metrics"]["native_text_metal"]["kernels"].is_object(),
         "native text Metal metrics are exposed"
     );
     assert!(
-        body["native_text_prefix_cache"]["qwen"]["hits"].is_number(),
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hits"].is_number(),
         "native text Qwen prefix cache hits are exposed"
     );
     assert!(
-        body["native_text_prefix_cache"]["gemma"]["hits"].is_number(),
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hits"].is_number(),
         "native text Gemma prefix cache hits are exposed"
     );
     assert!(
-        body["mlx"]["requests_total"].is_number(),
+        body["backend_metrics"]["mlx"]["requests_total"].is_number(),
         "MLX sidecar request metrics are exposed"
     );
-    assert!(body["mlx"]["successful_requests"].is_number());
-    assert!(body["mlx"]["failed_requests"].is_number());
-    assert!(body["mlx"]["stream_chunks"].is_number());
+    assert!(body["backend_metrics"]["mlx"]["successful_requests"].is_number());
+    assert!(body["backend_metrics"]["mlx"]["failed_requests"].is_number());
+    assert!(body["backend_metrics"]["mlx"]["stream_chunks"].is_number());
     assert!(
-        body["mlx"]["request_latency_ms"]["count"].is_number(),
+        body["backend_metrics"]["mlx"]["request_latency_ms"]["count"].is_number(),
         "MLX sidecar latency metrics are exposed"
     );
     assert!(
-        body["mlx"]["upstream_request_latency_ms"]["count"].is_number(),
+        body["backend_metrics"]["mlx"]["upstream_request_latency_ms"]["count"].is_number(),
         "MLX upstream sidecar latency metrics are exposed"
     );
     assert!(
-        body["mlx"]["blocking_upstream_request_latency_ms"]["count"].is_number(),
+        body["backend_metrics"]["mlx"]["blocking_upstream_request_latency_ms"]["count"].is_number(),
         "MLX blocking upstream sidecar latency metrics are exposed"
     );
     assert!(
-        body["mlx"]["streaming_upstream_request_latency_ms"]["count"].is_number(),
+        body["backend_metrics"]["mlx"]["streaming_upstream_request_latency_ms"]["count"]
+            .is_number(),
         "MLX streaming upstream sidecar latency metrics are exposed"
     );
     assert!(
-        body["native_qwen_metal"]["kernels"].is_object(),
+        body["backend_metrics"]["native_qwen_metal"]["kernels"].is_object(),
         "native Qwen Metal compatibility metrics are exposed"
     );
     assert!(
-        body["native_qwen_metal"]["bf16_matrix_cache"].is_object(),
+        body["backend_metrics"]["native_qwen_metal"]["bf16_matrix_cache"].is_object(),
         "native Qwen Metal BF16 matrix cache metrics are exposed"
     );
     assert!(
-        body["native_qwen_metal"]["bf16_matrix_cache"]["resident_bytes"].is_number(),
+        body["backend_metrics"]["native_qwen_metal"]["bf16_matrix_cache"]["resident_bytes"]
+            .is_number(),
         "native Qwen Metal BF16 matrix cache residency is exposed"
     );
     assert!(
-        body["native_qwen_metal"]["kv_cache"]["resident_bytes"].is_number(),
+        body["backend_metrics"]["native_qwen_metal"]["kv_cache"]["resident_bytes"].is_number(),
         "native Qwen Metal KV cache residency is exposed"
     );
     assert!(
-        body["native_qwen_metal"]["linear_attention_cache"]["resident_bytes"].is_number(),
+        body["backend_metrics"]["native_qwen_metal"]["linear_attention_cache"]["resident_bytes"]
+            .is_number(),
         "native Qwen Metal linear cache residency is exposed"
     );
     assert!(
-        body["native_qwen_prefix_cache"].is_object(),
+        body["backend_metrics"]["native_qwen_prefix_cache"].is_object(),
         "native Qwen shared prefix cache metrics are exposed"
     );
     assert!(
-        body["native_qwen_prefix_cache"]["hits"].is_number(),
+        body["backend_metrics"]["native_qwen_prefix_cache"]["hits"].is_number(),
         "native Qwen prefix cache hits are exposed"
     );
     assert!(
-        body["native_qwen_prefix_cache"]["misses"].is_number(),
+        body["backend_metrics"]["native_qwen_prefix_cache"]["misses"].is_number(),
         "native Qwen prefix cache misses are exposed"
     );
     assert!(
-        body["native_qwen_prefix_cache"]["evictions"].is_number(),
+        body["backend_metrics"]["native_qwen_prefix_cache"]["evictions"].is_number(),
         "native Qwen prefix cache evictions are exposed"
     );
     assert!(
-        body["native_qwen_prefix_cache"]["resident_bytes"].is_number(),
+        body["backend_metrics"]["native_qwen_prefix_cache"]["resident_bytes"].is_number(),
         "native Qwen prefix cache residency is exposed"
     );
 }
@@ -484,21 +487,56 @@ async fn admin_metrics_report_mlx_sidecar_activity_after_generation() {
     assert_eq!(after.status(), StatusCode::OK);
     let after = body_json(after.into_body()).await;
 
-    assert_metric_incremented(&before, &after, &["mlx", "requests_total"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "successful_requests"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "completion_requests"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "stream_chunks"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "request_latency_ms", "count"], 1);
     assert_metric_incremented(
         &before,
         &after,
-        &["mlx", "upstream_request_latency_ms", "count"],
+        &["backend_metrics", "mlx", "requests_total"],
         1,
     );
     assert_metric_incremented(
         &before,
         &after,
-        &["mlx", "blocking_upstream_request_latency_ms", "count"],
+        &["backend_metrics", "mlx", "successful_requests"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "completion_requests"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "stream_chunks"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "request_latency_ms", "count"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &[
+            "backend_metrics",
+            "mlx",
+            "upstream_request_latency_ms",
+            "count",
+        ],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &[
+            "backend_metrics",
+            "mlx",
+            "blocking_upstream_request_latency_ms",
+            "count",
+        ],
         1,
     );
 }
@@ -576,18 +614,51 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     assert_eq!(after_response.status(), StatusCode::OK);
     let after = body_json(after_response.into_body()).await;
 
-    assert_metric_incremented(&before, &after, &["mlx", "requests_total"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "successful_requests"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "completion_requests"], 1);
-    assert_metric_incremented(&before, &after, &["mlx", "stream_chunks"], 1);
     assert_metric_incremented(
         &before,
         &after,
-        &["mlx", "streaming_upstream_request_latency_ms", "count"],
+        &["backend_metrics", "mlx", "requests_total"],
         1,
     );
-    assert_metric_unchanged(&before, &after, &["mlx", "failed_requests"]);
-    assert_metric_unchanged(&before, &after, &["mlx", "dropped_requests"]);
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "successful_requests"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "completion_requests"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "stream_chunks"],
+        1,
+    );
+    assert_metric_incremented(
+        &before,
+        &after,
+        &[
+            "backend_metrics",
+            "mlx",
+            "streaming_upstream_request_latency_ms",
+            "count",
+        ],
+        1,
+    );
+    assert_metric_unchanged(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "failed_requests"],
+    );
+    assert_metric_unchanged(
+        &before,
+        &after,
+        &["backend_metrics", "mlx", "dropped_requests"],
+    );
     assert_eq!(after["tokens"]["prompt_tokens"], 2);
     assert_eq!(after["tokens"]["completion_tokens"], 3);
     assert_eq!(after["tokens"]["total_tokens"], 5);
@@ -605,25 +676,25 @@ async fn admin_metrics_report_successful_streamed_mlx_generation() {
     assert_eq!(mlx_response.status(), StatusCode::OK);
     let mlx = body_json(mlx_response.into_body()).await;
     assert_metric_incremented(
-        &before["mlx"],
+        &before["backend_metrics"]["mlx"],
         &mlx,
         &["stream_response_headers_ms", "count"],
         1,
     );
     assert_metric_incremented(
-        &before["mlx"],
+        &before["backend_metrics"]["mlx"],
         &mlx,
         &["stream_first_upstream_byte_ms", "count"],
         1,
     );
     assert_metric_incremented(
-        &before["mlx"],
+        &before["backend_metrics"]["mlx"],
         &mlx,
         &["stream_first_parsed_chunk_ms", "count"],
         1,
     );
     assert_metric_incremented(
-        &before["mlx"],
+        &before["backend_metrics"]["mlx"],
         &mlx,
         &["stream_upstream_complete_ms", "count"],
         1,
@@ -720,7 +791,12 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
     assert_metric_incremented(
         &before,
         &body,
-        &["mlx", "stream_first_tool_delta_ms", "count"],
+        &[
+            "backend_metrics",
+            "mlx",
+            "stream_first_tool_delta_ms",
+            "count",
+        ],
         1,
     );
 }
