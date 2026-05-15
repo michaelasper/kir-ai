@@ -7,17 +7,9 @@ pub use llm_util::defaults::DEFAULT_MODEL_ID;
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ServerBackendMetricsSnapshot {
     pub metrics: HashMap<String, Value>,
-}
-
-impl Default for ServerBackendMetricsSnapshot {
-    fn default() -> Self {
-        Self {
-            metrics: HashMap::new(),
-        }
-    }
 }
 
 pub trait ServerBackendMetrics: Send + Sync {
