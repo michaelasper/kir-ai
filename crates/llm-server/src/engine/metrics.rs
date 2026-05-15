@@ -190,6 +190,7 @@ pub(super) fn record_time_to_first_token_metrics(state: &AppState, latency: Dura
         .record_time_to_first_token(latency);
 }
 
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
@@ -197,6 +198,10 @@ pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duratio
         .record_first_tool_delta(latency);
 }
 
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_first_tool_delta_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_argument_assembly_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
@@ -204,6 +209,10 @@ pub(super) fn record_tool_argument_assembly_metrics(state: &AppState, latency: D
         .record_tool_argument_assembly(latency);
 }
 
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_tool_argument_assembly_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_intent_fill_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
@@ -211,6 +220,10 @@ pub(super) fn record_tool_intent_fill_metrics(state: &AppState, latency: Duratio
         .record_tool_intent_fill(latency);
 }
 
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_tool_intent_fill_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_schema_validation_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
@@ -218,6 +231,10 @@ pub(super) fn record_tool_schema_validation_metrics(state: &AppState, latency: D
         .record_tool_schema_validation(latency);
 }
 
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_tool_schema_validation_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_finish_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
@@ -225,12 +242,19 @@ pub(super) fn record_tool_finish_metrics(state: &AppState, latency: Duration) {
         .record_tool_finish(latency);
 }
 
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_tool_finish_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
 pub(super) fn record_validated_tool_call_metrics(state: &AppState, latency: Duration) {
     state
         .metrics
         .lock_or_panic("metrics")
         .record_validated_tool_call(latency);
 }
+
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_validated_tool_call_metrics(_state: &AppState, _latency: Duration) {}
 
 #[cfg(test)]
 mod tests {

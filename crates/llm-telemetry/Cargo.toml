@@ -3,4 +3,8 @@ name = "llm-telemetry"
 version.workspace = true
 edition = "2024"
 
+[features]
+default = ["tool-calls"]
+tool-calls = []
+
 [dependencies]

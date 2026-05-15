@@ -1723,10 +1723,12 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
             "tool_schema_validation_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
             "tool_finish_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
             "validated_tool_call_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
-            "mlx": {
-                "stream_first_upstream_byte_ms": {"count": 2, "min": 1.0, "max": 4.0, "avg": 2.5},
-                "stream_first_parsed_chunk_ms": {"count": 2, "min": 2.0, "max": 5.0, "avg": 3.5},
-                "stream_first_tool_delta_ms": {"count": 2, "min": 3.0, "max": 6.0, "avg": 4.5}
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_upstream_byte_ms": {"count": 2, "min": 1.0, "max": 4.0, "avg": 2.5},
+                    "stream_first_parsed_chunk_ms": {"count": 2, "min": 2.0, "max": 5.0, "avg": 3.5},
+                    "stream_first_tool_delta_ms": {"count": 2, "min": 3.0, "max": 6.0, "avg": 4.5}
+                }
             }
         })),
         after: Some(json!({
@@ -1736,10 +1738,12 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
             "tool_schema_validation_ms": {"count": 3, "min": 1.0, "max": 60.0, "avg": 20.0},
             "tool_finish_ms": {"count": 3, "min": 1.0, "max": 70.0, "avg": 23.0},
             "validated_tool_call_ms": {"count": 3, "min": 1.0, "max": 70.0, "avg": 23.0},
-            "mlx": {
-                "stream_first_upstream_byte_ms": {"count": 3, "min": 1.0, "max": 10.0, "avg": 5.0},
-                "stream_first_parsed_chunk_ms": {"count": 3, "min": 2.0, "max": 20.0, "avg": 8.0},
-                "stream_first_tool_delta_ms": {"count": 3, "min": 3.0, "max": 25.0, "avg": 10.0}
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_upstream_byte_ms": {"count": 3, "min": 1.0, "max": 10.0, "avg": 5.0},
+                    "stream_first_parsed_chunk_ms": {"count": 3, "min": 2.0, "max": 20.0, "avg": 8.0},
+                    "stream_first_tool_delta_ms": {"count": 3, "min": 3.0, "max": 25.0, "avg": 10.0}
+                }
             }
         })),
         error: None,

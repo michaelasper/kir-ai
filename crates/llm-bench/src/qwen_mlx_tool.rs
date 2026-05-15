@@ -2359,7 +2359,16 @@ fn admin_latency_metric(
     }
 }
 
-fn value_path<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+fn value_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    if let Some(found) = value_path_direct(value, path) {
+        return Some(found);
+    }
+    let (first, rest) = path.split_first()?;
+    (*first == "mlx").then_some(())?;
+    value_path_direct(value.get("backend_metrics")?.get("mlx")?, rest)
+}
+
+fn value_path_direct<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     for segment in path {
         value = value.get(*segment)?;
     }

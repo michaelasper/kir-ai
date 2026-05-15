@@ -6,8 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["tool-calls"]
 test-utils = ["llm-backend/test-utils"]
+tool-calls = ["llm-telemetry/tool-calls"]
 
 [dependencies]
 async-stream.workspace = true
@@ -18,7 +19,7 @@ llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-hub = { path = "../llm-hub" }
 llm-runtime = { path = "../llm-runtime" }
-llm-telemetry = { path = "../llm-telemetry" }
+llm-telemetry = { path = "../llm-telemetry", default-features = false }
 llm-util = { path = "../llm-util" }
 schemars.workspace = true
 serde.workspace = true

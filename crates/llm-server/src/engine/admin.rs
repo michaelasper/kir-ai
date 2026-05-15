@@ -317,11 +317,17 @@ pub(super) async fn admin_metrics(
     let non_streamed_request_latency = metrics.non_streamed_request_latency();
     let streamed_request_latency = metrics.streamed_request_latency();
     let time_to_first_token = metrics.time_to_first_token();
+    #[cfg(feature = "tool-calls")]
     let first_tool_delta = metrics.first_tool_delta();
+    #[cfg(feature = "tool-calls")]
     let tool_argument_assembly = metrics.tool_argument_assembly();
+    #[cfg(feature = "tool-calls")]
     let tool_intent_fill = metrics.tool_intent_fill();
+    #[cfg(feature = "tool-calls")]
     let tool_schema_validation = metrics.tool_schema_validation();
+    #[cfg(feature = "tool-calls")]
     let tool_finish = metrics.tool_finish();
+    #[cfg(feature = "tool-calls")]
     let validated_tool_call = metrics.validated_tool_call();
     let model_store_usage = model_store_usage(&state).await?;
     let scheduler = state.model_scheduler.snapshot();
@@ -371,11 +377,17 @@ pub(super) async fn admin_metrics(
         non_streamed_request_latency_ms: LatencySummary::from_metrics(non_streamed_request_latency),
         streamed_request_latency_ms: LatencySummary::from_metrics(streamed_request_latency),
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
+        #[cfg(feature = "tool-calls")]
         first_tool_delta_ms: LatencySummary::from_metrics(first_tool_delta),
+        #[cfg(feature = "tool-calls")]
         tool_argument_assembly_ms: LatencySummary::from_metrics(tool_argument_assembly),
+        #[cfg(feature = "tool-calls")]
         tool_intent_fill_ms: LatencySummary::from_metrics(tool_intent_fill),
+        #[cfg(feature = "tool-calls")]
         tool_schema_validation_ms: LatencySummary::from_metrics(tool_schema_validation),
+        #[cfg(feature = "tool-calls")]
         tool_finish_ms: LatencySummary::from_metrics(tool_finish),
+        #[cfg(feature = "tool-calls")]
         validated_tool_call_ms: LatencySummary::from_metrics(validated_tool_call),
         request_cache,
         tokens: TokenSummary {
@@ -446,11 +458,17 @@ pub(super) struct AdminMetricsResponse {
     non_streamed_request_latency_ms: LatencySummary,
     streamed_request_latency_ms: LatencySummary,
     time_to_first_token_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     first_tool_delta_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     tool_argument_assembly_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     tool_intent_fill_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     tool_schema_validation_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     tool_finish_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
     validated_tool_call_ms: LatencySummary,
     request_cache: RequestCacheSnapshot,
     tokens: TokenSummary,

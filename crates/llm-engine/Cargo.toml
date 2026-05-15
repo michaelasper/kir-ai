@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["mlx", "native-qwen", "native-gemma", "diagnostics"]
+default = ["mlx", "native-qwen", "native-gemma", "diagnostics", "tool-calls"]
 bench = ["dep:llm-bench"]
 diagnostics = ["dep:llm-tokenizer"]
 mlx = ["dep:reqwest", "dep:sha2", "dep:url"]
@@ -21,6 +21,7 @@ native-text = [
   "dep:tokio-stream",
 ]
 test-utils = ["llm-backend/test-utils"]
+tool-calls = ["llm-server/tool-calls", "llm-telemetry/tool-calls"]
 
 [dependencies]
 anyhow.workspace = true
@@ -37,8 +38,8 @@ llm-metal = { path = "../llm-metal", optional = true }
 llm-models = { path = "../llm-models" }
 llm-runtime = { path = "../llm-runtime" }
 llm-sampler = { path = "../llm-sampler", optional = true }
-llm-server = { path = "../llm-server" }
-llm-telemetry = { path = "../llm-telemetry" }
+llm-server = { path = "../llm-server", default-features = false }
+llm-telemetry = { path = "../llm-telemetry", default-features = false }
 llm-tokenizer = { path = "../llm-tokenizer", optional = true }
 llm-util = { path = "../llm-util" }
 libc.workspace = true
