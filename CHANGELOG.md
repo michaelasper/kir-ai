@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.7](https://github.com/michaelasper/kir-ai/compare/v1.14.6...v1.14.7) (2026-05-15)
+
+### Bug Fixes
+
+* **mlx:** allow long prefill before stream bytes ([a16c354](https://github.com/michaelasper/kir-ai/commit/a16c354fe324b9df0b26367faffb91c312cb4384))
+
 ## [1.14.6](https://github.com/michaelasper/kir-ai/compare/v1.14.5...v1.14.6) (2026-05-15)
 
 ### Bug Fixes
