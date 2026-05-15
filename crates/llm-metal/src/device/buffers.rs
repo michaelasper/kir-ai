@@ -151,6 +151,25 @@ impl MetalDevice {
         })
     }
 
+    pub fn new_f32_buffer_len(&self, len: usize) -> Result<F32Buffer, MetalError> {
+        let byte_len = len.checked_mul(std::mem::size_of::<f32>()).ok_or_else(|| {
+            MetalError::InvalidShape("f32 buffer byte length overflows usize".to_owned())
+        })?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(
+                self.device
+                    .new_buffer(byte_len as u64, MTLResourceOptions::StorageModeShared),
+            )
+        };
+        Ok(F32Buffer {
+            buffer,
+            len,
+            byte_len,
+        })
+    }
+
     pub fn write_f32_buffer(&self, buffer: &F32Buffer, values: &[f32]) -> Result<(), MetalError> {
         if values.len() != buffer.len {
             return Err(MetalError::InvalidShape(format!(
@@ -177,6 +196,45 @@ impl MetalDevice {
             std::ptr::copy_nonoverlapping(
                 values.as_ptr(),
                 metal_buffer.contents().cast::<f32>(),
+                values.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn write_f32_buffer_range(
+        &self,
+        buffer: &F32Buffer,
+        start: usize,
+        values: &[f32],
+    ) -> Result<(), MetalError> {
+        let end = start.checked_add(values.len()).ok_or_else(|| {
+            MetalError::InvalidShape("f32 buffer write range overflows usize".to_owned())
+        })?;
+        if end > buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "f32 buffer write range {start}..{end} exceeds buffer length {}",
+                buffer.len
+            )));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f32 buffer range write requires a Metal buffer".to_owned(),
+            ));
+        };
+        let _cpu_access = self.synchronization.begin_cpu_access();
+        // SAFETY: the destination range is bounds-checked above against the
+        // f32 length used to allocate the StorageModeShared buffer. The device
+        // synchronization guard waits for in-flight GPU commands and prevents
+        // new command submissions during this copy. Both pointers remain valid
+        // for values.len() f32 values.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                metal_buffer.contents().cast::<f32>().add(start),
                 values.len(),
             );
         }
