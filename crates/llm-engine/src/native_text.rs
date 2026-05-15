@@ -949,6 +949,7 @@ mod tests {
         let stop_tokens = NativeTextStopTokens {
             token_ids: &[1],
             token_strings: &["<|im_end|>"],
+            encoded_token_strings: &[],
         };
         let non_stop = (0..16)
             .find(|token_id| *token_id != 1 && *token_id != im_end)
@@ -966,6 +967,19 @@ mod tests {
         );
 
         const PHRASE_STOP_STRINGS: &[&str] = &["hello rust tokenizer"];
+        let missing_literal = PHRASE_STOP_STRINGS[0];
+        assert!(
+            tokenizer.token_to_id(missing_literal).is_none(),
+            "fixture phrase should not be treated as a single literal stop token"
+        );
+        let literal_only_stop_tokens = NativeTextStopTokens {
+            token_ids: &[],
+            token_strings: PHRASE_STOP_STRINGS,
+            encoded_token_strings: &[],
+        }
+        .resolve(&tokenizer);
+        assert_eq!(literal_only_stop_tokens.token_ids(), Vec::<usize>::new());
+
         let phrase = PHRASE_STOP_STRINGS[0];
         assert!(
             tokenizer.token_to_id(phrase).is_none(),
@@ -976,7 +990,8 @@ mod tests {
             .expect("fixture phrase encodes");
         let phrase_stop_tokens = NativeTextStopTokens {
             token_ids: &[],
-            token_strings: PHRASE_STOP_STRINGS,
+            token_strings: &[],
+            encoded_token_strings: PHRASE_STOP_STRINGS,
         }
         .resolve(&tokenizer);
         for token_id in phrase_ids {
@@ -990,6 +1005,7 @@ mod tests {
             NativeTextStopTokens {
                 token_ids: &[1],
                 token_strings: &[],
+                encoded_token_strings: &[],
             },
         ));
 
@@ -1008,6 +1024,7 @@ mod tests {
             NativeTextStopTokens {
                 token_ids: &[1],
                 token_strings: &[],
+                encoded_token_strings: &[],
             },
         ));
         let (tx, mut rx) = tokio::sync::mpsc::channel(2);

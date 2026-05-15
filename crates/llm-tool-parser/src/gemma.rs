@@ -50,8 +50,10 @@ fn split_gemma_reasoning(text: &str) -> Result<(Option<String>, String), ParserE
     };
     let body_start = start + "<|channel>thought\n".len();
     let Some(end_rel) = text[body_start..].find("<channel|>") else {
-        return Err(ParserError::malformed_tool(
-            "unterminated Gemma thought channel",
+        let reasoning = text[body_start..].trim().to_owned();
+        return Ok((
+            (!reasoning.is_empty()).then_some(reasoning),
+            text[..start].to_owned(),
         ));
     };
     let end = body_start + end_rel;

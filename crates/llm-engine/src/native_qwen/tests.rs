@@ -624,6 +624,7 @@ fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
         NativeTextStopTokens {
             token_ids: &[],
             token_strings: &["<|im_end|>"],
+            encoded_token_strings: &[],
         }
     );
     assert!(matches!(

@@ -304,6 +304,39 @@ async fn runtime_qwen_cache_context_includes_no_thinking_template_kwargs() {
 }
 
 #[tokio::test]
+async fn runtime_gemma_cache_context_includes_no_thinking_template_kwargs() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "gemma",
+    });
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    let expected = BackendCacheContext::chat_template_with_kwargs(
+        "gemma/text-it/v1",
+        None,
+        Some(r#"{"enable_thinking":false}"#.to_owned()),
+    );
+    assert_eq!(
+        observed.cache_context.key, expected.key,
+        "Gemma no-thinking kwargs should participate in the opaque backend cache key"
+    );
+}
+
+#[tokio::test]
 async fn runtime_non_qwen_cache_context_omits_template_kwargs() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {

@@ -1013,7 +1013,10 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
     assert_eq!(request["messages"][1]["role"], "user");
     assert_eq!(request["messages"][1]["content"], "hello gemma");
     assert_eq!(request["stream"], false);
-    assert!(request.get("chat_template_kwargs").is_none());
+    assert_eq!(
+        request["chat_template_kwargs"],
+        serde_json::json!({"enable_thinking": false})
+    );
 }
 
 #[tokio::test]
@@ -1058,6 +1061,10 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
     assert_eq!(request["messages"][0]["role"], "user");
     assert_eq!(request["messages"][0]["content"], "use lookup");
     assert_eq!(request["tools"][0]["type"], "function");
+    assert_eq!(
+        request["chat_template_kwargs"],
+        serde_json::json!({"enable_thinking": false})
+    );
     assert_eq!(
         request["messages"]
             .as_array()
@@ -1281,6 +1288,69 @@ async fn mlx_backend_uses_metadata_kwargs_for_request_body_and_fingerprint() {
         cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
     };
     let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("qwen");
+
+    let chunks = backend
+        .generate_stream(request.clone())
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("mlx stream succeeds");
+
+    assert!(!chunks.is_empty());
+    let received = server.received_body();
+    assert_eq!(
+        received["chat_template_kwargs"],
+        serde_json::json!({"enable_thinking": false})
+    );
+    let fingerprint = mlx_request_fingerprint(
+        MlxUpstreamProtocol::ChatCompletions,
+        true,
+        &metadata,
+        &request,
+    );
+    let expected_hash = {
+        let bytes = serde_json::to_vec(&serde_json::json!({"enable_thinking": false}))
+            .expect("kwargs serialize");
+        let digest = Sha256::digest(&bytes);
+        format!("{digest:x}")
+    };
+    assert_eq!(
+        fingerprint["chat_template_kwargs_hash"].as_str(),
+        Some(expected_hash.as_str())
+    );
+}
+
+#[tokio::test]
+async fn mlx_backend_uses_gemma_metadata_kwargs_for_request_body_and_fingerprint() {
+    let server = FakeMlxServer::start(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Gemma),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    let request = BackendRequest {
+        model: "local-mlx".to_owned(),
+        prompt: "<bos><|turn>user\nsay ok<turn|>\n<|turn>model\n".to_owned(),
+        chat_context: Some(BackendChatContext {
+            messages: backend_messages(vec![ChatMessage::user("say ok")]),
+        }),
+        max_tokens: Some(12),
+        sampling: SamplingConfig::Greedy,
+        required_tool_choice: None,
+        json_object_mode: false,
+        conversation_mode: true,
+        cache_context: BackendCacheContext::chat_template("gemma/text-it/v1", None),
+    };
+    let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("gemma");
 
     let chunks = backend
         .generate_stream(request.clone())

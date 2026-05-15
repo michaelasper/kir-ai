@@ -107,12 +107,18 @@ pub(crate) enum NativeTextCandidateDecision {
 pub(crate) struct NativeTextStopTokens {
     pub(crate) token_ids: &'static [usize],
     pub(crate) token_strings: &'static [&'static str],
+    pub(crate) encoded_token_strings: &'static [&'static str],
 }
 
 impl NativeTextStopTokens {
     pub(crate) fn resolve(&self, tokenizer: &HuggingFaceTokenizer) -> NativeTextResolvedStopTokens {
         let mut token_ids = self.token_ids.to_vec();
         for token_string in self.token_strings {
+            if let Some(token_id) = tokenizer.token_to_id(token_string) {
+                token_ids.push(token_id as usize);
+            }
+        }
+        for token_string in self.encoded_token_strings {
             if let Some(token_id) = tokenizer.token_to_id(token_string) {
                 token_ids.push(token_id as usize);
             } else if let Ok(encoded) = tokenizer.encode(token_string, false) {

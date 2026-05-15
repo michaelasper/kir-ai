@@ -289,6 +289,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         NativeTextStopTokens {
             token_ids: &[],
             token_strings: &["<|im_end|>"],
+            encoded_token_strings: &[],
         }
     }
 

@@ -266,10 +266,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
     }
 
     fn stop_tokens(&self) -> NativeTextStopTokens {
-        NativeTextStopTokens {
-            token_ids: &[1],
-            token_strings: &["<eos>"],
-        }
+        native_gemma_stop_tokens()
     }
 
     fn max_position_embeddings(&self) -> u32 {
@@ -381,6 +378,14 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         }
         .select_next_token(hidden, sampling, sampling_draw, sampling_scratch)
         .await
+    }
+}
+
+fn native_gemma_stop_tokens() -> NativeTextStopTokens {
+    NativeTextStopTokens {
+        token_ids: &[1],
+        token_strings: &["<eos>", "<turn|>"],
+        encoded_token_strings: &[],
     }
 }
 
@@ -518,7 +523,7 @@ impl ModelBackend for NativeGemmaBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_text::{NativeTextCandidateDecision, NativeTextStopTokens};
+    use crate::native_text::NativeTextStopTokens;
     use llm_backend::{BackendCacheContext, LayerKvCache};
     use serde_json::json;
     use std::{
@@ -568,39 +573,25 @@ mod tests {
     }
 
     #[test]
-    fn native_gemma_adapter_stop_tokens_use_eos_mapping() {
-        let snapshot = temp_snapshot_dir("native-gemma-stop-tokens");
-        std::fs::remove_dir_all(&snapshot).ok();
-        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
-        write_tiny_gemma4_decoder_snapshot(&snapshot);
-        copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
-
-        let backend = open_gemma_backend("local-gemma", &snapshot);
-
+    fn native_gemma_stop_tokens_include_eos_and_turn_literals() {
+        let stop_tokens = native_gemma_stop_tokens();
         assert_eq!(
-            backend.driver.adapter.stop_tokens(),
+            stop_tokens,
             NativeTextStopTokens {
                 token_ids: &[1],
-                token_strings: &["<eos>"],
+                token_strings: &["<eos>", "<turn|>"],
+                encoded_token_strings: &[],
             }
         );
-        assert!(matches!(
-            backend
-                .driver
-                .adapter
-                .observe_candidate(&backend.driver.stop_tokens, &[], 1)
-                .expect("eos candidate is observed"),
-            NativeTextCandidateDecision::Stop
-        ));
-        assert!(matches!(
-            backend
-                .driver
-                .adapter
-                .observe_candidate(&backend.driver.stop_tokens, &[], 0)
-                .expect("non-stop candidate is observed"),
-            NativeTextCandidateDecision::Emit(0)
-        ));
-        std::fs::remove_dir_all(snapshot).ok();
+
+        let tokenizer_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36")
+            .join("tokenizer.json");
+        let resolved = stop_tokens.resolve(
+            &HuggingFaceTokenizer::from_file(tokenizer_path).expect("fixture tokenizer loads"),
+        );
+        assert!(resolved.contains(1));
+        assert!(!resolved.contains(0));
     }
 
     #[test]

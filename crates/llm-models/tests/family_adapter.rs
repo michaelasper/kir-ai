@@ -155,6 +155,10 @@ fn gemma_family_declares_native_and_mlx_text_backends() {
         &[BackendKind::NativeMetal, BackendKind::Mlx]
     );
     assert_eq!(adapter.cache_template_id(), "gemma/text-it/v1");
+    assert_eq!(
+        adapter.chat_template_kwargs_json(),
+        Some(r#"{"enable_thinking":false}"#)
+    );
     assert_eq!(adapter.tensor_namespace(), "gemma4_text");
     assert_eq!(adapter.promotion_stage(), PromotionStage::Production);
     assert!(capabilities.text);

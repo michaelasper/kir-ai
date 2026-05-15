@@ -21,6 +21,17 @@ fn parses_gemma_reasoning_channel_and_content() {
 }
 
 #[test]
+fn parses_unterminated_gemma_reasoning_as_partial_reasoning() {
+    let parsed = GemmaParser
+        .parse_complete("<|channel>thought\nNeed inspect.")
+        .expect("unterminated Gemma reasoning parses as partial reasoning");
+
+    assert_eq!(parsed.reasoning.as_deref(), Some("Need inspect."));
+    assert_eq!(parsed.content, "");
+    assert!(parsed.tool_calls.is_empty());
+}
+
+#[test]
 fn parses_gemma_tool_call_channel() {
     let parsed = GemmaParser
         .parse_complete(

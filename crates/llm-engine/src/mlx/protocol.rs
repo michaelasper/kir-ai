@@ -83,13 +83,7 @@ pub(super) fn mlx_tool_markup_for_metadata(
 pub(super) fn mlx_chat_template_kwargs_for_metadata(
     metadata: &BackendModelMetadata,
 ) -> Option<Value> {
-    match metadata_family(metadata) {
-        Some(ModelFamily::Qwen) => Some(serde_json::json!({"enable_thinking": false})),
-        Some(ModelFamily::DeepSeek)
-        | Some(ModelFamily::Gemma)
-        | Some(ModelFamily::Llama)
-        | None => None,
-    }
+    metadata_family(metadata).and_then(mlx_chat_template_kwargs_for_family)
 }
 
 pub(super) fn mlx_effective_chat_template_kwargs(
@@ -97,6 +91,13 @@ pub(super) fn mlx_effective_chat_template_kwargs(
     _request: &BackendRequest,
 ) -> Option<Value> {
     mlx_chat_template_kwargs_for_metadata(metadata)
+}
+
+fn mlx_chat_template_kwargs_for_family(family: ModelFamily) -> Option<Value> {
+    family
+        .adapter()
+        .chat_template_kwargs_json()
+        .map(|kwargs| serde_json::from_str(kwargs).expect("static chat template kwargs JSON"))
 }
 
 pub(super) fn mlx_upstream_protocol_for_request(

@@ -261,6 +261,10 @@ impl ModelFamilyAdapter for GemmaFamilyAdapter {
         "gemma/text-it/v1"
     }
 
+    fn chat_template_kwargs_json(&self) -> Option<&'static str> {
+        Some(r#"{"enable_thinking":false}"#)
+    }
+
     fn tensor_namespace(&self) -> &'static str {
         "gemma4_text"
     }
