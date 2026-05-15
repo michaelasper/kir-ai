@@ -80,11 +80,7 @@ pub(super) async fn admin_model(
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
-        return Err(RuntimeError::ModelNotFound {
-            requested: alias,
-            available: metadata.id,
-        }
-        .into());
+        return Err(RuntimeError::model_unavailable(alias, metadata.id).into());
     }
     Ok(Json(admin_model_status(&state, &metadata).await))
 }
@@ -108,11 +104,7 @@ pub(super) async fn admin_model_verify(
     require_admin(&state, &headers)?;
     let metadata = state.runtime.model_metadata();
     if alias != metadata.id {
-        return Err(RuntimeError::ModelNotFound {
-            requested: alias,
-            available: metadata.id,
-        }
-        .into());
+        return Err(RuntimeError::model_unavailable(alias, metadata.id).into());
     }
     let snapshot = model_snapshot_for_alias(&state, &metadata.id)
         .await
@@ -258,11 +250,7 @@ fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError>
     if alias == model_id {
         return Ok(());
     }
-    Err(RuntimeError::ModelNotFound {
-        requested: alias.to_owned(),
-        available: model_id.to_owned(),
-    }
-    .into())
+    Err(RuntimeError::model_unavailable(alias, model_id).into())
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

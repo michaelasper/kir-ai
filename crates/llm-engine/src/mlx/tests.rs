@@ -953,7 +953,7 @@ async fn mlx_backend_metrics_record_in_flight_cancellations() {
         .await
         .expect("cancelled stream item")
         .expect_err("stream is cancelled");
-    assert!(matches!(err, BackendError::Cancelled));
+    assert!(err.is_cancelled());
 
     let metrics = metrics.snapshot();
     assert_eq!(metrics["requests_total"], 1);
@@ -2075,7 +2075,7 @@ async fn mlx_backend_rejects_model_mismatch_before_http_request() {
         .await
         .expect_err("model mismatch fails before HTTP");
 
-    assert!(matches!(err, BackendError::ModelNotFound { .. }));
+    assert!(err.is_model_not_found());
 }
 
 #[tokio::test]

@@ -83,7 +83,7 @@ fn common_prefix_len(left: &str, right: &str) -> usize {
 
 #[cfg(test)]
 fn non_prefix_stream_error() -> BackendError {
-    BackendError::Other(
+    BackendError::other(
         "native tokenizer streaming decode became non-prefix after emitted delta".to_owned(),
     )
 }
@@ -114,7 +114,7 @@ pub(crate) fn native_text_worker_stream(
                             if let Some(handle) = worker.take() {
                                 let result = handle.await;
                                 if let Err(err) = result {
-                                    yield Err(BackendError::Other(format!(
+                                    yield Err(BackendError::other(format!(
                                         "{label} streaming worker failed: {err}"
                                     )));
                                 }
@@ -126,7 +126,7 @@ pub(crate) fn native_text_worker_stream(
                 result = handle => {
                     worker = None;
                     if let Err(err) = result {
-                        yield Err(BackendError::Other(format!(
+                        yield Err(BackendError::other(format!(
                             "{label} streaming worker failed: {err}"
                         )));
                         break;

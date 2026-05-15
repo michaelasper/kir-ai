@@ -20,10 +20,10 @@ pub(crate) fn resolve_native_text_max_tokens(
     let configured_max = configured_max.max(1);
     match requested {
         None => Ok(configured_max),
-        Some(0) => Err(BackendError::UnsupportedRequest(
+        Some(0) => Err(BackendError::unsupported_request(
             "max_tokens must be greater than 0".to_owned(),
         )),
-        Some(value) if value > configured_max => Err(BackendError::UnsupportedRequest(format!(
+        Some(value) if value > configured_max => Err(BackendError::unsupported_request(format!(
             "requested max_tokens {value} exceeds configured native {family_display_name} limit {configured_max}"
         ))),
         Some(value) => Ok(value),
@@ -38,27 +38,27 @@ pub(crate) fn native_text_cache_token_capacity(
     family_display_name: &str,
 ) -> Result<usize, BackendError> {
     let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "native {family_display_name} max_position_embeddings does not fit usize: {err}"
         ))
     })?;
     if max_position_embeddings == 0 {
-        return Err(BackendError::UnsupportedRequest(format!(
+        return Err(BackendError::unsupported_request(format!(
             "native {family_display_name} model declares zero max_position_embeddings"
         )));
     }
     let max_new_tokens = usize::try_from(max_new_tokens).map_err(|err| {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "native {family_display_name} max_new_tokens does not fit usize: {err}"
         ))
     })?;
     let requested_context = context_tokens.checked_add(max_new_tokens).ok_or_else(|| {
-        BackendError::UnsupportedRequest(format!(
+        BackendError::unsupported_request(format!(
             "native {family_display_name} context length plus generation budget overflows usize"
         ))
     })?;
     if requested_context > max_position_embeddings {
-        return Err(BackendError::UnsupportedRequest(format!(
+        return Err(BackendError::unsupported_request(format!(
             "native {family_display_name} request needs {context_tokens} prompt tokens plus {max_new_tokens} generation tokens, exceeding model context limit {max_position_embeddings}"
         )));
     }
@@ -86,21 +86,21 @@ where
     F: FnMut(&[usize], &mut [C], &mut InferenceScratchpad) -> Result<Vec<Vec<f32>>, BackendError>,
 {
     if cancellation.is_cancelled() {
-        return Err(BackendError::Cancelled);
+        return Err(BackendError::cancelled());
     }
     let mut hidden = None;
     for chunk in context_tokens.chunks(prefill_chunk_tokens.max(1)) {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         let hidden_states = prefill_chunk(chunk, caches, scratch)?;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         hidden = hidden_states.last().cloned();
     }
     hidden.ok_or_else(|| {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "{family_display_name} prefill returned no hidden states"
         ))
     })
@@ -131,18 +131,18 @@ pub(crate) fn sample_token_id_with_draw_with_scratch(
     top_p_scratch: &mut TopPSamplerScratch,
 ) -> Result<usize, BackendError> {
     if logits.is_empty() {
-        return Err(BackendError::Other(format!(
+        return Err(BackendError::other(format!(
             "{family_display_name} lm head returned no logits"
         )));
     }
     match sampling {
         SamplingConfig::Greedy => llm_sampler::GreedySampler
             .sample(logits)
-            .map_err(|err| BackendError::Other(err.to_string())),
+            .map_err(|err| BackendError::other(err.to_string())),
         SamplingConfig::TopP { temperature, top_p } => {
             llm_sampler::TopPSampler { temperature, top_p }
                 .sample_with_scratch(logits, draw, top_p_scratch)
-                .map_err(|err| BackendError::Other(err.to_string()))
+                .map_err(|err| BackendError::other(err.to_string()))
         }
     }
 }
@@ -166,7 +166,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
     ) -> Result<usize, BackendError> {
         let final_norm = native_final_norm_for_spec_ref(self.store, self.spec, hidden, self.matvec)
             .await
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+            .map_err(|err| BackendError::other(err.to_string()))?;
         if !sampling.is_greedy() {
             let logits = native_lm_head_logits_for_spec_ref(
                 self.store,
@@ -176,9 +176,9 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
                 self.matvec,
             )
             .await
-            .map_err(|err| BackendError::Other(err.to_string()))?;
+            .map_err(|err| BackendError::other(err.to_string()))?;
             let sampling_draw = sampling_draw.ok_or_else(|| {
-                BackendError::Other(format!(
+                BackendError::other(format!(
                     "{} non-greedy sampling requires an RNG draw",
                     self.family_display_name
                 ))
@@ -204,9 +204,9 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             self.matvec,
         )
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        .map_err(|err| BackendError::other(err.to_string()))?;
         let item = top_logits.into_iter().next().ok_or_else(|| {
-            BackendError::Other(format!(
+            BackendError::other(format!(
                 "{} lm head returned no logits",
                 self.family_display_name
             ))
@@ -221,7 +221,7 @@ fn ensure_token_id_fits_u32(
     family_display_name: &str,
 ) -> Result<(), BackendError> {
     u32::try_from(token_id).map_err(|err| {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "{family_display_name} token id does not fit u32: {err}"
         ))
     })?;

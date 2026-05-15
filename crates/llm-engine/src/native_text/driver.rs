@@ -350,11 +350,11 @@ where
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.validate_model(&request)?;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         let prompt_tokens = self.encode_prompt(&request)?;
         let context_tokens = prompt_tokens
@@ -362,7 +362,7 @@ where
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
         if context_tokens.is_empty() {
-            return Err(BackendError::Other(format!(
+            return Err(BackendError::other(format!(
                 "{} prompt encoded to zero tokens",
                 self.adapter.family_display_name()
             )));
@@ -389,12 +389,12 @@ where
         let cache_report = start.cache_report;
         let mut decode = start.session;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
 
         for step_idx in 0..requested {
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             let candidate = self
                 .adapter
@@ -407,7 +407,7 @@ where
                 )
                 .await?;
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             let token_id =
                 match self
@@ -421,7 +421,7 @@ where
                     }
                 };
             output_ids.push(u32::try_from(token_id).map_err(|err| {
-                BackendError::Other(format!(
+                BackendError::other(format!(
                     "{} token id does not fit u32: {err}",
                     self.adapter.family_display_name()
                 ))
@@ -450,11 +450,11 @@ where
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.validate_model(&request)?;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         let prompt_tokens = self.encode_prompt(&request)?;
         let context_tokens = prompt_tokens
@@ -462,7 +462,7 @@ where
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
         if context_tokens.is_empty() {
-            return Err(BackendError::Other(format!(
+            return Err(BackendError::other(format!(
                 "{} prompt encoded to zero tokens",
                 self.adapter.family_display_name()
             )));
@@ -490,20 +490,20 @@ where
             .await
         {
             Ok(start) => start,
-            Err(BackendError::Cancelled) if cancellation.is_cancelled() => {
-                return Err(BackendError::Cancelled);
+            Err(err) if err.is_cancelled() && cancellation.is_cancelled() => {
+                return Err(BackendError::cancelled());
             }
             Err(err) => return Err(err),
         };
         let cache_report = start.cache_report;
         let mut decode = start.session;
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
 
         for step_idx in 0..requested {
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             let candidate = self
                 .adapter
@@ -516,7 +516,7 @@ where
                 )
                 .await?;
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             let token_id =
                 match self
@@ -530,7 +530,7 @@ where
                     }
                 };
             let output_id = u32::try_from(token_id).map_err(|err| {
-                BackendError::Other(format!(
+                BackendError::other(format!(
                     "{} token id does not fit u32: {err}",
                     self.adapter.family_display_name()
                 ))
@@ -540,7 +540,7 @@ where
             let token_decoded = self.adapter.decode_output(&self.tokenizer, &[output_id])?;
             let delta = text_deltas.observe_incremental(token_decoded);
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             if let Some(delta) = delta {
                 tx.send(Ok(BackendStreamChunk {
@@ -552,11 +552,11 @@ where
                     finish_reason: None,
                 }))
                 .await
-                .map_err(|err| BackendError::Other(err.to_string()))?;
+                .map_err(|err| BackendError::other(err.to_string()))?;
             }
             if step_idx + 1 < requested {
                 if cancellation.is_cancelled() {
-                    return Err(BackendError::Cancelled);
+                    return Err(BackendError::cancelled());
                 }
                 self.adapter
                     .step(&mut decode, token_id, &mut scratch)
@@ -565,7 +565,7 @@ where
         }
 
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         let final_text = if output_ids.is_empty() {
             None
@@ -581,16 +581,16 @@ where
             finish_reason: Some(finish_reason),
         }))
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        .map_err(|err| BackendError::other(err.to_string()))?;
         Ok(())
     }
 
     fn validate_model(&self, request: &BackendRequest) -> Result<(), BackendError> {
         if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model.clone(),
-                available: self.model_id.clone(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model.clone(),
+                self.model_id.clone(),
+            ));
         }
         Ok(())
     }
@@ -628,7 +628,7 @@ where
         scratch: &mut InferenceScratchpad,
     ) -> Result<NativeTextDecodeStart<A::DecodeSession>, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         let cache_tokens = native_text_cache_token_capacity(
             context_tokens.len(),
@@ -647,7 +647,7 @@ where
             self.adapter.prefix_cache_metrics(),
         ) {
             if hit.caches.len() != layer_count {
-                return Err(BackendError::Other(format!(
+                return Err(BackendError::other(format!(
                     "native {} prefix cache entry had {} layers, expected {layer_count}",
                     self.adapter.family_display_name(),
                     hit.caches.len()
@@ -663,7 +663,7 @@ where
         let mut cache_cleanup = NativeTextCacheMirrorCleanupGuard::new(&self.adapter);
         if cancellation.is_cancelled() {
             cache_cleanup.cleanup(&caches);
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         if cached_prefix_len < context_tokens.len() {
             let mut prefill_hidden = None;
@@ -671,7 +671,7 @@ where
             for chunk in context_tokens[cached_prefix_len..].chunks(prefill_chunk_tokens.max(1)) {
                 if cancellation.is_cancelled() {
                     cache_cleanup.cleanup(&caches);
-                    return Err(BackendError::Cancelled);
+                    return Err(BackendError::cancelled());
                 }
                 let hidden_states = match self
                     .adapter
@@ -686,13 +686,13 @@ where
                 };
                 if cancellation.is_cancelled() {
                     cache_cleanup.cleanup(&caches);
-                    return Err(BackendError::Cancelled);
+                    return Err(BackendError::cancelled());
                 }
                 prefill_hidden = hidden_states.last().cloned();
             }
             hidden = Some(prefill_hidden.ok_or_else(|| {
                 cache_cleanup.cleanup(&caches);
-                BackendError::Other(format!(
+                BackendError::other(format!(
                     "{} prefill returned no hidden states",
                     self.adapter.family_display_name()
                 ))
@@ -702,7 +702,7 @@ where
             Some(hidden) => hidden,
             None => {
                 cache_cleanup.cleanup(&caches);
-                return Err(BackendError::Other(format!(
+                return Err(BackendError::other(format!(
                     "{} prefill returned no hidden states",
                     self.adapter.family_display_name()
                 )));
@@ -710,7 +710,7 @@ where
         };
         if cancellation.is_cancelled() {
             cache_cleanup.cleanup(&caches);
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.adapter.prefix_cache().store(
             namespace,
@@ -737,7 +737,7 @@ where
         }
         let runtime = runtime.borrow();
         let Some(runtime) = runtime.as_ref() else {
-            return Err(BackendError::Other(
+            return Err(BackendError::other(
                 "native text worker runtime was not initialized".to_owned(),
             ));
         };
@@ -750,7 +750,7 @@ fn build_native_text_worker_runtime() -> Result<tokio::runtime::Runtime, Backend
         .enable_all()
         .build()
         .map_err(|err| {
-            BackendError::Other(format!("native text worker runtime build failed: {err}"))
+            BackendError::other(format!("native text worker runtime build failed: {err}"))
         })
 }
 
@@ -801,7 +801,7 @@ where
             })?
         })
         .await
-        .map_err(|err| BackendError::Other(format!("{label} generation worker failed: {err}")))?;
+        .map_err(|err| BackendError::other(format!("{label} generation worker failed: {err}")))?;
         cancel_on_drop.disarm();
         result
     }

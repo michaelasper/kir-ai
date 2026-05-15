@@ -31,7 +31,7 @@ async fn completions_endpoint_returns_openai_text_completion_shape() {
 }
 
 #[tokio::test]
-async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
+async fn completions_endpoint_reports_backend_unsupported_sampling_controls_as_invalid_request() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(
             Request::builder()
@@ -53,7 +53,7 @@ async fn completions_endpoint_reports_backend_unsupported_sampling_controls() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response.into_body()).await;
-    assert_eq!(body["error"]["code"], "unsupported_capability");
+    assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["phase"], "request_validation");
     assert_eq!(body["error"]["retryable"], false);
 }

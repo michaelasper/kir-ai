@@ -156,7 +156,7 @@ fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendErr
         .as_deref()
         .map(|schema| {
             serde_json::from_str::<Value>(schema).map_err(|err| {
-                BackendError::Other(format!("MLX tool schema was not valid JSON: {err}"))
+                BackendError::other(format!("MLX tool schema was not valid JSON: {err}"))
             })
         })
         .transpose()

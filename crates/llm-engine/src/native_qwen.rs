@@ -272,7 +272,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
     ) -> Result<Vec<u32>, BackendError> {
         tokenizer
             .encode(&request.prompt, false)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn decode_output(
@@ -282,7 +282,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
     ) -> Result<String, BackendError> {
         tokenizer
             .decode(output_ids, false)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn stop_tokens(&self) -> NativeTextStopTokens {
@@ -329,7 +329,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
 
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<QwenLayerCache>, BackendError> {
         qwen_layer_caches_for_spec(&self.spec, cache_tokens)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     async fn prefill_chunk_with_cache(
@@ -347,7 +347,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))
+        .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn make_decode_session(
@@ -432,7 +432,7 @@ impl NativeQwenDecodeSession {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        .map_err(|err| BackendError::other(err.to_string()))?;
         Ok(())
     }
 }

@@ -498,7 +498,7 @@ mod tests {
             _scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
             if self.fail_prefill {
-                return Err(BackendError::Other("test prefill failed".to_owned()));
+                return Err(BackendError::other("test prefill failed".to_owned()));
             }
             Ok(token_ids.iter().map(|_| vec![0.0]).collect())
         }
@@ -1220,7 +1220,7 @@ mod tests {
         )
         .expect_err("cancelled after first chunk");
 
-        assert!(matches!(err, BackendError::Cancelled));
+        assert!(err.is_cancelled());
         assert_eq!(calls, 1);
     }
 
@@ -1237,7 +1237,7 @@ mod tests {
         let err = native_text_cache_token_capacity(0, 1, 1, 0, "Test")
             .expect_err("zero position limit fails closed");
 
-        assert!(matches!(err, BackendError::UnsupportedRequest(_)));
+        assert!(err.is_unsupported_request());
         assert!(
             err.to_string()
                 .contains("native Test model declares zero max_position_embeddings"),

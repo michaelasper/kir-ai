@@ -104,7 +104,7 @@ impl ModelBackend for FailingBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other("execution failed".to_owned()))
+        Err(BackendError::other("execution failed".to_owned()))
     }
 
     async fn generate_with_cancel(
@@ -243,10 +243,10 @@ impl ModelBackend for ScriptedChatBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         if request.model != self.model_id() {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id().to_owned(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model,
+                self.model_id().to_owned(),
+            ));
         }
         let text = scripted_chat_response(&request.prompt);
         Ok(BackendOutput {
@@ -373,7 +373,7 @@ impl ModelBackend for AdminCancellableBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_with_cancel should be used".to_owned(),
         ))
     }
@@ -386,7 +386,7 @@ impl ModelBackend for AdminCancellableBackend {
         self.entered.notify_waiters();
         cancellation.cancelled().await;
         self.cancelled.notify_waiters();
-        Err(BackendError::Cancelled)
+        Err(BackendError::cancelled())
     }
 }
 
@@ -406,7 +406,7 @@ impl ModelBackend for AdminLateErrorBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_with_cancel should be used".to_owned(),
         ))
     }
@@ -422,7 +422,7 @@ impl ModelBackend for AdminLateErrorBackend {
             .acquire()
             .await
             .expect("release semaphore open");
-        Err(BackendError::Other("late backend failure".to_owned()))
+        Err(BackendError::other("late backend failure".to_owned()))
     }
 }
 
@@ -565,7 +565,7 @@ impl ModelBackend for TwoStageStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -671,7 +671,7 @@ impl ModelBackend for FailingStreamBackend {
                 completion_tokens: 1,
                 finish_reason: None,
             };
-            Err(BackendError::Other("stream failed".to_owned()))?;
+            Err(BackendError::other("stream failed".to_owned()))?;
         }
         .boxed()
     }
@@ -682,7 +682,7 @@ impl ModelBackend for FailingStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -804,7 +804,7 @@ async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
     cancellation: CancellationToken,
 ) -> Result<BackendOutput, BackendError> {
     if cancellation.is_cancelled() {
-        return Err(BackendError::Cancelled);
+        return Err(BackendError::cancelled());
     }
     backend.generate(request).await
 }

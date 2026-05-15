@@ -186,7 +186,7 @@ impl SamplingConfig {
         top_p: Option<f32>,
     ) -> Result<Self, BackendError> {
         llm_util::sampling::validate_sampling_controls(temperature, top_p)
-            .map_err(|err| BackendError::InvalidSamplingConfig(err.to_string()))?;
+            .map_err(|err| BackendError::invalid_sampling_config(err.to_string()))?;
         Ok(match (temperature, top_p) {
             (Some(temperature), _) if temperature == llm_util::sampling::GREEDY_TEMPERATURE => {
                 Self::Greedy
@@ -373,8 +373,14 @@ where
     }
 }
 
-#[derive(Debug, Error)]
-pub enum BackendError {
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(transparent)]
+pub struct BackendError {
+    kind: BackendErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(crate) enum BackendErrorKind {
     #[error("model `{requested}` is not loaded; available model is `{available}`")]
     ModelNotFound {
         requested: String,
@@ -388,6 +394,97 @@ pub enum BackendError {
     Cancelled,
     #[error("backend error: {0}")]
     Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendErrorDomain {
+    ModelNotFound {
+        requested: String,
+        available: String,
+    },
+    InvalidRequest {
+        reason: String,
+    },
+    Cancelled,
+    BackendFailure(BackendError),
+}
+
+impl BackendError {
+    pub fn model_not_found(requested: impl Into<String>, available: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::ModelNotFound {
+                requested: requested.into(),
+                available: available.into(),
+            },
+        }
+    }
+
+    pub fn unsupported_request(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::UnsupportedRequest(message.into()),
+        }
+    }
+
+    pub fn invalid_sampling_config(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::InvalidSamplingConfig(message.into()),
+        }
+    }
+
+    pub fn cancelled() -> Self {
+        Self {
+            kind: BackendErrorKind::Cancelled,
+        }
+    }
+
+    pub fn other(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::Other(message.into()),
+        }
+    }
+
+    pub fn is_model_not_found(&self) -> bool {
+        matches!(self.kind, BackendErrorKind::ModelNotFound { .. })
+    }
+
+    pub fn is_unsupported_request(&self) -> bool {
+        matches!(self.kind, BackendErrorKind::UnsupportedRequest(_))
+    }
+
+    pub fn is_invalid_sampling_config(&self) -> bool {
+        matches!(self.kind, BackendErrorKind::InvalidSamplingConfig(_))
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self.kind, BackendErrorKind::Cancelled)
+    }
+
+    pub fn other_message(&self) -> Option<&str> {
+        match &self.kind {
+            BackendErrorKind::Other(message) => Some(message.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn into_domain(self) -> BackendErrorDomain {
+        match self.kind {
+            BackendErrorKind::ModelNotFound {
+                requested,
+                available,
+            } => BackendErrorDomain::ModelNotFound {
+                requested,
+                available,
+            },
+            BackendErrorKind::UnsupportedRequest(reason)
+            | BackendErrorKind::InvalidSamplingConfig(reason) => {
+                BackendErrorDomain::InvalidRequest { reason }
+            }
+            BackendErrorKind::Cancelled => BackendErrorDomain::Cancelled,
+            BackendErrorKind::Other(message) => {
+                BackendErrorDomain::BackendFailure(BackendError::other(message))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -421,7 +518,7 @@ mod tests {
             cancellation: CancellationToken,
         ) -> Result<BackendOutput, BackendError> {
             if cancellation.is_cancelled() {
-                return Err(BackendError::Cancelled);
+                return Err(BackendError::cancelled());
             }
             self.generate(request).await
         }
@@ -437,7 +534,8 @@ mod tests {
 
         let result = block_on(stream.next()).expect("stream emits one result");
 
-        assert!(matches!(result, Err(BackendError::Cancelled)));
+        let err = result.expect_err("pre-cancelled generation should fail");
+        assert!(err.is_cancelled(), "expected Cancelled, got {err:?}");
     }
 
     fn backend_request(prompt: &str) -> BackendRequest {
@@ -483,7 +581,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(Some(-0.5), None)
             .expect_err("negative temperature should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -493,7 +591,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(Some(f32::NAN), None)
             .expect_err("NaN temperature should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -503,7 +601,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(Some(f32::INFINITY), None)
             .expect_err("inf temperature should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -513,7 +611,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(Some(2.1), None)
             .expect_err("temperature > 2.0 should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -536,7 +634,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(None, Some(0.0))
             .expect_err("zero top_p should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -546,7 +644,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(Some(f32::NEG_INFINITY), None)
             .expect_err("neg_inf temperature should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -556,7 +654,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(None, Some(1.5))
             .expect_err("top_p > 1.0 should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -566,7 +664,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(None, Some(f32::INFINITY))
             .expect_err("inf top_p should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -576,7 +674,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(None, Some(f32::NAN))
             .expect_err("NaN top_p should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }
@@ -586,7 +684,7 @@ mod tests {
         let err = SamplingConfig::from_openai_controls(None, Some(-0.1))
             .expect_err("negative top_p should be rejected");
         assert!(
-            matches!(err, BackendError::InvalidSamplingConfig(_)),
+            err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
         );
     }

@@ -583,7 +583,7 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "cached prompt token stream test must use generate_stream".to_owned(),
         ))
     }
@@ -627,7 +627,7 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }

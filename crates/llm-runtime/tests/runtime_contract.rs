@@ -175,10 +175,10 @@ impl ModelBackend for FamilyStreamBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id.to_owned(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model,
+                self.model_id.to_owned(),
+            ));
         }
         Ok(BackendOutput {
             text: self.text.to_owned(),
@@ -386,10 +386,10 @@ impl ModelBackend for ReplayBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         if request.model != self.model_id() {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id().to_owned(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model,
+                self.model_id().to_owned(),
+            ));
         }
         Ok(self.output.clone())
     }
@@ -612,7 +612,7 @@ impl ModelBackend for TwoChunkStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -629,7 +629,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "tool boundary streaming test must use generate_stream".to_owned(),
         ))
     }
@@ -677,7 +677,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -695,7 +695,7 @@ impl ModelBackend for StructuredToolDeltaStreamBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "structured tool delta streaming test must use generate_stream".to_owned(),
         ))
     }
@@ -743,7 +743,7 @@ impl ModelBackend for StructuredToolDeltaStreamBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -790,7 +790,7 @@ impl ModelBackend for StopStreamingBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "stop streaming test must use generate_stream".to_owned(),
         ))
     }
@@ -834,7 +834,7 @@ impl ModelBackend for StopStreamingBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         self.generate_stream(request)
     }
@@ -846,7 +846,7 @@ async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
     cancellation: CancellationToken,
 ) -> Result<BackendOutput, BackendError> {
     if cancellation.is_cancelled() {
-        return Err(BackendError::Cancelled);
+        return Err(BackendError::cancelled());
     }
     backend.generate(request).await
 }

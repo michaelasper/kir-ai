@@ -252,7 +252,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
     ) -> Result<Vec<u32>, BackendError> {
         tokenizer
             .encode(&request.prompt, false)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn decode_output(
@@ -262,7 +262,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
     ) -> Result<String, BackendError> {
         tokenizer
             .decode(output_ids, false)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn stop_tokens(&self) -> NativeTextStopTokens {
@@ -309,7 +309,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
 
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<GemmaLayerCache>, BackendError> {
         gemma_layer_caches_for_spec(&self.spec, cache_tokens)
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
     }
 
     async fn prefill_chunk_with_cache(
@@ -327,7 +327,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))
+        .map_err(|err| BackendError::other(err.to_string()))
     }
 
     fn make_decode_session(
@@ -412,7 +412,7 @@ impl NativeGemmaDecodeSession {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::Other(err.to_string()))?;
+        .map_err(|err| BackendError::other(err.to_string()))?;
         Ok(())
     }
 }

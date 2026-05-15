@@ -56,13 +56,13 @@ impl ModelBackend for ProtocolTestBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model,
-                available: self.model_id.clone(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model,
+                self.model_id.clone(),
+            ));
         }
         if !request.sampling.is_greedy() && !request.sampling.is_standard() {
-            return Err(BackendError::UnsupportedRequest(
+            return Err(BackendError::unsupported_request(
                 "protocol test backend does not support non-greedy sampling".to_owned(),
             ));
         }
@@ -99,7 +99,7 @@ impl ModelBackend for ProtocolTestBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.generate(request).await
     }

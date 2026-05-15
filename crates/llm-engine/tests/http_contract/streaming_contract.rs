@@ -801,7 +801,7 @@ impl ModelBackend for SlowDripStreamBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_stream_with_cancel should be used".to_owned(),
         ))
     }
@@ -811,7 +811,7 @@ impl ModelBackend for SlowDripStreamBackend {
         _request: BackendRequest,
         _cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_stream_with_cancel should be used".to_owned(),
         ))
     }
@@ -859,7 +859,7 @@ impl ModelBackend for PendingCancellableStreamBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_stream_with_cancel should be used".to_owned(),
         ))
     }
@@ -869,7 +869,7 @@ impl ModelBackend for PendingCancellableStreamBackend {
         _request: BackendRequest,
         _cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "generate_stream_with_cancel should be used".to_owned(),
         ))
     }
@@ -929,7 +929,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "structured tool delta HTTP test must use generate_stream".to_owned(),
         ))
     }
@@ -939,7 +939,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
         _request: BackendRequest,
         _cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        Err(BackendError::Other(
+        Err(BackendError::other(
             "structured tool delta HTTP test must use generate_stream".to_owned(),
         ))
     }
@@ -950,7 +950,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
         cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         if cancellation.is_cancelled() {
-            return futures::stream::once(async { Err(BackendError::Cancelled) }).boxed();
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
         }
         async_stream::try_stream! {
             yield BackendStreamChunk {

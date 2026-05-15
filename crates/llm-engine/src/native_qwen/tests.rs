@@ -539,7 +539,7 @@ fn native_max_tokens_rejects_requests_above_configured_limit() {
     let err = resolve_native_max_tokens(Some(5), 4)
         .expect_err("request above configured limit fails closed");
 
-    assert!(matches!(err, BackendError::UnsupportedRequest(_)));
+    assert!(err.is_unsupported_request());
     assert!(err.to_string().contains("configured native Qwen limit"));
 }
 
@@ -587,7 +587,7 @@ fn native_qwen_cache_capacity_rejects_context_beyond_position_limit() {
     let err = native_text_cache_token_capacity(60, 8, 32, 64, "Qwen")
         .expect_err("context beyond model position limit fails closed");
 
-    assert!(matches!(err, BackendError::UnsupportedRequest(_)));
+    assert!(err.is_unsupported_request());
     assert!(
         err.to_string().contains("model context limit"),
         "error should name context limit: {err}"
@@ -753,7 +753,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
                 &NativeTextMatvecBackend::Cpu,
                 scratch,
             ))
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
         },
     );
     let expected_hidden = expected_hidden.expect("fresh prefill succeeds");
@@ -801,7 +801,7 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
                 &NativeTextMatvecBackend::Cpu,
                 scratch,
             ))
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
         },
     );
     let hidden = hidden.expect("sequence prefill succeeds");
@@ -845,12 +845,12 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
             rt.block_on(qwen_prefill_sequence_with_cache(
                 &store, &spec, chunk, caches, &matvec, scratch,
             ))
-            .map_err(|err| BackendError::Other(err.to_string()))
+            .map_err(|err| BackendError::other(err.to_string()))
         },
     )
     .expect_err("cancelled after first chunk");
 
-    assert!(matches!(err, BackendError::Cancelled));
+    assert!(err.is_cancelled());
     match &caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 1),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
@@ -1044,7 +1044,7 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
         )
         .expect_err("pre-cancelled stream fails before normal EOF");
 
-    assert!(matches!(err, BackendError::Cancelled));
+    assert!(err.is_cancelled());
     std::fs::remove_dir_all(snapshot).ok();
 }
 
@@ -1088,7 +1088,7 @@ fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
         &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
         &cancellation,
     ) {
-        Err(BackendError::Cancelled) => {}
+        Err(err) if err.is_cancelled() => {}
         Err(err) => panic!("expected cancellation before prefill, got {err}"),
         Ok(_) => panic!("pre-cancelled decode startup should fail before prefill"),
     }

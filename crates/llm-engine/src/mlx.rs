@@ -124,10 +124,10 @@ impl MlxBackend {
 
     fn validate_model(&self, request: &BackendRequest) -> Result<(), BackendError> {
         if request.model != self.model_id {
-            return Err(BackendError::ModelNotFound {
-                requested: request.model.clone(),
-                available: self.model_id.clone(),
-            });
+            return Err(BackendError::model_not_found(
+                request.model.clone(),
+                self.model_id.clone(),
+            ));
         }
         Ok(())
     }
@@ -138,7 +138,7 @@ impl MlxBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.validate_model(&request)?;
         let (upstream_protocol, upstream_request) = build_upstream_request(
@@ -162,7 +162,7 @@ impl MlxBackend {
         let response = tokio::select! {
             response = upstream_request.send() => response
                 .map_err(|err| mlx_request_error(err, self.timeouts.request)),
-            _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
         };
         let response = match response {
             Ok(response) => response,
@@ -176,8 +176,8 @@ impl MlxBackend {
             request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
             let body = tokio::select! {
                 body = response.text() => body
-                    .map_err(|err| BackendError::Other(format!("MLX response read failed: {err}"))),
-                _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                    .map_err(|err| BackendError::other(format!("MLX response read failed: {err}"))),
+                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
             };
             let body = match body {
                 Ok(body) => body,
@@ -186,7 +186,7 @@ impl MlxBackend {
                     return Err(err);
                 }
             };
-            return Err(BackendError::Other(format!(
+            return Err(BackendError::other(format!(
                 "MLX server returned HTTP {status}: {body}"
             )));
         }
@@ -196,9 +196,9 @@ impl MlxBackend {
         loop {
             let item = tokio::select! {
                 biased;
-                _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
                 result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                    result.map_err(|_| BackendError::Other(format!(
+                    result.map_err(|_| BackendError::other(format!(
                         "{MLX_STALL_PREFIX} stream stalled for {} without data",
                         format_duration(self.timeouts.read)
                     )))
@@ -218,7 +218,7 @@ impl MlxBackend {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
-                    return Err(BackendError::Other(format!(
+                    return Err(BackendError::other(format!(
                         "MLX response read failed: {err}"
                     )));
                 }
@@ -230,7 +230,7 @@ impl MlxBackend {
             Ok(body) => body,
             Err(err) => {
                 request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
-                return Err(BackendError::Other(format!(
+                return Err(BackendError::other(format!(
                     "MLX response was not UTF-8: {err}"
                 )));
             }
@@ -260,7 +260,7 @@ impl MlxBackend {
     ) -> BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         async_stream::try_stream! {
             if cancellation.is_cancelled() {
-                Err(BackendError::Cancelled)?;
+                Err(BackendError::cancelled())?;
             }
             self.validate_model(&request)?;
             let (upstream_protocol, upstream_request) = build_upstream_request(
@@ -284,7 +284,7 @@ impl MlxBackend {
             let response = tokio::select! {
                 response = upstream_request.send() => response
                     .map_err(|err| mlx_request_error(err, self.timeouts.request)),
-                _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
             };
             let response = match response {
                 Ok(response) => response,
@@ -316,12 +316,12 @@ impl MlxBackend {
                 loop {
                     let item = tokio::select! {
                         biased;
-                        _ = cancellation.cancelled() => Err(BackendError::Cancelled),
-            result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                result.map_err(|_| BackendError::Other(format!(
-                    "{MLX_STALL_PREFIX} stream stalled for {} without data",
-                    format_duration(self.timeouts.read)
-                )))
+                        _ = cancellation.cancelled() => Err(BackendError::cancelled()),
+                        result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
+                            result.map_err(|_| BackendError::other(format!(
+                                "{MLX_STALL_PREFIX} stream stalled for {} without data",
+                                format_duration(self.timeouts.read)
+                            )))
                         }
                     };
                     let item = match item {
@@ -338,7 +338,7 @@ impl MlxBackend {
                         Ok(bytes) => bytes,
                         Err(err) => {
                             request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
-                            Err(BackendError::Other(format!("MLX stream read failed: {err}")))?
+                            Err(BackendError::other(format!("MLX stream read failed: {err}")))?
                         }
                     };
                     request_metrics.record_first_upstream_byte();
@@ -347,7 +347,7 @@ impl MlxBackend {
                         Ok(chunk) => chunk,
                         Err(err) => {
                             request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
-                            Err(BackendError::Other(format!("MLX stream was not UTF-8: {err}")))?
+                            Err(BackendError::other(format!("MLX stream was not UTF-8: {err}")))?
                         }
                     };
                     let parsed_chunks = match parser.push_str(chunk) {
@@ -395,8 +395,8 @@ impl MlxBackend {
                 request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
                 let body = tokio::select! {
                     body = response.text() => body
-                        .map_err(|err| BackendError::Other(format!("MLX response read failed: {err}"))),
-                    _ = cancellation.cancelled() => Err(BackendError::Cancelled),
+                        .map_err(|err| BackendError::other(format!("MLX response read failed: {err}"))),
+                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
                 };
                 let body = match body {
                     Ok(body) => body,
@@ -405,7 +405,7 @@ impl MlxBackend {
                         Err(err)?
                     }
                 };
-                Err(BackendError::Other(format!(
+                Err(BackendError::other(format!(
                     "MLX server returned HTTP {status}: {body}"
                 )))?;
             }
@@ -415,9 +415,9 @@ impl MlxBackend {
 }
 
 fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
-    if matches!(err, BackendError::Cancelled) {
+    if err.is_cancelled() {
         MlxBackendFailureKind::Cancelled
-    } else if let BackendError::Other(msg) = err {
+    } else if let Some(msg) = err.other_message() {
         if msg.starts_with(MLX_STALL_PREFIX) {
             MlxBackendFailureKind::Stall
         } else {
@@ -430,12 +430,12 @@ fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKi
 
 fn mlx_request_error(err: reqwest::Error, request_timeout: std::time::Duration) -> BackendError {
     if err.is_timeout() {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "{MLX_STALL_PREFIX} request timed out after {}",
             format_duration(request_timeout)
         ))
     } else {
-        BackendError::Other(format!("MLX request failed: {err}"))
+        BackendError::other(format!("MLX request failed: {err}"))
     }
 }
 
@@ -475,7 +475,7 @@ impl ModelBackend for MlxBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         if cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
+            return Err(BackendError::cancelled());
         }
         self.generate_once(request, cancellation).await
     }

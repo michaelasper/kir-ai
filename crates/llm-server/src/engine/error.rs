@@ -19,26 +19,20 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
             "request_validation",
             false,
         ),
-        RuntimeError::ModelNotFound { .. } => (
+        RuntimeError::ModelUnavailable { .. } => (
             StatusCode::NOT_FOUND,
             "model_not_found",
             "model_resolution",
             false,
         ),
-        RuntimeError::UnsupportedCapability(_) => (
-            StatusCode::BAD_REQUEST,
-            "unsupported_capability",
-            "request_validation",
-            false,
-        ),
         RuntimeError::Cancelled => (StatusCode::REQUEST_TIMEOUT, "cancelled", "decode", false),
-        RuntimeError::InvalidRequest(_) => (
+        RuntimeError::InvalidRequest { .. } => (
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "request_validation",
             false,
         ),
-        RuntimeError::BackendExecution(_) => (
+        RuntimeError::BackendFailed { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "backend_execution_failed",
             "decode",

@@ -61,7 +61,7 @@ impl MlxCompletionResponse {
         self.choices
             .into_iter()
             .next()
-            .ok_or_else(|| BackendError::Other("MLX completion response had no choices".to_owned()))
+            .ok_or_else(|| BackendError::other("MLX completion response had no choices".to_owned()))
     }
 }
 
@@ -166,7 +166,7 @@ impl MlxSseParser {
 
     pub(super) fn finish(&mut self) -> Result<Vec<BackendStreamChunk>, BackendError> {
         if !self.saw_done {
-            return Err(BackendError::Other(
+            return Err(BackendError::other(
                 "MLX SSE completion ended before data: [DONE]".to_owned(),
             ));
         }
@@ -208,7 +208,7 @@ impl MlxSseParser {
             return Ok(Vec::new());
         }
         let completion = serde_json::from_str::<MlxCompletionResponse>(data).map_err(|err| {
-            BackendError::Other(format!("invalid MLX SSE completion JSON: {err}"))
+            BackendError::other(format!("invalid MLX SSE completion JSON: {err}"))
         })?;
         self.parse_completion(completion)
     }
@@ -382,7 +382,7 @@ impl MlxSseParser {
             if self.emit_structured_tool_deltas {
                 deltas.push(BackendToolCallDelta {
                     index: u32::try_from(index).map_err(|err| {
-                        BackendError::Other(format!("MLX tool call index does not fit u32: {err}"))
+                        BackendError::other(format!("MLX tool call index does not fit u32: {err}"))
                     })?,
                     id: call.id.clone(),
                     call_type: call.call_type.clone(),
@@ -498,7 +498,7 @@ impl QwenXmlToolSchema {
             return Ok(Self::default());
         };
         let value = serde_json::from_str::<Value>(schema).map_err(|err| {
-            BackendError::Other(format!("Qwen XML tool schema was not valid JSON: {err}"))
+            BackendError::other(format!("Qwen XML tool schema was not valid JSON: {err}"))
         })?;
         let mut functions = BTreeMap::new();
         let Some(tools) = value.as_array() else {
@@ -576,7 +576,7 @@ impl QwenXmlActiveCall {
         };
         self.argument_count += 1;
         prefix.push_str(&serde_json::to_string(key).map_err(|err| {
-            BackendError::Other(format!("Qwen XML parameter key render failed: {err}"))
+            BackendError::other(format!("Qwen XML parameter key render failed: {err}"))
         })?);
         prefix.push(':');
         Ok(prefix)
@@ -624,7 +624,7 @@ impl QwenXmlToolParser {
 
     fn finish(&mut self) -> Result<Vec<QwenXmlEmission>, BackendError> {
         if !matches!(self.state, QwenXmlState::Outside) {
-            return Err(BackendError::Other(format!(
+            return Err(BackendError::other(format!(
                 "Qwen XML tool call ended while parser was in {:?}",
                 self.state
             )));
@@ -946,7 +946,7 @@ fn escape_json_string_fragment(value: &str) -> String {
 }
 
 fn qwen_xml_error(message: impl Into<String>) -> BackendError {
-    BackendError::Other(format!("Qwen XML tool parser error: {}", message.into()))
+    BackendError::other(format!("Qwen XML tool parser error: {}", message.into()))
 }
 
 #[derive(Debug, Clone)]
@@ -1035,7 +1035,7 @@ fn mlx_finish_reason(reason: Option<&str>) -> Result<BackendFinishReason, Backen
         Some("length") => Ok(BackendFinishReason::Length),
         Some("tool_calls") => Ok(BackendFinishReason::ToolCalls),
         Some("stop") | None => Ok(BackendFinishReason::Stop),
-        Some(other) => Err(BackendError::Other(format!(
+        Some(other) => Err(BackendError::other(format!(
             "unsupported MLX finish reason `{other}`"
         ))),
     }
@@ -1046,7 +1046,7 @@ fn render_mlx_tool_call(
     markup: MlxToolMarkup,
 ) -> Result<String, BackendError> {
     if call.name.trim().is_empty() {
-        return Err(BackendError::Other(
+        return Err(BackendError::other(
             "MLX structured tool call was missing a function name".to_owned(),
         ));
     }
@@ -1062,13 +1062,13 @@ fn render_mlx_tool_call(
         MlxToolMarkup::DeepSeek => Ok(format!(
             "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{}\n```json\n{}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
             call.name,
-            serde_json::to_string(&arguments).map_err(|err| BackendError::Other(format!(
+            serde_json::to_string(&arguments).map_err(|err| BackendError::other(format!(
                 "DeepSeek tool argument render failed: {err}"
             )))?
         )),
         MlxToolMarkup::Gemma => {
             let Value::Object(arguments) = arguments else {
-                return Err(BackendError::Other(
+                return Err(BackendError::other(
                     "MLX structured Gemma tool arguments must be a JSON object".to_owned(),
                 ));
             };
@@ -1087,7 +1087,7 @@ fn parse_mlx_tool_arguments(arguments: &str) -> Result<Value, BackendError> {
         return Ok(serde_json::json!({}));
     }
     serde_json::from_str::<Value>(trimmed).map_err(|err| {
-        BackendError::Other(format!(
+        BackendError::other(format!(
             "invalid MLX structured tool call arguments `{trimmed}`: {err}"
         ))
     })
@@ -1103,7 +1103,7 @@ fn render_gemma_tool_object(
         }
         rendered.push_str(
             &serde_json::to_string(key).map_err(|err| {
-                BackendError::Other(format!("Gemma tool key render failed: {err}"))
+                BackendError::other(format!("Gemma tool key render failed: {err}"))
             })?,
         );
         rendered.push(':');
@@ -1128,7 +1128,7 @@ fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
             Ok(rendered)
         }
         _ => serde_json::to_string(value)
-            .map_err(|err| BackendError::Other(format!("Gemma tool value render failed: {err}"))),
+            .map_err(|err| BackendError::other(format!("Gemma tool value render failed: {err}"))),
     }
 }
 
@@ -1147,7 +1147,7 @@ pub(super) fn parse_mlx_completion_body(
         chunks
     } else {
         let completion = serde_json::from_str::<MlxCompletionResponse>(body)
-            .map_err(|err| BackendError::Other(format!("invalid MLX completion JSON: {err}")))?;
+            .map_err(|err| BackendError::other(format!("invalid MLX completion JSON: {err}")))?;
         let mut chunks = Vec::new();
         chunks.extend(parser.parse_completion(completion)?);
         chunks.extend(parser.finish_non_streaming()?);

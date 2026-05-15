@@ -218,8 +218,8 @@ fn mark_active_request_running(
         RequestStartResult::Finished | RequestStartResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            Err(RuntimeError::BackendExecution(
-                "request lifecycle was not runnable after scheduler admission".to_owned(),
+            Err(RuntimeError::backend_failed(
+                "request lifecycle was not runnable after scheduler admission",
             )
             .into())
         }
@@ -244,8 +244,8 @@ fn mark_active_request_finished_for_success(
         RequestFinishResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            Err(RuntimeError::BackendExecution(
-                "request lifecycle was missing before response delivery".to_owned(),
+            Err(RuntimeError::backend_failed(
+                "request lifecycle was missing before response delivery",
             )
             .into())
         }
@@ -275,10 +275,8 @@ fn mark_active_request_finished_for_runtime_error(
         RequestFinishResult::Missing => {
             scheduler_slot.mark_failed();
             record_failure_metrics(state);
-            RuntimeError::BackendExecution(
-                "request lifecycle was missing before error delivery".to_owned(),
-            )
-            .into()
+            RuntimeError::backend_failed("request lifecycle was missing before error delivery")
+                .into()
         }
     }
 }
