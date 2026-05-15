@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.2](https://github.com/michaelasper/kir-ai/compare/v1.15.1...v1.15.2) (2026-05-15)
+
+### Performance Improvements
+
+* **native:** grow metal kv mirrors by token blocks ([63212ce](https://github.com/michaelasper/kir-ai/commit/63212ce356068501d2d40e4e2807308cee9e4fc4))
+
 ## [1.15.1](https://github.com/michaelasper/kir-ai/compare/v1.15.0...v1.15.1) (2026-05-15)
 
 ### Bug Fixes
