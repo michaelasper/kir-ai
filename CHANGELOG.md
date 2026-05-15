@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.0](https://github.com/michaelasper/kir-ai/compare/v1.15.3...v1.16.0) (2026-05-15)
+
+### Features
+
+* **native:** stream prefill progress events ([e081a77](https://github.com/michaelasper/kir-ai/commit/e081a771a0df47ff736b45fea6c3eb636497204f))
+
 ## [1.15.3](https://github.com/michaelasper/kir-ai/compare/v1.15.2...v1.15.3) (2026-05-15)
 
 ### Performance Improvements
