@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 import json
 import os
@@ -33,6 +34,21 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(bench.context_sizes_for_lane(gemma, (8, 256)), (8, 128))
         self.assertIn("direct_stable_prefix_128k", bench.direct_probe_names((8, 128)))
+
+    def test_gemma_vlm_sidecar_command_omits_unsupported_max_tokens(self):
+        bench = load_module()
+        gemma_lanes = [lane for lane in bench.LANES if lane.sidecar_kind == "vlm"]
+
+        self.assertGreaterEqual(len(gemma_lanes), 2)
+        for lane in gemma_lanes:
+            command = bench.sidecar_command(lane, 8123)
+            self.assertIn("mlx_vlm.server", command)
+            self.assertIn("--prefill-step-size", command)
+            self.assertNotIn("--max-tokens", command)
+
+            invalid_lane = dataclasses.replace(lane, sidecar_extra=("--max-tokens", "2048"))
+            with self.assertRaisesRegex(ValueError, "does not support --max-tokens"):
+                bench.sidecar_command(invalid_lane, 8123)
 
     def test_direct_stable_prefix_probe_requests_stream_usage_and_tools(self):
         bench = load_module()
