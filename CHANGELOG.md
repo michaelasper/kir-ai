@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.1](https://github.com/michaelasper/kir-ai/compare/v1.15.0...v1.15.1) (2026-05-15)
+
+### Bug Fixes
+
+* **native:** incrementally sync metal kv cache appends ([0f9aea8](https://github.com/michaelasper/kir-ai/commit/0f9aea8af2f98cd4756ef7495ec54935652cde35))
+
 ## [1.15.0](https://github.com/michaelasper/kir-ai/compare/v1.14.7...v1.15.0) (2026-05-15)
 
 ### Features
