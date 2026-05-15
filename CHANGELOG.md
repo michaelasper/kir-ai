@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.1](https://github.com/michaelasper/kir-ai/compare/v1.14.0...v1.14.1) (2026-05-15)
+
+### Bug Fixes
+
+* **api:** allow configurable long-context request limits ([b787203](https://github.com/michaelasper/kir-ai/commit/b787203d48d996c5877dc44452702ea958c392cc))
+* **gemma:** propagate no-thinking template identity ([ccafa4a](https://github.com/michaelasper/kir-ai/commit/ccafa4a70ec6be8269d8fe1b590154207accaa8b))
+* **hub:** prefer LFS sha256 over blob id ([d9c4aca](https://github.com/michaelasper/kir-ai/commit/d9c4acaa29bd27430d1f5ea93de59b2b17756ccf))
+* **streaming:** start stall timer after first output ([2ca8e55](https://github.com/michaelasper/kir-ai/commit/2ca8e55afb13214472ce03a3d6dbde2de9b99e07))
+
 ## [1.14.0](https://github.com/michaelasper/kir-ai/compare/v1.13.0...v1.14.0) (2026-05-15)
 
 ### Features
