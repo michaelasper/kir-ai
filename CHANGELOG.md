@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.3](https://github.com/michaelasper/kir-ai/compare/v1.15.2...v1.15.3) (2026-05-15)
+
+### Performance Improvements
+
+* **native:** store metal kv mirrors as f16 ([bb1e3f2](https://github.com/michaelasper/kir-ai/commit/bb1e3f2453dc22868ac3853f2c6e20c2e1f0a772))
+
 ## [1.15.2](https://github.com/michaelasper/kir-ai/compare/v1.15.1...v1.15.2) (2026-05-15)
 
 ### Performance Improvements
