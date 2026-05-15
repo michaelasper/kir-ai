@@ -49,6 +49,14 @@ The script records `manifest.json`, per-lane sidecar/Kir logs, direct SSE
 traces, opencode JSONL/stdout/stderr, per-task judges, admin metrics before and
 after each sample, `samples.jsonl`, and a top-level `summary.json`.
 
+All built-in MLX lanes launch their sidecars with prompt-cache capacity. Qwen
+lanes use MLX-LM with `--prompt-cache-size 16`, no-thinking chat-template args,
+and `--prefill-step-size 2048`; Gemma VLM lanes use `--prompt-cache-size 16`
+and `--prefill-step-size 2048`. The benchmark does not inject request-level
+cache/session fields because the MLX sidecar API does not advertise a stable
+cache-key contract. Cache evidence comes from upstream usage when present and
+from Kir `/admin/metrics.request_cache` observations.
+
 Key fields to review after a run:
 
 - `by_model[*].first_semantic_delta_ms` for chat TTFI.

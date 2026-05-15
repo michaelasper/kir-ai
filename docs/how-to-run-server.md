@@ -133,7 +133,7 @@ exposes OpenAI chat completions rather than text completions:
 
 ```sh
 SNAPSHOT=$HOME/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/<resolved-commit>
-mlx_vlm.server --model "$SNAPSHOT"
+mlx_vlm.server --model "$SNAPSHOT" --prompt-cache-size 16 --prefill-step-size 2048
 cargo run -p llm-engine -- serve \
   --addr 127.0.0.1:3000 \
   --snapshot "$SNAPSHOT" \
@@ -161,6 +161,13 @@ The MLX endpoint must be loopback. Kir rejects remote MLX endpoints and does
 not fall back to protocol-test mode or native text when an MLX manifest is selected.
 This is a bootstrap comparison path; the no-Python production target remains a
 native MLX bridge.
+
+MLX sidecar prompt-cache reuse is controlled at sidecar launch time with
+`--prompt-cache-size` or `--prompt-cache-bytes`. Kir keeps request bodies
+OpenAI/MLX-compatible and does not send request-level cache/session fields that
+the MLX sidecars do not advertise. Stable-prefix serving should instead keep
+system prompts, tools, chat-template kwargs, and tool schema serialization stable
+so the sidecar cache can match common prefixes when enabled.
 
 ## Choose Generation Bounds
 

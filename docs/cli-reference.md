@@ -68,6 +68,14 @@ Qwen family metadata. Kir records Qwen chat-template kwargs as
 `{"enable_thinking":false}` in cache identity and forwards the same kwargs to
 MLX chat-completion sidecars.
 
+MLX prompt-cache control is a sidecar launch policy, not a Kir request-body
+field. Launch `mlx_lm.server`/`mlx_vlm.server` with `--prompt-cache-size` or
+`--prompt-cache-bytes` and keep request serialization stable. Kir records the
+stable cache identity in backend/admin metrics and consumes upstream
+`usage.prompt_tokens_details.cached_tokens` when the sidecar reports it, but it
+does not send unsupported `cache_key`, `session_id`, or `prompt_cache_key`
+fields to MLX request bodies.
+
 The default request-size limits accept the current long-context benchmark
 payloads, including the synthetic 135k stable-prefix probe. Lower the three
 request-limit flags for small deployments that need stricter ingress bounds.

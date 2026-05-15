@@ -1416,6 +1416,9 @@ async fn mlx_backend_uses_metadata_kwargs_for_request_body_and_fingerprint() {
         received["chat_template_kwargs"],
         serde_json::json!({"enable_thinking": false})
     );
+    assert!(received.get("cache_key").is_none());
+    assert!(received.get("session_id").is_none());
+    assert!(received.get("prompt_cache_key").is_none());
     let fingerprint = mlx_request_fingerprint(
         MlxUpstreamProtocol::ChatCompletions,
         true,
