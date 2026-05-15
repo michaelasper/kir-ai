@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.2](https://github.com/michaelasper/kir-ai/compare/v1.14.1...v1.14.2) (2026-05-15)
+
+### Bug Fixes
+
+* **native:** raise prefill chunk default ([12767c6](https://github.com/michaelasper/kir-ai/commit/12767c6f66f9855281dff267bc4e10a9cd402de5))
+
 ## [1.14.1](https://github.com/michaelasper/kir-ai/compare/v1.14.0...v1.14.1) (2026-05-15)
 
 ### Bug Fixes
