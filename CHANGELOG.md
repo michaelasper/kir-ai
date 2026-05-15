@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.0](https://github.com/michaelasper/kir-ai/compare/v1.13.0...v1.14.0) (2026-05-15)
+
+### Features
+
+* **engine:** gate backend implementations ([9e57d06](https://github.com/michaelasper/kir-ai/commit/9e57d06fbd3a9781b1a8c08f2636823949efaf24))
+* **engine:** gate diagnostics commands ([b2af317](https://github.com/michaelasper/kir-ai/commit/b2af3171c2a3ef04f33b469abd7e7a128d913313))
+* **server:** map backend metrics by provider ([22b6e54](https://github.com/michaelasper/kir-ai/commit/22b6e54f4465a647a59a7e83700b420ee9b00de1))
+* **telemetry:** gate tool-call metrics ([2768416](https://github.com/michaelasper/kir-ai/commit/2768416d6cec4fca303361970fd329487b44b813))
+
+### Bug Fixes
+
+* **server:** derive backend metrics defaults ([dda7c06](https://github.com/michaelasper/kir-ai/commit/dda7c0628a7121efc47ddbb713b546fd2ea8368b))
+
 ## [1.13.0](https://github.com/michaelasper/kir-ai/compare/v1.12.0...v1.13.0) (2026-05-14)
 
 ### Features
