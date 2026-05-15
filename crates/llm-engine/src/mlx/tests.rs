@@ -6,8 +6,9 @@ use super::*;
 use llm_api::ChatMessage;
 use llm_backend::{
     BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
-    BackendModelMetadata, BackendRequest, BackendToolCall, BackendToolCallDelta,
-    BackendToolCallFunction, BackendToolCallType, ModelBackend, SamplingConfig,
+    BackendFinishReason, BackendModelMetadata, BackendRequest, BackendToolCall,
+    BackendToolCallDelta, BackendToolCallFunction, BackendToolCallType, ModelBackend,
+    SamplingConfig,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -25,7 +26,7 @@ type ParsedMlxChunkForTest = (
     Vec<BackendToolCallDelta>,
     u64,
     u64,
-    Option<llm_api::FinishReason>,
+    Option<BackendFinishReason>,
 );
 
 fn backend_messages(messages: Vec<ChatMessage>) -> Vec<BackendChatMessage> {
@@ -196,8 +197,8 @@ fn mlx_sse_parser_streams_split_qwen_xml_as_schema_aware_tool_deltas() {
         serde_json::json!({"path":"Cargo.toml","limit":3,"active":true})
     );
     assert_eq!(
-        chunks.last().and_then(|chunk| chunk.4.clone()),
-        Some(llm_api::FinishReason::ToolCalls)
+        chunks.last().and_then(|chunk| chunk.4),
+        Some(BackendFinishReason::ToolCalls)
     );
 }
 
@@ -296,7 +297,7 @@ fn mlx_non_streaming_qwen_xml_converts_to_canonical_tool_markup() {
     )
     .expect("non-streaming XML parses");
 
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
     assert!(output.text.starts_with("<tool_call>"));
     assert!(output.text.ends_with("</tool_call>"));
     assert!(output.text.contains("\"name\":\"record\""));
@@ -400,8 +401,8 @@ fn mlx_sse_parser_emits_structured_tool_call_deltas_without_synthetic_markup() {
         Some(":\"Cargo.toml\"}")
     );
     assert_eq!(
-        chunks.last().and_then(|chunk| chunk.4.clone()),
-        Some(llm_api::FinishReason::ToolCalls)
+        chunks.last().and_then(|chunk| chunk.4),
+        Some(BackendFinishReason::ToolCalls)
     );
 }
 
@@ -543,7 +544,7 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
     assert_eq!(output.prompt_tokens, 4);
     assert_eq!(output.prompt_cached_tokens, Some(3));
     assert_eq!(output.completion_tokens, 5);
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
 }
 
 #[tokio::test]
@@ -894,7 +895,7 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
         .await
         .expect("stream item")
         .expect("finish chunk");
-    assert_eq!(chunk.finish_reason, Some(llm_api::FinishReason::Stop));
+    assert_eq!(chunk.finish_reason, Some(BackendFinishReason::Stop));
     drop(stream);
 
     assert_eq!(server.received_body()["stream"], true);
@@ -1346,7 +1347,7 @@ async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
         .expect("mlx generation succeeds");
 
     assert_eq!(output.text, "otter:19");
-    assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    assert_eq!(output.finish_reason, BackendFinishReason::Stop);
 }
 
 #[tokio::test]
@@ -1390,8 +1391,8 @@ async fn mlx_backend_strips_split_control_stop_tokens_from_stream() {
         .collect::<String>();
     assert_eq!(text, "otter:19");
     assert_eq!(
-        chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
-        Some(llm_api::FinishReason::Stop)
+        chunks.last().and_then(|chunk| chunk.finish_reason),
+        Some(BackendFinishReason::Stop)
     );
 }
 
@@ -1428,7 +1429,7 @@ async fn mlx_backend_strips_gemma_control_stop_tokens_from_completion_text() {
         .expect("mlx generation succeeds");
 
     assert_eq!(output.text, "hello from gemma");
-    assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    assert_eq!(output.finish_reason, BackendFinishReason::Stop);
 }
 
 #[tokio::test]
@@ -1464,7 +1465,7 @@ async fn mlx_backend_strips_llama_control_stop_tokens_from_completion_text() {
         .expect("mlx generation succeeds");
 
     assert_eq!(output.text, "hello from llama");
-    assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+    assert_eq!(output.finish_reason, BackendFinishReason::Stop);
 }
 
 #[test]
@@ -1629,7 +1630,7 @@ async fn mlx_backend_streams_completion_chunks() {
     assert_eq!(second.text, "two");
     assert_eq!(second.prompt_cached_tokens, Some(1));
     assert_eq!(second.completion_tokens, 3);
-    assert_eq!(second.finish_reason, Some(llm_api::FinishReason::Stop));
+    assert_eq!(second.finish_reason, Some(BackendFinishReason::Stop));
 }
 
 #[tokio::test]
@@ -1683,7 +1684,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
         request["tool_choice"],
         serde_json::json!({"type":"function","function":{"name":"read_file"}})
     );
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
     assert!(output.text.starts_with("<tool_call>"));
     assert!(output.text.contains("\"name\":\"read_file\""));
     assert!(output.text.contains("\"path\":\"Cargo.toml\""));
@@ -1838,8 +1839,8 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
         r#"{"path":"Cargo.toml"}"#
     );
     assert_eq!(
-        chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
-        Some(llm_api::FinishReason::ToolCalls)
+        chunks.last().and_then(|chunk| chunk.finish_reason),
+        Some(BackendFinishReason::ToolCalls)
     );
     let metrics = metrics.snapshot();
     assert_eq!(metrics["stream_response_headers_ms"]["count"], 1);
@@ -1924,8 +1925,8 @@ async fn mlx_backend_streams_qwen_xml_tool_deltas_and_records_first_tool_delta()
         serde_json::json!({"path":"Cargo.toml"})
     );
     assert_eq!(
-        chunks.last().and_then(|chunk| chunk.finish_reason.clone()),
-        Some(llm_api::FinishReason::ToolCalls)
+        chunks.last().and_then(|chunk| chunk.finish_reason),
+        Some(BackendFinishReason::ToolCalls)
     );
     let metrics = metrics.snapshot();
     assert_eq!(metrics["stream_first_tool_delta_ms"]["count"], 1);
@@ -1963,7 +1964,7 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
         .await
         .expect("mlx generation succeeds");
 
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
     assert!(output.text.starts_with("<|tool_call>call:lookup"));
     assert!(output.text.contains("\"query\":\"rust\""));
     assert!(output.text.contains("\"limit\":3"));
@@ -2001,7 +2002,7 @@ async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
         .await
         .expect("mlx generation succeeds");
 
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
     assert!(output.text.starts_with("<｜tool▁calls▁begin｜>"));
     assert!(output.text.contains("<｜tool▁sep｜>lookup"));
     assert!(output.text.contains("\"query\":\"metal\""));
@@ -2039,7 +2040,7 @@ async fn mlx_backend_preserves_structured_llama_tool_call_response() {
         .await
         .expect("mlx generation succeeds");
 
-    assert_eq!(output.finish_reason, llm_api::FinishReason::ToolCalls);
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
     assert!(output.text.starts_with("<tool_call>"));
     assert!(output.text.contains("\"name\":\"lookup\""));
     assert!(output.text.contains("\"query\":\"llama\""));

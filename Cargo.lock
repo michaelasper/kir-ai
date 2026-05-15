@@ -1047,7 +1047,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
- "llm-api",
  "llm-kv-cache",
  "llm-models",
  "llm-util",

@@ -7,8 +7,8 @@ use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    InferenceScratchpad, ModelBackend, SamplingConfig,
+    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, InferenceScratchpad, ModelBackend, SamplingConfig,
 };
 use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -368,7 +368,7 @@ where
             )));
         }
         let mut output_ids = Vec::new();
-        let mut finish_reason = llm_api::FinishReason::Length;
+        let mut finish_reason = BackendFinishReason::Length;
         let requested = resolve_native_text_max_tokens(
             request.max_tokens,
             self.max_new_tokens,
@@ -416,7 +416,7 @@ where
                 {
                     NativeTextCandidateDecision::Emit(token_id) => token_id,
                     NativeTextCandidateDecision::Stop => {
-                        finish_reason = llm_api::FinishReason::Stop;
+                        finish_reason = BackendFinishReason::Stop;
                         break;
                     }
                 };
@@ -470,7 +470,7 @@ where
         let mut output_ids = Vec::new();
         let mut text_deltas = NativeStreamTextDeltas::default();
         let mut unreported_completion_tokens = 0_u64;
-        let mut finish_reason = llm_api::FinishReason::Length;
+        let mut finish_reason = BackendFinishReason::Length;
         let requested = resolve_native_text_max_tokens(
             request.max_tokens,
             self.max_new_tokens,
@@ -525,7 +525,7 @@ where
                 {
                     NativeTextCandidateDecision::Emit(token_id) => token_id,
                     NativeTextCandidateDecision::Stop => {
-                        finish_reason = llm_api::FinishReason::Stop;
+                        finish_reason = BackendFinishReason::Stop;
                         break;
                     }
                 };

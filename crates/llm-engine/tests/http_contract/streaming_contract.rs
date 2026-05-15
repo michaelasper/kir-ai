@@ -977,7 +977,7 @@ impl ModelBackend for StructuredToolDeltaHttpBackend {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
-                finish_reason: Some(llm_api::FinishReason::ToolCalls),
+                finish_reason: Some(BackendFinishReason::ToolCalls),
             };
         }
         .boxed()

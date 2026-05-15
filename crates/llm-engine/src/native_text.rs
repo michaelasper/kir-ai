@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    InferenceScratchpad, ModelBackend,
+    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, InferenceScratchpad, ModelBackend,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use std::path::Path;
@@ -944,7 +944,7 @@ mod tests {
 
         assert_eq!(output.text, "");
         assert_eq!(output.completion_tokens, 0);
-        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+        assert_eq!(output.finish_reason, BackendFinishReason::Stop);
     }
 
     #[test]
@@ -966,7 +966,7 @@ mod tests {
             .expect("final chunk is ok");
         assert_eq!(final_chunk.text, "");
         assert_eq!(final_chunk.completion_tokens, 0);
-        assert_eq!(final_chunk.finish_reason, Some(llm_api::FinishReason::Stop));
+        assert_eq!(final_chunk.finish_reason, Some(BackendFinishReason::Stop));
         assert!(rx.blocking_recv().is_none());
     }
 
@@ -1069,7 +1069,7 @@ mod tests {
 
         assert_eq!(output.text, "<7>");
         assert_eq!(output.completion_tokens, 1);
-        assert_eq!(output.finish_reason, llm_api::FinishReason::Stop);
+        assert_eq!(output.finish_reason, BackendFinishReason::Stop);
     }
 
     #[test]

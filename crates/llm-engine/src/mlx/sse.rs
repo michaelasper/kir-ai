@@ -1,6 +1,6 @@
 use super::protocol::MlxToolMarkup;
 use llm_backend::{
-    BackendError, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
+    BackendError, BackendFinishReason, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType,
 };
 use serde::Deserialize;
@@ -266,7 +266,7 @@ impl MlxSseParser {
         let finish_reason = finish_reason.or_else(|| {
             self.stop_filter
                 .is_stopped()
-                .then_some(llm_api::FinishReason::Stop)
+                .then_some(BackendFinishReason::Stop)
         });
         let mut chunks = Vec::new();
         if !tool_call_deltas.is_empty() {
@@ -275,7 +275,7 @@ impl MlxSseParser {
         if !text.is_empty() {
             chunks.extend(self.push_text_chunks(&text)?);
         }
-        if matches!(finish_reason, Some(llm_api::FinishReason::ToolCalls))
+        if matches!(finish_reason, Some(BackendFinishReason::ToolCalls))
             && !self.emit_structured_tool_deltas
             && !self.tool_calls.is_empty()
         {
@@ -334,7 +334,7 @@ impl MlxSseParser {
         &mut self,
         chunks: &mut Vec<BackendStreamChunk>,
         usage_completion_tokens: Option<u64>,
-        finish_reason: Option<llm_api::FinishReason>,
+        finish_reason: Option<BackendFinishReason>,
         is_final_chunk: bool,
     ) {
         let completion_tokens =
@@ -1030,11 +1030,11 @@ fn count_visible_tokens(text: &str) -> u64 {
     }
 }
 
-fn mlx_finish_reason(reason: Option<&str>) -> Result<llm_api::FinishReason, BackendError> {
+fn mlx_finish_reason(reason: Option<&str>) -> Result<BackendFinishReason, BackendError> {
     match reason {
-        Some("length") => Ok(llm_api::FinishReason::Length),
-        Some("tool_calls") => Ok(llm_api::FinishReason::ToolCalls),
-        Some("stop") | None => Ok(llm_api::FinishReason::Stop),
+        Some("length") => Ok(BackendFinishReason::Length),
+        Some("tool_calls") => Ok(BackendFinishReason::ToolCalls),
+        Some("stop") | None => Ok(BackendFinishReason::Stop),
         Some(other) => Err(BackendError::Other(format!(
             "unsupported MLX finish reason `{other}`"
         ))),
@@ -1162,7 +1162,7 @@ pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> 
     let mut prompt_tokens = 0;
     let mut prompt_cached_tokens = None;
     let mut completion_tokens = 0;
-    let mut finish_reason = llm_api::FinishReason::Stop;
+    let mut finish_reason = BackendFinishReason::Stop;
     for chunk in chunks {
         prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
         prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);

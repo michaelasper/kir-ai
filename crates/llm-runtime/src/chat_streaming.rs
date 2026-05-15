@@ -5,7 +5,8 @@ use crate::no_progress::classify_chat_no_progress;
 use crate::stop::{earliest_stop_index, max_stop_sequence_len, safe_stream_emit_len};
 use crate::streaming::{
     CancelOnDrop, ChatCompletionStream, ChatCompletionStreamEvent, ChatCompletionStreamStage,
-    RuntimeCompletionSeed, max_optional_u64, stream_seed_chunk, usage_from_tokens,
+    RuntimeCompletionSeed, api_finish_reason, max_optional_u64, stream_seed_chunk,
+    usage_from_tokens,
 };
 use crate::tool_call::{
     StructuredToolDeltaAssembler, fill_missing_tool_intent_arguments,
@@ -227,7 +228,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                 }
             }
             if let Some(reason) = chunk.finish_reason {
-                finish_reason = reason;
+                finish_reason = api_finish_reason(reason);
                 break;
             }
         }

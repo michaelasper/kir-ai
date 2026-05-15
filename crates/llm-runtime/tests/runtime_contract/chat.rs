@@ -53,7 +53,7 @@ async fn runtime_non_streaming_chat_includes_backend_cached_prompt_tokens() {
             prompt_tokens: 10,
             prompt_cached_tokens: Some(7),
             completion_tokens: 2,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         },
     });
 
@@ -429,7 +429,7 @@ async fn runtime_keeps_llama_tool_shaped_json_as_content_without_declared_tools(
         model_id: "local-llama",
         family: "llama",
         text: r#"{"name":"report","parameters":{"status":"ok"}}<|eot_id|>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     let runtime = Runtime::new(backend);
     let response = runtime

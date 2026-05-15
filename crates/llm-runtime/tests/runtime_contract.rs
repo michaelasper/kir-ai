@@ -4,9 +4,10 @@ use llm_api::{
     ToolChoice, ToolDefinition,
 };
 use llm_backend::{
-    BackendCacheContext, BackendChatRole, BackendError, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendStreamChunk, BackendToolCallDelta, BackendToolCallFunctionDelta,
-    BackendToolCallType, BackendToolChoice, ModelBackend, ProtocolTestBackend, SamplingConfig,
+    BackendCacheContext, BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata,
+    BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, ModelBackend,
+    ProtocolTestBackend, SamplingConfig,
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
@@ -54,7 +55,7 @@ struct FamilyStreamBackend {
     model_id: &'static str,
     family: &'static str,
     text: &'static str,
-    finish_reason: FinishReason,
+    finish_reason: BackendFinishReason,
 }
 
 struct RecordingChatContextBackend {
@@ -91,7 +92,7 @@ impl ModelBackend for RecordingBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -124,7 +125,7 @@ impl ModelBackend for RecordingSamplingBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -184,7 +185,7 @@ impl ModelBackend for FamilyStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: self.finish_reason.clone(),
+            finish_reason: self.finish_reason,
         })
     }
 
@@ -220,7 +221,7 @@ impl ModelBackend for MlxQwenMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -256,7 +257,7 @@ impl ModelBackend for MlxGemmaMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -292,7 +293,7 @@ impl ModelBackend for MlxDeepSeekMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -330,7 +331,7 @@ impl ModelBackend for MlxLlamaMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -360,7 +361,7 @@ impl ModelBackend for RecordingChatContextBackend {
             prompt_tokens: 4,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -419,9 +420,9 @@ fn fixture_backend_output(value: &Value) -> BackendOutput {
             .as_str()
             .expect("backend output has finish_reason")
         {
-            "stop" => FinishReason::Stop,
-            "length" => FinishReason::Length,
-            "tool_calls" => FinishReason::ToolCalls,
+            "stop" => BackendFinishReason::Stop,
+            "length" => BackendFinishReason::Length,
+            "tool_calls" => BackendFinishReason::ToolCalls,
             other => panic!("unknown fixture finish_reason `{other}`"),
         },
     }
@@ -480,7 +481,7 @@ impl ModelBackend for CancellableStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -526,7 +527,7 @@ impl ModelBackend for CancellableGenerateBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -564,7 +565,7 @@ impl ModelBackend for TwoChunkStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 2,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -599,7 +600,7 @@ impl ModelBackend for TwoChunkStreamBackend {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
-                finish_reason: Some(FinishReason::Stop),
+                finish_reason: Some(BackendFinishReason::Stop),
             };
         }
         .boxed()
@@ -664,7 +665,7 @@ impl ModelBackend for ToolBoundaryStreamBackend {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 0,
-                finish_reason: Some(FinishReason::ToolCalls),
+                finish_reason: Some(BackendFinishReason::ToolCalls),
             };
         }
         .boxed()
@@ -730,7 +731,7 @@ impl ModelBackend for StructuredToolDeltaStreamBackend {
                 prompt_tokens: 11,
                 prompt_cached_tokens: Some(7),
                 completion_tokens: 1,
-                finish_reason: Some(FinishReason::ToolCalls),
+                finish_reason: Some(BackendFinishReason::ToolCalls),
             };
         }
         .boxed()
@@ -765,7 +766,7 @@ impl ModelBackend for BlockingTextBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -821,7 +822,7 @@ impl ModelBackend for StopStreamingBackend {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
-                finish_reason: Some(FinishReason::Stop),
+                finish_reason: Some(BackendFinishReason::Stop),
             };
         }
         .boxed()

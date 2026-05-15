@@ -99,7 +99,7 @@ async fn qwen_json_object_mode_rejects_llama_control_token_suffix_without_trunca
         model_id: "local-qwen36",
         family: "qwen",
         text: r#"{"answer":"ok"}<|eot_id|>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     });
     let err = runtime
         .chat(ChatCompletionRequest {
@@ -137,7 +137,7 @@ async fn llama_json_object_mode_keeps_tool_shaped_json_as_content_when_no_tools_
         model_id: "local-llama",
         family: "llama",
         text: r#"{"name":"report","parameters":{"status":"ok"}}<|eot_id|>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     });
     let response = runtime
         .chat(ChatCompletionRequest {

@@ -7,18 +7,18 @@ pub mod protocol_test {
 
 pub mod traits {
     pub use super::core::{
-        BackendCacheKey, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-        BackendToolCallDelta, ModelBackend, SamplingConfig,
+        BackendCacheKey, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+        BackendStreamChunk, BackendToolCallDelta, ModelBackend, SamplingConfig,
     };
 }
 
 pub use core::{
     BackendCacheContext, BackendCacheKey, BackendChatContext, BackendChatMessage, BackendChatRole,
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    BackendToolCall, BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
-    BackendToolCallType, BackendToolChoice, CpuNativeMatvecBackend, F32TensorCacheWarmup,
-    GemmaLayerCache, InferenceScratchpad, LayerKvCache, LinearAttentionCache, MathError,
-    ModelBackend, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
+    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, BackendToolCall, BackendToolCallDelta, BackendToolCallFunction,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, CpuNativeMatvecBackend,
+    F32TensorCacheWarmup, GemmaLayerCache, InferenceScratchpad, LayerKvCache, LinearAttentionCache,
+    MathError, ModelBackend, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
     NativeTextLayerCaches, NativeTextLayerCachesMut, NativeTextModelSpec, NativeTextModelSpecRef,
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
     QwenEmbeddingProbe, QwenLayerCache, QwenLinearAttentionProjectionProbe, QwenMoeDims,

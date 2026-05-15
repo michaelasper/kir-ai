@@ -7,8 +7,8 @@ use crate::runtime::Runtime;
 use crate::stop::apply_stop_sequences;
 use crate::streaming::{
     CancelOnDrop, ChatCompletionStream, ChatCompletionStreamEvent, ChatCompletionStreamStage,
-    RuntimeChatCompletion, RuntimeCompletionSeed, stream_chunk, stream_usage_chunk,
-    usage_from_tokens,
+    RuntimeChatCompletion, RuntimeCompletionSeed, api_finish_reason, stream_chunk,
+    stream_usage_chunk, usage_from_tokens,
 };
 use crate::tool_call::{
     fill_missing_tool_intent_arguments, required_backend_tool_choice, tool_call_delta,
@@ -199,7 +199,7 @@ where
         } else if stopped {
             llm_api::FinishReason::Stop
         } else {
-            output.finish_reason
+            api_finish_reason(output.finish_reason)
         };
         let usage = usage_from_tokens(
             output.prompt_tokens,

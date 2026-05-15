@@ -409,7 +409,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
             prompt_tokens: 4,
             prompt_cached_tokens: None,
             completion_tokens: 8,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         },
     })
     .chat(ChatCompletionRequest {
@@ -432,7 +432,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
             prompt_tokens: 4,
             prompt_cached_tokens: None,
             completion_tokens: 5,
-            finish_reason: FinishReason::ToolCalls,
+            finish_reason: BackendFinishReason::ToolCalls,
         },
     })
     .chat(ChatCompletionRequest {
@@ -460,7 +460,7 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
             prompt_tokens: 4,
             prompt_cached_tokens: None,
             completion_tokens: 3,
-            finish_reason: FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         },
     })
     .chat(ChatCompletionRequest {

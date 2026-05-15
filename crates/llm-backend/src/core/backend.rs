@@ -3,7 +3,6 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use llm_api::FinishReason;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -153,6 +152,16 @@ pub enum BackendToolChoice {
     RequiredFunction(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendFinishReason {
+    Stop,
+    Length,
+    ToolCalls,
+    ContentFilter,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SamplingConfig {
     #[default]
@@ -205,7 +214,7 @@ pub struct BackendOutput {
     pub prompt_tokens: u64,
     pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
-    pub finish_reason: FinishReason,
+    pub finish_reason: BackendFinishReason,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +224,7 @@ pub struct BackendStreamChunk {
     pub prompt_tokens: u64,
     pub prompt_cached_tokens: Option<u64>,
     pub completion_tokens: u64,
-    pub finish_reason: Option<FinishReason>,
+    pub finish_reason: Option<BackendFinishReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,7 +395,6 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::{StreamExt, executor::block_on};
-    use llm_api::FinishReason;
     use tokio_util::sync::CancellationToken;
 
     struct CancelAwareBackend;
@@ -403,7 +411,7 @@ mod tests {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
-                finish_reason: FinishReason::Stop,
+                finish_reason: BackendFinishReason::Stop,
             })
         }
 

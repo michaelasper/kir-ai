@@ -4,6 +4,7 @@ use llm_api::{
     ChatCompletionDelta, ChatCompletionStreamChoice, ChatCompletionStreamResponse,
     CompletionChoice, CompletionStreamResponse, Usage,
 };
+use llm_backend::BackendFinishReason;
 use llm_tool_parser::ParsedAssistant;
 use std::fmt;
 use tokio_util::sync::CancellationToken;
@@ -163,6 +164,16 @@ pub(crate) fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Optio
         (Some(current), None) => Some(current),
         (None, Some(next)) => Some(next),
         (None, None) => None,
+    }
+}
+
+pub(crate) fn api_finish_reason(reason: BackendFinishReason) -> llm_api::FinishReason {
+    match reason {
+        BackendFinishReason::Stop => llm_api::FinishReason::Stop,
+        BackendFinishReason::Length => llm_api::FinishReason::Length,
+        BackendFinishReason::ToolCalls => llm_api::FinishReason::ToolCalls,
+        BackendFinishReason::ContentFilter => llm_api::FinishReason::ContentFilter,
+        BackendFinishReason::Error => llm_api::FinishReason::Error,
     }
 }
 

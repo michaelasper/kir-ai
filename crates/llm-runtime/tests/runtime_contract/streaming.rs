@@ -549,7 +549,7 @@ async fn runtime_streams_generated_tool_call_delta() {
         model_id: "local-qwen36",
         family: "qwen",
         text: r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     assert_streams_tool_call_delta_without_marker_content(backend, "local-qwen36", &[]).await;
 }
@@ -560,7 +560,7 @@ async fn runtime_streams_deepseek_tool_call_delta_without_marker_content() {
         model_id: "local-deepseek",
         family: "deep_seek",
         text: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>lookup\n```json\n{\"query\":\"rust\"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     assert_streams_tool_call_delta_without_marker_content(
         backend,
@@ -615,7 +615,7 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
                 prompt_tokens: 10,
                 prompt_cached_tokens: Some(6),
                 completion_tokens: 1,
-                finish_reason: Some(FinishReason::Stop),
+                finish_reason: Some(BackendFinishReason::Stop),
             };
         }
         .boxed()
@@ -639,7 +639,7 @@ async fn runtime_streams_deepseek_dsml_tool_call_delta_without_marker_content() 
         model_id: "local-deepseek",
         family: "deep_seek",
         text: r#"<dsml_tool_call>{"name":"lookup","arguments":{"query":"rust"}}</dsml_tool_call>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     assert_streams_tool_call_delta_with_choice_without_marker_content(
         backend,
@@ -656,7 +656,7 @@ async fn runtime_streams_gemma_tool_call_delta_without_marker_content() {
         model_id: "local-gemma4",
         family: "gemma",
         text: "<|tool_call>call:lookup{\"query\":\"rust\"}<tool_call|>",
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     assert_streams_tool_call_delta_without_marker_content(
         backend,
@@ -672,7 +672,7 @@ async fn runtime_streams_llama_raw_json_tool_call_delta_without_content_leak() {
         model_id: "local-llama",
         family: "llama",
         text: r#"{"name":"lookup","parameters":{"query":"rust"}}"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     assert_streams_tool_call_delta_with_choice_without_marker_content(
         backend,
@@ -689,7 +689,7 @@ async fn runtime_streams_llama_raw_json_tool_call_with_stop_without_content_leak
         model_id: "local-llama",
         family: "llama",
         text: r#"{"name":"lookup","parameters":{"query":"rust"}}<|eot_id|>ignored"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     let runtime = Runtime::new(backend);
     let stream = runtime
@@ -745,7 +745,7 @@ async fn runtime_streams_llama_text_after_buffering_unmarked_tool_candidate() {
         model_id: "local-llama",
         family: "llama",
         text: "plain answer",
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     let runtime = Runtime::new(backend);
     let stream = runtime
@@ -789,7 +789,7 @@ async fn runtime_streams_llama_text_with_stop_after_buffering_unmarked_tool_cand
         model_id: "local-llama",
         family: "llama",
         text: "plain answer STOP ignored",
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     let runtime = Runtime::new(backend);
     let stream = runtime
@@ -884,7 +884,7 @@ async fn runtime_streams_llama_json_object_with_tools_emits_content_once() {
         model_id: "local-llama",
         family: "llama",
         text: r#"{"answer":"ok"}<|eot_id|>"#,
-        finish_reason: FinishReason::Stop,
+        finish_reason: BackendFinishReason::Stop,
     };
     let runtime = Runtime::new(backend);
     let stream = runtime

@@ -13,7 +13,6 @@ test-utils = []
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-llm-api = { path = "../llm-api" }
 llm-kv-cache = { path = "../llm-kv-cache" }
 llm-models = { path = "../llm-models" }
 llm-util = { path = "../llm-util" }

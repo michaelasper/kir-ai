@@ -6,7 +6,8 @@ use crate::stop::{
 };
 use crate::streaming::{
     CancelOnDrop, CompletionStream, CompletionStreamEvent, RuntimeCompletion,
-    RuntimeCompletionSeed, completion_stream_seed_chunk, max_optional_u64, usage_from_tokens,
+    RuntimeCompletionSeed, api_finish_reason, completion_stream_seed_chunk, max_optional_u64,
+    usage_from_tokens,
 };
 use chrono::Utc;
 use futures::{StreamExt, stream::BoxStream};
@@ -147,7 +148,7 @@ where
             finish_reason: if stopped {
                 llm_api::FinishReason::Stop
             } else {
-                output.finish_reason
+                api_finish_reason(output.finish_reason)
             },
             usage,
         })
@@ -204,7 +205,7 @@ fn streaming_completion_stream<'a>(
                 }
             }
             if let Some(reason) = chunk.finish_reason {
-                finish_reason = reason;
+                finish_reason = api_finish_reason(reason);
                 break;
             }
         }

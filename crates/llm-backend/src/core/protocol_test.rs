@@ -1,10 +1,10 @@
 use super::{
-    BackendChatRole, BackendError, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendToolChoice, ModelBackend,
+    BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendToolChoice, ModelBackend,
 };
 use async_trait::async_trait;
-use llm_api::{FinishReason, ToolDefinition};
 use llm_models::ModelFamily;
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ impl ModelBackend for ProtocolTestBackend {
         {
             (
                 render_tool_call(self.family, &name, &arguments),
-                FinishReason::ToolCalls,
+                BackendFinishReason::ToolCalls,
             )
         } else if self.json_object_protocol && request.json_object_mode {
             (
@@ -79,10 +79,10 @@ impl ModelBackend for ProtocolTestBackend {
                     "response": "ok",
                 })
                 .to_string(),
-                FinishReason::Stop,
+                BackendFinishReason::Stop,
             )
         } else {
-            (self.text.clone(), FinishReason::Stop)
+            (self.text.clone(), BackendFinishReason::Stop)
         };
         Ok(BackendOutput {
             completion_tokens: count_tokens(self.family, &text),
@@ -114,10 +114,24 @@ fn protocol_test_tool_call(
     protocol_test_tool_call_from_tools(&user, &tools, request.required_tool_choice.as_ref())
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct BackendToolDefinition {
+    function: BackendFunctionDefinition,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BackendFunctionDefinition {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parameters: serde_json::Value,
+}
+
 fn request_tool_definitions(
     family: ModelFamily,
     request: &BackendRequest,
-) -> Option<Vec<ToolDefinition>> {
+) -> Option<Vec<BackendToolDefinition>> {
     request
         .cache_context
         .tool_schema
@@ -146,7 +160,7 @@ fn request_last_user_message(family: ModelFamily, request: &BackendRequest) -> S
 
 fn protocol_test_tool_call_from_tools(
     user: &str,
-    tools: &[ToolDefinition],
+    tools: &[BackendToolDefinition],
     required_choice: Option<&BackendToolChoice>,
 ) -> Option<(String, serde_json::Value)> {
     let tool = match required_choice {
@@ -162,7 +176,10 @@ fn protocol_test_tool_call_from_tools(
     ))
 }
 
-fn rendered_tool_definitions(family: ModelFamily, prompt: &str) -> Option<Vec<ToolDefinition>> {
+fn rendered_tool_definitions(
+    family: ModelFamily,
+    prompt: &str,
+) -> Option<Vec<BackendToolDefinition>> {
     match family {
         ModelFamily::Qwen => rendered_tool_definitions_between(
             prompt,
@@ -191,7 +208,7 @@ fn rendered_tool_definitions_between(
     prompt: &str,
     preamble: &str,
     terminator: &str,
-) -> Option<Vec<ToolDefinition>> {
+) -> Option<Vec<BackendToolDefinition>> {
     let (_, rest) = prompt.split_once(preamble)?;
     let (tools_json, _) = rest.split_once(terminator)?;
     serde_json::from_str(tools_json).ok()
@@ -199,16 +216,22 @@ fn rendered_tool_definitions_between(
 
 fn select_required_any_tool<'a>(
     prompt: &str,
-    tools: &'a [ToolDefinition],
-) -> Option<&'a ToolDefinition> {
+    tools: &'a [BackendToolDefinition],
+) -> Option<&'a BackendToolDefinition> {
     select_scored_tool(prompt, tools).or_else(|| (tools.len() == 1).then_some(&tools[0]))
 }
 
-fn select_auto_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&'a ToolDefinition> {
+fn select_auto_tool<'a>(
+    prompt: &str,
+    tools: &'a [BackendToolDefinition],
+) -> Option<&'a BackendToolDefinition> {
     select_scored_tool(prompt, tools)
 }
 
-fn select_scored_tool<'a>(prompt: &str, tools: &'a [ToolDefinition]) -> Option<&'a ToolDefinition> {
+fn select_scored_tool<'a>(
+    prompt: &str,
+    tools: &'a [BackendToolDefinition],
+) -> Option<&'a BackendToolDefinition> {
     let user_terms = lexical_user_terms(prompt);
     if user_terms.is_empty() {
         return None;
@@ -241,7 +264,7 @@ fn lexical_user_terms(prompt: &str) -> Vec<String> {
     terms
 }
 
-fn score_tool_match(user_terms: &[String], tool: &ToolDefinition) -> usize {
+fn score_tool_match(user_terms: &[String], tool: &BackendToolDefinition) -> usize {
     let name_score = lexical_terms(&tool.function.name)
         .iter()
         .filter(|term| contains_term(user_terms, term))
@@ -330,7 +353,7 @@ fn is_lexical_stop_word(term: &str) -> bool {
     )
 }
 
-fn protocol_test_tool_arguments(user: &str, tool: &ToolDefinition) -> serde_json::Value {
+fn protocol_test_tool_arguments(user: &str, tool: &BackendToolDefinition) -> serde_json::Value {
     let mut arguments = serde_json::Map::new();
     for name in required_parameter_names(&tool.function.parameters) {
         if let Some(value) = argument_value_for_parameter(user, &name) {

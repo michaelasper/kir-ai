@@ -6,8 +6,9 @@ use axum::{
 };
 use futures::StreamExt;
 use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend,
+    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendStreamChunk, BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType,
+    ModelBackend,
 };
 use llm_engine::{
     EngineOptions, build_router, build_router_with_protocol_test_backend, router_builder,
@@ -157,7 +158,7 @@ impl ModelBackend for StaticBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -186,7 +187,7 @@ impl ModelBackend for CachedUsageBackend {
             prompt_tokens: self.prompt_tokens,
             prompt_cached_tokens: self.prompt_cached_tokens,
             completion_tokens: self.completion_tokens,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -215,7 +216,7 @@ impl ModelBackend for FamilyStaticBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -253,7 +254,7 @@ impl ModelBackend for ScriptedChatBackend {
             prompt_cached_tokens: None,
             completion_tokens: test_token_count(&text),
             text,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -289,7 +290,7 @@ impl ModelBackend for BlockingBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -343,7 +344,7 @@ impl ModelBackend for FairnessBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -443,7 +444,7 @@ impl ModelBackend for NoProgressBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 4096,
-            finish_reason: llm_api::FinishReason::Length,
+            finish_reason: BackendFinishReason::Length,
         })
     }
 
@@ -481,7 +482,7 @@ impl ModelBackend for DelayedStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -517,7 +518,7 @@ impl ModelBackend for TwoStageStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 2,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -552,7 +553,7 @@ impl ModelBackend for TwoStageStreamBackend {
                 prompt_tokens: 1,
                 prompt_cached_tokens: None,
                 completion_tokens: 1,
-                finish_reason: Some(llm_api::FinishReason::Stop),
+                finish_reason: Some(BackendFinishReason::Stop),
             };
         }
         .boxed()
@@ -590,7 +591,7 @@ impl ModelBackend for CancellableStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -645,7 +646,7 @@ impl ModelBackend for FailingStreamBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -711,7 +712,7 @@ impl ModelBackend for MetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -747,7 +748,7 @@ impl ModelBackend for MlxMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
@@ -784,7 +785,7 @@ impl ModelBackend for SnapshotMetadataBackend {
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,
-            finish_reason: llm_api::FinishReason::Stop,
+            finish_reason: BackendFinishReason::Stop,
         })
     }
 
