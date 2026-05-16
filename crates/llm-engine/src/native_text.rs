@@ -1040,10 +1040,17 @@ mod tests {
         driver
             .generate_blocking_stream(driver_test_request(4), tx, CancellationToken::new())
             .expect("streaming generation stops cleanly");
-        let final_chunk = rx
-            .blocking_recv()
-            .expect("final chunk is sent")
-            .expect("final chunk is ok");
+        let final_chunk = loop {
+            let chunk = rx
+                .blocking_recv()
+                .expect("final chunk is sent")
+                .expect("final chunk is ok");
+            if chunk.finish_reason.is_some() {
+                break chunk;
+            }
+            assert_eq!(chunk.text, "");
+            assert_eq!(chunk.completion_tokens, 0);
+        };
         assert_eq!(final_chunk.text, "");
         assert_eq!(final_chunk.completion_tokens, 0);
         assert_eq!(final_chunk.finish_reason, Some(BackendFinishReason::Stop));
