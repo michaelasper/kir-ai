@@ -71,6 +71,22 @@ pub struct LayerKvCache {
     values: Vec<f32>,
 }
 
+/// Owned layer KV cache state, excluding runtime cache identity.
+///
+/// `keys` and `values` contain only the used token rows. Restoring a snapshot
+/// allocates fresh backing storage and a fresh cache id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerKvCacheSnapshot {
+    pub revision: u64,
+    pub max_tokens: usize,
+    pub key_value_heads: usize,
+    pub head_dim: usize,
+    pub token_count: usize,
+    pub tokens_seen: usize,
+    pub keys: Vec<f32>,
+    pub values: Vec<f32>,
+}
+
 impl Clone for LayerKvCache {
     fn clone(&self) -> Self {
         Self {
@@ -113,6 +129,55 @@ impl LayerKvCache {
             keys: vec![0.0; storage_len],
             values: vec![0.0; storage_len],
         })
+    }
+
+    pub fn snapshot(&self) -> LayerKvCacheSnapshot {
+        LayerKvCacheSnapshot {
+            revision: self.revision,
+            max_tokens: self.max_tokens,
+            key_value_heads: self.key_value_heads,
+            head_dim: self.head_dim,
+            token_count: self.token_count,
+            tokens_seen: self.tokens_seen,
+            keys: self.keys().to_vec(),
+            values: self.values().to_vec(),
+        }
+    }
+
+    pub fn from_snapshot(snapshot: LayerKvCacheSnapshot) -> Result<Self, KvCacheError> {
+        if snapshot.token_count > snapshot.max_tokens || snapshot.tokens_seen < snapshot.token_count
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+
+        let mut cache = Self::new(
+            snapshot.max_tokens,
+            snapshot.key_value_heads,
+            snapshot.head_dim,
+        )?;
+        let used_len = snapshot
+            .token_count
+            .checked_mul(cache.vector_len())
+            .ok_or(KvCacheError::InvalidShape)?;
+        if snapshot.keys.len() != used_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: used_len,
+                actual: snapshot.keys.len(),
+            });
+        }
+        if snapshot.values.len() != used_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: used_len,
+                actual: snapshot.values.len(),
+            });
+        }
+
+        cache.revision = snapshot.revision;
+        cache.token_count = snapshot.token_count;
+        cache.tokens_seen = snapshot.tokens_seen;
+        cache.keys[..used_len].copy_from_slice(&snapshot.keys);
+        cache.values[..used_len].copy_from_slice(&snapshot.values);
+        Ok(cache)
     }
 
     pub fn id(&self) -> u64 {
@@ -273,6 +338,22 @@ pub struct LinearAttentionCache {
     recurrent_state: Vec<f32>,
 }
 
+/// Owned linear attention cache state, excluding runtime cache identity.
+///
+/// Restoring a snapshot allocates fresh backing storage and a fresh cache id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearAttentionCacheSnapshot {
+    pub revision: u64,
+    pub conv_kernel_size: usize,
+    pub conv_dim: usize,
+    pub num_value_heads: usize,
+    pub key_head_dim: usize,
+    pub value_head_dim: usize,
+    pub token_count: usize,
+    pub conv_window: Vec<f32>,
+    pub recurrent_state: Vec<f32>,
+}
+
 impl Clone for LinearAttentionCache {
     fn clone(&self) -> Self {
         Self {
@@ -325,6 +406,48 @@ impl LinearAttentionCache {
             conv_window: vec![0.0; conv_len],
             recurrent_state: vec![0.0; recurrent_state_len],
         })
+    }
+
+    pub fn snapshot(&self) -> LinearAttentionCacheSnapshot {
+        LinearAttentionCacheSnapshot {
+            revision: self.revision,
+            conv_kernel_size: self.conv_kernel_size,
+            conv_dim: self.conv_dim,
+            num_value_heads: self.num_value_heads,
+            key_head_dim: self.key_head_dim,
+            value_head_dim: self.value_head_dim,
+            token_count: self.token_count,
+            conv_window: self.conv_window.clone(),
+            recurrent_state: self.recurrent_state.clone(),
+        }
+    }
+
+    pub fn from_snapshot(snapshot: LinearAttentionCacheSnapshot) -> Result<Self, KvCacheError> {
+        let mut cache = Self::new(
+            snapshot.conv_kernel_size,
+            snapshot.conv_dim,
+            snapshot.num_value_heads,
+            snapshot.key_head_dim,
+            snapshot.value_head_dim,
+        )?;
+        if snapshot.conv_window.len() != cache.conv_window.len() {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: cache.conv_window.len(),
+                actual: snapshot.conv_window.len(),
+            });
+        }
+        if snapshot.recurrent_state.len() != cache.recurrent_state.len() {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: cache.recurrent_state.len(),
+                actual: snapshot.recurrent_state.len(),
+            });
+        }
+
+        cache.revision = snapshot.revision;
+        cache.token_count = snapshot.token_count;
+        cache.conv_window = snapshot.conv_window;
+        cache.recurrent_state = snapshot.recurrent_state;
+        Ok(cache)
     }
 
     pub fn id(&self) -> u64 {
@@ -559,6 +682,58 @@ mod tests {
     }
 
     #[test]
+    fn layer_kv_cache_snapshot_round_trips_used_storage_and_shape() {
+        let mut cache = LayerKvCache::new(4, 2, 3).expect("cache shape is valid");
+        cache
+            .append(
+                &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+            )
+            .expect("first token fits");
+        cache
+            .append(
+                &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                &[70.0, 80.0, 90.0, 100.0, 110.0, 120.0],
+            )
+            .expect("second token fits");
+
+        let snapshot = cache.snapshot();
+        let restored = LayerKvCache::from_snapshot(snapshot).expect("snapshot restores");
+
+        assert_ne!(restored.id(), cache.id());
+        assert_eq!(restored.revision(), cache.revision());
+        assert_eq!(restored.max_tokens(), cache.max_tokens());
+        assert_eq!(restored.key_value_heads(), cache.key_value_heads());
+        assert_eq!(restored.head_dim(), cache.head_dim());
+        assert_eq!(restored.token_count(), cache.token_count());
+        assert_eq!(restored.next_position(), cache.next_position());
+        assert_eq!(restored.keys(), cache.keys());
+        assert_eq!(restored.values(), cache.values());
+        assert_eq!(
+            &restored.key_storage()[restored.keys().len()..],
+            vec![0.0; restored.key_storage().len() - restored.keys().len()]
+        );
+    }
+
+    #[test]
+    fn layer_kv_cache_restore_rejects_bad_storage_len() {
+        let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape is valid");
+        cache.append(&[1.0, 2.0], &[3.0, 4.0]).expect("token fits");
+        let mut snapshot = cache.snapshot();
+        snapshot.keys.pop();
+
+        let err = LayerKvCache::from_snapshot(snapshot).expect_err("bad storage length fails");
+
+        assert_eq!(
+            err,
+            KvCacheError::ShapeMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+    }
+
+    #[test]
     fn layer_kv_cache_rejects_shape_mismatch_and_capacity_overflow() {
         let mut cache = LayerKvCache::new(1, 1, 2).expect("cache shape is valid");
 
@@ -686,6 +861,55 @@ mod tests {
         assert_eq!(clone.token_count(), cache.token_count());
         assert_eq!(clone.conv_window(), cache.conv_window());
         assert_eq!(clone.recurrent_state(), cache.recurrent_state());
+    }
+
+    #[test]
+    fn linear_attention_cache_snapshot_round_trips_window_state_and_shape() {
+        let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
+        cache
+            .push_conv_input(&[1.0, 2.0, 3.0])
+            .expect("first conv input fits");
+        cache
+            .push_conv_input(&[4.0, 5.0, 6.0])
+            .expect("second conv input fits");
+        cache
+            .replace_recurrent_state(&[0.5, 1.5, 2.5, 3.5])
+            .expect("state shape fits");
+
+        let snapshot = cache.snapshot();
+        let restored = LinearAttentionCache::from_snapshot(snapshot).expect("snapshot restores");
+
+        assert_ne!(restored.id(), cache.id());
+        assert_eq!(restored.revision(), cache.revision());
+        assert_eq!(restored.conv_kernel_size(), cache.conv_kernel_size());
+        assert_eq!(restored.conv_dim(), cache.conv_dim());
+        assert_eq!(restored.num_value_heads(), cache.num_value_heads());
+        assert_eq!(restored.key_head_dim(), cache.key_head_dim());
+        assert_eq!(restored.value_head_dim(), cache.value_head_dim());
+        assert_eq!(restored.token_count(), cache.token_count());
+        assert_eq!(restored.conv_window(), cache.conv_window());
+        assert_eq!(restored.recurrent_state(), cache.recurrent_state());
+    }
+
+    #[test]
+    fn linear_attention_cache_restore_rejects_bad_state_len() {
+        let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
+        cache
+            .replace_recurrent_state(&[0.5, 1.5, 2.5, 3.5])
+            .expect("state shape fits");
+        let mut snapshot = cache.snapshot();
+        snapshot.recurrent_state.push(4.5);
+
+        let err =
+            LinearAttentionCache::from_snapshot(snapshot).expect_err("bad state length fails");
+
+        assert_eq!(
+            err,
+            KvCacheError::ShapeMismatch {
+                expected: 4,
+                actual: 5
+            }
+        );
     }
 
     #[test]

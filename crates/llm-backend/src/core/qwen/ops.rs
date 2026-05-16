@@ -16,8 +16,8 @@ use super::super::native_attention::{
     require_native_output_projection_shape,
 };
 use super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, NativeMatvecBackend,
-    SafeTensorShardStore, TensorLoadError,
+    CpuNativeMatvecBackend, KvCacheError, LayerKvCache, LayerKvCacheSnapshot, LinearAttentionCache,
+    LinearAttentionCacheSnapshot, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
 };
 use super::matvec::{l2_normalize_f32, rms_norm_f32, rms_norm_f32_in_place};
 use llm_models::{AttentionKind, QwenModelSpec};
@@ -292,6 +292,32 @@ impl QwenLinearAttentionDims {
 pub enum QwenLayerCache {
     Linear(LinearAttentionCache),
     Full(LayerKvCache),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QwenLayerCacheSnapshot {
+    Linear(LinearAttentionCacheSnapshot),
+    Full(LayerKvCacheSnapshot),
+}
+
+impl QwenLayerCache {
+    pub fn snapshot(&self) -> QwenLayerCacheSnapshot {
+        match self {
+            Self::Linear(cache) => QwenLayerCacheSnapshot::Linear(cache.snapshot()),
+            Self::Full(cache) => QwenLayerCacheSnapshot::Full(cache.snapshot()),
+        }
+    }
+
+    pub fn from_snapshot(snapshot: QwenLayerCacheSnapshot) -> Result<Self, KvCacheError> {
+        match snapshot {
+            QwenLayerCacheSnapshot::Linear(snapshot) => {
+                LinearAttentionCache::from_snapshot(snapshot).map(Self::Linear)
+            }
+            QwenLayerCacheSnapshot::Full(snapshot) => {
+                LayerKvCache::from_snapshot(snapshot).map(Self::Full)
+            }
+        }
+    }
 }
 
 pub fn qwen_layer_caches_for_spec(

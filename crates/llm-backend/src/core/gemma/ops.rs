@@ -8,12 +8,36 @@ use super::super::native_attention::{
     native_full_attention_sequence_from_cache_parts,
     native_full_attention_sequence_with_cache_from_parts,
 };
-use super::super::{LayerKvCache, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
+use super::super::{
+    KvCacheError, LayerKvCache, LayerKvCacheSnapshot, NativeMatvecBackend, SafeTensorShardStore,
+    TensorLoadError,
+};
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GemmaLayerCache {
     Attention(LayerKvCache),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GemmaLayerCacheSnapshot {
+    Attention(LayerKvCacheSnapshot),
+}
+
+impl GemmaLayerCache {
+    pub fn snapshot(&self) -> GemmaLayerCacheSnapshot {
+        match self {
+            Self::Attention(cache) => GemmaLayerCacheSnapshot::Attention(cache.snapshot()),
+        }
+    }
+
+    pub fn from_snapshot(snapshot: GemmaLayerCacheSnapshot) -> Result<Self, KvCacheError> {
+        match snapshot {
+            GemmaLayerCacheSnapshot::Attention(snapshot) => {
+                LayerKvCache::from_snapshot(snapshot).map(Self::Attention)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

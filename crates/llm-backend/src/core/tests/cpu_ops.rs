@@ -16,6 +16,7 @@ use super::super::qwen::ops::{
     qwen_linear_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_step_with_cache_from_parts,
 };
+use super::super::{GemmaLayerCache, QwenLayerCache};
 use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
 
 #[test]
@@ -105,6 +106,58 @@ fn backend_cache_context_tracks_chat_template_kwargs_identity() {
     assert_ne!(no_kwargs.key, no_thinking.key);
     assert_ne!(no_thinking.key, thinking.key);
     assert!(no_thinking.key.as_str().starts_with("sha256:"));
+}
+
+#[test]
+fn layer_cache_variant_snapshots_round_trip_for_qwen_and_gemma() {
+    let mut qwen_full = LayerKvCache::new(2, 1, 2).expect("cache shape");
+    qwen_full
+        .append(&[1.0, 2.0], &[3.0, 4.0])
+        .expect("token fits");
+    let qwen_full = QwenLayerCache::Full(qwen_full);
+    let restored = QwenLayerCache::from_snapshot(qwen_full.snapshot()).expect("snapshot restores");
+    match (&qwen_full, restored) {
+        (QwenLayerCache::Full(expected), QwenLayerCache::Full(actual)) => {
+            assert_ne!(actual.id(), expected.id());
+            assert_eq!(actual.keys(), expected.keys());
+            assert_eq!(actual.values(), expected.values());
+        }
+        _ => panic!("full Qwen cache variant should round trip"),
+    }
+
+    let mut qwen_linear = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("linear cache shape");
+    qwen_linear
+        .push_conv_input(&[1.0, 2.0, 3.0])
+        .expect("conv input fits");
+    qwen_linear
+        .replace_recurrent_state(&[0.5, 1.5, 2.5, 3.5])
+        .expect("state shape fits");
+    let qwen_linear = QwenLayerCache::Linear(qwen_linear);
+    let restored =
+        QwenLayerCache::from_snapshot(qwen_linear.snapshot()).expect("snapshot restores");
+    match (&qwen_linear, restored) {
+        (QwenLayerCache::Linear(expected), QwenLayerCache::Linear(actual)) => {
+            assert_ne!(actual.id(), expected.id());
+            assert_eq!(actual.conv_window(), expected.conv_window());
+            assert_eq!(actual.recurrent_state(), expected.recurrent_state());
+        }
+        _ => panic!("linear Qwen cache variant should round trip"),
+    }
+
+    let mut gemma_attention = LayerKvCache::new(2, 1, 2).expect("cache shape");
+    gemma_attention
+        .append(&[5.0, 6.0], &[7.0, 8.0])
+        .expect("token fits");
+    let gemma_attention = GemmaLayerCache::Attention(gemma_attention);
+    let restored =
+        GemmaLayerCache::from_snapshot(gemma_attention.snapshot()).expect("snapshot restores");
+    match (&gemma_attention, restored) {
+        (GemmaLayerCache::Attention(expected), GemmaLayerCache::Attention(actual)) => {
+            assert_ne!(actual.id(), expected.id());
+            assert_eq!(actual.keys(), expected.keys());
+            assert_eq!(actual.values(), expected.values());
+        }
+    }
 }
 
 #[test]

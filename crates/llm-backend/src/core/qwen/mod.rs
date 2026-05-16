@@ -3,8 +3,8 @@ pub(crate) mod ops;
 
 pub use ops::{
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
-    QwenEmbeddingProbe, QwenLayerCache, QwenLinearAttentionProjectionProbe, QwenMoeDims,
-    QwenMoeRouterProbe, qwen_decode_token_with_cache, qwen_decoder_layer_first_token,
+    QwenEmbeddingProbe, QwenLayerCache, QwenLayerCacheSnapshot, QwenLinearAttentionProjectionProbe,
+    QwenMoeDims, QwenMoeRouterProbe, qwen_decode_token_with_cache, qwen_decoder_layer_first_token,
     qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_final_norm_for_spec,
     qwen_layer_caches_for_spec, qwen_layer_moe_forward_in_place, qwen_layer_moe_router,
     qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
