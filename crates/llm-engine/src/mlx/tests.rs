@@ -393,6 +393,117 @@ fn mlx_non_streaming_qwen_xml_converts_to_canonical_tool_markup() {
 }
 
 #[test]
+fn mlx_non_streaming_qwen_xml_structured_tool_calls_bypass_xml_reparse() {
+    let body = serde_json::json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_read_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"Cargo.toml\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {
+            "prompt_tokens": 4,
+            "completion_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 3}
+        }
+    })
+    .to_string();
+    let (output, _chunk_count) = parse_mlx_completion_body(
+        &body,
+        "read a file",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::QwenXml,
+        Some(&qwen_xml_test_tool_schema()),
+    )
+    .expect("structured MLX tool calls render without Qwen XML reparse");
+
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
+    assert!(output.text.starts_with("<tool_call>"));
+    assert!(output.text.ends_with("</tool_call>"));
+    assert!(
+        !output.text.contains("<function="),
+        "raw Qwen XML should not leak into canonical tool markup: {}",
+        output.text
+    );
+    let payload = output
+        .text
+        .strip_prefix("<tool_call>")
+        .and_then(|text| text.strip_suffix("</tool_call>"))
+        .expect("canonical tool call wrapper");
+    assert_eq!(
+        serde_json::from_str::<Value>(payload).expect("canonical tool call JSON"),
+        serde_json::json!({"name": "read_file", "arguments": {"path": "Cargo.toml"}})
+    );
+    assert_eq!(output.prompt_cached_tokens, Some(3));
+    assert_eq!(output.completion_tokens, 5);
+}
+
+#[test]
+fn mlx_non_streaming_qwen_xml_allows_length_truncated_raw_tool_xml() {
+    for raw_text in [
+        "<tool_call>",
+        "<tool_call><function=record><parameter=path>Cargo",
+    ] {
+        let body = serde_json::json!({
+            "choices": [{
+                "text": raw_text,
+                "finish_reason": "length"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 5}
+        })
+        .to_string();
+        let (output, _chunk_count) = parse_mlx_completion_body(
+            &body,
+            "hello mlx",
+            MLX_QWEN_CONTROL_STOP_TOKENS,
+            MlxToolMarkup::QwenXml,
+            Some(&qwen_xml_test_tool_schema()),
+        )
+        .expect("length-truncated raw Qwen XML degrades without backend failure");
+
+        assert_eq!(output.finish_reason, BackendFinishReason::Length);
+        assert!(
+            !output.text.contains("<function=record>"),
+            "active raw XML should not leak when length-truncated: {}",
+            output.text
+        );
+    }
+}
+
+#[test]
+fn mlx_non_streaming_qwen_xml_rejects_non_length_truncated_raw_tool_xml() {
+    let body = serde_json::json!({
+        "choices": [{
+            "text": "<tool_call><function=record><parameter=path>Cargo",
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 5}
+    })
+    .to_string();
+    let err = parse_mlx_completion_body(
+        &body,
+        "hello mlx",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::QwenXml,
+        Some(&qwen_xml_test_tool_schema()),
+    )
+    .expect_err("non-length incomplete raw Qwen XML must fail closed");
+
+    assert!(
+        err.to_string().contains("Qwen XML"),
+        "error should identify Qwen XML parser: {err}"
+    );
+}
+
+#[test]
 fn mlx_tool_parser_auto_detects_qwen36_and_keeps_older_qwen_json() {
     let mut qwen36 = BackendModelMetadata::new("local-qwen36", "mlx").with_family("qwen");
     qwen36.repo_id = Some("mlx-community/Qwen3.6-35B-A3B-4bit".to_owned());
@@ -603,7 +714,7 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
 }
 
 #[tokio::test]
-async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
+async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
     let server = FakeMlxServer::start(
         r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":3}}}"#,
     );
@@ -613,6 +724,7 @@ async fn mlx_backend_uses_non_streaming_chat_completion_for_generate() {
         MlxBackendOptions {
             endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
+            tool_parser: MlxToolParserMode::QwenXml,
             ..MlxBackendOptions::default()
         },
     )

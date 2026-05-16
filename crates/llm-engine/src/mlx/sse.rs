@@ -281,7 +281,7 @@ impl MlxSseParser {
             && !self.tool_calls.is_empty()
         {
             let tool_text = self.render_tool_calls()?;
-            chunks.extend(self.push_text_chunks(&tool_text)?);
+            chunks.extend(self.push_rendered_tool_call_text(&tool_text));
         }
         let is_final_chunk = finish_reason.is_some();
         self.finalize_completion_chunks(
@@ -300,6 +300,11 @@ impl MlxSseParser {
         }
         self.estimated_completion_tokens += count_visible_tokens(text);
         Ok(vec![self.chunk(text.to_owned(), Vec::new())])
+    }
+
+    fn push_rendered_tool_call_text(&mut self, text: &str) -> Vec<BackendStreamChunk> {
+        self.estimated_completion_tokens += count_visible_tokens(text);
+        vec![self.chunk(text.to_owned(), Vec::new())]
     }
 
     fn qwen_xml_emissions_to_chunks(
