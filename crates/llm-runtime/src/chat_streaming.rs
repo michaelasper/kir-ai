@@ -1,7 +1,9 @@
 use crate::RuntimeError;
 use crate::adapters::{ChatAdapter, SelectedChatAdapter, ToolMarkupPolicy};
 use crate::json_mode::{parse_chat_text, validate_json_object_response};
-use crate::no_progress::classify_chat_no_progress;
+use crate::no_progress::{
+    classify_chat_no_progress, classify_repeated_invalid_tool_call_no_progress,
+};
 use crate::stop::{earliest_stop_index, max_stop_sequence_len, safe_stream_emit_len};
 use crate::streaming::{
     CancelOnDrop, ChatCompletionStream, ChatCompletionStreamEvent, ChatCompletionStreamStage,
@@ -192,6 +194,11 @@ pub(crate) fn streaming_chat_stream<'a>(
                     let mut parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
                     validate_tool_call_arguments(&parsed_prefix)?;
                     fill_missing_tool_intent_arguments(&mut parsed_prefix, &request);
+                    if let Some(class) =
+                        classify_repeated_invalid_tool_call_no_progress(&parsed_prefix, &request)
+                    {
+                        Err(RuntimeError::NoProgress(class))?;
+                    }
                     validate_tool_calls_against_request(&parsed_prefix, &request)?;
                     for (index, tool_call) in parsed_prefix
                         .tool_calls
@@ -278,6 +285,9 @@ pub(crate) fn streaming_chat_stream<'a>(
         }
         validate_tool_call_arguments(&parsed)?;
         fill_missing_tool_intent_arguments(&mut parsed, &request);
+        if let Some(class) = classify_repeated_invalid_tool_call_no_progress(&parsed, &request) {
+            Err(RuntimeError::NoProgress(class))?;
+        }
         if tool_calls_seen {
             yield ChatCompletionStreamEvent::Stage(
                 ChatCompletionStreamStage::ToolIntentFillComplete,

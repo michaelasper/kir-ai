@@ -2,7 +2,9 @@ use crate::RuntimeError;
 use crate::adapters::ChatAdapter;
 use crate::chat_streaming::streaming_chat_stream;
 use crate::json_mode::{parse_chat_text, validate_json_object_response};
-use crate::no_progress::classify_chat_no_progress;
+use crate::no_progress::{
+    classify_chat_no_progress, classify_repeated_invalid_tool_call_no_progress,
+};
 use crate::runtime::Runtime;
 use crate::stop::apply_stop_sequences;
 use crate::streaming::{
@@ -175,6 +177,9 @@ where
         let mut parsed = parse_chat_text(adapter, &raw_text, &request)?;
         validate_tool_call_arguments(&parsed)?;
         fill_missing_tool_intent_arguments(&mut parsed, &request);
+        if let Some(class) = classify_repeated_invalid_tool_call_no_progress(&parsed, &request) {
+            return Err(RuntimeError::NoProgress(class));
+        }
         validate_tool_calls_against_request(&parsed, &request)?;
         if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
             validate_json_object_response(&parsed)?;

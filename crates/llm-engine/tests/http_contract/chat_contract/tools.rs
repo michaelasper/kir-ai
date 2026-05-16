@@ -239,6 +239,57 @@ async fn chat_completions_rejects_undeclared_generated_tool_call() {
 }
 
 #[tokio::test]
+async fn chat_completions_tool_call_validation_failed_includes_schema_hint_for_missing_required_argument()
+ {
+    let response = build_router_with_backend(Box::new(StaticBackend {
+        text: r#"<tool_call>{"name":"read_file","arguments":{}}</tool_call>"#.to_owned(),
+    }))
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [{"role": "user", "content": "read Cargo.toml"}],
+                    "tools": [{
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "parameters": {
+                                "type": "object",
+                                "required": ["path"],
+                                "properties": {
+                                    "path": {"type": "string"}
+                                }
+                            }
+                        }
+                    }],
+                    "tool_choice": "required"
+                })
+                .to_string(),
+            ))
+            .expect("request builds"),
+    )
+    .await
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "tool_call_validation_failed");
+    assert_eq!(body["error"]["phase"], "response_validation");
+    assert_eq!(body["error"]["retryable"], false);
+    let message = body["error"]["message"]
+        .as_str()
+        .expect("error message is string");
+    assert!(message.contains("missing required argument `path`"));
+    assert!(message.contains("required arguments: `path`"));
+    assert!(message.contains("expected arguments object"));
+    assert!(message.contains(r#""path":"<string>""#));
+}
+
+#[tokio::test]
 async fn chat_completions_stop_sequence_suppresses_later_tool_calls() {
     let response = build_router_with_backend(Box::new(StaticBackend {
         text:

@@ -443,6 +443,61 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
 }
 
 #[tokio::test]
+async fn streaming_repeated_empty_required_tool_call_fifth_attempt_returns_no_progress_without_emitting_arguments()
+ {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read","arguments":{}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: streaming_failed_read_attempts(4),
+            tools: vec![streaming_read_tool_definition()],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming repeated empty read request starts");
+
+    let mut emitted_tool_calls = 0;
+    let mut events = stream.into_events();
+    let err = loop {
+        match events
+            .next()
+            .await
+            .expect("stream yields no-progress error")
+        {
+            Ok(llm_runtime::ChatCompletionStreamEvent::Chunk(chunk)) => {
+                emitted_tool_calls += chunk
+                    .choices
+                    .iter()
+                    .map(|choice| choice.delta.tool_calls.len())
+                    .sum::<usize>();
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
+                panic!("repeated invalid tool call should not complete successfully")
+            }
+            Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
+            Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
+            Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Err(err) => break err,
+        }
+    };
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::RepeatedInvalidToolCall)
+    ));
+    assert_eq!(
+        emitted_tool_calls, 0,
+        "invalid repeated tool call arguments must not be emitted"
+    );
+}
+
+#[tokio::test]
 async fn streaming_tool_call_fills_missing_required_omp_intent_argument() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",
@@ -1509,6 +1564,39 @@ async fn runtime_rejects_invalid_structured_omp_args_without_argument_delta_or_f
     assert!(!saw_tool_calls_finish);
     assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
     assert!(err.to_string().contains("path"));
+}
+
+fn streaming_read_tool_definition() -> ToolDefinition {
+    ToolDefinition::function(
+        "read",
+        "read file",
+        json!({
+            "type": "object",
+            "required": ["path", "_i"],
+            "properties": {
+                "path": { "type": "string" },
+                "_i": { "type": "string" }
+            }
+        }),
+    )
+}
+
+fn streaming_failed_read_attempts(count: usize) -> Vec<ChatMessage> {
+    let mut messages = vec![ChatMessage::user("read missing.txt")];
+    for index in 0..count {
+        let call_id = format!("call_{index}");
+        messages.push(ChatMessage::assistant_tool_call(
+            call_id.clone(),
+            "read",
+            json!({}),
+        ));
+        messages.push(ChatMessage::tool(
+            call_id,
+            "error: missing path argument or file not found",
+        ));
+        messages.push(ChatMessage::user("try again"));
+    }
+    messages
 }
 
 fn structured_tool_delta(

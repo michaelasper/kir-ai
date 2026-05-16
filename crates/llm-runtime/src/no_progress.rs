@@ -1,7 +1,13 @@
 use llm_api::{ChatCompletionRequest, ChatMessage, ChatRole, ToolCall};
 use llm_tool_parser::ParsedAssistant;
+use serde_json::Value;
+use std::collections::BTreeSet;
 
 use crate::adapters::ToolMarkupPolicy;
+use crate::tool_schema::schema_requires_string_intent_argument;
+
+const EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 5;
+const FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
@@ -10,6 +16,7 @@ pub enum NoProgressClass {
     HiddenOnlyOutput,
     TextFallbackRequiredTool,
     RepeatedInvalidToolCall,
+    FuzzyRepeatedInvalidToolCall,
     RepeatedAssistantContent,
     StalledAssistantTurn,
 }
@@ -22,6 +29,7 @@ impl NoProgressClass {
             Self::HiddenOnlyOutput => "no_progress_hidden_only_output",
             Self::TextFallbackRequiredTool => "no_progress_missing_required_tool_call",
             Self::RepeatedInvalidToolCall => "no_progress_repeated_invalid_tool_call",
+            Self::FuzzyRepeatedInvalidToolCall => "no_progress_fuzzy_repeated_invalid_tool_call",
             Self::RepeatedAssistantContent => "no_progress_repeated_assistant_content",
             Self::StalledAssistantTurn => "no_progress_stalled_assistant_turn",
         }
@@ -67,8 +75,8 @@ pub(crate) fn classify_chat_no_progress(
         if stalled_assistant_turn(&parsed.content) {
             return Some(NoProgressClass::StalledAssistantTurn);
         }
-    } else if repeated_invalid_tool_call(parsed, request) {
-        return Some(NoProgressClass::RepeatedInvalidToolCall);
+    } else if let Some(class) = classify_repeated_invalid_tool_call_no_progress(parsed, request) {
+        return Some(class);
     }
     if parsed.tool_calls.is_empty() && raw_text.trim().is_empty() {
         return classify_no_progress(raw_text, completion_tokens);
@@ -91,44 +99,94 @@ fn repeated_assistant_content(content: &str, request: &ChatCompletionRequest) ->
         .any(|previous| previous == normalized)
 }
 
-fn repeated_invalid_tool_call(parsed: &ParsedAssistant, request: &ChatCompletionRequest) -> bool {
-    parsed.tool_calls.iter().any(|generated| {
-        request
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .any(|(index, message)| {
-                message.role == ChatRole::Assistant
-                    && message
-                        .tool_calls
-                        .iter()
-                        .any(|previous| same_tool_call(previous, generated))
-                    && following_tool_result_failed(&request.messages[index + 1..])
-            })
-    })
-}
+pub(crate) fn classify_repeated_invalid_tool_call_no_progress(
+    parsed: &ParsedAssistant,
+    request: &ChatCompletionRequest,
+) -> Option<NoProgressClass> {
+    let failed_tool_call_ids = failed_tool_call_ids(&request.messages);
+    if failed_tool_call_ids.is_empty() {
+        return None;
+    }
 
-fn same_tool_call(previous: &ToolCall, generated: &ToolCall) -> bool {
-    previous.function.name == generated.function.name
-        && previous.function.arguments == generated.function.arguments
-}
+    for generated in &parsed.tool_calls {
+        let generated_arguments = normalized_tool_call_arguments(generated, request);
+        let generated_key_set = argument_key_set(&generated_arguments);
+        let mut exact_count = 1;
+        let mut fuzzy_count = 1;
 
-fn following_tool_result_failed(messages: &[ChatMessage]) -> bool {
-    for message in messages {
-        if message.role == ChatRole::User {
-            return false;
+        for message in &request.messages {
+            if message.role != ChatRole::Assistant {
+                continue;
+            }
+            for previous in &message.tool_calls {
+                if !failed_tool_call_ids.contains(previous.id.as_str())
+                    || previous.function.name != generated.function.name
+                {
+                    continue;
+                }
+                let previous_arguments = normalized_tool_call_arguments(previous, request);
+                if previous_arguments == generated_arguments {
+                    exact_count += 1;
+                    continue;
+                }
+                if generated_key_set.as_ref().is_some_and(|keys| {
+                    argument_key_set(&previous_arguments).as_ref() == Some(keys)
+                }) {
+                    fuzzy_count += 1;
+                }
+            }
         }
-        if message.role == ChatRole::Tool
-            && message
+
+        if exact_count >= EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
+            return Some(NoProgressClass::RepeatedInvalidToolCall);
+        }
+        if fuzzy_count >= FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
+            return Some(NoProgressClass::FuzzyRepeatedInvalidToolCall);
+        }
+    }
+
+    None
+}
+
+fn failed_tool_call_ids(messages: &[ChatMessage]) -> BTreeSet<&str> {
+    messages
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+        .filter(|message| {
+            message
                 .content
                 .as_deref()
                 .is_some_and(tool_result_indicates_failure)
-        {
-            return true;
-        }
+        })
+        .filter_map(|message| message.tool_call_id.as_deref())
+        .collect()
+}
+
+fn normalized_tool_call_arguments(tool_call: &ToolCall, request: &ChatCompletionRequest) -> Value {
+    let mut arguments = tool_call.function.arguments.clone();
+    if tool_schema_requires_string_intent_argument(&tool_call.function.name, request)
+        && let Some(object) = arguments.as_object_mut()
+    {
+        object.remove("_i");
     }
-    false
+    arguments
+}
+
+fn tool_schema_requires_string_intent_argument(
+    tool_name: &str,
+    request: &ChatCompletionRequest,
+) -> bool {
+    request
+        .tools
+        .iter()
+        .find(|tool| tool.function.name == tool_name)
+        .is_some_and(|tool| schema_requires_string_intent_argument(&tool.function.parameters))
+}
+
+fn argument_key_set(arguments: &Value) -> Option<BTreeSet<&str>> {
+    arguments
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
 }
 
 fn tool_result_indicates_failure(content: &str) -> bool {

@@ -201,6 +201,117 @@ async fn rejects_generated_tool_call_missing_required_schema_argument() {
 }
 
 #[tokio::test]
+async fn repeated_empty_required_tool_call_fourth_attempt_returns_schema_hint() {
+    let err = replay_read_tool_error(
+        failed_read_attempts(3, json!({})),
+        json!({}),
+        "four total empty read attempts should remain schema validation",
+    )
+    .await;
+
+    let RuntimeError::ToolCallValidation(message) = err else {
+        panic!("expected tool-call validation under exact threshold, got {err:?}");
+    };
+    assert!(message.contains("missing required argument `path`"));
+    assert!(message.contains("required arguments: `path`, `_i`"));
+    assert!(message.contains("expected arguments object"));
+    assert!(message.contains(r#""path":"<string>""#));
+}
+
+#[tokio::test]
+async fn repeated_empty_required_tool_call_fifth_attempt_returns_no_progress() {
+    let err = replay_read_tool_error(
+        failed_read_attempts(4, json!({})),
+        json!({}),
+        "fifth empty read attempt should hit exact no-progress threshold",
+    )
+    .await;
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::RepeatedInvalidToolCall)
+    ));
+}
+
+#[tokio::test]
+async fn fuzzy_repeated_invalid_tool_call_third_attempt_returns_no_progress() {
+    let err = replay_read_tool_error(
+        vec![
+            ChatMessage::user("read the first missing file"),
+            ChatMessage::assistant_tool_call("call_0", "read", json!({"path": "missing-a.txt"})),
+            ChatMessage::tool("call_0", "error: file not found: missing-a.txt"),
+            ChatMessage::user("try the second missing file"),
+            ChatMessage::assistant_tool_call("call_1", "read", json!({"path": "missing-b.txt"})),
+            ChatMessage::tool("call_1", "error: file not found: missing-b.txt"),
+        ],
+        json!({"path": "missing-c.txt"}),
+        "third same-shape failed read attempt should hit fuzzy no-progress threshold",
+    )
+    .await;
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::FuzzyRepeatedInvalidToolCall)
+    ));
+}
+
+#[tokio::test]
+async fn repeated_empty_required_tool_call_counts_failed_attempts_across_turns() {
+    let messages = vec![
+        ChatMessage::system("You are a file-reading assistant."),
+        ChatMessage::user("read missing.txt"),
+        ChatMessage::assistant_tool_call("call_0", "read", json!({})),
+        ChatMessage::tool("call_0", "error: missing path argument"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_1", "read", json!({})),
+        ChatMessage::tool("call_1", "error: missing path argument"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_2", "read", json!({})),
+        ChatMessage::tool("call_2", "error: missing path argument"),
+        ChatMessage::user("one more time"),
+        ChatMessage::assistant_tool_call("call_3", "read", json!({})),
+        ChatMessage::tool("call_3", "error: missing path argument"),
+    ];
+    let err = replay_read_tool_error(
+        messages,
+        json!({}),
+        "failed attempts should count across separate user turns",
+    )
+    .await;
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::RepeatedInvalidToolCall)
+    ));
+}
+
+#[tokio::test]
+async fn repeated_empty_required_tool_call_ignores_successes_and_unmatched_tool_results() {
+    let messages = vec![
+        ChatMessage::user("read missing.txt"),
+        ChatMessage::assistant_tool_call("call_0", "read", json!({})),
+        ChatMessage::tool("call_0", "ok"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_1", "read", json!({})),
+        ChatMessage::tool("other_1", "error: missing path argument"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_2", "read", json!({})),
+        ChatMessage::tool("call_2", "read succeeded"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_3", "read", json!({})),
+        ChatMessage::tool("other_3", "error: missing path argument"),
+    ];
+    let err = replay_read_tool_error(
+        messages,
+        json!({}),
+        "successful and unmatched tool results should not count toward threshold",
+    )
+    .await;
+
+    assert!(matches!(err, RuntimeError::ToolCallValidation(_)));
+}
+
+#[tokio::test]
 async fn fills_missing_required_omp_intent_argument() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",
@@ -475,4 +586,59 @@ async fn no_progress_classifier_allows_content_tool_calls_and_json_objects() {
         json_response.choices[0].message.content.as_deref(),
         Some(r#"{"answer":"ok"}"#)
     );
+}
+
+fn read_tool_definition() -> ToolDefinition {
+    ToolDefinition::function(
+        "read",
+        "read file",
+        json!({
+            "type": "object",
+            "required": ["path", "_i"],
+            "properties": {
+                "path": { "type": "string" },
+                "_i": { "type": "string" }
+            }
+        }),
+    )
+}
+
+fn failed_read_attempts(count: usize, arguments: Value) -> Vec<ChatMessage> {
+    let mut messages = vec![ChatMessage::user("read missing.txt")];
+    for index in 0..count {
+        let call_id = format!("call_{index}");
+        messages.push(ChatMessage::assistant_tool_call(
+            call_id.clone(),
+            "read",
+            arguments.clone(),
+        ));
+        messages.push(ChatMessage::tool(
+            call_id,
+            "error: missing path argument or file not found",
+        ));
+        messages.push(ChatMessage::user("try again"));
+    }
+    messages
+}
+
+async fn replay_read_tool_error(
+    messages: Vec<ChatMessage>,
+    generated_arguments: Value,
+    expectation: &str,
+) -> RuntimeError {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        format!(r#"<tool_call>{{"name":"read","arguments":{generated_arguments}}}</tool_call>"#),
+    );
+    let runtime = Runtime::new(backend);
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages,
+            tools: vec![read_tool_definition()],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err(expectation)
 }

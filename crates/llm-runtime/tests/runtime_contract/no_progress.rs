@@ -17,6 +17,7 @@ async fn no_progress_transcript_replay_fixtures_return_stable_codes() {
     for fixture_json in [
         include_str!("../fixtures/no_progress/hidden_only_reasoning.json"),
         include_str!("../fixtures/no_progress/repeated_invalid_tool_call.json"),
+        include_str!("../fixtures/no_progress/fuzzy_repeated_invalid_tool_call.json"),
         include_str!("../fixtures/no_progress/repeated_assistant_content.json"),
         include_str!("../fixtures/no_progress/stalled_assistant_turn.json"),
     ] {

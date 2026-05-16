@@ -25,6 +25,72 @@
         "role": "tool",
         "tool_call_id": "call_0",
         "content": "error: file not found: missing.txt"
+      },
+      {
+        "role": "user",
+        "content": "Try again."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"missing.txt\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "error: file not found: missing.txt"
+      },
+      {
+        "role": "user",
+        "content": "Try again."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"missing.txt\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "error: file not found: missing.txt"
+      },
+      {
+        "role": "user",
+        "content": "Try again."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_3",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"missing.txt\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_3",
+        "content": "error: file not found: missing.txt"
       }
     ],
     "tools": [

@@ -147,18 +147,28 @@ fn validate_json_schema_value(
                     display_schema_path(path)
                 ))
             })?;
-            for field in required {
-                let field = field.as_str().ok_or_else(|| {
-                    RuntimeError::ToolCallValidation(format!(
-                        "tool `{tool_name}` schema required entries for `{}` must be strings",
-                        display_schema_path(path)
-                    ))
-                })?;
-                if !object.contains_key(field) {
-                    return Err(RuntimeError::ToolCallValidation(format!(
-                        "generated tool call `{tool_name}` missing required argument `{}`",
-                        join_schema_path(path, field)
-                    )));
+            let required_fields = required
+                .iter()
+                .map(|field| {
+                    field.as_str().ok_or_else(|| {
+                        RuntimeError::ToolCallValidation(format!(
+                            "tool `{tool_name}` schema required entries for `{}` must be strings",
+                            display_schema_path(path)
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for field in &required_fields {
+                if !object.contains_key(*field) {
+                    return Err(RuntimeError::ToolCallValidation(
+                        missing_required_argument_message(
+                            tool_name,
+                            path,
+                            field,
+                            &required_fields,
+                            schema_object,
+                        ),
+                    ));
                 }
             }
         }
@@ -194,6 +204,79 @@ fn validate_json_schema_value(
         }
     }
     Ok(())
+}
+
+fn missing_required_argument_message(
+    tool_name: &str,
+    path: &str,
+    field: &str,
+    required_fields: &[&str],
+    schema_object: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let required = required_fields
+        .iter()
+        .map(|field| format!("`{}`", join_schema_path(path, field)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hint = expected_arguments_object_hint(required_fields, schema_object);
+    format!(
+        "generated tool call `{tool_name}` missing required argument `{}`; required arguments: {required}; expected arguments object: {hint}",
+        join_schema_path(path, field)
+    )
+}
+
+fn expected_arguments_object_hint(
+    required_fields: &[&str],
+    schema_object: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let properties = schema_object
+        .get("properties")
+        .and_then(serde_json::Value::as_object);
+    let mut hint = serde_json::Map::new();
+    for field in required_fields {
+        let field_schema = properties.and_then(|properties| properties.get(*field));
+        hint.insert(
+            (*field).to_owned(),
+            expected_schema_value_hint(field_schema),
+        );
+    }
+    serde_json::to_string(&serde_json::Value::Object(hint)).unwrap_or_else(|_| "{}".to_owned())
+}
+
+fn expected_schema_value_hint(schema: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(schema_object) = schema.and_then(serde_json::Value::as_object) else {
+        return serde_json::Value::String("<value>".to_owned());
+    };
+    if let Some(enum_values) = schema_object
+        .get("enum")
+        .and_then(serde_json::Value::as_array)
+        && let Some(first) = enum_values.first()
+    {
+        return first.clone();
+    }
+    let placeholder = schema_object
+        .get("type")
+        .and_then(first_schema_type_name)
+        .map(|type_name| match type_name {
+            "array" => "<array>",
+            "boolean" => "<boolean>",
+            "integer" => "<integer>",
+            "null" => "<null>",
+            "number" => "<number>",
+            "object" => "<object>",
+            "string" => "<string>",
+            _ => "<value>",
+        })
+        .unwrap_or("<value>");
+    serde_json::Value::String(placeholder.to_owned())
+}
+
+fn first_schema_type_name(schema_type: &serde_json::Value) -> Option<&str> {
+    match schema_type {
+        serde_json::Value::String(type_name) => Some(type_name),
+        serde_json::Value::Array(types) => types.iter().find_map(serde_json::Value::as_str),
+        _ => None,
+    }
 }
 
 fn schema_type_matches(schema_type: &serde_json::Value, value: &serde_json::Value) -> bool {
