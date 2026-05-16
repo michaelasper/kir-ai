@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.0](https://github.com/michaelasper/kir-ai/compare/v1.16.0...v1.17.0) (2026-05-16)
+
+### Features
+
+* **kv-cache:** add restorable native cache snapshots ([a8840a8](https://github.com/michaelasper/kir-ai/commit/a8840a8de710d1455b9965cdbac6698da77447b3))
+
 ## [1.16.0](https://github.com/michaelasper/kir-ai/compare/v1.15.3...v1.16.0) (2026-05-15)
 
 ### Features
