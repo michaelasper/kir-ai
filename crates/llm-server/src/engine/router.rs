@@ -27,6 +27,7 @@ use llm_hub::HubClient;
 use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;
 
 /// Fails closed because a production router must be constructed with an
 /// explicit inference backend.
@@ -276,6 +277,7 @@ fn engine_state(
         allow_unauthenticated_admin,
         model_home: options.model_home.unwrap_or_else(default_model_home),
         model_store_usage: Arc::new(Mutex::new(ModelStoreUsageCache::default())),
+        model_pull_gate: Arc::new(Semaphore::new(1)),
         hub_client,
         hf_token: options.hf_token.map(Arc::from),
         stream_stall_timeout: options.stream_stall_timeout,

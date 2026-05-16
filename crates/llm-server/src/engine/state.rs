@@ -15,6 +15,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::Semaphore;
 
 pub(super) type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 
@@ -31,6 +32,7 @@ pub(super) struct AppState {
     pub(super) allow_unauthenticated_admin: bool,
     pub(super) model_home: PathBuf,
     pub(super) model_store_usage: Arc<Mutex<ModelStoreUsageCache>>,
+    pub(super) model_pull_gate: Arc<Semaphore>,
     pub(super) hub_client: HubClient,
     pub(super) hf_token: Option<Arc<str>>,
     pub(super) stream_stall_timeout: Option<Duration>,

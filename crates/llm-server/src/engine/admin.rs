@@ -179,6 +179,12 @@ pub(super) async fn admin_model_pull(
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
     let request = super::parse_json_request(request, &state)?;
+    let _pull_permit = state
+        .model_pull_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| EngineError::Overloaded("model pull gate is closed".to_owned()))?;
     let plan = match build_admin_download_plan(&state, request).await {
         Ok(plan) => plan,
         Err(err) => {

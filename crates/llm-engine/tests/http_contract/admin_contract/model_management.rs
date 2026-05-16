@@ -288,6 +288,58 @@ async fn admin_model_pull_endpoint_promotes_snapshot() {
 }
 
 #[tokio::test]
+async fn admin_model_pull_endpoint_serializes_concurrent_downloads() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut hub = spawn_blocking_fake_hub_server();
+    let app = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            model_home: Some(temp.path().to_path_buf()),
+            hub_endpoint: Some(hub.endpoint.clone()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
+
+    let first = tokio::spawn({
+        let app = app.clone();
+        async move {
+            app.oneshot(admin_model_pull_request("TestOrg/FirstModel"))
+                .await
+                .expect("first admin pull response")
+        }
+    });
+    assert_eq!(next_fake_hub_download(&mut hub).await, "TestOrg/FirstModel");
+
+    let second = tokio::spawn({
+        let app = app.clone();
+        async move {
+            app.oneshot(admin_model_pull_request("TestOrg/SecondModel"))
+                .await
+                .expect("second admin pull response")
+        }
+    });
+    assert_no_fake_hub_download(&mut hub).await;
+
+    hub.release_one_download();
+    let first_response = first.await.expect("first admin pull task");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(
+        next_fake_hub_download(&mut hub).await,
+        "TestOrg/SecondModel"
+    );
+
+    hub.release_one_download();
+    let second_response = second.await.expect("second admin pull task");
+    assert_eq!(second_response.status(), StatusCode::OK);
+    assert_eq!(hub.max_active_downloads(), 1);
+    hub.server.join().expect("fake hub exits");
+}
+
+#[tokio::test]
 async fn admin_model_endpoint_uses_stable_missing_model_error() {
     let request_id = "admin-model-not-found-request-id";
     let response = build_router_with_protocol_test_backend()
@@ -315,4 +367,40 @@ async fn admin_model_endpoint_uses_stable_missing_model_error() {
     assert_eq!(body["error"]["code"], "model_not_found");
     assert_eq!(body["error"]["phase"], "model_resolution");
     assert_eq!(body["error"]["retryable"], false);
+}
+
+fn admin_model_pull_request(repo_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/admin/models/{}/pull",
+            llm_engine::DEFAULT_MODEL_ID
+        ))
+        .header("authorization", "Bearer secret-admin-token")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "repo_id": repo_id,
+                "revision": "main",
+                "profile": "qwen36-safetensors-bf16",
+                "metadata_only": true
+            })
+            .to_string(),
+        ))
+        .expect("request builds")
+}
+
+async fn next_fake_hub_download(hub: &mut BlockingFakeHubServer) -> String {
+    tokio::time::timeout(Duration::from_secs(2), hub.download_started.recv())
+        .await
+        .expect("download starts before timeout")
+        .expect("fake hub download channel is open")
+}
+
+async fn assert_no_fake_hub_download(hub: &mut BlockingFakeHubServer) {
+    match tokio::time::timeout(Duration::from_millis(300), hub.download_started.recv()).await {
+        Ok(Some(repo_id)) => panic!("concurrent model pull started downloading {repo_id}"),
+        Ok(None) => panic!("fake hub download channel closed"),
+        Err(_) => {}
+    }
 }
