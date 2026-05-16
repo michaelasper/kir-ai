@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.1](https://github.com/michaelasper/kir-ai/compare/v1.17.0...v1.17.1) (2026-05-16)
+
+### Bug Fixes
+
+* **mlx:** preserve non-stream Qwen XML structured tool calls ([12961ab](https://github.com/michaelasper/kir-ai/commit/12961ab1c203dec2aea40cb5cd692a480fae3173))
+
 ## [1.17.0](https://github.com/michaelasper/kir-ai/compare/v1.16.0...v1.17.0) (2026-05-16)
 
 ### Features
