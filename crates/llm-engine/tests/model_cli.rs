@@ -1119,6 +1119,10 @@ fn serve_help_prints_without_backend_validation() {
         "serve help should document configurable completion prompt limits: {stdout}"
     );
     assert!(
+        stdout.contains("--stream-stall-timeout <secs>"),
+        "serve help should document configurable stream stall timeout: {stdout}"
+    );
+    assert!(
         stdout.contains("--canonical-tool-schemas"),
         "serve help should document production opt-in tool schema canonicalization: {stdout}"
     );

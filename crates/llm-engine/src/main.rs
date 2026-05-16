@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
             let canonical_tool_schemas = canonical_tool_schemas_enabled(&serve_args)?;
             let request_limits = request_limits_from_args(&serve_args)?;
+            let stream_stall_timeout = serve_stream_stall_timeout_from_args(&serve_args)?;
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
@@ -96,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
                 hf_token: std::env::var("HF_TOKEN").ok(),
                 canonical_tool_schemas,
                 request_limits,
+                stream_stall_timeout,
                 ..EngineOptions::default()
             };
             let snapshot_alias = flag_value(&serve_args, "--snapshot-alias")
@@ -295,6 +297,7 @@ Options:
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
+  --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
@@ -345,6 +348,26 @@ fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> any
     Ok(parsed)
 }
 
+fn serve_stream_stall_timeout_from_args(
+    args: &[String],
+) -> anyhow::Result<Option<std::time::Duration>> {
+    let secs = parse_positive_u64_flag(args, "--stream-stall-timeout", 300)?;
+    Ok(Some(std::time::Duration::from_secs(secs)))
+}
+
+fn parse_positive_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
+    let Some(value) = flag_value(args, flag) else {
+        return Ok(default);
+    };
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|err| anyhow::anyhow!("{flag} must be a positive integer: {err}"))?;
+    if parsed == 0 {
+        anyhow::bail!("{flag} must be greater than 0");
+    }
+    Ok(parsed)
+}
+
 fn canonical_tool_schemas_enabled(args: &[String]) -> anyhow::Result<bool> {
     if has_flag(args, "--canonical-tool-schemas") {
         return Ok(true);
@@ -389,6 +412,48 @@ fn parse_bool_config(name: &str, value: &str) -> anyhow::Result<bool> {
         "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
         "0" | "false" | "FALSE" | "no" | "NO" => Ok(false),
         other => anyhow::bail!("{name} must be 1/0 or true/false, got `{other}`"),
+    }
+}
+
+#[cfg(test)]
+mod serve_arg_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn stream_stall_timeout_defaults_to_300_seconds() {
+        assert_eq!(
+            serve_stream_stall_timeout_from_args(&args(&[])).expect("default timeout parses"),
+            Some(Duration::from_secs(300))
+        );
+    }
+
+    #[test]
+    fn stream_stall_timeout_parses_custom_seconds() {
+        assert_eq!(
+            serve_stream_stall_timeout_from_args(&args(&["--stream-stall-timeout", "42"]))
+                .expect("custom timeout parses"),
+            Some(Duration::from_secs(42))
+        );
+    }
+
+    #[test]
+    fn stream_stall_timeout_rejects_zero_and_non_numeric_values() {
+        let zero = serve_stream_stall_timeout_from_args(&args(&["--stream-stall-timeout", "0"]))
+            .expect_err("zero timeout fails");
+        assert!(zero.to_string().contains("greater than 0"), "error: {zero}");
+
+        let non_numeric =
+            serve_stream_stall_timeout_from_args(&args(&["--stream-stall-timeout", "abc"]))
+                .expect_err("non-numeric timeout fails");
+        assert!(
+            non_numeric.to_string().contains("--stream-stall-timeout"),
+            "error: {non_numeric}"
+        );
     }
 }
 

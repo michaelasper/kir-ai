@@ -27,10 +27,6 @@ use std::{
 };
 use tokio::time::Instant as TokioInstant;
 
-// After the first real delta, require more than a one-byte drip before
-// extending the stream stall deadline again.
-const MIN_STREAM_STALL_PROGRESS_BYTES: usize = 2;
-
 pub(super) fn stream_runtime_events<'a, E, S>(
     lifecycle: StreamRunLifecycle,
     events: S,
@@ -102,6 +98,18 @@ where
                             return;
                         }
                         yield sse_json_event(progress);
+                    }
+                    EngineStreamStep::InternalProgress { bytes } => {
+                        if lifecycle.active_request.cancellation.is_cancelled() {
+                            for event in lifecycle.finish_cancellation(
+                                "request was cancelled before internal stream progress processing",
+                                "decode",
+                            ) {
+                                yield event;
+                            }
+                            return;
+                        }
+                        stall_deadline.record_internal_progress(bytes);
                     }
                     EngineStreamStep::ToolStage(stage) => {
                         if lifecycle.active_request.cancellation.is_cancelled() {
@@ -501,8 +509,6 @@ enum StreamWaitError {
 struct StreamStallDeadline {
     timeout: Option<Duration>,
     deadline: Option<TokioInstant>,
-    seen_progress: bool,
-    bytes_since_deadline_reset: usize,
 }
 
 impl StreamStallDeadline {
@@ -510,8 +516,6 @@ impl StreamStallDeadline {
         Self {
             timeout,
             deadline: None,
-            seen_progress: false,
-            bytes_since_deadline_reset: 0,
         }
     }
 
@@ -520,23 +524,22 @@ impl StreamStallDeadline {
     }
 
     fn record_chunk(&mut self, chunk: &impl StreamChunkProgress) {
-        let progress_bytes = chunk.real_delta_bytes();
-        if progress_bytes == 0 || self.timeout.is_none() {
+        if chunk.has_real_delta() {
+            self.record_progress();
+        }
+    }
+
+    fn record_internal_progress(&mut self, bytes: usize) {
+        if bytes > 0 {
+            self.record_progress();
+        }
+    }
+
+    fn record_progress(&mut self) {
+        if self.timeout.is_none() {
             return;
         }
-        if !self.seen_progress {
-            self.seen_progress = true;
-            self.bytes_since_deadline_reset = 0;
-            self.reset_deadline();
-            return;
-        }
-        self.bytes_since_deadline_reset = self
-            .bytes_since_deadline_reset
-            .saturating_add(progress_bytes);
-        if self.bytes_since_deadline_reset >= MIN_STREAM_STALL_PROGRESS_BYTES {
-            self.bytes_since_deadline_reset = 0;
-            self.reset_deadline();
-        }
+        self.reset_deadline();
     }
 
     fn reset_deadline(&mut self) {
@@ -592,6 +595,7 @@ pub(super) trait EngineStreamEvent {
 pub(super) enum EngineStreamStep<C> {
     Chunk(C),
     Progress(BackendStreamProgress),
+    InternalProgress { bytes: usize },
     ToolStage(ChatCompletionStreamStage),
     Complete(Usage),
 }
@@ -612,6 +616,7 @@ impl EngineStreamEvent for ChatCompletionStreamEvent {
         match self {
             Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
             Self::Progress(progress) => EngineStreamStep::Progress(progress),
+            Self::InternalProgress { bytes } => EngineStreamStep::InternalProgress { bytes },
             Self::Stage(stage) => EngineStreamStep::ToolStage(stage),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }

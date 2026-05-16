@@ -40,6 +40,7 @@ impl<'a> ChatCompletionStream<'a> {
             match event? {
                 ChatCompletionStreamEvent::Chunk(chunk) => chunks.push(chunk),
                 ChatCompletionStreamEvent::Progress(_) => {}
+                ChatCompletionStreamEvent::InternalProgress { .. } => {}
                 ChatCompletionStreamEvent::Stage(_) => {}
                 ChatCompletionStreamEvent::Complete(final_usage) => usage = Some(final_usage),
             }
@@ -88,6 +89,7 @@ impl<'a> CompletionStream<'a> {
 pub enum ChatCompletionStreamEvent {
     Chunk(ChatCompletionStreamResponse),
     Progress(BackendStreamProgress),
+    InternalProgress { bytes: usize },
     Stage(ChatCompletionStreamStage),
     Complete(Usage),
 }

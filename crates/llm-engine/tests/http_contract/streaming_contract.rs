@@ -256,46 +256,147 @@ async fn chat_stream_stall_cancels_backend_work() {
 }
 
 #[tokio::test]
-async fn chat_stream_stall_detects_slow_drip_output() {
-    let cancelled = Arc::new(Notify::new());
-    let response = build_router_with_backend_and_options(
-        Box::new(SlowDripStreamBackend {
+async fn chat_stream_does_not_stall_on_regular_one_byte_deltas() {
+    let app = build_router_with_unauthenticated_admin_and_options(
+        Box::new(OneByteDeltaStreamBackend {
             delay: Duration::from_millis(40),
-            cancelled: cancelled.clone(),
+            fragments: vec!["a", "b", "c"],
         }),
         EngineOptions {
             stream_stall_timeout: Some(Duration::from_millis(50)),
             ..EngineOptions::default()
         },
     )
-    .expect("router builds")
-    .oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "model": llm_engine::DEFAULT_MODEL_ID,
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "stream": true
-                })
-                .to_string(),
-            ))
-            .expect("request builds"),
-    )
-    .await
-    .expect("stream response");
+    .expect("router builds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = tokio::time::timeout(Duration::from_millis(250), body_text(response.into_body()))
+    let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
         .await
-        .expect("slow drip should trip stream stall timeout");
-    assert!(body.contains("\"code\":\"stream_stalled\""), "body: {body}");
+        .expect("one-byte deltas should complete before stream stall timeout");
+    assert!(
+        !body.contains("\"code\":\"stream_stalled\""),
+        "body: {body}"
+    );
+    assert!(body.contains("\"content\":\"a\""), "body: {body}");
+    assert!(body.contains("\"content\":\"b\""), "body: {body}");
+    assert!(body.contains("\"content\":\"c\""), "body: {body}");
     assert_eq!(body.matches("data: [DONE]").count(), 1);
-    tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
+    let metrics = wait_for_metrics(&app, |body| body["successful_requests"] == 1).await;
+    assert_eq!(metrics["stream_stalled_requests"], 0);
+    assert_eq!(metrics["failed_requests"], 0);
+}
+
+#[tokio::test]
+async fn chat_stream_required_tool_buffered_arguments_do_not_stall() {
+    let app = build_router_with_unauthenticated_admin_and_options(
+        Box::new(SlowStructuredToolArgumentBackend {
+            delay: Duration::from_millis(40),
+        }),
+        EngineOptions {
+            stream_stall_timeout: Some(Duration::from_millis(70)),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "read calculator.py"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "description": "read file",
+                                "parameters": {
+                                    "type": "object",
+                                    "required": ["path", "_i"],
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "_i": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }],
+                        "tool_choice": "required",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
         .await
-        .expect("stream stall cancels slow drip backend");
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(Duration::from_millis(500), body_text(response.into_body()))
+        .await
+        .expect("buffered required-tool arguments should complete before stall timeout");
+    assert!(
+        !body.contains("\"code\":\"stream_stalled\""),
+        "body: {body}"
+    );
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+
+    let frames = sse_json_frames(&body);
+    let mut reconstructed_arguments = String::new();
+    let mut saw_tool_calls_finish = false;
+
+    for frame in &frames {
+        let Some(choices) = frame["choices"].as_array() else {
+            continue;
+        };
+        for choice in choices {
+            if let Some(tool_calls) = choice["delta"]["tool_calls"].as_array() {
+                for tool_call in tool_calls {
+                    if let Some(arguments) = tool_call["function"]["arguments"].as_str() {
+                        reconstructed_arguments.push_str(arguments);
+                    }
+                }
+            }
+            if choice["finish_reason"].as_str() == Some("tool_calls") {
+                saw_tool_calls_finish = true;
+            }
+        }
+    }
+
+    assert!(saw_tool_calls_finish);
+    let reconstructed_arguments: Value =
+        serde_json::from_str(&reconstructed_arguments).expect("client arguments JSON");
+    assert_eq!(reconstructed_arguments["path"], "calculator.py");
+    assert!(
+        reconstructed_arguments["_i"]
+            .as_str()
+            .is_some_and(|intent| !intent.is_empty())
+    );
+    let metrics = wait_for_metrics(&app, |body| body["successful_requests"] == 1).await;
+    assert_eq!(metrics["stream_stalled_requests"], 0);
+    assert_eq!(metrics["failed_requests"], 0);
 }
 
 #[tokio::test]
@@ -892,19 +993,19 @@ impl ModelBackend for PrefillProgressStreamBackend {
     }
 }
 
-struct SlowDripStreamBackend {
+struct OneByteDeltaStreamBackend {
     delay: Duration,
-    cancelled: Arc<Notify>,
+    fragments: Vec<&'static str>,
 }
 
 #[async_trait]
-impl ModelBackend for SlowDripStreamBackend {
+impl ModelBackend for OneByteDeltaStreamBackend {
     fn model_id(&self) -> &str {
         llm_engine::DEFAULT_MODEL_ID
     }
 
     fn model_metadata(&self) -> BackendModelMetadata {
-        qwen_test_metadata(self.model_id(), "slow-drip-stream")
+        qwen_test_metadata(self.model_id(), "one-byte-delta-stream")
     }
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -926,24 +1027,101 @@ impl ModelBackend for SlowDripStreamBackend {
     fn generate_stream_with_cancel<'a>(
         &'a self,
         _request: BackendRequest,
-        cancellation: CancellationToken,
+        _cancellation: CancellationToken,
     ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
         let delay = self.delay;
-        let cancelled = self.cancelled.clone();
-        tokio::spawn(async move {
-            cancellation.cancelled().await;
-            cancelled.notify_waiters();
-        });
+        let fragments = self.fragments.clone();
         async_stream::try_stream! {
-            loop {
+            for (index, fragment) in fragments.iter().enumerate() {
                 tokio::time::sleep(delay).await;
                 yield BackendStreamChunk {
-                    text: "x".to_owned(),
+                    text: (*fragment).to_owned(),
                     tool_call_deltas: Vec::new(),
                     prompt_tokens: 1,
                     prompt_cached_tokens: None,
                     completion_tokens: 1,
-                    finish_reason: None,
+                    finish_reason: (index + 1 == fragments.len()).then_some(BackendFinishReason::Stop),
+                    progress: None,
+                };
+            }
+        }
+        .boxed()
+    }
+}
+
+struct SlowStructuredToolArgumentBackend {
+    delay: Duration,
+}
+
+#[async_trait]
+impl ModelBackend for SlowStructuredToolArgumentBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "slow-structured-tool-argument-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "slow structured tool argument test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "slow structured tool argument test must use generate_stream".to_owned(),
+        ))
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        let delay = self.delay;
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![http_structured_tool_delta(
+                    0,
+                    Some("call_read_1"),
+                    Some("read"),
+                    Some("{"),
+                )],
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: None,
+                progress: None,
+            };
+            for arguments in [
+                r#""path""#,
+                r#":"#,
+                r#""calculator.py""#,
+                r#"}"#,
+            ] {
+                tokio::time::sleep(delay).await;
+                yield BackendStreamChunk {
+                    text: String::new(),
+                    tool_call_deltas: vec![http_structured_tool_delta(
+                        0,
+                        None,
+                        None,
+                        Some(arguments),
+                    )],
+                    prompt_tokens: 1,
+                    prompt_cached_tokens: None,
+                    completion_tokens: 1,
+                    finish_reason: (arguments == "}").then_some(BackendFinishReason::ToolCalls),
                     progress: None,
                 };
             }

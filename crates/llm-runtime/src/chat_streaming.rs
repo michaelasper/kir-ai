@@ -110,6 +110,8 @@ pub(crate) fn streaming_chat_stream<'a>(
         let max_stop_len = max_stop_sequence_len(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
+            let internal_progress_bytes = internal_progress_bytes(&chunk);
+            let mut emitted_public_chunk = false;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens += chunk.completion_tokens;
@@ -134,6 +136,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                     api_tool_call_deltas
                 };
                 if !tool_call_deltas.is_empty() {
+                    emitted_public_chunk = true;
                     yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                         &completion,
                         ChatCompletionDelta {
@@ -170,6 +173,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
                         .min(tool_markup_policy.safe_emit_len(&raw_text));
                     if safe_len > emitted_len {
+                        emitted_public_chunk = true;
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
                             ChatCompletionDelta {
@@ -196,6 +200,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                         .skip(emitted_tool_calls)
                     {
                         let delta = tool_call_delta(index, tool_call)?;
+                        emitted_public_chunk = true;
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
                             ChatCompletionDelta {
@@ -217,6 +222,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                     if safe_len.saturating_sub(emitted_len)
                         >= UNMARKED_TOOL_BUFFER_FLUSH_THRESHOLD
                     {
+                        emitted_public_chunk = true;
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                             &completion,
                             ChatCompletionDelta {
@@ -229,6 +235,11 @@ pub(crate) fn streaming_chat_stream<'a>(
                         emitted_len = safe_len;
                     }
                 }
+            }
+            if internal_progress_bytes > 0 && !emitted_public_chunk {
+                yield ChatCompletionStreamEvent::InternalProgress {
+                    bytes: internal_progress_bytes,
+                };
             }
             if let Some(reason) = chunk.finish_reason {
                 finish_reason = api_finish_reason(reason);
@@ -383,6 +394,21 @@ fn api_tool_call_delta(delta: &BackendToolCallDelta) -> llm_api::ToolCallDelta {
         call_type: delta.call_type.as_ref().map(api_tool_call_type),
         function: delta.function.as_ref().map(api_tool_call_function_delta),
     }
+}
+
+fn internal_progress_bytes(chunk: &BackendStreamChunk) -> usize {
+    chunk.text.len()
+        + chunk
+            .tool_call_deltas
+            .iter()
+            .map(|delta| {
+                delta
+                    .function
+                    .as_ref()
+                    .and_then(|function| function.arguments.as_ref())
+                    .map_or(0, String::len)
+            })
+            .sum::<usize>()
 }
 
 fn api_tool_call_type(call_type: &BackendToolCallType) -> llm_api::ToolCallType {
