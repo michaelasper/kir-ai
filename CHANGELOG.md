@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.2](https://github.com/michaelasper/kir-ai/compare/v1.17.1...v1.17.2) (2026-05-16)
+
+### Bug Fixes
+
+* **runtime:** bound repeated invalid tool calls ([52cccd8](https://github.com/michaelasper/kir-ai/commit/52cccd83cffc51e44e0f4d3b4ecaaf34a9b28fb5))
+* **streaming:** track hidden chat progress for stall deadlines ([75a058d](https://github.com/michaelasper/kir-ai/commit/75a058d948e91f715255fa60ba966d1407c6a1d1))
+
 ## [1.17.1](https://github.com/michaelasper/kir-ai/compare/v1.17.0...v1.17.1) (2026-05-16)
 
 ### Bug Fixes
