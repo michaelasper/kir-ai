@@ -807,6 +807,8 @@ mod tests {
 
         metrics.record_hit(3);
         metrics.record_miss();
+        metrics.record_miss_tokens(5);
+        metrics.record_prefill_chunk(5);
         metrics.record_store(32);
         metrics.record_eviction(16);
         metrics.record_rejected();
@@ -821,6 +823,11 @@ mod tests {
         assert_eq!(snapshot["evictions"], 1);
         assert_eq!(snapshot["rejected"], 1);
         assert_eq!(snapshot["reused_tokens"], 3);
+        assert_eq!(snapshot["prefill_chunks"], 1);
+        assert_eq!(snapshot["prefill_tokens"], 5);
+        assert_eq!(snapshot["hit_tokens"], 3);
+        assert_eq!(snapshot["miss_tokens"], 5);
+        assert_eq!(snapshot["avoided_prefill_tokens"], 3);
         assert_eq!(snapshot["bytes_stored"], 32);
         assert_eq!(snapshot["bytes_evicted"], 16);
         assert_eq!(snapshot["resident_bytes"], 32);

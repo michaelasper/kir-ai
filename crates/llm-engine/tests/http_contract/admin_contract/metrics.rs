@@ -363,6 +363,27 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         "native text Qwen prefix cache hit clone bytes are exposed"
     );
     assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["prefill_chunks"].is_number(),
+        "native text Qwen prefix cache prefill chunk metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["prefill_tokens"].is_number(),
+        "native text Qwen prefix cache prefill token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hit_tokens"].is_number(),
+        "native text Qwen prefix cache hit token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["miss_tokens"].is_number(),
+        "native text Qwen prefix cache miss token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["avoided_prefill_tokens"]
+            .is_number(),
+        "native text Qwen prefix cache avoided prefill token metrics are exposed"
+    );
+    assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hits"].is_number(),
         "native text Gemma prefix cache hits are exposed"
     );
@@ -378,6 +399,27 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hit_clone_bytes"].is_number(),
         "native text Gemma prefix cache hit clone bytes are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["prefill_chunks"].is_number(),
+        "native text Gemma prefix cache prefill chunk metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["prefill_tokens"].is_number(),
+        "native text Gemma prefix cache prefill token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hit_tokens"].is_number(),
+        "native text Gemma prefix cache hit token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["miss_tokens"].is_number(),
+        "native text Gemma prefix cache miss token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["avoided_prefill_tokens"]
+            .is_number(),
+        "native text Gemma prefix cache avoided prefill token metrics are exposed"
     );
     assert!(
         body["backend_metrics"]["mlx"]["requests_total"].is_number(),
@@ -457,6 +499,26 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["hit_clone_bytes"].is_number(),
         "native Qwen prefix cache hit clone bytes are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["prefill_chunks"].is_number(),
+        "native Qwen prefix cache prefill chunk metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["prefill_tokens"].is_number(),
+        "native Qwen prefix cache prefill token metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["hit_tokens"].is_number(),
+        "native Qwen prefix cache hit token metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["miss_tokens"].is_number(),
+        "native Qwen prefix cache miss token metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["avoided_prefill_tokens"].is_number(),
+        "native Qwen prefix cache avoided prefill token metrics are exposed through the legacy object"
     );
 }
 

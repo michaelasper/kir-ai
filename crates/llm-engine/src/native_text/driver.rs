@@ -725,6 +725,9 @@ where
                 prefill_hidden = hidden_states.last().cloned();
                 completed_prefill_chunks += 1;
                 completed_prefill_tokens += chunk.len();
+                self.adapter
+                    .prefix_cache_metrics()
+                    .record_prefill_chunk(chunk.len() as u64);
                 if let Some(progress_tx) = progress_tx {
                     progress_tx
                         .send(Ok(BackendStreamChunk {

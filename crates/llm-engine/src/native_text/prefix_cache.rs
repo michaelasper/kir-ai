@@ -117,6 +117,11 @@ pub(crate) struct NativeTextPrefixCacheCounters {
     pub(crate) evictions: u64,
     pub(crate) rejected: u64,
     pub(crate) reused_tokens: u64,
+    pub(crate) prefill_chunks: u64,
+    pub(crate) prefill_tokens: u64,
+    pub(crate) hit_tokens: u64,
+    pub(crate) miss_tokens: u64,
+    pub(crate) avoided_prefill_tokens: u64,
     pub(crate) entries_scanned: u64,
     pub(crate) namespace_entries_scanned: u64,
     pub(crate) hit_clone_bytes: u64,
@@ -196,9 +201,12 @@ where
         metrics.record_lookup_scan(entries_scanned, namespace_entries_scanned);
         let Some((best_len, clone_bytes, payload)) = hit else {
             metrics.record_miss();
+            metrics.record_miss_tokens(tokens.len() as u64);
             return None;
         };
-        metrics.record_hit(best_len as u64);
+        let hit_tokens = best_len as u64;
+        metrics.record_hit(hit_tokens);
+        metrics.record_miss_tokens((tokens.len() as u64).saturating_sub(hit_tokens));
         metrics.record_hit_clone_bytes(clone_bytes);
         Some(NativeTextPrefixCacheHit {
             token_count: best_len,
@@ -316,11 +324,24 @@ impl NativeTextPrefixCacheMetrics {
         self.update(|counters| {
             counters.hits += 1;
             counters.reused_tokens += tokens;
+            counters.hit_tokens += tokens;
+            counters.avoided_prefill_tokens += tokens;
         });
     }
 
     pub(crate) fn record_miss(&self) {
         self.update(|counters| counters.misses += 1);
+    }
+
+    pub(crate) fn record_miss_tokens(&self, tokens: u64) {
+        self.update(|counters| counters.miss_tokens += tokens);
+    }
+
+    pub(crate) fn record_prefill_chunk(&self, tokens: u64) {
+        self.update(|counters| {
+            counters.prefill_chunks += 1;
+            counters.prefill_tokens += tokens;
+        });
     }
 
     pub(crate) fn record_lookup_scan(&self, entries_scanned: u64, namespace_entries_scanned: u64) {
@@ -374,6 +395,11 @@ impl NativeTextPrefixCacheMetrics {
             "evictions": counters.evictions,
             "rejected": counters.rejected,
             "reused_tokens": counters.reused_tokens,
+            "prefill_chunks": counters.prefill_chunks,
+            "prefill_tokens": counters.prefill_tokens,
+            "hit_tokens": counters.hit_tokens,
+            "miss_tokens": counters.miss_tokens,
+            "avoided_prefill_tokens": counters.avoided_prefill_tokens,
             "entries_scanned": counters.entries_scanned,
             "namespace_entries_scanned": counters.namespace_entries_scanned,
             "hit_clone_bytes": counters.hit_clone_bytes,

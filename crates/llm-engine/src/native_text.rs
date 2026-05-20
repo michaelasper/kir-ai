@@ -1429,6 +1429,29 @@ mod tests {
     }
 
     #[test]
+    fn driver_records_prefill_and_avoided_work_for_warm_prefix() {
+        let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11, 12, 13, 14]);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let driver = driver_for_test(adapter).with_max_prefill_tokens(2);
+
+        let first = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("cold generation succeeds");
+        let second = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("warm generation succeeds");
+
+        assert_eq!(first.prompt_cached_tokens, Some(0));
+        assert_eq!(second.prompt_cached_tokens, Some(5));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["prefill_chunks"], 3);
+        assert_eq!(snapshot["prefill_tokens"], 5);
+        assert_eq!(snapshot["hit_tokens"], 5);
+        assert_eq!(snapshot["miss_tokens"], 5);
+        assert_eq!(snapshot["avoided_prefill_tokens"], 5);
+    }
+
+    #[test]
     fn driver_reports_prefix_cache_miss_and_hit_for_streaming_generation() {
         let driver = driver_for_test(TestAdapter::new([1_usize]));
 

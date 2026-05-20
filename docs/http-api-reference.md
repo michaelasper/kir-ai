@@ -157,7 +157,11 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   reports sidecar request duration, while
   `backend_metrics.mlx.blocking_upstream_request_latency_ms` and
   `backend_metrics.mlx.streaming_upstream_request_latency_ms` split that
-  duration by kir-ai blocking versus streaming generation path.
+  duration by kir-ai blocking versus streaming generation path. Native text
+  prefix-cache objects include cache counters plus `prefill_chunks`,
+  `prefill_tokens`, `hit_tokens`, `miss_tokens`, and
+  `avoided_prefill_tokens` so warm-prefix runs can distinguish hit rate from
+  avoided prefill work.
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`
   is fixed at `128`; `recent` contains successful buffered and streaming
   requests with `request_id`, `model`, `streamed`, `prompt_tokens`,
