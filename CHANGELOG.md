@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.22.1](https://github.com/michaelasper/kir-ai/compare/v1.22.0...v1.22.1) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-233:** standardize native max token resolution ([ae90454](https://github.com/michaelasper/kir-ai/commit/ae90454186c1d89da1694b12db2d56ebc12d7688))
+
 ## [1.22.0](https://github.com/michaelasper/kir-ai/compare/v1.21.0...v1.22.0) (2026-05-20)
 
 ### Features
