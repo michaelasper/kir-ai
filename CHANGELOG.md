@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.18.0](https://github.com/michaelasper/kir-ai/compare/v1.17.10...v1.18.0) (2026-05-20)
+
+### Features
+
+* **COR-228:** expose prefix cache lookup and clone metrics ([6784700](https://github.com/michaelasper/kir-ai/commit/6784700fd4f19cb862e8e0fce49f80f0ceafe90d))
+
 ## [1.17.10](https://github.com/michaelasper/kir-ai/compare/v1.17.9...v1.17.10) (2026-05-20)
 
 ### Bug Fixes
