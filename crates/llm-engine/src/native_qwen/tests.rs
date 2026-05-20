@@ -52,6 +52,49 @@ fn open_qwen_backend_with_options_blocking(
         .expect("backend opens snapshot")
 }
 
+async fn start_qwen_decode_session(
+    backend: &NativeQwenBackend,
+    context_tokens: &[usize],
+    max_new_tokens: u32,
+    request: &BackendRequest,
+    cancellation: &CancellationToken,
+) -> Result<NativeQwenDecodeSession, BackendError> {
+    let mut scratch = InferenceScratchpad::new();
+    backend
+        .driver
+        .start_decode_session(
+            context_tokens,
+            max_new_tokens,
+            request,
+            cancellation,
+            &mut scratch,
+        )
+        .await
+}
+
+async fn select_qwen_token(
+    backend: &NativeQwenBackend,
+    hidden: &[f32],
+    sampling: SamplingConfig,
+) -> Result<usize, BackendError> {
+    let sampling_draw = if sampling.is_greedy() {
+        None
+    } else {
+        let mut sampling_rng = crate::native_text::NativeTextSamplingRng::from_entropy();
+        Some(sampling_rng.draw_f32())
+    };
+    backend
+        .driver
+        .adapter
+        .next_token_from_hidden(
+            hidden,
+            sampling,
+            sampling_draw,
+            &mut llm_sampler::TopPSamplerScratch::new(),
+        )
+        .await
+}
+
 #[derive(Default)]
 struct TestQwenCacheMirrorCleaner {
     calls: AtomicUsize,
@@ -646,8 +689,8 @@ fn native_qwen_adapter_stop_tokens_use_chatml_im_end() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
+#[tokio::test]
+async fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
     let snapshot = temp_snapshot_dir("full-context-prefill");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -663,14 +706,15 @@ fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cache() {
         64,
     );
 
-    let decode = backend
-        .start_decode_session(
-            &[0, 1, 0],
-            8,
-            &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
-            &CancellationToken::new(),
-        )
-        .expect("decode session starts");
+    let decode = start_qwen_decode_session(
+        &backend,
+        &[0, 1, 0],
+        8,
+        &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("decode session starts");
 
     match &decode.caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
@@ -702,13 +746,26 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
         top_p: 0.9,
     };
     let before_hits = native_prefix_metric_counter("hits");
+    let rt = test_runtime();
 
-    let first = backend
-        .start_decode_session(&[0, 1], 8, &request, &CancellationToken::new())
+    let first = rt
+        .block_on(start_qwen_decode_session(
+            &backend,
+            &[0, 1],
+            8,
+            &request,
+            &CancellationToken::new(),
+        ))
         .expect("first decode session starts");
     drop(first);
-    let second = backend
-        .start_decode_session(&[0, 1, 0], 8, &top_p_request, &CancellationToken::new())
+    let second = rt
+        .block_on(start_qwen_decode_session(
+            &backend,
+            &[0, 1, 0],
+            8,
+            &top_p_request,
+            &CancellationToken::new(),
+        ))
         .expect("second decode session starts");
 
     assert!(
@@ -884,30 +941,33 @@ fn native_qwen_backend_opens_snapshot_without_engine_manifest() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
+#[tokio::test]
+async fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
     let snapshot = temp_snapshot_dir("qwen3-dense-single-file");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
     write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
     copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-    let mut backend = open_qwen_backend_blocking("local-qwen3", &snapshot);
+    let mut backend = NativeQwenBackend::open("local-qwen3", &snapshot)
+        .await
+        .expect("backend opens snapshot");
     backend.driver.adapter.top_k = 2;
-    let decode = backend
-        .start_decode_session(
-            &[0, 1],
-            4,
-            &native_qwen_test_request("local-qwen3"),
-            &CancellationToken::new(),
-        )
-        .expect("dense single-file prefill runs");
-    let candidate = backend
-        .next_token_from_hidden(decode.hidden(), SamplingConfig::Greedy)
+    let decode = start_qwen_decode_session(
+        &backend,
+        &[0, 1],
+        4,
+        &native_qwen_test_request("local-qwen3"),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("dense single-file prefill runs");
+    let token_id = select_qwen_token(&backend, decode.hidden(), SamplingConfig::Greedy)
+        .await
         .expect("dense tied lm head can select a token");
 
     assert!(backend.driver.adapter.spec.is_qwen3_dense());
-    assert!(candidate.token_id < 2);
+    assert!(token_id < 2);
     match &decode.caches[0] {
         QwenLayerCache::Full(cache) => assert_eq!(cache.token_count(), 2),
         QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
@@ -915,25 +975,28 @@ fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_full_attention_prefill_keeps_context_beyond_chunk_size() {
+#[tokio::test]
+async fn native_qwen_full_attention_prefill_keeps_context_beyond_chunk_size() {
     let snapshot = temp_snapshot_dir("qwen3-dense-long-prefill");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
     write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
     copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
 
-    let mut backend = open_qwen_backend_blocking("local-qwen3", &snapshot);
+    let mut backend = NativeQwenBackend::open("local-qwen3", &snapshot)
+        .await
+        .expect("backend opens snapshot");
     backend.driver.adapter.max_prefill_tokens = 1;
     let context = [0, 1].repeat(6);
-    let decode = backend
-        .start_decode_session(
-            &context,
-            4,
-            &native_qwen_test_request("local-qwen3"),
-            &CancellationToken::new(),
-        )
-        .expect("dense full-attention prefill keeps the accepted context");
+    let decode = start_qwen_decode_session(
+        &backend,
+        &context,
+        4,
+        &native_qwen_test_request("local-qwen3"),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("dense full-attention prefill keeps the accepted context");
 
     match &decode.caches[0] {
         QwenLayerCache::Full(cache) => {
@@ -1011,8 +1074,8 @@ async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
+#[tokio::test]
+async fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
     let snapshot = temp_snapshot_dir("cancelled-stream");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -1022,30 +1085,33 @@ fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend = open_qwen_backend_blocking(crate::DEFAULT_MODEL_ID, &snapshot);
+    let backend = NativeQwenBackend::open(crate::DEFAULT_MODEL_ID, &snapshot)
+        .await
+        .expect("backend opens snapshot");
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-
-    let err = backend
-        .generate_blocking_stream(
-            BackendRequest {
-                model: crate::DEFAULT_MODEL_ID.to_owned(),
-                prompt: "say hi".to_owned(),
-                chat_context: None,
-                max_tokens: Some(1),
-                sampling: SamplingConfig::Greedy,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: false,
-                cache_context: BackendCacheContext::default(),
-            },
-            tx,
-            cancellation,
-        )
+    let mut stream = backend.generate_stream_with_cancel(
+        BackendRequest {
+            model: crate::DEFAULT_MODEL_ID.to_owned(),
+            prompt: "say hi".to_owned(),
+            chat_context: None,
+            max_tokens: Some(1),
+            sampling: SamplingConfig::Greedy,
+            required_tool_choice: None,
+            json_object_mode: false,
+            conversation_mode: false,
+            cache_context: BackendCacheContext::default(),
+        },
+        cancellation,
+    );
+    let err = stream
+        .next()
+        .await
+        .expect("stream reports cancellation")
         .expect_err("pre-cancelled stream fails before normal EOF");
 
     assert!(err.is_cancelled());
+    assert!(stream.next().await.is_none());
     std::fs::remove_dir_all(snapshot).ok();
 }
 
@@ -1068,8 +1134,8 @@ async fn native_qwen_worker_stream_reports_join_failure_after_channel_close() {
     assert!(stream.next().await.is_none());
 }
 
-#[test]
-fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
+#[tokio::test]
+async fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
     let snapshot = temp_snapshot_dir("cancelled-start-decode");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -1079,16 +1145,21 @@ fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
         "model.safetensors.index.json",
         snapshot.join("model.safetensors.index.json"),
     );
-    let backend = open_qwen_backend_blocking(crate::DEFAULT_MODEL_ID, &snapshot);
+    let backend = NativeQwenBackend::open(crate::DEFAULT_MODEL_ID, &snapshot)
+        .await
+        .expect("backend opens snapshot");
     let cancellation = CancellationToken::new();
     cancellation.cancel();
 
-    match backend.start_decode_session(
+    match start_qwen_decode_session(
+        &backend,
         &[0],
         1,
         &native_qwen_test_request(crate::DEFAULT_MODEL_ID),
         &cancellation,
-    ) {
+    )
+    .await
+    {
         Err(err) if err.is_cancelled() => {}
         Err(err) => panic!("expected cancellation before prefill, got {err}"),
         Ok(_) => panic!("pre-cancelled decode startup should fail before prefill"),
@@ -1096,8 +1167,8 @@ fn native_qwen_start_decode_session_observes_pre_cancelled_token() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
+#[tokio::test]
+async fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
     let snapshot = temp_snapshot_dir("greedy-whitespace");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -1142,22 +1213,22 @@ fn native_qwen_greedy_returns_top_logit_even_when_it_decodes_to_whitespace() {
         64,
     );
 
-    let candidate = backend
-        .next_token_from_hidden(&[1.0], SamplingConfig::Greedy)
+    let token_id = select_qwen_token(&backend, &[1.0], SamplingConfig::Greedy)
+        .await
         .expect("greedy candidate");
 
-    assert_eq!(candidate.token_id, 220);
+    assert_eq!(token_id, 220);
     let decoded = backend
         .driver
         .tokenizer
-        .decode(&[candidate.token_id as u32], false)
+        .decode(&[token_id as u32], false)
         .expect("candidate decodes");
     assert!(decoded.trim().is_empty());
     std::fs::remove_dir_all(snapshot).ok();
 }
 
-#[test]
-fn native_qwen_greedy_clamps_top_k_to_vocab_size() {
+#[tokio::test]
+async fn native_qwen_greedy_clamps_top_k_to_vocab_size() {
     let snapshot = temp_snapshot_dir("greedy-top-k-clamp");
     std::fs::remove_dir_all(&snapshot).ok();
     std::fs::create_dir_all(&snapshot).expect("snapshot dir");
@@ -1200,11 +1271,11 @@ fn native_qwen_greedy_clamps_top_k_to_vocab_size() {
         64,
     );
 
-    let candidate = backend
-        .next_token_from_hidden(&[1.0], SamplingConfig::Greedy)
+    let token_id = select_qwen_token(&backend, &[1.0], SamplingConfig::Greedy)
+        .await
         .expect("greedy candidate with clamped top_k");
 
-    assert_eq!(candidate.token_id, 1);
+    assert_eq!(token_id, 1);
     std::fs::remove_dir_all(snapshot).ok();
 }
 

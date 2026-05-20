@@ -191,61 +191,6 @@ impl NativeQwenBackend {
     pub(crate) fn into_driver(self) -> NativeTextDriver<NativeQwenAdapter> {
         self.driver
     }
-
-    #[cfg(test)]
-    fn generate_blocking_stream(
-        &self,
-        request: BackendRequest,
-        tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
-        cancellation: CancellationToken,
-    ) -> Result<(), BackendError> {
-        self.driver
-            .generate_blocking_stream(request, tx, cancellation)
-    }
-
-    #[cfg(test)]
-    fn start_decode_session(
-        &self,
-        context_tokens: &[usize],
-        max_new_tokens: u32,
-        request: &BackendRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<NativeQwenDecodeSession, BackendError> {
-        let driver = &self.driver;
-        tokio::task::block_in_place(|| {
-            driver.block_on_worker(driver.start_decode_session(
-                context_tokens,
-                max_new_tokens,
-                request,
-                cancellation,
-                &mut InferenceScratchpad::new(),
-            ))?
-        })
-    }
-
-    #[cfg(test)]
-    fn next_token_from_hidden(
-        &self,
-        hidden: &[f32],
-        sampling: SamplingConfig,
-    ) -> Result<NativeQwenCandidate, BackendError> {
-        let sampling_draw = if sampling.is_greedy() {
-            None
-        } else {
-            let mut sampling_rng = crate::native_text::NativeTextSamplingRng::from_entropy();
-            Some(sampling_rng.draw_f32())
-        };
-        let token_id = tokio::task::block_in_place(|| {
-            self.driver
-                .block_on_worker(self.driver.adapter.next_token_from_hidden(
-                    hidden,
-                    sampling,
-                    sampling_draw,
-                    &mut llm_sampler::TopPSamplerScratch::new(),
-                ))?
-        })?;
-        Ok(NativeQwenCandidate { token_id })
-    }
 }
 
 #[async_trait]
@@ -462,12 +407,6 @@ fn resolve_native_max_tokens(
     configured_max: u32,
 ) -> Result<u32, BackendError> {
     crate::native_text::resolve_native_text_max_tokens(requested, configured_max, "Qwen")
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-struct NativeQwenCandidate {
-    token_id: usize,
 }
 
 #[async_trait]
