@@ -290,6 +290,97 @@ async fn runtime_returns_text_stream_chunks() {
     assert_eq!(chunks[2].choices[0].finish_reason, Some(FinishReason::Stop));
 }
 
+#[test]
+fn runtime_classifies_chat_stream_chunk_progress_metadata() {
+    let role_only = chat_stream_event(
+        llm_api::ChatCompletionDelta {
+            role: Some(llm_api::ChatRole::Assistant),
+            ..llm_api::ChatCompletionDelta::default()
+        },
+        None,
+    )
+    .progress_metadata();
+    assert!(!role_only.has_real_delta());
+    assert!(!role_only.has_tool_delta());
+    assert!(!role_only.has_tool_call_finish());
+    assert_eq!(role_only.real_delta_bytes(), 0);
+
+    let empty = chat_stream_event(
+        llm_api::ChatCompletionDelta::default(),
+        Some(FinishReason::Stop),
+    )
+    .progress_metadata();
+    assert!(!empty.has_real_delta());
+    assert!(!empty.has_tool_delta());
+    assert!(!empty.has_tool_call_finish());
+    assert_eq!(empty.real_delta_bytes(), 0);
+
+    let content = "hello";
+    let content_progress = chat_stream_event(
+        llm_api::ChatCompletionDelta {
+            content: Some(content.to_owned()),
+            ..llm_api::ChatCompletionDelta::default()
+        },
+        None,
+    )
+    .progress_metadata();
+    assert!(content_progress.has_real_delta());
+    assert!(!content_progress.has_tool_delta());
+    assert!(!content_progress.has_tool_call_finish());
+    assert_eq!(content_progress.real_delta_bytes(), content.len());
+
+    let arguments = r#"{"query":"rust"}"#;
+    let tool_progress = chat_stream_event(
+        llm_api::ChatCompletionDelta {
+            tool_calls: vec![llm_api::ToolCallDelta {
+                index: 0,
+                id: Some("call".to_owned()),
+                call_type: Some(llm_api::ToolCallType::Function),
+                function: Some(llm_api::ToolCallFunctionDelta {
+                    name: Some("lookup".to_owned()),
+                    arguments: Some(arguments.to_owned()),
+                }),
+            }],
+            ..llm_api::ChatCompletionDelta::default()
+        },
+        None,
+    )
+    .progress_metadata();
+    assert!(tool_progress.has_real_delta());
+    assert!(tool_progress.has_tool_delta());
+    assert!(!tool_progress.has_tool_call_finish());
+    assert_eq!(
+        tool_progress.real_delta_bytes(),
+        "call".len() + "lookup".len() + arguments.len()
+    );
+
+    let tool_finish = chat_stream_event(
+        llm_api::ChatCompletionDelta::default(),
+        Some(FinishReason::ToolCalls),
+    )
+    .progress_metadata();
+    assert!(!tool_finish.has_real_delta());
+    assert!(!tool_finish.has_tool_delta());
+    assert!(tool_finish.has_tool_call_finish());
+    assert_eq!(tool_finish.real_delta_bytes(), 0);
+}
+
+#[test]
+fn runtime_classifies_completion_stream_chunk_progress_metadata() {
+    let empty = completion_stream_event("", Some(FinishReason::Stop)).progress_metadata();
+    assert!(!empty.has_real_delta());
+    assert!(!empty.has_tool_delta());
+    assert!(!empty.has_tool_call_finish());
+    assert_eq!(empty.real_delta_bytes(), 0);
+
+    let text = "hello";
+    let content = completion_stream_event(text, None).progress_metadata();
+    assert!(content.has_real_delta());
+    assert!(!content.has_tool_delta());
+    assert!(!content.has_tool_call_finish());
+    assert_eq!(content.real_delta_bytes(), text.len());
+}
+
 #[tokio::test]
 async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
     let backend = ProtocolTestBackend::new(
@@ -1686,4 +1777,40 @@ async fn dropping_non_streaming_completion_future_cancels_backend_generation() {
     tokio::time::timeout(Duration::from_millis(100), cancelled.notified())
         .await
         .expect("backend generation cancellation token is cancelled");
+}
+
+fn chat_stream_event(
+    delta: llm_api::ChatCompletionDelta,
+    finish_reason: Option<FinishReason>,
+) -> ChatCompletionStreamEvent {
+    ChatCompletionStreamEvent::Chunk(llm_api::ChatCompletionStreamResponse {
+        id: "chatcmpl-test".to_owned(),
+        object: "chat.completion.chunk".to_owned(),
+        created: 0,
+        model: "local-qwen36".to_owned(),
+        choices: vec![llm_api::ChatCompletionStreamChoice {
+            index: 0,
+            delta,
+            finish_reason,
+        }],
+        usage: None,
+    })
+}
+
+fn completion_stream_event(
+    text: &str,
+    finish_reason: Option<FinishReason>,
+) -> llm_runtime::CompletionStreamEvent {
+    llm_runtime::CompletionStreamEvent::Chunk(llm_api::CompletionStreamResponse {
+        id: "cmpl-test".to_owned(),
+        object: "text_completion".to_owned(),
+        created: 0,
+        model: "local-qwen36".to_owned(),
+        choices: vec![llm_api::CompletionChoice {
+            text: text.to_owned(),
+            index: 0,
+            finish_reason,
+        }],
+        usage: None,
+    })
 }

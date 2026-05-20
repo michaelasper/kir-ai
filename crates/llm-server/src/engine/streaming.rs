@@ -14,10 +14,11 @@ use super::{
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
-use llm_api::{ChatCompletionStreamResponse, CompletionStreamResponse, Usage};
+use llm_api::Usage;
 use llm_backend::BackendStreamProgress;
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
+    StreamProgressMetadata,
 };
 use serde_json::json;
 use std::{
@@ -33,7 +34,7 @@ pub(super) fn stream_runtime_events<'a, E, S>(
 ) -> impl Stream<Item = Result<Event, Infallible>> + 'a
 where
     E: EngineStreamEvent + 'a,
-    E::Chunk: serde::Serialize + StreamChunkProgress + 'a,
+    E::Chunk: serde::Serialize + 'a,
     S: Stream<Item = Result<E, RuntimeError>> + Unpin + 'a,
 {
     async_stream::stream! {
@@ -52,7 +53,7 @@ where
             .await
             {
                 Ok(Some(Ok(event))) => match event.into_step() {
-                    EngineStreamStep::Chunk(chunk) => {
+                    EngineStreamStep::Chunk { chunk, progress } => {
                         if lifecycle.active_request.cancellation.is_cancelled() {
                             for event in lifecycle.finish_cancellation(
                                 "request was cancelled before stream chunk delivery",
@@ -62,7 +63,7 @@ where
                             }
                             return;
                         }
-                        if !ttft_recorded && chunk.has_real_delta() {
+                        if !ttft_recorded && progress.has_real_delta() {
                             lifecycle.transition_to_decode();
                             record_time_to_first_token_metrics(
                                 &lifecycle.state,
@@ -70,20 +71,20 @@ where
                             );
                             ttft_recorded = true;
                         }
-                        if !first_tool_delta_recorded && chunk.has_tool_delta() {
+                        if !first_tool_delta_recorded && progress.has_tool_delta() {
                             record_first_tool_delta_metrics(
                                 &lifecycle.state,
                                 lifecycle.request_started.elapsed(),
                             );
                             first_tool_delta_recorded = true;
                         }
-                        if !validated_tool_call_recorded && chunk.has_tool_call_finish() {
+                        if !validated_tool_call_recorded && progress.has_tool_call_finish() {
                             let latency = lifecycle.request_started.elapsed();
                             record_tool_finish_metrics(&lifecycle.state, latency);
                             record_validated_tool_call_metrics(&lifecycle.state, latency);
                             validated_tool_call_recorded = true;
                         }
-                        stall_deadline.record_chunk(&chunk);
+                        stall_deadline.record_progress_metadata(progress);
                         yield sse_json_event(chunk);
                     }
                     EngineStreamStep::Progress(progress) => {
@@ -491,8 +492,8 @@ impl StreamStallDeadline {
         self.deadline
     }
 
-    fn record_chunk(&mut self, chunk: &impl StreamChunkProgress) {
-        if chunk.has_real_delta() {
+    fn record_progress_metadata(&mut self, progress: StreamProgressMetadata) {
+        if progress.has_real_delta() {
             self.record_progress();
         }
     }
@@ -561,28 +562,27 @@ pub(super) trait EngineStreamEvent {
 }
 
 pub(super) enum EngineStreamStep<C> {
-    Chunk(C),
+    Chunk {
+        chunk: C,
+        progress: StreamProgressMetadata,
+    },
     Progress(BackendStreamProgress),
-    InternalProgress { bytes: usize },
+    InternalProgress {
+        bytes: usize,
+    },
     ToolStage(ChatCompletionStreamStage),
     Complete(Usage),
 }
 
-pub(super) trait StreamChunkProgress {
-    fn has_real_delta(&self) -> bool;
-    fn has_tool_delta(&self) -> bool;
-    fn has_tool_call_finish(&self) -> bool;
-    fn real_delta_bytes(&self) -> usize;
-}
-
 impl EngineStreamEvent for ChatCompletionStreamEvent {
-    type Chunk = ChatCompletionStreamResponse;
+    type Chunk = llm_api::ChatCompletionStreamResponse;
 
     fn into_step(
         self,
     ) -> EngineStreamStep<<ChatCompletionStreamEvent as EngineStreamEvent>::Chunk> {
+        let progress = self.progress_metadata();
         match self {
-            Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
+            Self::Chunk(chunk) => EngineStreamStep::Chunk { chunk, progress },
             Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::InternalProgress { bytes } => EngineStreamStep::InternalProgress { bytes },
             Self::Stage(stage) => EngineStreamStep::ToolStage(stage),
@@ -592,78 +592,14 @@ impl EngineStreamEvent for ChatCompletionStreamEvent {
 }
 
 impl EngineStreamEvent for CompletionStreamEvent {
-    type Chunk = CompletionStreamResponse;
+    type Chunk = llm_api::CompletionStreamResponse;
 
     fn into_step(self) -> EngineStreamStep<<CompletionStreamEvent as EngineStreamEvent>::Chunk> {
+        let progress = self.progress_metadata();
         match self {
-            Self::Chunk(chunk) => EngineStreamStep::Chunk(chunk),
+            Self::Chunk(chunk) => EngineStreamStep::Chunk { chunk, progress },
             Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }
-    }
-}
-
-impl StreamChunkProgress for ChatCompletionStreamResponse {
-    fn has_real_delta(&self) -> bool {
-        self.choices.iter().any(|choice| {
-            choice
-                .delta
-                .content
-                .as_deref()
-                .is_some_and(|text| !text.is_empty())
-                || !choice.delta.tool_calls.is_empty()
-        })
-    }
-
-    fn has_tool_delta(&self) -> bool {
-        self.choices
-            .iter()
-            .any(|choice| !choice.delta.tool_calls.is_empty())
-    }
-
-    fn has_tool_call_finish(&self) -> bool {
-        self.choices
-            .iter()
-            .any(|choice| choice.finish_reason.as_ref() == Some(&llm_api::FinishReason::ToolCalls))
-    }
-
-    fn real_delta_bytes(&self) -> usize {
-        self.choices
-            .iter()
-            .map(|choice| {
-                choice.delta.content.as_ref().map_or(0, String::len)
-                    + choice
-                        .delta
-                        .tool_calls
-                        .iter()
-                        .map(|tool_call| {
-                            let bytes = tool_call.id.as_ref().map_or(0, String::len)
-                                + tool_call.function.as_ref().map_or(0, |function| {
-                                    function.name.as_ref().map_or(0, String::len)
-                                        + function.arguments.as_ref().map_or(0, String::len)
-                                });
-                            bytes.max(1)
-                        })
-                        .sum::<usize>()
-            })
-            .sum()
-    }
-}
-
-impl StreamChunkProgress for CompletionStreamResponse {
-    fn has_real_delta(&self) -> bool {
-        self.real_delta_bytes() > 0
-    }
-
-    fn has_tool_delta(&self) -> bool {
-        false
-    }
-
-    fn has_tool_call_finish(&self) -> bool {
-        false
-    }
-
-    fn real_delta_bytes(&self) -> usize {
-        self.choices.iter().map(|choice| choice.text.len()).sum()
     }
 }

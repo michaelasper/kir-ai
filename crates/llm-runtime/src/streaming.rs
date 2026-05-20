@@ -117,6 +117,18 @@ pub enum ChatCompletionStreamEvent {
     Complete(Usage),
 }
 
+impl ChatCompletionStreamEvent {
+    pub fn progress_metadata(&self) -> StreamProgressMetadata {
+        match self {
+            Self::Chunk(chunk) => chat_stream_progress_metadata(chunk),
+            Self::Progress(_)
+            | Self::InternalProgress { .. }
+            | Self::Stage(_)
+            | Self::Complete(_) => StreamProgressMetadata::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatCompletionStreamStage {
     ToolArgumentAssemblyComplete,
@@ -129,6 +141,71 @@ pub enum CompletionStreamEvent {
     Chunk(CompletionStreamResponse),
     Progress(BackendStreamProgress),
     Complete(Usage),
+}
+
+impl CompletionStreamEvent {
+    pub fn progress_metadata(&self) -> StreamProgressMetadata {
+        match self {
+            Self::Chunk(chunk) => completion_stream_progress_metadata(chunk),
+            Self::Progress(_) | Self::Complete(_) => StreamProgressMetadata::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamProgressMetadata {
+    real_delta_bytes: usize,
+    has_tool_delta: bool,
+    has_tool_call_finish: bool,
+}
+
+impl StreamProgressMetadata {
+    pub const fn has_real_delta(self) -> bool {
+        self.real_delta_bytes > 0
+    }
+
+    pub const fn has_tool_delta(self) -> bool {
+        self.has_tool_delta
+    }
+
+    pub const fn has_tool_call_finish(self) -> bool {
+        self.has_tool_call_finish
+    }
+
+    pub const fn real_delta_bytes(self) -> usize {
+        self.real_delta_bytes
+    }
+}
+
+fn chat_stream_progress_metadata(chunk: &ChatCompletionStreamResponse) -> StreamProgressMetadata {
+    let mut metadata = StreamProgressMetadata::default();
+    for choice in &chunk.choices {
+        if let Some(content) = &choice.delta.content {
+            metadata.real_delta_bytes += content.len();
+        }
+        for tool_call in &choice.delta.tool_calls {
+            metadata.has_tool_delta = true;
+            metadata.real_delta_bytes += tool_call_delta_progress_bytes(tool_call).max(1);
+        }
+        metadata.has_tool_call_finish |=
+            choice.finish_reason.as_ref() == Some(&llm_api::FinishReason::ToolCalls);
+    }
+    metadata
+}
+
+fn completion_stream_progress_metadata(chunk: &CompletionStreamResponse) -> StreamProgressMetadata {
+    StreamProgressMetadata {
+        real_delta_bytes: chunk.choices.iter().map(|choice| choice.text.len()).sum(),
+        ..StreamProgressMetadata::default()
+    }
+}
+
+fn tool_call_delta_progress_bytes(tool_call: &llm_api::ToolCallDelta) -> usize {
+    tool_call.id.as_ref().map_or(0, String::len)
+        + tool_call.function.as_ref().map_or(0, |function| {
+            function.name.as_ref().map_or(0, String::len)
+                + function.arguments.as_ref().map_or(0, String::len)
+        })
 }
 
 #[derive(Debug)]

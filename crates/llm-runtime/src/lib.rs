@@ -16,6 +16,6 @@ pub use no_progress::{NoProgressClass, classify_no_progress};
 pub use runtime::{Runtime, RuntimeOptions};
 pub use streaming::{
     ChatCompletionStream, ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStream,
-    CompletionStreamEvent,
+    CompletionStreamEvent, StreamProgressMetadata,
 };
 pub use tool_call::ToolSchemaNormalization;
