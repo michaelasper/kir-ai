@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.21.0](https://github.com/michaelasper/kir-ai/compare/v1.20.0...v1.21.0) (2026-05-20)
+
+### Features
+
+* **COR-231:** add warm prefix benchmark cases ([4a45f2b](https://github.com/michaelasper/kir-ai/commit/4a45f2b85c9959911644b987df86833ade2198bc))
+
 ## [1.20.0](https://github.com/michaelasper/kir-ai/compare/v1.19.0...v1.20.0) (2026-05-20)
 
 ### Features
