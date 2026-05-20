@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.22.0](https://github.com/michaelasper/kir-ai/compare/v1.21.0...v1.22.0) (2026-05-20)
+
+### Features
+
+* **COR-232:** centralize cache byte accounting ([62ff7dd](https://github.com/michaelasper/kir-ai/commit/62ff7dd1de2bd895ab5c03b405c1bb2f26b92921))
+
 ## [1.21.0](https://github.com/michaelasper/kir-ai/compare/v1.20.0...v1.21.0) (2026-05-20)
 
 ### Features
