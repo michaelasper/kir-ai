@@ -117,6 +117,9 @@ pub(crate) struct NativeTextPrefixCacheCounters {
     pub(crate) evictions: u64,
     pub(crate) rejected: u64,
     pub(crate) reused_tokens: u64,
+    pub(crate) entries_scanned: u64,
+    pub(crate) namespace_entries_scanned: u64,
+    pub(crate) hit_clone_bytes: u64,
     pub(crate) bytes_stored: u64,
     pub(crate) bytes_evicted: u64,
     pub(crate) resident_bytes: u64,
@@ -156,7 +159,7 @@ where
         metrics: &NativeTextPrefixCacheMetrics,
         mut is_compatible: impl FnMut(&[C]) -> bool,
     ) -> Option<NativeTextPrefixCacheHit<C>> {
-        let hit = {
+        let (hit, entries_scanned, namespace_entries_scanned) = {
             let mut inner = self.inner.lock_or_panic("native text prefix cache");
             let NativeTextPrefixCacheInner {
                 entries,
@@ -165,8 +168,12 @@ where
             } = &mut *inner;
             let mut best_len = 0;
             let mut best_entry = None;
+            let mut entries_scanned = 0;
+            let mut namespace_entries_scanned = 0;
             if let Some(bucket) = entries.get_mut(namespace) {
+                namespace_entries_scanned = bucket.len() as u64;
                 for (entry_tokens, entry) in bucket.iter_mut() {
+                    entries_scanned += 1;
                     if entry_tokens.len() > best_len
                         && tokens.starts_with(entry_tokens)
                         && is_compatible(&entry.payload.caches)
@@ -176,20 +183,23 @@ where
                     }
                 }
             }
-            if let Some(entry) = best_entry {
+            let hit = if let Some(entry) = best_entry {
                 let access = *next_access;
                 *next_access = next_access.saturating_add(1);
                 entry.last_used = access;
-                Some((best_len, Arc::clone(&entry.payload)))
+                Some((best_len, entry.byte_len, Arc::clone(&entry.payload)))
             } else {
                 None
-            }
+            };
+            (hit, entries_scanned, namespace_entries_scanned)
         };
-        let Some((best_len, payload)) = hit else {
+        metrics.record_lookup_scan(entries_scanned, namespace_entries_scanned);
+        let Some((best_len, clone_bytes, payload)) = hit else {
             metrics.record_miss();
             return None;
         };
         metrics.record_hit(best_len as u64);
+        metrics.record_hit_clone_bytes(clone_bytes);
         Some(NativeTextPrefixCacheHit {
             token_count: best_len,
             hidden: payload.hidden.clone(),
@@ -313,6 +323,21 @@ impl NativeTextPrefixCacheMetrics {
         self.update(|counters| counters.misses += 1);
     }
 
+    pub(crate) fn record_lookup_scan(&self, entries_scanned: u64, namespace_entries_scanned: u64) {
+        self.update(|counters| {
+            counters.entries_scanned = counters.entries_scanned.saturating_add(entries_scanned);
+            counters.namespace_entries_scanned = counters
+                .namespace_entries_scanned
+                .saturating_add(namespace_entries_scanned);
+        });
+    }
+
+    pub(crate) fn record_hit_clone_bytes(&self, byte_len: u64) {
+        self.update(|counters| {
+            counters.hit_clone_bytes = counters.hit_clone_bytes.saturating_add(byte_len);
+        });
+    }
+
     pub(crate) fn record_store(&self, byte_len: u64) {
         self.update(|counters| {
             counters.stores += 1;
@@ -349,6 +374,9 @@ impl NativeTextPrefixCacheMetrics {
             "evictions": counters.evictions,
             "rejected": counters.rejected,
             "reused_tokens": counters.reused_tokens,
+            "entries_scanned": counters.entries_scanned,
+            "namespace_entries_scanned": counters.namespace_entries_scanned,
+            "hit_clone_bytes": counters.hit_clone_bytes,
             "bytes_stored": counters.bytes_stored,
             "bytes_evicted": counters.bytes_evicted,
             "resident_bytes": counters.resident_bytes,

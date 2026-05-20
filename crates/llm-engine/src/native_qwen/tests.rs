@@ -339,6 +339,8 @@ fn native_qwen_prefix_cache_metrics_expose_hits_misses_and_evictions() {
     metrics.record_eviction(16);
     metrics.record_rejected();
     metrics.record_residency(32, 1);
+    metrics.record_lookup_scan(5, 4);
+    metrics.record_hit_clone_bytes(64);
 
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot["hits"], 1);
@@ -351,6 +353,9 @@ fn native_qwen_prefix_cache_metrics_expose_hits_misses_and_evictions() {
     assert_eq!(snapshot["bytes_evicted"], 16);
     assert_eq!(snapshot["resident_bytes"], 32);
     assert_eq!(snapshot["resident_entries"], 1);
+    assert_eq!(snapshot["entries_scanned"], 5);
+    assert_eq!(snapshot["namespace_entries_scanned"], 4);
+    assert_eq!(snapshot["hit_clone_bytes"], 64);
 }
 
 #[test]

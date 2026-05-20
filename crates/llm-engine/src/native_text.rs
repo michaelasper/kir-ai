@@ -1819,6 +1819,63 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_metrics_record_lookup_scans_and_hit_clone_bytes() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let base_namespace = namespace("scan-metrics");
+        let other_namespace = namespace("scan-metrics-other");
+        let hidden = [1.0, 2.0, 3.0, 4.0];
+
+        cache.store(
+            base_namespace.clone(),
+            &[1],
+            &hidden,
+            &[TestCache {
+                bytes: 5,
+                marker: 1,
+            }],
+            &metrics,
+        );
+        cache.store(
+            base_namespace.clone(),
+            &[1, 2],
+            &hidden,
+            &[TestCache {
+                bytes: 7,
+                marker: 2,
+            }],
+            &metrics,
+        );
+        cache.store(
+            other_namespace,
+            &[9],
+            &hidden,
+            &[TestCache {
+                bytes: 11,
+                marker: 9,
+            }],
+            &metrics,
+        );
+
+        let hit = cache
+            .lookup(&base_namespace, &[1, 2, 3], &metrics)
+            .expect("matching prompt reuses longest stored prefix");
+        assert_eq!(hit.token_count, 2);
+        assert!(cache.lookup(&base_namespace, &[42], &metrics).is_none());
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot["entries_scanned"], 4,
+            "lookups only scan entries in the matching namespace bucket"
+        );
+        assert_eq!(snapshot["namespace_entries_scanned"], 4);
+        assert_eq!(
+            snapshot["hit_clone_bytes"],
+            std::mem::size_of_val(&hidden) as u64 + 7
+        );
+    }
+
+    #[test]
     fn prefix_cache_uses_value_sizing_for_eviction_budget() {
         let cache = NativeTextPrefixCache::new(32);
         let metrics = NativeTextPrefixCacheMetrics::default();

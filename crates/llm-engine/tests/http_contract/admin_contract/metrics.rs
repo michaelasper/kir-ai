@@ -350,8 +350,34 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         "native text Qwen prefix cache hits are exposed"
     );
     assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["entries_scanned"].is_number(),
+        "native text Qwen prefix cache lookup scan metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["namespace_entries_scanned"]
+            .is_number(),
+        "native text Qwen prefix cache namespace scan metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hit_clone_bytes"].is_number(),
+        "native text Qwen prefix cache hit clone bytes are exposed"
+    );
+    assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hits"].is_number(),
         "native text Gemma prefix cache hits are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["entries_scanned"].is_number(),
+        "native text Gemma prefix cache lookup scan metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["namespace_entries_scanned"]
+            .is_number(),
+        "native text Gemma prefix cache namespace scan metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hit_clone_bytes"].is_number(),
+        "native text Gemma prefix cache hit clone bytes are exposed"
     );
     assert!(
         body["backend_metrics"]["mlx"]["requests_total"].is_number(),
@@ -418,6 +444,19 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["resident_bytes"].is_number(),
         "native Qwen prefix cache residency is exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["entries_scanned"].is_number(),
+        "native Qwen prefix cache lookup scan metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["namespace_entries_scanned"]
+            .is_number(),
+        "native Qwen prefix cache namespace scan metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["hit_clone_bytes"].is_number(),
+        "native Qwen prefix cache hit clone bytes are exposed through the legacy object"
     );
 }
 
