@@ -58,6 +58,9 @@ fn cache_metrics_summary_extracts_admin_cache_counters() {
                     "evictions": 1,
                     "rejected": 0,
                     "reused_tokens": 42,
+                    "hit_tokens": 91,
+                    "miss_tokens": 17,
+                    "avoided_prefill_tokens": 73,
                     "resident_bytes": 1024,
                     "resident_entries": 2
                 }
@@ -97,13 +100,93 @@ fn cache_metrics_summary_extracts_admin_cache_counters() {
     });
 
     let summary = cache_metrics_from_admin(&admin).expect("cache summary");
+    let value = serde_json::to_value(&summary).expect("serialize cache summary");
 
     assert_eq!(summary.prefix_cache.hit_rate, Some(0.75));
+    assert_eq!(value["prefix_cache"]["hit_tokens"], 91);
+    assert_eq!(value["prefix_cache"]["miss_tokens"], 17);
+    assert_eq!(value["prefix_cache"]["avoided_prefill_tokens"], 73);
     assert!((summary.weight_cache.hit_rate.expect("weight hit rate") - 0.7).abs() < f64::EPSILON);
     assert_eq!(summary.kv_cache.resident_bytes, 3072);
     assert_eq!(summary.linear_attention_cache.syncs, 3);
     assert_eq!(summary.readiness.status, "observable");
     assert!(summary.readiness.missing_signals.is_empty());
+}
+
+#[test]
+fn case_admin_metrics_report_serializes_prefix_cache_before_after_and_delta() {
+    let before = prefix_cache_metrics_from_admin(&serde_json::json!({
+        "backend_metrics": {
+            "native_text_prefix_cache": {
+                "qwen": {
+                    "hits": 2,
+                    "misses": 1,
+                    "stores": 1,
+                    "evictions": 0,
+                    "rejected": 0,
+                    "reused_tokens": 16,
+                    "hit_tokens": 32,
+                    "miss_tokens": 48,
+                    "avoided_prefill_tokens": 24,
+                    "resident_bytes": 4096,
+                    "resident_entries": 1
+                }
+            }
+        }
+    }))
+    .expect("before metrics");
+    let after = prefix_cache_metrics_from_admin(&serde_json::json!({
+        "backend_metrics": {
+            "native_text_prefix_cache": {
+                "qwen": {
+                    "hits": 4,
+                    "misses": 2,
+                    "stores": 3,
+                    "evictions": 1,
+                    "rejected": 0,
+                    "reused_tokens": 72,
+                    "hit_tokens": 144,
+                    "miss_tokens": 57,
+                    "avoided_prefill_tokens": 112,
+                    "resident_bytes": 6144,
+                    "resident_entries": 2
+                }
+            }
+        }
+    }))
+    .expect("after metrics");
+    let mut case = case_report(
+        BenchProfileKind::Promotion135k,
+        BenchCaseKind::PlainRecall,
+        DEFAULT_MAX_TOKENS,
+    );
+
+    case.admin_metrics = Some(BenchCaseAdminMetricsReport::from_prefix_cache_snapshots(
+        before, after,
+    ));
+
+    let value = serde_json::to_value(&case).expect("serialize case");
+    assert_eq!(
+        value["admin_metrics"]["prefix_cache"]["before"]["hit_tokens"],
+        32
+    );
+    assert_eq!(
+        value["admin_metrics"]["prefix_cache"]["after"]["miss_tokens"],
+        57
+    );
+    assert_eq!(value["admin_metrics"]["prefix_cache"]["delta"]["hits"], 2);
+    assert_eq!(
+        value["admin_metrics"]["prefix_cache"]["delta"]["hit_tokens"],
+        112
+    );
+    assert_eq!(
+        value["admin_metrics"]["prefix_cache"]["delta"]["miss_tokens"],
+        9
+    );
+    assert_eq!(
+        value["admin_metrics"]["prefix_cache"]["delta"]["resident_bytes"],
+        2048
+    );
 }
 
 #[tokio::test]

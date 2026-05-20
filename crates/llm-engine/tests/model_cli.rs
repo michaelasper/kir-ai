@@ -108,6 +108,18 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
             .expect("benchmark cache metrics")
             .contains(&Value::String("prefix_cache_hit_rate".to_owned()))
     );
+    assert!(
+        value["cache_policy"]["benchmark_metrics"]
+            .as_array()
+            .expect("benchmark cache metrics")
+            .contains(&Value::String("prefix_cache_hit_tokens".to_owned()))
+    );
+    assert!(
+        value["cache_policy"]["benchmark_metrics"]
+            .as_array()
+            .expect("benchmark cache metrics")
+            .contains(&Value::String("prefix_cache_miss_tokens".to_owned()))
+    );
     let lanes = value["lanes"].as_array().expect("lanes array");
     assert_eq!(lanes.len(), 1, "lanes: {lanes:?}");
     assert_eq!(lanes[0]["name"], "primary");
@@ -152,7 +164,9 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
             "json-object-recall",
             "required-tool-recall",
             "streamed-required-tool-recall",
-            "multi-turn-lifecycle"
+            "multi-turn-lifecycle",
+            "same-long-prompt-twice",
+            "shared-prefix-short-suffix-variation"
         ]
     );
     let required_tool = promotion["cases"]

@@ -227,6 +227,7 @@ async fn run_qwen_long_context_bench(args: &[String]) -> anyhow::Result<()> {
             hardware: &report.hardware,
             latency_regression_threshold,
             max_tokens,
+            admin_token: admin_token.as_deref(),
         };
         let lane_failed = run_lane_profiles(
             lane_report,
@@ -272,6 +273,8 @@ async fn run_lane_profiles(
         for case in &mut profile.cases {
             let case_kind = BenchCaseKind::from_name(case.name)
                 .ok_or_else(|| anyhow!("unknown case in report: {}", case.name))?;
+            let before_metrics =
+                capture_case_prefix_metrics(context.client, endpoint, context.admin_token).await;
             let case_run = run_case(
                 context.client,
                 endpoint,
@@ -283,6 +286,10 @@ async fn run_lane_profiles(
             )
             .await;
             apply_case_run(case, case_run);
+            let after_metrics =
+                capture_case_prefix_metrics(context.client, endpoint, context.admin_token).await;
+            apply_case_admin_metrics(case, before_metrics, after_metrics);
+            apply_case_cache_metric_validation(case, case_kind);
             apply_baseline_comparison(
                 case,
                 context.baseline_trace,
@@ -378,6 +385,32 @@ async fn capture_lane_admin_metrics(
     endpoint: &str,
     admin_token: Option<&str>,
 ) {
+    match fetch_admin_metrics(client, endpoint, admin_token).await {
+        Ok(metrics) => {
+            lane.cache_metrics = cache_metrics_from_admin(&metrics);
+            lane.admin_metrics = Some(metrics);
+        }
+        Err(err) => {
+            lane.admin_metrics_error = Some(err);
+        }
+    }
+}
+
+async fn capture_case_prefix_metrics(
+    client: &reqwest::Client,
+    endpoint: &str,
+    admin_token: Option<&str>,
+) -> Result<Option<PrefixCacheMetricsReport>, String> {
+    fetch_admin_metrics(client, endpoint, admin_token)
+        .await
+        .map(|metrics| prefix_cache_metrics_from_admin(&metrics))
+}
+
+async fn fetch_admin_metrics(
+    client: &reqwest::Client,
+    endpoint: &str,
+    admin_token: Option<&str>,
+) -> Result<Value, String> {
     let url = format!("{endpoint}/admin/metrics");
     let mut request = client.get(url);
     if let Some(token) = admin_token {
@@ -385,27 +418,17 @@ async fn capture_lane_admin_metrics(
     }
     match request.send().await {
         Ok(response) if response.status().is_success() => match response.json::<Value>().await {
-            Ok(metrics) => {
-                lane.cache_metrics = cache_metrics_from_admin(&metrics);
-                lane.admin_metrics = Some(metrics);
-            }
-            Err(err) => lane.admin_metrics_error = Some(format!("parse admin metrics: {err}")),
+            Ok(metrics) => Ok(metrics),
+            Err(err) => Err(format!("parse admin metrics: {err}")),
         },
-        Ok(response) => {
-            lane.admin_metrics_error = Some(format!("admin metrics HTTP {}", response.status()));
-        }
-        Err(err) => {
-            lane.admin_metrics_error = Some(format!("admin metrics request failed: {err}"));
-        }
+        Ok(response) => Err(format!("admin metrics HTTP {}", response.status())),
+        Err(err) => Err(format!("admin metrics request failed: {err}")),
     }
 }
 
 fn cache_metrics_from_admin(metrics: &Value) -> Option<BenchCacheMetricsReport> {
     let backend_metrics = metrics.get("backend_metrics").unwrap_or(metrics);
-    let prefix = backend_metrics
-        .get("native_text_prefix_cache")
-        .and_then(|native_text| native_text.get("qwen"))
-        .or_else(|| backend_metrics.get("native_qwen_prefix_cache"))?;
+    let prefix = prefix_cache_metrics_value(metrics)?;
     let metal = backend_metrics
         .get("native_text_metal")
         .or_else(|| backend_metrics.get("native_qwen_metal"))?;
@@ -413,17 +436,7 @@ fn cache_metrics_from_admin(metrics: &Value) -> Option<BenchCacheMetricsReport> 
     let kv = metal.get("kv_cache")?;
     let linear = metal.get("linear_attention_cache")?;
     Some(BenchCacheMetricsReport {
-        prefix_cache: PrefixCacheMetricsReport {
-            hits: metric_u64(prefix, "hits"),
-            misses: metric_u64(prefix, "misses"),
-            hit_rate: hit_rate(metric_u64(prefix, "hits"), metric_u64(prefix, "misses")),
-            stores: metric_u64(prefix, "stores"),
-            evictions: metric_u64(prefix, "evictions"),
-            rejected: metric_u64(prefix, "rejected"),
-            reused_tokens: metric_u64(prefix, "reused_tokens"),
-            resident_bytes: metric_u64(prefix, "resident_bytes"),
-            resident_entries: metric_u64(prefix, "resident_entries"),
-        },
+        prefix_cache: prefix_cache_metrics_report(prefix),
         weight_cache: WeightCacheMetricsReport {
             hits: metric_u64(weight, "hits"),
             misses: metric_u64(weight, "misses"),
@@ -440,6 +453,35 @@ fn cache_metrics_from_admin(metrics: &Value) -> Option<BenchCacheMetricsReport> 
         linear_attention_cache: resident_cache_metrics(linear),
         readiness: cache_readiness(prefix, weight, kv, linear),
     })
+}
+
+fn prefix_cache_metrics_from_admin(metrics: &Value) -> Option<PrefixCacheMetricsReport> {
+    prefix_cache_metrics_value(metrics).map(prefix_cache_metrics_report)
+}
+
+fn prefix_cache_metrics_value(metrics: &Value) -> Option<&Value> {
+    let backend_metrics = metrics.get("backend_metrics").unwrap_or(metrics);
+    backend_metrics
+        .get("native_text_prefix_cache")
+        .and_then(|native_text| native_text.get("qwen"))
+        .or_else(|| backend_metrics.get("native_qwen_prefix_cache"))
+}
+
+fn prefix_cache_metrics_report(prefix: &Value) -> PrefixCacheMetricsReport {
+    PrefixCacheMetricsReport {
+        hits: metric_u64(prefix, "hits"),
+        misses: metric_u64(prefix, "misses"),
+        hit_rate: hit_rate(metric_u64(prefix, "hits"), metric_u64(prefix, "misses")),
+        stores: metric_u64(prefix, "stores"),
+        evictions: metric_u64(prefix, "evictions"),
+        rejected: metric_u64(prefix, "rejected"),
+        reused_tokens: metric_u64(prefix, "reused_tokens"),
+        hit_tokens: metric_u64(prefix, "hit_tokens"),
+        miss_tokens: metric_u64(prefix, "miss_tokens"),
+        avoided_prefill_tokens: metric_u64(prefix, "avoided_prefill_tokens"),
+        resident_bytes: metric_u64(prefix, "resident_bytes"),
+        resident_entries: metric_u64(prefix, "resident_entries"),
+    }
 }
 
 fn resident_cache_metrics(cache: &Value) -> ResidentCacheMetricsReport {
@@ -468,6 +510,11 @@ fn cache_readiness(
         (
             "prefix_cache_residency",
             has_metric(prefix, "resident_bytes") && has_metric(prefix, "resident_entries"),
+        ),
+        ("prefix_cache_hit_tokens", has_metric(prefix, "hit_tokens")),
+        (
+            "prefix_cache_miss_tokens",
+            has_metric(prefix, "miss_tokens"),
         ),
         (
             "weight_cache_hit_rate",
@@ -523,6 +570,17 @@ fn has_metric(value: &Value, key: &str) -> bool {
 fn hit_rate(hits: u64, misses: u64) -> Option<f64> {
     let total = hits + misses;
     (total > 0).then_some(hits as f64 / total as f64)
+}
+
+fn counter_delta(before: u64, after: u64) -> u64 {
+    after.saturating_sub(before)
+}
+
+fn gauge_delta(before: u64, after: u64) -> i64 {
+    let before = i128::from(before);
+    let after = i128::from(after);
+    let delta = after - before;
+    delta.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
 fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
@@ -701,23 +759,27 @@ fn selected_profiles(profile: &str) -> anyhow::Result<Vec<BenchProfileKind>> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BenchCaseKind {
     PlainRecall,
     JsonObjectRecall,
     RequiredToolRecall,
     StreamedRequiredToolRecall,
     MultiTurnLifecycle,
+    SameLongPromptTwice,
+    SharedPrefixShortSuffixVariation,
 }
 
 impl BenchCaseKind {
-    fn all() -> [Self; 5] {
+    fn all() -> [Self; 7] {
         [
             Self::PlainRecall,
             Self::JsonObjectRecall,
             Self::RequiredToolRecall,
             Self::StreamedRequiredToolRecall,
             Self::MultiTurnLifecycle,
+            Self::SameLongPromptTwice,
+            Self::SharedPrefixShortSuffixVariation,
         ]
     }
 
@@ -728,6 +790,8 @@ impl BenchCaseKind {
             Self::RequiredToolRecall => "required-tool-recall",
             Self::StreamedRequiredToolRecall => "streamed-required-tool-recall",
             Self::MultiTurnLifecycle => "multi-turn-lifecycle",
+            Self::SameLongPromptTwice => "same-long-prompt-twice",
+            Self::SharedPrefixShortSuffixVariation => "shared-prefix-short-suffix-variation",
         }
     }
 
@@ -738,6 +802,8 @@ impl BenchCaseKind {
             "required-tool-recall" => Some(Self::RequiredToolRecall),
             "streamed-required-tool-recall" => Some(Self::StreamedRequiredToolRecall),
             "multi-turn-lifecycle" => Some(Self::MultiTurnLifecycle),
+            "same-long-prompt-twice" => Some(Self::SameLongPromptTwice),
+            "shared-prefix-short-suffix-variation" => Some(Self::SharedPrefixShortSuffixVariation),
             _ => None,
         }
     }
@@ -749,6 +815,8 @@ impl BenchCaseKind {
             Self::RequiredToolRecall => "chat-required-tool",
             Self::StreamedRequiredToolRecall => "chat-stream-required-tool",
             Self::MultiTurnLifecycle => "chat-multi-turn",
+            Self::SameLongPromptTwice => "chat-warm-prefix-repeat",
+            Self::SharedPrefixShortSuffixVariation => "chat-shared-prefix-short-suffix",
         }
     }
 
@@ -767,11 +835,31 @@ impl BenchCaseKind {
             Self::MultiTurnLifecycle => {
                 "multi-message chat response must recall the target marker from the first turn"
             }
+            Self::SameLongPromptTwice => {
+                "two identical long-prompt chat requests must recall the marker and increase prefix cache hit tokens"
+            }
+            Self::SharedPrefixShortSuffixVariation => {
+                "two chat requests with a shared long prefix and short suffix variation must recall the marker and increase prefix cache hit tokens"
+            }
         }
     }
 
     fn streams(self) -> bool {
         matches!(self, Self::StreamedRequiredToolRecall)
+    }
+
+    fn request_count(self) -> usize {
+        match self {
+            Self::SameLongPromptTwice | Self::SharedPrefixShortSuffixVariation => 2,
+            _ => 1,
+        }
+    }
+
+    fn requires_prefix_cache_validation(self) -> bool {
+        matches!(
+            self,
+            Self::SameLongPromptTwice | Self::SharedPrefixShortSuffixVariation
+        )
     }
 }
 
@@ -789,6 +877,7 @@ struct BenchExecutionContext<'a> {
     hardware: &'a HardwareReport,
     latency_regression_threshold: f64,
     max_tokens: u32,
+    admin_token: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -949,6 +1038,9 @@ struct PrefixCacheMetricsReport {
     evictions: u64,
     rejected: u64,
     reused_tokens: u64,
+    hit_tokens: u64,
+    miss_tokens: u64,
+    avoided_prefill_tokens: u64,
     resident_bytes: u64,
     resident_entries: u64,
 }
@@ -1001,6 +1093,7 @@ struct BenchCaseReport {
     target_tokens: usize,
     stream: bool,
     response_contract: &'static str,
+    request_count: usize,
     marker: String,
     prompt_identity: PromptIdentityReport,
     status: String,
@@ -1034,7 +1127,91 @@ struct BenchCaseReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    admin_metrics: Option<BenchCaseAdminMetricsReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<BaselineComparisonReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchCaseAdminMetricsReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefix_cache: Option<BenchCasePrefixCacheMetricsReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl BenchCaseAdminMetricsReport {
+    fn from_prefix_cache_snapshots(
+        before: PrefixCacheMetricsReport,
+        after: PrefixCacheMetricsReport,
+    ) -> Self {
+        Self {
+            prefix_cache: Some(BenchCasePrefixCacheMetricsReport {
+                delta: PrefixCacheMetricsDeltaReport::between(&before, &after),
+                before,
+                after,
+            }),
+            error: None,
+        }
+    }
+
+    fn error(error: String) -> Self {
+        Self {
+            prefix_cache: None,
+            error: Some(error),
+        }
+    }
+
+    fn prefix_cache_delta(&self) -> Option<&PrefixCacheMetricsDeltaReport> {
+        self.prefix_cache.as_ref().map(|metrics| &metrics.delta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchCasePrefixCacheMetricsReport {
+    before: PrefixCacheMetricsReport,
+    after: PrefixCacheMetricsReport,
+    delta: PrefixCacheMetricsDeltaReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PrefixCacheMetricsDeltaReport {
+    hits: u64,
+    misses: u64,
+    hit_rate: Option<f64>,
+    stores: u64,
+    evictions: u64,
+    rejected: u64,
+    reused_tokens: u64,
+    hit_tokens: u64,
+    miss_tokens: u64,
+    avoided_prefill_tokens: u64,
+    resident_bytes: i64,
+    resident_entries: i64,
+}
+
+impl PrefixCacheMetricsDeltaReport {
+    fn between(before: &PrefixCacheMetricsReport, after: &PrefixCacheMetricsReport) -> Self {
+        let hits = counter_delta(before.hits, after.hits);
+        let misses = counter_delta(before.misses, after.misses);
+        Self {
+            hits,
+            misses,
+            hit_rate: hit_rate(hits, misses),
+            stores: counter_delta(before.stores, after.stores),
+            evictions: counter_delta(before.evictions, after.evictions),
+            rejected: counter_delta(before.rejected, after.rejected),
+            reused_tokens: counter_delta(before.reused_tokens, after.reused_tokens),
+            hit_tokens: counter_delta(before.hit_tokens, after.hit_tokens),
+            miss_tokens: counter_delta(before.miss_tokens, after.miss_tokens),
+            avoided_prefill_tokens: counter_delta(
+                before.avoided_prefill_tokens,
+                after.avoided_prefill_tokens,
+            ),
+            resident_bytes: gauge_delta(before.resident_bytes, after.resident_bytes),
+            resident_entries: gauge_delta(before.resident_entries, after.resident_entries),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1250,6 +1427,8 @@ impl CachePolicyReport {
             ],
             benchmark_metrics: vec![
                 "prefix_cache_hit_rate",
+                "prefix_cache_hit_tokens",
+                "prefix_cache_miss_tokens",
                 "prefix_cache_residency",
                 "weight_cache_hit_rate",
                 "weight_cache_residency",
@@ -1347,6 +1526,24 @@ fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Option<u64> {
         (Some(current), Some(next)) => Some(current.max(next)),
         (Some(current), None) => Some(current),
         (None, Some(next)) => Some(next),
+        (None, None) => None,
+    }
+}
+
+fn sum_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn sum_optional_u128(left: Option<u128>, right: Option<u128>) -> Option<u128> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
         (None, None) => None,
     }
 }
@@ -1510,6 +1707,7 @@ fn case_report(profile: BenchProfileKind, case: BenchCaseKind, max_tokens: u32) 
         target_tokens: profile.target_tokens(),
         stream: case.streams(),
         response_contract: case.response_contract(),
+        request_count: case.request_count(),
         marker: marker.clone(),
         prompt_identity: PromptIdentityReport {
             profile: profile.name(),
@@ -1541,6 +1739,7 @@ fn case_report(profile: BenchProfileKind, case: BenchCaseKind, max_tokens: u32) 
         http_status: None,
         finish_reason: None,
         error: None,
+        admin_metrics: None,
         baseline: None,
     }
 }
@@ -1680,14 +1879,90 @@ async fn run_case(
         }
     };
     let prompt_hash = prompt_body_hash(&prompt.body);
+    if case == BenchCaseKind::SameLongPromptTwice {
+        let mut run = run_same_long_prompt_twice_case(
+            client, endpoint, model_id, profile, case, &prompt, max_tokens,
+        )
+        .await;
+        run.prompt_hash = Some(prompt_hash);
+        return run;
+    }
+    if case == BenchCaseKind::SharedPrefixShortSuffixVariation {
+        let mut run = run_shared_prefix_short_suffix_case(
+            client, endpoint, model_id, profile, case, &prompt, max_tokens,
+        )
+        .await;
+        run.prompt_hash = Some(prompt_hash);
+        return run;
+    }
     let body = request_body(model_id, profile, case, &prompt, max_tokens);
     let mut run = if case.streams() {
-        run_streaming_case(client, endpoint, profile, case, prompt, body).await
+        run_streaming_case(client, endpoint, profile, case, &prompt, body).await
     } else {
-        run_buffered_case(client, endpoint, profile, case, prompt, body).await
+        run_buffered_case(client, endpoint, profile, case, &prompt, body).await
     };
     run.prompt_hash = Some(prompt_hash);
     run
+}
+
+async fn run_same_long_prompt_twice_case(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model_id: &str,
+    profile: BenchProfileKind,
+    case: BenchCaseKind,
+    prompt: &PromptBuild,
+    max_tokens: u32,
+) -> CaseRun {
+    let body = cache_probe_request_body(
+        model_id,
+        prompt,
+        max_tokens,
+        "Return only the target_marker value.",
+    );
+    let first = run_buffered_case(client, endpoint, profile, case, prompt, body.clone()).await;
+    let second = run_buffered_case(client, endpoint, profile, case, prompt, body).await;
+    merge_case_runs(first, second, "second_identical_prompt")
+}
+
+async fn run_shared_prefix_short_suffix_case(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model_id: &str,
+    profile: BenchProfileKind,
+    case: BenchCaseKind,
+    prompt: &PromptBuild,
+    max_tokens: u32,
+) -> CaseRun {
+    let first = run_buffered_case(
+        client,
+        endpoint,
+        profile,
+        case,
+        prompt,
+        cache_probe_request_body(
+            model_id,
+            prompt,
+            max_tokens,
+            "Short suffix A: prime shared-prefix reuse and return only the target_marker value.",
+        ),
+    )
+    .await;
+    let second = run_buffered_case(
+        client,
+        endpoint,
+        profile,
+        case,
+        prompt,
+        cache_probe_request_body(
+            model_id,
+            prompt,
+            max_tokens,
+            "Short suffix B: vary only this suffix and return only the target_marker value.",
+        ),
+    )
+    .await;
+    merge_case_runs(first, second, "second_shared_prefix_prompt")
 }
 
 async fn run_buffered_case(
@@ -1695,7 +1970,7 @@ async fn run_buffered_case(
     endpoint: &str,
     profile: BenchProfileKind,
     case: BenchCaseKind,
-    prompt: PromptBuild,
+    prompt: &PromptBuild,
     body: Value,
 ) -> CaseRun {
     let url = format!("{endpoint}/v1/chat/completions");
@@ -1770,7 +2045,7 @@ async fn run_streaming_case(
     endpoint: &str,
     profile: BenchProfileKind,
     case: BenchCaseKind,
-    prompt: PromptBuild,
+    prompt: &PromptBuild,
     body: Value,
 ) -> CaseRun {
     let url = format!("{endpoint}/v1/chat/completions");
@@ -1939,8 +2214,34 @@ fn request_body(
                 {"role": "user", "content": "Now answer with only the target_marker value from the first user turn."}
             ]);
         }
+        BenchCaseKind::SameLongPromptTwice | BenchCaseKind::SharedPrefixShortSuffixVariation => {
+            body = cache_probe_request_body(
+                model_id,
+                prompt,
+                max_tokens,
+                "Return only the target_marker value.",
+            );
+        }
     }
     body
+}
+
+fn cache_probe_request_body(
+    model_id: &str,
+    prompt: &PromptBuild,
+    max_tokens: u32,
+    suffix: &str,
+) -> Value {
+    serde_json::json!({
+        "model": model_id,
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "top_p": 1,
+        "messages": [
+            {"role": "system", "content": "You are a long-context prefix-cache evaluator. Return the requested marker exactly."},
+            {"role": "user", "content": format!("{}\n{suffix}", prompt.body)}
+        ]
+    })
 }
 
 fn recall_tool_schema() -> Value {
@@ -1970,7 +2271,10 @@ fn validate_buffered_case(
     value: &Value,
 ) -> Result<(), String> {
     match case {
-        BenchCaseKind::PlainRecall | BenchCaseKind::MultiTurnLifecycle => {
+        BenchCaseKind::PlainRecall
+        | BenchCaseKind::MultiTurnLifecycle
+        | BenchCaseKind::SameLongPromptTwice
+        | BenchCaseKind::SharedPrefixShortSuffixVariation => {
             let content = value
                 .pointer("/choices/0/message/content")
                 .and_then(Value::as_str)
@@ -2258,6 +2562,54 @@ fn case_from_validation(
     }
 }
 
+fn merge_case_runs(first: CaseRun, second: CaseRun, second_attempt_label: &str) -> CaseRun {
+    let latency_ms = sum_optional_u128(first.latency_ms, second.latency_ms);
+    let completion_tokens = sum_optional_u64(first.completion_tokens, second.completion_tokens);
+    let tokens_per_second = match (latency_ms, completion_tokens) {
+        (Some(latency_ms), Some(tokens)) if latency_ms > 0 => {
+            Some(tokens as f64 / (latency_ms as f64 / 1000.0))
+        }
+        _ => None,
+    };
+    let (status, classification, error) = if first.status != "passed" {
+        (
+            first.status,
+            first.classification.clone(),
+            first.error.clone(),
+        )
+    } else if second.status != "passed" {
+        (
+            second.status,
+            format!("{second_attempt_label}_{}", second.classification),
+            second.error.clone(),
+        )
+    } else {
+        ("passed", "passed".to_owned(), None)
+    };
+    CaseRun {
+        status,
+        classification,
+        planned_prompt_tokens: first
+            .planned_prompt_tokens
+            .saturating_add(second.planned_prompt_tokens),
+        latency_ms,
+        stream_timing: second.stream_timing,
+        tokens_per_second,
+        prompt_tokens: sum_optional_u64(first.prompt_tokens, second.prompt_tokens),
+        completion_tokens,
+        total_tokens: sum_optional_u64(first.total_tokens, second.total_tokens),
+        cached_tokens_status: merge_cached_tokens_status(
+            first.cached_tokens_status,
+            second.cached_tokens_status,
+        ),
+        cached_tokens: sum_optional_u64(first.cached_tokens, second.cached_tokens),
+        prompt_hash: None,
+        http_status: second.http_status.or(first.http_status),
+        finish_reason: second.finish_reason.or(first.finish_reason),
+        error,
+    }
+}
+
 fn failed_case(
     classification: impl Into<String>,
     planned_prompt_tokens: usize,
@@ -2329,6 +2681,59 @@ fn apply_case_run(case: &mut BenchCaseReport, run: CaseRun) {
     case.http_status = run.http_status;
     case.finish_reason = run.finish_reason;
     case.error = run.error;
+}
+
+fn apply_case_admin_metrics(
+    case: &mut BenchCaseReport,
+    before: Result<Option<PrefixCacheMetricsReport>, String>,
+    after: Result<Option<PrefixCacheMetricsReport>, String>,
+) {
+    case.admin_metrics = Some(match (before, after) {
+        (Ok(Some(before)), Ok(Some(after))) => {
+            BenchCaseAdminMetricsReport::from_prefix_cache_snapshots(before, after)
+        }
+        (Err(before), Err(after)) => BenchCaseAdminMetricsReport::error(format!(
+            "before admin metrics failed: {before}; after admin metrics failed: {after}"
+        )),
+        (Err(before), _) => {
+            BenchCaseAdminMetricsReport::error(format!("before admin metrics failed: {before}"))
+        }
+        (_, Err(after)) => {
+            BenchCaseAdminMetricsReport::error(format!("after admin metrics failed: {after}"))
+        }
+        (Ok(None), Ok(None)) => {
+            BenchCaseAdminMetricsReport::error("prefix cache admin metrics missing".to_owned())
+        }
+        (Ok(None), Ok(Some(_))) => BenchCaseAdminMetricsReport::error(
+            "prefix cache admin metrics missing before case".to_owned(),
+        ),
+        (Ok(Some(_)), Ok(None)) => BenchCaseAdminMetricsReport::error(
+            "prefix cache admin metrics missing after case".to_owned(),
+        ),
+    });
+}
+
+fn apply_case_cache_metric_validation(case: &mut BenchCaseReport, case_kind: BenchCaseKind) {
+    if !case_kind.requires_prefix_cache_validation() || case.status != "passed" {
+        return;
+    }
+    let Some(delta) = case
+        .admin_metrics
+        .as_ref()
+        .and_then(BenchCaseAdminMetricsReport::prefix_cache_delta)
+    else {
+        case.status = "failed".to_owned();
+        case.classification = "prefix_cache_metrics_missing".to_owned();
+        case.error =
+            Some("prefix cache admin metrics were not available for cache probe".to_owned());
+        return;
+    };
+    if delta.hit_tokens == 0 {
+        case.status = "failed".to_owned();
+        case.classification = "prefix_cache_hit_tokens_missing".to_owned();
+        case.error =
+            Some("prefix cache hit_tokens did not increase during cache probe case".to_owned());
+    }
 }
 
 fn time_to_first_token_ms(stream_timing: StreamTimingReport) -> Option<u128> {

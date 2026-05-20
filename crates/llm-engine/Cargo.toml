@@ -6,7 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["mlx", "native-qwen", "native-gemma", "diagnostics", "tool-calls"]
+default = [
+  "mlx",
+  "native-qwen",
+  "native-gemma",
+  "diagnostics",
+  "tool-calls",
+  "bench",
+]
 bench = ["dep:llm-bench"]
 diagnostics = ["dep:llm-tokenizer"]
 metal = ["dep:llm-metal"]

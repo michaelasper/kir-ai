@@ -145,12 +145,17 @@ body chunk, `first_sse_data_latency_ms` for the first valid non-empty SSE JSON
 delta, `first_tool_delta_latency_ms` for the first non-empty tool-call delta, and
 `first_semantic_delta_latency_ms` for the first content or tool delta. SSE
 comments, blank data frames, `[DONE]`, and usage-only frames do not count as
-semantic output. `cache_policy.env` records `LLM_ENGINE_PREFIX_CACHE_BYTES` when
-set so benchmark traces identify the native prefix-cache budget used by the
-served lane. When `/admin/metrics` is available, each lane also includes
-`cache_metrics` with prefix-cache hit rate/residency, Metal BF16 weight-cache hit
-rate/residency, KV-cache residency, recurrent linear-attention-cache residency, and
-eviction churn signals. Lane comparison reports `artifact_identity_mismatch` unless
+semantic output. The case matrix includes native prefix-cache probes for running
+the same long prompt twice and for varying only a short suffix after a shared long
+prefix. `cache_policy.env` records `LLM_ENGINE_PREFIX_CACHE_BYTES` when set so
+benchmark traces identify the native prefix-cache budget used by the served lane.
+When `/admin/metrics` is available, each lane also includes `cache_metrics` with
+prefix-cache hit rate, hit-token and miss-token counters, residency, Metal BF16
+weight-cache hit rate/residency, KV-cache residency, recurrent
+linear-attention-cache residency, and eviction churn signals. Each executed case
+records `admin_metrics.prefix_cache.before`, `after`, and `delta`; the two
+prefix-cache probe cases fail if their delta does not show increased
+`hit_tokens`. Lane comparison reports `artifact_identity_mismatch` unless
 repo, commit, profile, and quantization are identical across lanes; that mismatch
 fails the promotion gate and is emitted as
 `failure_classification: "lane_artifact_identity_mismatch"`. JSON and tool-call
