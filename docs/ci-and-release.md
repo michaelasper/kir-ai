@@ -12,8 +12,9 @@ what each workflow produces, and how releases are cut.
 | Nightly | `.github/workflows/nightly.yml` | Daily schedule and manual dispatch | Broad workspace tests, nightly north-star gates, long-context planning, optional live bench gates, and nightly build packaging | Nightly gate report and nightly build artifact |
 | Release | `.github/workflows/release.yml` | `v*.*.*` tags and manual dispatch | Validate tag/version, run release checks, build `llm-engine`, generate notes, publish GitHub release | macOS release archive, SHA-256 file, release notes |
 
-All workflows run on macOS because Metal smoke coverage and Apple Silicon
-serving are first-class project concerns.
+CI keeps Metal-aware validation on macOS because Apple Silicon serving is a
+first-class project concern. The cheap non-Metal compile check runs on Ubuntu
+to keep one PR lane independent of Apple runner availability.
 
 ## CI Jobs
 
@@ -58,6 +59,31 @@ The nextest PR lane is intentionally limited to fast package slices for now.
 It is a scheduling and timing visibility lane, not a replacement for the named
 north-star contract gates. Standard `cargo test` commands remain the fallback
 for local and CI environments without `cargo-nextest`.
+
+## CI Cargo Cache Strategy
+
+The CI workflow caches Cargo registry data, Cargo git checkouts, and `target/`
+with `actions/cache`. Cargo jobs use job-specific primary keys under a shared
+prefix containing runner OS, runner architecture, Rust toolchain,
+`CARGO_CACHE_VERSION`, and the `Cargo.lock` hash. That shape lets parallel jobs
+save the target layout they produced while still restoring dependency
+compilation from another build, clippy, test, or gate job when the OS, runner
+architecture, toolchain, and lockfile match.
+
+Restore keys intentionally fall back from the exact lockfile prefix to the same
+OS, architecture, toolchain, and cache-version prefix. A restored `target/`
+directory is only a build hint: Cargo and rustc fingerprints remain the source
+of truth and rebuild artifacts when features, sources, flags, or dependency
+metadata no longer match. Jobs that publish reports from `target/` clear those
+report paths after cache restore so an upload cannot accidentally use output
+from a previous run.
+
+`sccache` was evaluated for PR CI and left disabled for now. The official
+GitHub Actions integration can cache Rust compilation through `RUSTC_WRAPPER`,
+but it would add another cache backend and action on top of the shared Cargo
+target cache. Enable it only after workflow timing shows compiler-wrapper
+caching improves this workspace beyond the target-cache strategy, and keep
+Cargo's fingerprinted rebuilds as the correctness boundary.
 
 Serial-test decision: the PR nextest lane does not run native or Metal tests.
 The repository nextest profile assigns `llm-metal` tests to a `native-metal`

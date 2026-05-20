@@ -15,8 +15,19 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_CACHE_VERSION: "v1"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   RUST_TOOLCHAIN: "1.95.0"
+
+# Cargo cache strategy:
+# - Job-specific primary keys let parallel jobs save the target shape they build.
+# - Shared restore prefixes let build, clippy, test, and gate lanes reuse
+#   dependency artifacts from the same OS, runner architecture, Rust toolchain,
+#   and Cargo.lock when available.
+# - Restored target artifacts are only hints. Cargo/rustc fingerprints decide
+#   whether an artifact is valid and rebuild deterministically on misses.
+# - sccache was evaluated for Rust compilation reuse but is deferred until
+#   GitHub Actions timing shows it improves this workspace beyond target reuse.
 
 jobs:
   static-analysis:
@@ -43,9 +54,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-analysis-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            macos-cargo-analysis-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -78,9 +90,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-schema-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            macos-cargo-schema-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
 
       - name: Generate admin API schemas
         run: cargo test -p llm-server --all-features --lib generate_admin_api_schemas
@@ -118,9 +131,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ubuntu-cargo-check-no-metal-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            ubuntu-cargo-check-no-metal-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
 
       - name: Check all targets without Metal
         run: cargo check --workspace --all-targets --exclude llm-metal --no-default-features --features llm-engine/mlx,llm-engine/diagnostics,llm-engine/tool-calls,llm-server/tool-calls,llm-telemetry/tool-calls
@@ -148,9 +162,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-metal-smoke-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            macos-cargo-metal-smoke-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
 
       - name: Run Metal smoke tests
         run: cargo test -p llm-metal --test metal_smoke -- --test-threads=1
@@ -181,9 +196,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-nextest-fast-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            macos-cargo-nextest-fast-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
+
+      - name: Clear stale nextest report
+        run: rm -f target/nextest/pr-ci/junit.xml
 
       - name: Run nextest fast package lane
         run: cargo nextest run --profile pr-ci -p llm-kv-cache -p llm-sampler
@@ -222,9 +241,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.job }}
           restore-keys: |
-            macos-cargo-gates-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ env.CARGO_CACHE_VERSION }}-
+
+      - name: Clear stale gate reports
+        run: rm -rf target/north-star-gates target/release-notes-preview.md
 
       - name: Enforce versioning
         run: bash scripts/check-versioning.sh
