@@ -17,7 +17,8 @@ pub(crate) struct NativeTextPrefixCache<C> {
 
 #[derive(Debug)]
 pub(crate) struct NativeTextPrefixCacheInner<C> {
-    pub(crate) entries: HashMap<NativeTextPrefixCacheKey, NativeTextPrefixCacheEntry<C>>,
+    pub(crate) entries:
+        HashMap<NativeTextPrefixCacheNamespace, HashMap<Vec<usize>, NativeTextPrefixCacheEntry<C>>>,
     pub(crate) used_bytes: u64,
     pub(crate) next_access: u64,
 }
@@ -86,12 +87,6 @@ pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> Strin
         ),
         None => "raw_completion".to_owned(),
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct NativeTextPrefixCacheKey {
-    pub(crate) namespace: NativeTextPrefixCacheNamespace,
-    pub(crate) tokens: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,14 +165,15 @@ where
             } = &mut *inner;
             let mut best_len = 0;
             let mut best_entry = None;
-            for (key, entry) in entries.iter_mut() {
-                if key.namespace == *namespace
-                    && key.tokens.len() > best_len
-                    && tokens.starts_with(&key.tokens)
-                    && is_compatible(&entry.payload.caches)
-                {
-                    best_len = key.tokens.len();
-                    best_entry = Some(entry);
+            if let Some(bucket) = entries.get_mut(namespace) {
+                for (entry_tokens, entry) in bucket.iter_mut() {
+                    if entry_tokens.len() > best_len
+                        && tokens.starts_with(entry_tokens)
+                        && is_compatible(&entry.payload.caches)
+                    {
+                        best_len = entry_tokens.len();
+                        best_entry = Some(entry);
+                    }
                 }
             }
             if let Some(entry) = best_entry {
@@ -221,28 +217,17 @@ where
             hidden: hidden.to_vec(),
             caches: caches.to_vec(),
         });
-        let key = NativeTextPrefixCacheKey {
-            namespace,
-            tokens: tokens.to_vec(),
-        };
+        let entry_tokens = tokens.to_vec();
         let mut removed_entries = Vec::new();
         let mut evicted_byte_lens = Vec::new();
         let (resident_bytes, resident_entries) = {
             let mut inner = self.inner.lock_or_panic("native text prefix cache");
-            if let Some(existing) = inner.entries.remove(&key) {
+            if let Some(existing) = inner.remove_entry(&namespace, &entry_tokens) {
                 inner.used_bytes = inner.used_bytes.saturating_sub(existing.byte_len);
                 removed_entries.push(existing);
             }
             while inner.used_bytes.saturating_add(byte_len) > self.max_bytes {
-                let Some(lru_key) = inner
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.last_used)
-                    .map(|(key, _)| key.clone())
-                else {
-                    break;
-                };
-                let Some(evicted) = inner.entries.remove(&lru_key) else {
+                let Some(evicted) = inner.remove_lru_entry() else {
                     break;
                 };
                 inner.used_bytes = inner.used_bytes.saturating_sub(evicted.byte_len);
@@ -250,8 +235,8 @@ where
                 removed_entries.push(evicted);
             }
             let access = inner.next_access();
-            inner.entries.insert(
-                key,
+            inner.entries.entry(namespace).or_default().insert(
+                entry_tokens,
                 NativeTextPrefixCacheEntry {
                     payload,
                     byte_len,
@@ -259,7 +244,7 @@ where
                 },
             );
             inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
-            (inner.used_bytes, inner.entries.len() as u64)
+            (inner.used_bytes, inner.entry_count())
         };
         // Drop replaced or evicted payloads after releasing the global cache lock.
         drop(removed_entries);
@@ -276,6 +261,43 @@ impl<C> NativeTextPrefixCacheInner<C> {
         let access = self.next_access;
         self.next_access = self.next_access.saturating_add(1);
         access
+    }
+
+    fn entry_count(&self) -> u64 {
+        self.entries
+            .values()
+            .map(|bucket| bucket.len() as u64)
+            .sum()
+    }
+
+    fn remove_entry(
+        &mut self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+    ) -> Option<NativeTextPrefixCacheEntry<C>> {
+        let (entry, remove_bucket) = {
+            let bucket = self.entries.get_mut(namespace)?;
+            let entry = bucket.remove(tokens);
+            (entry, bucket.is_empty())
+        };
+        if remove_bucket {
+            self.entries.remove(namespace);
+        }
+        entry
+    }
+
+    fn remove_lru_entry(&mut self) -> Option<NativeTextPrefixCacheEntry<C>> {
+        let (namespace, tokens) = self
+            .entries
+            .iter()
+            .flat_map(|(namespace, bucket)| {
+                bucket
+                    .iter()
+                    .map(move |(tokens, entry)| (namespace, tokens, entry))
+            })
+            .min_by_key(|(_, _, entry)| entry.last_used)
+            .map(|(namespace, tokens, _)| (namespace.clone(), tokens.clone()))?;
+        self.remove_entry(&namespace, &tokens)
     }
 }
 

@@ -35,10 +35,9 @@ pub(crate) use generation::{
 #[allow(unused_imports)]
 pub(crate) use prefix_cache::{
     NativeTextPrefixCache, NativeTextPrefixCacheCounters, NativeTextPrefixCacheEntry,
-    NativeTextPrefixCacheHit, NativeTextPrefixCacheInner, NativeTextPrefixCacheKey,
-    NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-    NativeTextPrefixNamespaceContext, native_text_prefix_namespace,
-    native_text_prefix_request_mode,
+    NativeTextPrefixCacheHit, NativeTextPrefixCacheInner, NativeTextPrefixCacheMetrics,
+    NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, NativeTextPrefixNamespaceContext,
+    native_text_prefix_namespace, native_text_prefix_request_mode,
 };
 pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
 
@@ -1697,6 +1696,101 @@ mod tests {
             })
             .expect("compatible entry is reusable");
         assert_eq!(hit.token_count, 2);
+    }
+
+    #[test]
+    fn prefix_cache_stores_entries_in_namespace_buckets() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let base_namespace = namespace("bucket");
+        let other_namespace = namespace("other-bucket");
+        let hidden = [1.0];
+        let caches = [TestCache {
+            bytes: 8,
+            marker: 1,
+        }];
+
+        cache.store(base_namespace.clone(), &[1], &hidden, &caches, &metrics);
+        cache.store(base_namespace.clone(), &[1, 2], &hidden, &caches, &metrics);
+        cache.store(other_namespace.clone(), &[9], &hidden, &caches, &metrics);
+
+        let inner = cache.inner.lock().expect("prefix cache lock is available");
+        assert_eq!(inner.entries.len(), 2);
+        assert_eq!(
+            inner
+                .entries
+                .get(&base_namespace)
+                .expect("namespace bucket exists")
+                .len(),
+            2
+        );
+        assert_eq!(
+            inner
+                .entries
+                .get(&other_namespace)
+                .expect("other namespace bucket exists")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prefix_cache_prefers_longest_prefix_over_recency_and_updates_lru() {
+        let cache = NativeTextPrefixCache::new(48);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let base_namespace = namespace("longest-lru");
+        let other_namespace = namespace("longest-lru-other");
+        let hidden = [1.0, 2.0, 3.0, 4.0];
+
+        cache.store(
+            base_namespace.clone(),
+            &[1, 2, 3],
+            &hidden,
+            &[TestCache {
+                bytes: 8,
+                marker: 3,
+            }],
+            &metrics,
+        );
+        cache.store(
+            base_namespace.clone(),
+            &[1, 2],
+            &hidden,
+            &[TestCache {
+                bytes: 8,
+                marker: 2,
+            }],
+            &metrics,
+        );
+
+        let hit = cache
+            .lookup(&base_namespace, &[1, 2, 3, 4], &metrics)
+            .expect("matching prompt reuses longest prefix");
+        assert_eq!(hit.token_count, 3);
+        assert_eq!(hit.caches[0].marker, 3);
+
+        cache.store(
+            other_namespace.clone(),
+            &[9],
+            &hidden,
+            &[TestCache {
+                bytes: 8,
+                marker: 9,
+            }],
+            &metrics,
+        );
+
+        assert!(
+            cache.lookup(&base_namespace, &[1, 2], &metrics).is_none(),
+            "shorter prefix should be least recently used after the longest-prefix hit"
+        );
+        assert!(
+            cache
+                .lookup(&base_namespace, &[1, 2, 3], &metrics)
+                .is_some(),
+            "longest-prefix hit should refresh that entry before eviction"
+        );
+        assert!(cache.lookup(&other_namespace, &[9], &metrics).is_some());
     }
 
     #[test]
