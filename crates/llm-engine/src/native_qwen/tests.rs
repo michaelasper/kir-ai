@@ -330,6 +330,23 @@ fn native_qwen_prefix_cache_evicts_lru_entries_to_fit_budget() {
 }
 
 #[test]
+fn native_qwen_prefix_cache_rejects_entries_over_small_budget() {
+    let cache = NativeQwenPrefixCache::new(4);
+    let metrics = NativeQwenPrefixCacheMetrics::default();
+    let namespace = native_qwen_test_prefix_namespace("small-budget");
+    let hidden = vec![1.0; 2];
+
+    cache.store(namespace.clone(), &[1], &hidden, &[], &metrics);
+
+    assert!(cache.lookup(&namespace, &[1], &metrics).is_none());
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot["stores"], 0);
+    assert_eq!(snapshot["rejected"], 1);
+    assert_eq!(snapshot["resident_bytes"], 0);
+    assert_eq!(snapshot["resident_entries"], 0);
+}
+
+#[test]
 fn native_qwen_prefix_cache_metrics_expose_hits_misses_and_evictions() {
     let metrics = NativeQwenPrefixCacheMetrics::default();
 
@@ -1104,6 +1121,28 @@ fn native_qwen_backend_can_eagerly_materialize_indexed_shards_on_open() {
     );
 
     assert_eq!(backend.driver.adapter.store.materialized_shard_count(), 1);
+    std::fs::remove_dir_all(snapshot).ok();
+}
+
+#[test]
+fn native_qwen_backend_uses_configured_prefix_cache_budget() {
+    let snapshot = temp_snapshot_dir("prefix-cache-budget");
+    std::fs::remove_dir_all(&snapshot).ok();
+    std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+    copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+    write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
+    write_tiny_qwen3_dense_model_index(&snapshot);
+
+    let backend = open_qwen_backend_with_options_blocking(
+        crate::DEFAULT_MODEL_ID,
+        &snapshot,
+        NativeQwenLoadOptions {
+            prefix_cache_bytes: Some(7),
+            ..NativeQwenLoadOptions::default()
+        },
+    );
+
+    assert_eq!(backend.driver.adapter.prefix_cache.max_bytes, 7);
     std::fs::remove_dir_all(snapshot).ok();
 }
 

@@ -131,6 +131,8 @@ async fn main() -> anyhow::Result<()> {
                     flag_value(&serve_args, "--native-metal-weight-cache-bytes")
                         .map(str::parse::<u64>)
                         .transpose()?;
+                #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+                let native_prefix_cache_bytes = native_prefix_cache_bytes_from_args(&serve_args)?;
                 #[cfg(feature = "mlx")]
                 let mlx_endpoint = if let Some(endpoint) = flag_value(&serve_args, "--mlx-endpoint")
                 {
@@ -189,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
                                     "--eager-materialize-shards",
                                 ),
                                 metal_weight_cache_bytes: native_metal_weight_cache_bytes,
+                                prefix_cache_bytes: native_prefix_cache_bytes,
                                 warm_metal_weight_cache: has_flag(
                                     &serve_args,
                                     "--warm-native-metal-weight-cache",
@@ -302,6 +305,7 @@ Options:
   --mlx-read-timeout <secs>                  MLX sidecar per-chunk read timeout [default: 60]
   --mlx-stream-usage <true|false>            Forward stream_options.include_usage to MLX sidecars [default: true, env: LLM_ENGINE_MLX_STREAM_USAGE]
   --mlx-tool-parser <auto|json|qwen-xml>     MLX streamed tool parser [default: auto]
+  --native-prefix-cache-bytes <bytes>        Native prefix cache budget [default: 536870912, env: LLM_ENGINE_PREFIX_CACHE_BYTES]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
@@ -348,6 +352,32 @@ fn serve_stream_stall_timeout_from_args(
 ) -> anyhow::Result<Option<std::time::Duration>> {
     let secs = parse_positive_u64_flag(args, "--stream-stall-timeout", 300)?;
     Ok(Some(std::time::Duration::from_secs(secs)))
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn native_prefix_cache_bytes_from_args(args: &[String]) -> anyhow::Result<Option<u64>> {
+    let env_value = std::env::var("LLM_ENGINE_PREFIX_CACHE_BYTES").ok();
+    native_prefix_cache_bytes_from_env(args, env_value.as_deref())
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn native_prefix_cache_bytes_from_env(
+    args: &[String],
+    env_value: Option<&str>,
+) -> anyhow::Result<Option<u64>> {
+    if let Some(value) = flag_value(args, "--native-prefix-cache-bytes") {
+        return parse_u64_config("--native-prefix-cache-bytes", value).map(Some);
+    }
+    env_value
+        .map(|value| parse_u64_config("LLM_ENGINE_PREFIX_CACHE_BYTES", value))
+        .transpose()
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn parse_u64_config(name: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .parse::<u64>()
+        .map_err(|err| anyhow::anyhow!("{name} must be a non-negative integer: {err}"))
 }
 
 fn parse_positive_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
@@ -448,6 +478,29 @@ mod serve_arg_tests {
         assert!(
             non_numeric.to_string().contains("--stream-stall-timeout"),
             "error: {non_numeric}"
+        );
+    }
+
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+    #[test]
+    fn native_prefix_cache_bytes_accepts_zero_from_env() {
+        assert_eq!(
+            native_prefix_cache_bytes_from_env(&args(&[]), Some("0"))
+                .expect("zero disables prefix cache stores"),
+            Some(0)
+        );
+    }
+
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+    #[test]
+    fn native_prefix_cache_bytes_flag_overrides_env() {
+        assert_eq!(
+            native_prefix_cache_bytes_from_env(
+                &args(&["--native-prefix-cache-bytes", "64"]),
+                Some("0"),
+            )
+            .expect("flag override parses"),
+            Some(64)
         );
     }
 }

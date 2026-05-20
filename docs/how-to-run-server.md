@@ -181,6 +181,11 @@ backends retain the accepted prompt context by sizing full-attention caches from
 prompt length plus generation budget, and reject requests that exceed the model
 context limit.
 
+`--native-prefix-cache-bytes` controls the per-backend Qwen/Gemma prefix-cache
+budget. It defaults to `536870912` bytes. Set `0` to reject prefix-cache stores
+while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES`
+provides the same setting when the flag is omitted.
+
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
 set to `0` to disable weight-buffer caching.

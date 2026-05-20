@@ -5,8 +5,9 @@ use crate::{
         NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
     },
     native_text::{
-        NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
-        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
+        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
+        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
         NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
@@ -49,7 +50,7 @@ pub(crate) struct NativeQwenAdapter {
     prefix_cache: Arc<NativeQwenPrefixCache>,
 }
 
-const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES;
 const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
 
 type NativeQwenPrefixCache = NativeTextPrefixCache<QwenLayerCache>;
@@ -97,6 +98,7 @@ impl NativeTextCacheMirrorSource for QwenLayerCache {
 pub struct NativeQwenLoadOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
+    pub prefix_cache_bytes: Option<u64>,
     pub warm_metal_weight_cache: bool,
 }
 impl NativeQwenBackend {
@@ -164,7 +166,9 @@ impl NativeQwenBackend {
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeQwenPrefixCache::new(
-                DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
+                options
+                    .prefix_cache_bytes
+                    .unwrap_or(DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES),
             )),
         };
         Ok(Self {

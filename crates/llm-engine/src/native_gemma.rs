@@ -5,8 +5,9 @@ use crate::{
         NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
     },
     native_text::{
-        NativeTextAdapter, NativeTextDriver, NativeTextNextTokenContext, NativeTextPrefixCache,
-        NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
+        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
+        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
+        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
         NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
@@ -29,7 +30,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES: u64 = DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES;
 const NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
 
 #[derive(Clone)]
@@ -41,6 +42,7 @@ pub struct NativeGemmaBackend {
 pub struct NativeGemmaLoadOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
+    pub prefix_cache_bytes: Option<u64>,
     pub warm_metal_weight_cache: bool,
 }
 
@@ -155,7 +157,9 @@ impl NativeGemmaBackend {
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeGemmaPrefixCache::new(
-                DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES,
+                options
+                    .prefix_cache_bytes
+                    .unwrap_or(DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES),
             )),
         };
         Ok(Self {
@@ -781,6 +785,23 @@ mod tests {
     }
 
     #[test]
+    fn native_gemma_prefix_cache_rejects_entries_over_small_budget() {
+        let cache = NativeGemmaPrefixCache::new(4);
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+        let namespace = native_gemma_test_prefix_namespace("small-budget");
+        let hidden = vec![1.0; 2];
+
+        cache.store(namespace.clone(), &[1], &hidden, &[], &metrics);
+
+        assert!(cache.lookup(&namespace, &[1], &metrics).is_none());
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["stores"], 0);
+        assert_eq!(snapshot["rejected"], 1);
+        assert_eq!(snapshot["resident_bytes"], 0);
+        assert_eq!(snapshot["resident_entries"], 0);
+    }
+
+    #[test]
     fn native_gemma_prefix_cache_metrics_expose_hits_misses_and_evictions() {
         let metrics = NativeGemmaPrefixCacheMetrics::default();
 
@@ -855,6 +876,27 @@ mod tests {
         );
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_gemma_backend_uses_configured_prefix_cache_budget() {
+        let snapshot = temp_snapshot_dir("native-gemma-prefix-cache-budget");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_gemma4_decoder_snapshot(&snapshot);
+        copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
+
+        let backend = open_gemma_backend_with_options(
+            "local-gemma",
+            &snapshot,
+            NativeGemmaLoadOptions {
+                prefix_cache_bytes: Some(7),
+                ..NativeGemmaLoadOptions::default()
+            },
+        );
+
+        assert_eq!(backend.driver.adapter.prefix_cache.max_bytes, 7);
         std::fs::remove_dir_all(snapshot).ok();
     }
 

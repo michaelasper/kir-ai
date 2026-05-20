@@ -43,6 +43,7 @@ pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
 pub const DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 2048;
+pub const DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeTextLoadOptions {
@@ -57,6 +58,7 @@ pub struct NativeTextLoadOptions {
 pub struct NativeTextRuntimeOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
+    pub prefix_cache_bytes: Option<u64>,
     pub warm_metal_weight_cache: bool,
 }
 
@@ -66,6 +68,7 @@ impl From<NativeTextRuntimeOptions> for NativeQwenLoadOptions {
         Self {
             eager_materialize_shards: value.eager_materialize_shards,
             metal_weight_cache_bytes: value.metal_weight_cache_bytes,
+            prefix_cache_bytes: value.prefix_cache_bytes,
             warm_metal_weight_cache: value.warm_metal_weight_cache,
         }
     }
@@ -77,6 +80,7 @@ impl From<NativeTextRuntimeOptions> for NativeGemmaLoadOptions {
         Self {
             eager_materialize_shards: value.eager_materialize_shards,
             metal_weight_cache_bytes: value.metal_weight_cache_bytes,
+            prefix_cache_bytes: value.prefix_cache_bytes,
             warm_metal_weight_cache: value.warm_metal_weight_cache,
         }
     }
@@ -101,6 +105,7 @@ impl NativeTextLoadOptions {
             gemma: NativeGemmaLoadOptions {
                 eager_materialize_shards: qwen.eager_materialize_shards,
                 metal_weight_cache_bytes: qwen.metal_weight_cache_bytes,
+                prefix_cache_bytes: qwen.prefix_cache_bytes,
                 warm_metal_weight_cache: qwen.warm_metal_weight_cache,
             },
             qwen,
@@ -443,6 +448,11 @@ mod tests {
 
         fn with_prefill_failure(mut self) -> Self {
             self.fail_prefill = true;
+            self
+        }
+
+        fn with_prefix_cache_bytes(mut self, prefix_cache_bytes: u64) -> Self {
+            self.prefix_cache = std::sync::Arc::new(NativeTextPrefixCache::new(prefix_cache_bytes));
             self
         }
 
@@ -843,15 +853,42 @@ mod tests {
         let options = NativeTextLoadOptions::with_runtime_options(NativeTextRuntimeOptions {
             eager_materialize_shards: true,
             metal_weight_cache_bytes: Some(4096),
+            prefix_cache_bytes: Some(17),
             warm_metal_weight_cache: true,
         });
 
         assert!(options.qwen.eager_materialize_shards);
         assert_eq!(options.qwen.metal_weight_cache_bytes, Some(4096));
+        assert_eq!(options.qwen.prefix_cache_bytes, Some(17));
         assert!(options.qwen.warm_metal_weight_cache);
         assert!(options.gemma.eager_materialize_shards);
         assert_eq!(options.gemma.metal_weight_cache_bytes, Some(4096));
+        assert_eq!(options.gemma.prefix_cache_bytes, Some(17));
         assert!(options.gemma.warm_metal_weight_cache);
+    }
+
+    #[test]
+    fn driver_with_zero_prefix_cache_budget_generates_without_reuse() {
+        let adapter = TestAdapter::new([1_usize]).with_prefix_cache_bytes(0);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let driver = driver_for_test(adapter);
+
+        let first = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("first generation succeeds");
+        let second = driver
+            .generate_blocking(driver_test_request(1), CancellationToken::new())
+            .expect("second generation succeeds");
+
+        assert_eq!(first.text, "<1>");
+        assert_eq!(second.text, "<1>");
+        assert_eq!(first.prompt_cached_tokens, Some(0));
+        assert_eq!(second.prompt_cached_tokens, Some(0));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["stores"], 0);
+        assert_eq!(snapshot["rejected"], 2);
+        assert_eq!(snapshot["resident_bytes"], 0);
+        assert_eq!(snapshot["resident_entries"], 0);
     }
 
     #[test]

@@ -1130,6 +1130,14 @@ fn serve_help_prints_without_backend_validation() {
         "stdout should make low native prefill chunks an explicit probe-only override: {stdout}"
     );
     assert!(
+        stdout.contains("--native-prefix-cache-bytes <bytes>"),
+        "serve help should document native prefix cache sizing: {stdout}"
+    );
+    assert!(
+        stdout.contains("LLM_ENGINE_PREFIX_CACHE_BYTES"),
+        "serve help should document the native prefix cache environment variable: {stdout}"
+    );
+    assert!(
         stdout.contains("--max-json-body-bytes <bytes>"),
         "serve help should document configurable JSON body limits: {stdout}"
     );

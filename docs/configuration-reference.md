@@ -19,6 +19,7 @@ generation options.
 | `LLM_ENGINE_ADDR` | `mise run run-inference` | Listen address. Defaults to `127.0.0.1:3000`. |
 | `LLM_ENGINE_MAX_NEW_TOKENS` | `mise run run-inference` | Generation cap passed to `--max-new-tokens`. Defaults to `256`. |
 | `LLM_ENGINE_MAX_PREFILL_TOKENS` | `mise run run-inference` | Native prefill chunk size passed to `--max-prefill-tokens`. Defaults to `2048`; lowering it is mainly for memory-constrained correctness probes. |
+| `LLM_ENGINE_PREFIX_CACHE_BYTES` | `serve`, `bench qwen-long-context`, `mise run run-inference` | Native Qwen/Gemma prefix-cache byte budget when `--native-prefix-cache-bytes` is omitted. Defaults to `536870912`; `0` rejects stores while generation continues without prefix reuse. Benchmark traces record this value under `cache_policy.env` when set. |
 | `MLX_LM_ENDPOINT` | `serve`, `mise run run-inference` | Loopback MLX sidecar `/v1` endpoint when `--mlx-endpoint` is omitted. |
 
 ## Workspace Tooling
@@ -57,6 +58,7 @@ Mise tasks:
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
 | `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Chat requests use `/v1/chat/completions` with lossless OpenAI message history; legacy text completions use a completions-capable sidecar endpoint when the selected family exposes one. Qwen, DeepSeek, and Llama use `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
+| `--native-prefix-cache-bytes` | `u64` | `536870912` | Per-backend Qwen/Gemma prefix-cache budget. Set `0` to reject stores while generation continues without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when omitted. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | boolean | unset | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 

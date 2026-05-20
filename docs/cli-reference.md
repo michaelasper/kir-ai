@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--mlx-endpoint <url>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine model <subcommand> ...
@@ -55,6 +55,7 @@ llm-engine serve \
 | `--max-message-content-bytes <usize>` | `8388608` | Per-message chat `content` byte cap after JSON parsing. Values below `1` are rejected. |
 | `--max-completion-prompt-bytes <usize>` | `8388608` | Text completion `prompt` byte cap after JSON parsing. Values below `1` are rejected. |
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` or `mlx_vlm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
+| `--native-prefix-cache-bytes <u64>` | `536870912` | Per-backend native Qwen/Gemma prefix-cache budget. Set `0` to reject stores while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 | `--canonical-tool-schemas` | absent | Opts production serving into canonical tool schema rendering/cache keys. Equivalent JSON object key order and string-only `required` array order normalize to one minified schema. |
@@ -144,7 +145,9 @@ body chunk, `first_sse_data_latency_ms` for the first valid non-empty SSE JSON
 delta, `first_tool_delta_latency_ms` for the first non-empty tool-call delta, and
 `first_semantic_delta_latency_ms` for the first content or tool delta. SSE
 comments, blank data frames, `[DONE]`, and usage-only frames do not count as
-semantic output. When `/admin/metrics` is available, each lane also includes
+semantic output. `cache_policy.env` records `LLM_ENGINE_PREFIX_CACHE_BYTES` when
+set so benchmark traces identify the native prefix-cache budget used by the
+served lane. When `/admin/metrics` is available, each lane also includes
 `cache_metrics` with prefix-cache hit rate/residency, Metal BF16 weight-cache hit
 rate/residency, KV-cache residency, recurrent linear-attention-cache residency, and
 eviction churn signals. Lane comparison reports `artifact_identity_mismatch` unless
