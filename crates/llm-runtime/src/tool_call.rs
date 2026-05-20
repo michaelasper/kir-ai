@@ -1,5 +1,5 @@
 use crate::RuntimeError;
-use crate::tool_schema::{default_tool_intent, schema_requires_string_intent_argument};
+use crate::response_validation::{default_tool_intent, schema_requires_string_intent_argument};
 use llm_api::{
     ApiError, ChatCompletionRequest, ToolCall, ToolCallDelta, ToolCallFunction,
     ToolCallFunctionDelta, ToolCallType, ToolChoice,
@@ -169,18 +169,6 @@ pub(crate) fn tool_call_arguments_delta(
             arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
         }),
     })
-}
-
-pub(crate) fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
-    for tool_call in &parsed.tool_calls {
-        if !tool_call.function.arguments.is_object() {
-            return Err(RuntimeError::JsonMode(format!(
-                "tool call `{}` arguments must be a JSON object",
-                tool_call.function.name
-            )));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn fill_missing_tool_intent_arguments(

@@ -124,24 +124,3 @@ fn unmarked_tool_json_candidate<'a>(
         .map_or(text, |index| &text[..index])
         .trim()
 }
-
-pub(crate) fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
-    if !parsed.content.is_empty() {
-        let value = serde_json::from_str::<serde_json::Value>(&parsed.content).map_err(|err| {
-            RuntimeError::JsonMode(format!(
-                "json_object response_format requires valid JSON object content: {err}"
-            ))
-        })?;
-        if !value.is_object() {
-            return Err(RuntimeError::JsonMode(
-                "json_object response_format requires assistant content to be a JSON object"
-                    .to_owned(),
-            ));
-        }
-    } else if parsed.tool_calls.is_empty() {
-        return Err(RuntimeError::JsonMode(
-            "json_object response_format requires assistant content or tool calls".to_owned(),
-        ));
-    }
-    Ok(())
-}

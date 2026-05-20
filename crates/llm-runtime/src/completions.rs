@@ -1,20 +1,17 @@
 use crate::RuntimeError;
+use crate::backend_request::completion_backend_request;
 use crate::no_progress::classify_no_progress;
 use crate::runtime::Runtime;
-use crate::stop::{
-    apply_stop_sequences, earliest_stop_index, max_stop_sequence_len, safe_stream_emit_len,
-};
+use crate::stop::apply_stop_sequences;
 use crate::streaming::{
-    CancelOnDrop, CompletionStream, CompletionStreamEvent, RuntimeCompletion,
-    RuntimeCompletionSeed, api_finish_reason, completion_stream_seed_chunk, max_optional_u64,
-    usage_from_tokens,
+    CancelOnDrop, CompletionStream, RuntimeCompletion, RuntimeCompletionSeed, api_finish_reason,
+    streaming_completion_stream, usage_from_tokens,
 };
 use chrono::Utc;
-use futures::{StreamExt, stream::BoxStream};
 use llm_api::{
     ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest, Validated,
 };
-use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend, SamplingConfig};
+use llm_backend::ModelBackend;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -102,15 +99,10 @@ where
             model: request_ref.model.clone(),
         };
         let request = request.into_inner();
-        let backend_stream = self.backend.generate_stream_with_cancel(
-            BackendRequest::raw_completion(
-                request.model,
-                request.prompt,
-                request.max_tokens,
-                SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
-            ),
-            cancellation.clone(),
-        );
+        let backend_request = completion_backend_request(request)?;
+        let backend_stream = self
+            .backend
+            .generate_stream_with_cancel(backend_request, cancellation.clone());
         Ok(streaming_completion_stream(
             completion,
             backend_stream,
@@ -126,20 +118,13 @@ where
         cancellation: CancellationToken,
     ) -> Result<RuntimeCompletion, RuntimeError> {
         let request = request.into_inner();
-        let model = request.model;
-        let stop = request.stop;
+        let model = request.model.clone();
+        let stop = request.stop.clone();
+        let backend_request = completion_backend_request(request)?;
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
-            .generate_with_cancel(
-                BackendRequest::raw_completion(
-                    model.clone(),
-                    request.prompt,
-                    request.max_tokens,
-                    SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
-                ),
-                cancellation,
-            )
+            .generate_with_cancel(backend_request, cancellation)
             .await?;
         let mut text = output.text;
         let stopped = apply_stop_sequences(&mut text, &stop);
@@ -165,94 +150,4 @@ where
             usage,
         })
     }
-}
-
-fn streaming_completion_stream<'a>(
-    completion: RuntimeCompletionSeed,
-    backend_stream: BoxStream<'a, Result<BackendStreamChunk, BackendError>>,
-    stop: Vec<String>,
-    include_usage: bool,
-    cancellation: CancellationToken,
-) -> CompletionStream<'a> {
-    let cancel_on_drop = CancelOnDrop::new(cancellation);
-    let events = async_stream::try_stream! {
-        let _cancel_on_drop = cancel_on_drop;
-        let mut backend_stream = backend_stream;
-        let mut raw_text = String::new();
-        let mut emitted_len = 0;
-        let mut prompt_tokens = 0;
-        let mut prompt_cached_tokens = None;
-        let mut completion_tokens = 0;
-        let mut finish_reason = llm_api::FinishReason::Length;
-        let max_stop_len = max_stop_sequence_len(&stop);
-        while let Some(chunk) = backend_stream.next().await {
-            let chunk = chunk?;
-            prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
-            prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
-            completion_tokens += chunk.completion_tokens;
-            if let Some(progress) = chunk.progress.clone() {
-                yield CompletionStreamEvent::Progress(progress);
-            }
-            if !chunk.text.is_empty() {
-                raw_text.push_str(&chunk.text);
-                if let Some(stop_at) = earliest_stop_index(&raw_text, &stop) {
-                    if stop_at > emitted_len {
-                        yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-                            &completion,
-                            raw_text[emitted_len..stop_at].to_owned(),
-                            None,
-                            None,
-                        ));
-                    }
-                    emitted_len = stop_at;
-                    finish_reason = llm_api::FinishReason::Stop;
-                    break;
-                }
-                let safe_len = safe_stream_emit_len(&raw_text, max_stop_len);
-                if safe_len > emitted_len {
-                    yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-                        &completion,
-                        raw_text[emitted_len..safe_len].to_owned(),
-                        None,
-                        None,
-                    ));
-                    emitted_len = safe_len;
-                }
-            }
-            if let Some(reason) = chunk.finish_reason {
-                finish_reason = api_finish_reason(reason);
-                break;
-            }
-        }
-        if finish_reason != llm_api::FinishReason::Stop && emitted_len < raw_text.len() {
-            yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-                &completion,
-                raw_text[emitted_len..].to_owned(),
-                None,
-                None,
-            ));
-            emitted_len = raw_text.len();
-        }
-        let visible_text = &raw_text[..emitted_len];
-        if let Some(class) = classify_no_progress(visible_text, completion_tokens) {
-            Err(RuntimeError::NoProgress(class))?;
-        }
-        let usage = usage_from_tokens(prompt_tokens, completion_tokens, prompt_cached_tokens);
-        yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-            &completion,
-            String::new(),
-            Some(finish_reason),
-            None,
-        ));
-        if include_usage {
-            yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
-                &completion,
-                String::new(),
-                None,
-                Some(usage.clone()),
-            ));
-        }
-        yield CompletionStreamEvent::Complete(usage);
-    };
-    CompletionStream::new(events.boxed())
 }

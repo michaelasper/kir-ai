@@ -125,7 +125,7 @@ impl ChatAdapter for SelectedChatAdapter {
     ) -> BackendChatContext {
         BackendChatContext {
             messages: messages.iter().map(backend_chat_message).collect(),
-            tools: crate::runtime::backend_tool_definitions(tools),
+            tools: crate::backend_request::backend_tool_definitions(tools),
         }
     }
 

@@ -1,30 +1,26 @@
 use crate::RuntimeError;
 use crate::adapters::ChatAdapter;
-use crate::chat_streaming::streaming_chat_stream;
-use crate::json_mode::{parse_chat_text, validate_json_object_response};
+use crate::json_mode::parse_chat_text;
 use crate::no_progress::{
     classify_chat_no_progress, classify_repeated_invalid_tool_call_no_progress,
+};
+use crate::response_validation::{
+    validate_json_object_response_format, validate_tool_call_arguments,
+    validate_tool_calls_against_request,
 };
 use crate::runtime::Runtime;
 use crate::stop::apply_stop_sequences;
 use crate::streaming::{
-    CancelOnDrop, ChatCompletionStream, ChatCompletionStreamEvent, ChatCompletionStreamStage,
-    RuntimeChatCompletion, RuntimeCompletionSeed, api_finish_reason, stream_chunk,
-    stream_usage_chunk, usage_from_tokens,
+    CancelOnDrop, ChatCompletionStream, RuntimeChatCompletion, RuntimeCompletionSeed,
+    api_finish_reason, buffered_chat_stream, streaming_chat_stream, usage_from_tokens,
 };
-use crate::tool_call::{
-    fill_missing_tool_intent_arguments, required_backend_tool_choice, tool_call_delta,
-    validate_tool_call_arguments,
-};
-use crate::tool_schema::validate_tool_calls_against_request;
+use crate::tool_call::fill_missing_tool_intent_arguments;
 use chrono::Utc;
-use futures::{StreamExt, stream};
 use llm_api::{
-    ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
-    ChatCompletionResponse, ChatMessage, ChatRole, ResponseFormat, ToolChoice, ValidateRequest,
-    Validated,
+    ApiError, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    ChatRole, ToolChoice, ValidateRequest, Validated,
 };
-use llm_backend::{BackendRequest, ModelBackend, SamplingConfig};
+use llm_backend::ModelBackend;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -112,29 +108,15 @@ where
         let request_ref = request.as_ref();
         let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
-        let (cache_context, prompt, chat_context) =
-            self.prepare_chat_backend(adapter, request_ref)?;
+        let backend_request = self.chat_backend_request(adapter, request_ref)?;
         let completion = RuntimeCompletionSeed {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
             model: request_ref.model.clone(),
         };
-        let backend_stream = self.backend.generate_stream_with_cancel(
-            BackendRequest::chat_completion(
-                request_ref.model.clone(),
-                prompt,
-                chat_context,
-                request_ref.effective_max_tokens(),
-                SamplingConfig::from_openai_controls(request_ref.temperature, request_ref.top_p)?,
-                required_backend_tool_choice(request_ref),
-                matches!(
-                    request_ref.response_format.as_ref(),
-                    Some(ResponseFormat::JsonObject)
-                ),
-                cache_context,
-            ),
-            cancellation.clone(),
-        );
+        let backend_stream = self
+            .backend
+            .generate_stream_with_cancel(backend_request, cancellation.clone());
         let request = request.into_inner();
         Ok(streaming_chat_stream(
             completion,
@@ -183,31 +165,11 @@ where
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
         let adapter = self.chat_adapter()?;
         let request_ref = request.as_ref();
-        let (cache_context, prompt, chat_context) =
-            self.prepare_chat_backend(adapter, request_ref)?;
-        let required_tool_choice = required_backend_tool_choice(request_ref);
+        let backend_request = self.chat_backend_request(adapter, request_ref)?;
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
-            .generate_with_cancel(
-                BackendRequest::chat_completion(
-                    request_ref.model.clone(),
-                    prompt,
-                    chat_context,
-                    request_ref.effective_max_tokens(),
-                    SamplingConfig::from_openai_controls(
-                        request_ref.temperature,
-                        request_ref.top_p,
-                    )?,
-                    required_tool_choice,
-                    matches!(
-                        request_ref.response_format.as_ref(),
-                        Some(ResponseFormat::JsonObject)
-                    ),
-                    cache_context,
-                ),
-                cancellation,
-            )
+            .generate_with_cancel(backend_request, cancellation)
             .await?;
         let request = request.into_inner();
         let mut raw_text = output.text;
@@ -219,12 +181,7 @@ where
             return Err(RuntimeError::NoProgress(class));
         }
         validate_tool_calls_against_request(&parsed, &request)?;
-        if matches!(
-            request.response_format.as_ref(),
-            Some(ResponseFormat::JsonObject)
-        ) {
-            validate_json_object_response(&parsed)?;
-        }
+        validate_json_object_response_format(&parsed, &request)?;
         let required_tool_pending = matches!(
             request.tool_choice.as_ref(),
             Some(ToolChoice::Required | ToolChoice::Function { .. })
@@ -261,62 +218,4 @@ where
             usage,
         })
     }
-}
-
-fn buffered_chat_stream(
-    completion: RuntimeChatCompletion,
-    include_usage: bool,
-) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-    let mut events = Vec::new();
-    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-        &completion,
-        ChatCompletionDelta {
-            role: Some(ChatRole::Assistant),
-            ..ChatCompletionDelta::default()
-        },
-        None,
-    ))));
-    if !completion.parsed.content.is_empty() {
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-            &completion,
-            ChatCompletionDelta {
-                content: Some(completion.parsed.content.clone()),
-                ..ChatCompletionDelta::default()
-            },
-            None,
-        ))));
-    }
-    for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
-        if index == 0 {
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
-            )));
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolIntentFillComplete,
-            )));
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolSchemaValidationComplete,
-            )));
-        }
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-            &completion,
-            ChatCompletionDelta {
-                tool_calls: vec![tool_call_delta(index, tool_call)?],
-                ..ChatCompletionDelta::default()
-            },
-            None,
-        ))));
-    }
-    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-        &completion,
-        ChatCompletionDelta::default(),
-        Some(completion.finish_reason.clone()),
-    ))));
-    if include_usage {
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_usage_chunk(
-            &completion,
-        ))));
-    }
-    events.push(Ok(ChatCompletionStreamEvent::Complete(completion.usage)));
-    Ok(ChatCompletionStream::new(stream::iter(events).boxed()))
 }

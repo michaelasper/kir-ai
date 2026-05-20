@@ -1,5 +1,5 @@
 use crate::RuntimeError;
-use llm_api::{ChatCompletionRequest, ToolCall, ToolChoice};
+use llm_api::{ChatCompletionRequest, ResponseFormat, ToolCall, ToolChoice};
 use llm_tool_parser::ParsedAssistant;
 use std::collections::BTreeSet;
 
@@ -28,16 +28,6 @@ pub(crate) fn schema_requires_string_intent_argument(schema: &serde_json::Value)
         .is_some_and(schema_type_accepts_string)
 }
 
-fn schema_type_accepts_string(schema_type: &serde_json::Value) -> bool {
-    match schema_type {
-        serde_json::Value::String(type_name) => type_name == "string",
-        serde_json::Value::Array(types) => types
-            .iter()
-            .any(|type_name| type_name.as_str() == Some("string")),
-        _ => false,
-    }
-}
-
 pub(crate) fn default_tool_intent(tool_name: &str) -> &'static str {
     match tool_name {
         "read" => "Reading requested path",
@@ -47,6 +37,18 @@ pub(crate) fn default_tool_intent(tool_name: &str) -> &'static str {
         name if name.contains("search") || name.contains("grep") => "Searching requested context",
         _ => "Calling requested tool",
     }
+}
+
+pub(crate) fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
+    for tool_call in &parsed.tool_calls {
+        if !tool_call.function.arguments.is_object() {
+            return Err(RuntimeError::JsonMode(format!(
+                "tool call `{}` arguments must be a JSON object",
+                tool_call.function.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_tool_calls_against_request(
@@ -80,12 +82,46 @@ pub(crate) fn validate_tool_calls_against_request(
                 "generated tool call `{name}` did not match required tool `{required}`"
             )));
         }
-        let tool = request
-            .tools
-            .iter()
-            .find(|tool| tool.function.name == name)
-            .expect("declared tool set already checked");
+        let Some(tool) = request.tools.iter().find(|tool| tool.function.name == name) else {
+            return Err(RuntimeError::ToolCallValidation(format!(
+                "generated tool call `{name}` was not declared in request tools"
+            )));
+        };
         validate_tool_call_arguments_against_schema(tool_call, &tool.function.parameters)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_json_object_response(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {
+    if !parsed.content.is_empty() {
+        let value = serde_json::from_str::<serde_json::Value>(&parsed.content).map_err(|err| {
+            RuntimeError::JsonMode(format!(
+                "json_object response_format requires valid JSON object content: {err}"
+            ))
+        })?;
+        if !value.is_object() {
+            return Err(RuntimeError::JsonMode(
+                "json_object response_format requires assistant content to be a JSON object"
+                    .to_owned(),
+            ));
+        }
+    } else if parsed.tool_calls.is_empty() {
+        return Err(RuntimeError::JsonMode(
+            "json_object response_format requires assistant content or tool calls".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_json_object_response_format(
+    parsed: &ParsedAssistant,
+    request: &ChatCompletionRequest,
+) -> Result<(), RuntimeError> {
+    if matches!(
+        request.response_format.as_ref(),
+        Some(ResponseFormat::JsonObject)
+    ) {
+        validate_json_object_response(parsed)?;
     }
     Ok(())
 }
@@ -276,6 +312,16 @@ fn first_schema_type_name(schema_type: &serde_json::Value) -> Option<&str> {
         serde_json::Value::String(type_name) => Some(type_name),
         serde_json::Value::Array(types) => types.iter().find_map(serde_json::Value::as_str),
         _ => None,
+    }
+}
+
+fn schema_type_accepts_string(schema_type: &serde_json::Value) -> bool {
+    match schema_type {
+        serde_json::Value::String(type_name) => type_name == "string",
+        serde_json::Value::Array(types) => types
+            .iter()
+            .any(|type_name| type_name.as_str() == Some("string")),
+        _ => false,
     }
 }
 

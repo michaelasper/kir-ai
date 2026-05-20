@@ -1,15 +1,15 @@
 mod adapters;
+mod backend_request;
 mod chat;
-mod chat_streaming;
 mod completions;
 mod error;
 mod json_mode;
 mod no_progress;
+mod response_validation;
 mod runtime;
 mod stop;
 mod streaming;
 mod tool_call;
-mod tool_schema;
 
 pub use error::RuntimeError;
 pub use no_progress::{NoProgressClass, classify_no_progress};

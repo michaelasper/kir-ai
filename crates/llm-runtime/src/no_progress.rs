@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::adapters::ToolMarkupPolicy;
-use crate::tool_schema::schema_requires_string_intent_argument;
+use crate::response_validation::schema_requires_string_intent_argument;
 
 const EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 5;
 const FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 3;
