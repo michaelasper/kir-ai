@@ -109,7 +109,7 @@ async fn chat_stream_headers_return_before_backend_completion() {
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_emits_heartbeat_before_backend_chunk() {
     let release = Arc::new(Semaphore::new(0));
     let response = build_router_with_backend(Box::new(DelayedStreamBackend {
@@ -158,7 +158,7 @@ async fn chat_stream_emits_heartbeat_before_backend_chunk() {
     assert!(tail.contains("\"content\":\"released\""));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_does_not_stall_before_first_backend_output() {
     let release = Arc::new(Semaphore::new(0));
     let app = build_router_with_unauthenticated_admin_and_options(
@@ -214,7 +214,7 @@ async fn chat_stream_does_not_stall_before_first_backend_output() {
     assert_eq!(metrics["scheduler_completed_requests"], 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_stall_cancels_backend_work() {
     let cancelled = Arc::new(Notify::new());
     let response = build_router_with_backend_and_options(
@@ -255,7 +255,7 @@ async fn chat_stream_stall_cancels_backend_work() {
         .expect("stream stall cancels backend token");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_does_not_stall_on_regular_one_byte_deltas() {
     let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(OneByteDeltaStreamBackend {
@@ -305,7 +305,7 @@ async fn chat_stream_does_not_stall_on_regular_one_byte_deltas() {
     assert_eq!(metrics["failed_requests"], 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_required_tool_buffered_arguments_do_not_stall() {
     let app = build_router_with_unauthenticated_admin_and_options(
         Box::new(SlowStructuredToolArgumentBackend {
@@ -429,7 +429,7 @@ async fn chat_stream_runtime_errors_include_stable_metadata() {
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
@@ -799,7 +799,7 @@ async fn dropping_completion_stream_body_cancels_backend_stream() {
     assert_eq!(metrics["time_to_first_token_ms"]["count"], 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_chat_stream_before_first_token_records_client_disconnect_without_ttft() {
     let cancelled = Arc::new(Notify::new());
     let app = build_router_with_unauthenticated_admin(Box::new(PendingCancellableStreamBackend {

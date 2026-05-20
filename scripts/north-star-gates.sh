@@ -231,6 +231,7 @@ run_nightly_gates() {
     skip_workspace_covered_ci_gates
     skip_workspace_covered_nightly_gates
   fi
+  run_gate "slow_timeout_stall_contracts" true cargo test -p llm-engine --lib mlx_slow_ -- --ignored --test-threads=1
   run_gate "qwen_long_context_plan" true cargo run -p llm-engine -- bench qwen-long-context --dry-run --profile all --output "$out_dir/qwen-long-context-plan.json"
 
   if [ -n "${LLM_BENCH_ENDPOINT:-}" ] && [ -n "${LLM_BENCH_SNAPSHOT:-}" ]; then

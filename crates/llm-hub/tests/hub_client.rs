@@ -1,6 +1,6 @@
 use llm_hub::{HubClient, HubFile, HubRepoId, HubTimeouts, ModelProfile, ModelStore};
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::TcpListener,
     thread,
     time::{Duration, Instant},
@@ -9,10 +9,8 @@ use url::Url;
 
 #[tokio::test]
 async fn model_info_returns_network_error_when_request_times_out() {
-    let (endpoint, server) = spawn_stalling_http_server(|mut stream| {
-        let mut buffer = [0_u8; 1024];
-        let _ = stream.read(&mut buffer);
-        thread::sleep(Duration::from_millis(500));
+    let (endpoint, server) = spawn_stalling_http_server(|_stream| {
+        thread::sleep(Duration::from_millis(45));
     });
     let client = HubClient::with_timeouts(endpoint, short_timeouts());
 
@@ -76,7 +74,7 @@ async fn pull_plan_returns_network_error_when_download_body_stalls() {
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{")
             .expect("partial response");
         stream.flush().expect("flush response");
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(45));
     });
     let client = HubClient::with_timeouts(
         endpoint,
@@ -133,8 +131,8 @@ async fn pull_plan_returns_network_error_when_download_body_stalls() {
 fn short_timeouts() -> HubTimeouts {
     HubTimeouts {
         connect: Duration::from_millis(100),
-        request: Duration::from_millis(100),
-        read: Duration::from_millis(100),
+        request: Duration::from_millis(40),
+        read: Duration::from_millis(40),
     }
 }
 
@@ -142,13 +140,33 @@ fn spawn_stalling_http_server(
     handler: impl FnOnce(std::net::TcpStream) + Send + 'static,
 ) -> (Url, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    listener
+        .set_nonblocking(true)
+        .expect("set fake server listener nonblocking");
     let endpoint = Url::parse(&format!(
         "http://{}",
         listener.local_addr().expect("local addr")
     ))
     .expect("endpoint URL");
     let server = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept request");
+        let accept_deadline = Instant::now() + Duration::from_millis(250);
+        let (stream, _) = loop {
+            match listener.accept() {
+                Ok(accepted) => break accepted,
+                Err(err)
+                    if err.kind() == ErrorKind::WouldBlock && Instant::now() < accept_deadline =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(err) => panic!("accept request: {err}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("set fake server stream blocking");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("set fake server stream read timeout");
         handler(stream);
     });
     (endpoint, server)

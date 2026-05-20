@@ -87,6 +87,16 @@ If `workspace_tests` fails, the covered PR gate rows are marked skipped with a
 reason that broad workspace coverage could not be credited, and the nightly
 report fails because `workspace_tests` is required.
 
+Nightly also runs the ignored slow timeout/stall lane after `workspace_tests`:
+
+```sh
+cargo test -p llm-engine --lib mlx_slow_ -- --ignored --test-threads=1
+```
+
+Those tests exercise wall-clock localhost MLX timeout behavior that cannot use
+Tokio paused time. The `mlx_slow_` prefix and `#[ignore]` reason keep them out
+of fast local and PR lanes while preserving nightly coverage.
+
 ## Local Validation Tasks
 
 `mise run check-fast` is the default local iteration baseline before broader
@@ -115,9 +125,17 @@ cargo test -p llm-kv-cache
 cargo test -p llm-sampler
 ```
 
+Use `mise run test-slow-timeouts` to reproduce the ignored timeout/stall slow
+lane:
+
+```sh
+cargo test -p llm-engine --lib mlx_slow_ -- --ignored --test-threads=1
+```
+
 Use `mise run gates-ci` to reproduce the PR north-star product gate report.
 Use `mise run gates-nightly` for the broad nightly profile, including
-`cargo test --workspace --all-features` and the additional nightly-only gates.
+`cargo test --workspace --all-features`, the slow timeout/stall lane, and the
+additional nightly-only gates.
 Use `mise run test` when you specifically want broad workspace tests without
 the north-star report.
 

@@ -152,7 +152,7 @@ async fn runtime_completion_stream_returns_before_backend_finishes() {
     drop(stream);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn runtime_completion_stream_yields_backend_chunks_incrementally() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
@@ -1616,7 +1616,7 @@ fn structured_tool_delta(
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_unpolled_chat_stream_cancels_backend_stream() {
     let cancelled = Arc::new(Notify::new());
     let runtime = Runtime::new(CancellableStreamBackend {
@@ -1638,7 +1638,7 @@ async fn dropping_unpolled_chat_stream_cancels_backend_stream() {
         .expect("backend cancellation token is cancelled");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_non_streaming_chat_future_cancels_backend_generation() {
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
@@ -1663,7 +1663,7 @@ async fn dropping_non_streaming_chat_future_cancels_backend_generation() {
         .expect("backend generation cancellation token is cancelled");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_non_streaming_completion_future_cancels_backend_generation() {
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());

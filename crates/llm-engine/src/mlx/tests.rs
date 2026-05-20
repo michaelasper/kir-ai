@@ -2654,10 +2654,11 @@ async fn mlx_backend_rejects_sse_without_done_marker() {
 }
 
 #[tokio::test]
-async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
+#[ignore = "slow wall-clock upstream stall coverage; run the slow timeout lane"]
+async fn mlx_slow_backend_per_chunk_timeout_detects_stalled_stream() {
     let server = FakeMlxServer::start_with_stall(
         "data:{\"choices\":[{\"text\":\"one\",\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2}}\n\n",
-        Duration::from_secs(300),
+        Duration::from_millis(80),
     );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -2668,7 +2669,7 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
             timeouts: MlxTimeouts {
                 connect: Duration::from_secs(5),
                 request: Duration::from_secs(5),
-                read: Duration::from_millis(100),
+                read: Duration::from_millis(40),
             },
             ..MlxBackendOptions::default()
         },
@@ -2703,10 +2704,11 @@ async fn mlx_backend_per_chunk_timeout_detects_stalled_stream() {
 }
 
 #[tokio::test]
-async fn mlx_backend_read_timeout_allows_initial_prefill_silence() {
+#[ignore = "slow wall-clock upstream stall coverage; run the slow timeout lane"]
+async fn mlx_slow_backend_read_timeout_allows_initial_prefill_silence() {
     let server = FakeMlxServer::start_with_initial_body_delay(
         "data:{\"choices\":[{\"text\":\"late\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
-        Duration::from_millis(150),
+        Duration::from_millis(60),
     );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -2717,7 +2719,7 @@ async fn mlx_backend_read_timeout_allows_initial_prefill_silence() {
             timeouts: MlxTimeouts {
                 connect: Duration::from_secs(5),
                 request: Duration::from_secs(5),
-                read: Duration::from_millis(50),
+                read: Duration::from_millis(30),
             },
             ..MlxBackendOptions::default()
         },
@@ -2757,10 +2759,11 @@ async fn mlx_backend_read_timeout_allows_initial_prefill_silence() {
 }
 
 #[tokio::test]
-async fn mlx_backend_request_timeout_detects_delayed_response_headers() {
+#[ignore = "slow wall-clock upstream stall coverage; run the slow timeout lane"]
+async fn mlx_slow_backend_request_timeout_detects_delayed_response_headers() {
     let server = FakeMlxServer::start_with_response_delay(
         "data:{\"choices\":[{\"text\":\"late\",\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
-        Duration::from_millis(300),
+        Duration::from_millis(60),
     );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
@@ -2770,7 +2773,7 @@ async fn mlx_backend_request_timeout_detects_delayed_response_headers() {
             family: Some(ModelFamily::Qwen),
             timeouts: MlxTimeouts {
                 connect: Duration::from_secs(5),
-                request: Duration::from_millis(100),
+                request: Duration::from_millis(30),
                 read: Duration::from_secs(5),
             },
             ..MlxBackendOptions::default()

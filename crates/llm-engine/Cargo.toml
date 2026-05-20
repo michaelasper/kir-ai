@@ -59,4 +59,5 @@ url = { workspace = true, optional = true }
 axum.workspace = true
 llm-backend = { path = "../llm-backend", features = ["test-utils"] }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
