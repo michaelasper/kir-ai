@@ -1,0 +1,27 @@
+nextest-version = { required = "0.9.131", recommended = "0.9.133" }
+
+[profile.default]
+retries = 0
+slow-timeout = "60s"
+failure-output = "immediate-final"
+
+[profile.pr-ci]
+retries = 1
+flaky-result = "fail"
+fail-fast = false
+slow-timeout = "10s"
+status-level = "pass"
+final-status-level = "slow"
+failure-output = "immediate-final"
+junit.path = "junit.xml"
+junit.report-name = "kir-ai-pr-ci-nextest"
+junit.store-success-output = false
+junit.store-failure-output = true
+
+[test-groups]
+native-metal = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(llm-metal)'
+test-group = 'native-metal'
+slow-timeout = "60s"

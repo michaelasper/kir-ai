@@ -36,6 +36,10 @@ cargo test -p llm-sampler
 cargo test -p llm-api --test openai_contract
 """
 
+[tasks.test-nextest-pr]
+description = "Run the PR nextest lane for fast package scheduling and slow-test reporting"
+run = "cargo nextest run --profile pr-ci -p llm-kv-cache -p llm-sampler"
+
 [tasks.test-cache]
 description = "Run KV cache unit tests"
 run = "cargo test -p llm-kv-cache"

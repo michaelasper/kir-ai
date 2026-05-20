@@ -123,6 +123,48 @@ jobs:
       - name: Check all targets
         run: cargo check --workspace --all-targets
 
+  nextest-fast-packages:
+    name: Nextest Fast Packages
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-nextest-fast-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-nextest-fast-
+
+      - name: Run nextest fast package lane
+        run: cargo nextest run --profile pr-ci -p llm-kv-cache -p llm-sampler
+
+      - name: Upload nextest JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-pr-ci-junit
+          path: target/nextest/pr-ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
   north-star-gates:
     name: North-Star Gate Report
     runs-on: macos-latest

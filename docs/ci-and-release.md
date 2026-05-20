@@ -25,6 +25,7 @@ coverage.
 - `Static Analysis` runs `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 - `Admin Schema Drift` runs `cargo test -p llm-server --all-features --lib generate_admin_api_schemas`, then fails if `docs/schemas/admin/` has uncommitted changes.
 - `Compile Check` runs `cargo check --workspace --all-targets` to type-check library, binary, test, and bench targets without spending PR time on link/package work.
+- `Nextest Fast Packages` installs `cargo-nextest` and runs `cargo nextest run --profile pr-ci -p llm-kv-cache -p llm-sampler`. The `pr-ci` profile prints per-test timings, marks tests slower than 10 seconds, treats retry-pass tests as failures, and writes `target/nextest/pr-ci/junit.xml` for artifact upload.
 - `North-Star Gate Report` runs versioning, conventional commits, release-note preview generation, and `scripts/north-star-gates.sh ci`.
 
 The north-star gate script writes JSON, Markdown, and per-gate logs under
@@ -52,6 +53,18 @@ name:
 engine, hub, model, tokenizer, and parser suites plus the rest of the
 workspace. That broad validation belongs to nightly and explicit release/deep
 validation, not the PR path.
+
+The nextest PR lane is intentionally limited to fast package slices for now.
+It is a scheduling and timing visibility lane, not a replacement for the named
+north-star contract gates. Standard `cargo test` commands remain the fallback
+for local and CI environments without `cargo-nextest`.
+
+Serial-test decision: the PR nextest lane does not run native or Metal tests.
+The repository nextest profile assigns `llm-metal` tests to a `native-metal`
+test group with one slot so those tests are serialized if selected manually or
+by a future CI lane. Hub fake-server tests bind randomized localhost ports and
+do not require a serial group; keep using `cargo test -p llm-hub` for the
+current north-star model acquisition contract gate.
 
 ## Nightly Validation
 
@@ -88,6 +101,19 @@ cargo test -p llm-api --test openai_contract
 ```
 
 It intentionally does not run `cargo test --workspace`.
+
+Use `mise run test-nextest-pr` to reproduce the PR nextest lane:
+
+```sh
+cargo nextest run --profile pr-ci -p llm-kv-cache -p llm-sampler
+```
+
+If `cargo-nextest` is unavailable, use the fallback commands:
+
+```sh
+cargo test -p llm-kv-cache
+cargo test -p llm-sampler
+```
 
 Use `mise run gates-ci` to reproduce the PR north-star product gate report.
 Use `mise run gates-nightly` for the broad nightly profile, including
