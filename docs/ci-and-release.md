@@ -92,16 +92,17 @@ the north-star report.
 
 Use targeted tasks when a change is isolated to one area:
 
-| Area | Task |
-| --- | --- |
-| KV cache | `mise run test-cache` |
-| Sampler | `mise run test-sampler` |
-| API contract | `mise run test-api-contract` |
-| Runtime contracts | `mise run test-runtime-contract` or a runtime subset task |
-| Parser/tokenizer | `mise run test-parser-tokenizer` |
-| Hub planning/store | `mise run test-hub` |
-| Backend CPU ops | `mise run test-backend-cpu` |
-| Metal smoke | `mise run test-metal-smoke` |
+| Changed area | Mise task | Underlying command |
+| --- | --- | --- |
+| KV cache | `mise run test-cache` | `cargo test -p llm-kv-cache` |
+| Sampler | `mise run test-sampler` | `cargo test -p llm-sampler` |
+| API contract | `mise run test-api-contract` | `cargo test -p llm-api --test openai_contract` |
+| Runtime contracts | `mise run test-runtime-contract` or a runtime subset task | `cargo test -p llm-runtime --test runtime_contract` |
+| Tool parser | `mise run test-parser` | `cargo test -p llm-tool-parser` |
+| Parser and tokenizer family changes | `mise run test-parser-tokenizer` | `cargo test -p llm-tool-parser` and `cargo test -p llm-tokenizer` |
+| Hub download planning | `mise run test-hub` | `cargo test -p llm-hub --test download_plan` |
+| Backend CPU ops | `mise run test-backend-cpu` | `cargo test -p llm-backend --test safetensors_loader` |
+| Metal smoke | `mise run test-metal-smoke` | `cargo test -p llm-metal --test metal_smoke -- --test-threads=1` |
 
 These tasks support local triage. CI still runs the workflow jobs listed above,
 and release candidates still use the full release checklist.
