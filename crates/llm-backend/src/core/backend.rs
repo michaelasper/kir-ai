@@ -135,6 +135,7 @@ pub struct BackendChatRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendChatContext {
     pub messages: Vec<BackendChatMessage>,
+    pub tools: Vec<BackendToolDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -730,6 +731,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: Vec::new(),
             }],
+            tools: Vec::new(),
         };
         let chat = BackendRequest::chat_completion(
             "local-qwen36",

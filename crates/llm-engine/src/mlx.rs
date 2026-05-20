@@ -30,7 +30,7 @@ use protocol::{
     MlxUpstreamProtocol, mlx_control_stop_tokens_for_metadata, mlx_tool_markup_for_metadata,
 };
 use request::build_upstream_request;
-use sse::{MlxSseParser, parse_mlx_completion_body};
+use sse::{MlxSseParser, parse_mlx_completion_body_with_tools};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MlxToolParserMode {
@@ -245,14 +245,16 @@ impl MlxBackend {
                 )));
             }
         };
-        let (output, chunk_count) = match parse_mlx_completion_body(
+        let tools = request
+            .as_chat()
+            .map(|chat| chat.chat_context.tools.as_slice())
+            .unwrap_or(&[]);
+        let (output, chunk_count) = match parse_mlx_completion_body_with_tools(
             body,
             request.prompt(),
             self.control_stop_tokens,
             self.tool_markup,
-            request
-                .as_chat()
-                .and_then(|chat| chat.cache_context.tool_schema.as_deref()),
+            tools,
         ) {
             Ok(parsed) => parsed,
             Err(err) => {
@@ -325,13 +327,15 @@ impl MlxBackend {
                     self.tool_markup,
                 );
                 if matches!(self.tool_markup, protocol::MlxToolMarkup::QwenXml) {
-                    parser = MlxSseParser::new_streaming_with_tool_schema(
+                    let tools = request
+                        .as_chat()
+                        .map(|chat| chat.chat_context.tools.as_slice())
+                        .unwrap_or(&[]);
+                    parser = MlxSseParser::new_streaming_with_tools(
                         request.prompt(),
                         self.control_stop_tokens,
                         self.tool_markup,
-                        request
-                            .as_chat()
-                            .and_then(|chat| chat.cache_context.tool_schema.as_deref()),
+                        tools,
                     )
                     .inspect_err(|_| {
                         request_metrics.finish_failure(MlxBackendFailureKind::SseParse);

@@ -7,7 +7,8 @@ use llm_backend::{
     BackendCacheContext, BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata,
     BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
-    ModelBackend, ProtocolTestBackend, SamplingConfig,
+    BackendToolFunctionDefinition, BackendToolType, ModelBackend, ProtocolTestBackend,
+    SamplingConfig,
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
@@ -70,6 +71,22 @@ struct MlxLlamaMetadataBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
+}
+
+fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefinition> {
+    tools
+        .iter()
+        .map(|tool| BackendToolDefinition {
+            tool_type: match &tool.tool_type {
+                llm_api::ToolCallType::Function => BackendToolType::Function,
+            },
+            function: BackendToolFunctionDefinition {
+                name: tool.function.name.clone(),
+                description: tool.function.description.clone(),
+                parameters: tool.function.parameters.clone(),
+            },
+        })
+        .collect()
 }
 
 #[async_trait::async_trait]

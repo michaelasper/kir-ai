@@ -344,6 +344,14 @@ async fn runtime_adapts_tool_schema_to_backend_contract_by_default() {
                 .as_str()
         )
     );
+    assert_eq!(
+        observed
+            .as_chat()
+            .expect("chat request kind")
+            .chat_context
+            .tools,
+        backend_tools
+    );
 }
 
 #[tokio::test]
@@ -493,6 +501,14 @@ async fn runtime_canonicalizes_tool_schema_when_opted_in() {
     assert_eq!(
         observed.cache_context().tool_schema.as_deref(),
         Some(canonical_json.as_str())
+    );
+    assert_eq!(
+        observed
+            .as_chat()
+            .expect("chat request kind")
+            .chat_context
+            .tools,
+        backend_tool_definitions(&canonical_tools)
     );
     assert!(
         observed.prompt().contains(&rendered_canonical_tools),

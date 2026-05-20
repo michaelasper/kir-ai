@@ -2,13 +2,14 @@ use super::protocol::{
     MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxToolMarkup,
     MlxUpstreamProtocol,
 };
+use super::sse::parse_mlx_completion_body;
 use super::*;
 use llm_api::ChatMessage;
 use llm_backend::{
     BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
     BackendFinishReason, BackendModelMetadata, BackendRequest, BackendToolCall,
-    BackendToolCallDelta, BackendToolCallFunction, BackendToolCallType, ModelBackend,
-    SamplingConfig,
+    BackendToolCallDelta, BackendToolCallFunction, BackendToolCallType, BackendToolDefinition,
+    ModelBackend, SamplingConfig,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -31,6 +32,20 @@ type ParsedMlxChunkForTest = (
 
 fn backend_messages(messages: Vec<ChatMessage>) -> Vec<BackendChatMessage> {
     messages.into_iter().map(backend_message).collect()
+}
+
+fn backend_chat_context(messages: Vec<ChatMessage>) -> BackendChatContext {
+    backend_chat_context_with_tools(messages, Vec::new())
+}
+
+fn backend_chat_context_with_tools(
+    messages: Vec<ChatMessage>,
+    tools: Vec<BackendToolDefinition>,
+) -> BackendChatContext {
+    BackendChatContext {
+        messages: backend_messages(messages),
+        tools,
+    }
 }
 
 fn backend_message(message: ChatMessage) -> BackendChatMessage {
@@ -729,9 +744,19 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "read a file",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("read Cargo.toml")]),
-            },
+            backend_chat_context_with_tools(
+                vec![ChatMessage::user("read Cargo.toml")],
+                vec![BackendToolDefinition::function(
+                    "read_file",
+                    "Read a file.",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        }
+                    }),
+                )],
+            ),
             Some(12),
             SamplingConfig::Greedy,
             Some(llm_backend::BackendToolChoice::RequiredFunction(
@@ -740,7 +765,7 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
             false,
             BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
-                Some(r#"[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]"#.to_owned()),
+                Some("tool-schema-compatibility-v1".to_owned()),
             ),
         ))
         .await
@@ -824,9 +849,7 @@ async fn mlx_backend_streaming_chat_requests_include_usage_by_default() {
         .generate_stream(BackendRequest::chat_completion(
             "local-mlx",
             "hello mlx",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("hello mlx")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("hello mlx")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -929,13 +952,15 @@ async fn mlx_backend_metrics_record_http_errors() {
 }
 
 #[tokio::test]
-async fn mlx_backend_metrics_skip_local_request_build_errors() {
-    let snapshot = tempfile::tempdir().expect("snapshot tempdir");
+async fn mlx_backend_metrics_count_request_with_opaque_tool_cache_identity() {
+    let server = FakeMlxServer::start(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
+    );
     let mut backend = MlxBackend::open_with_options(
         "local-mlx",
-        snapshot.path(),
+        server.snapshot_path(),
         MlxBackendOptions {
-            endpoint: Url::parse("http://127.0.0.1:1/v1").expect("url"),
+            endpoint: server.endpoint(),
             family: Some(ModelFamily::Qwen),
             ..MlxBackendOptions::default()
         },
@@ -945,13 +970,11 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
 
-    let err = backend
+    let output = backend
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "use lookup",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("use lookup")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("use lookup")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -959,11 +982,12 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
             BackendCacheContext::chat_template("chatml/qwen/v1", Some("not json".to_owned())),
         ))
         .await
-        .expect_err("invalid local request build fails before HTTP");
+        .expect("opaque cache identity does not fail local request building");
 
-    assert!(err.to_string().contains("tool schema"));
+    assert_eq!(output.text, "ok");
     let metrics = metrics.snapshot();
-    assert_eq!(metrics["requests_total"], 0);
+    assert_eq!(metrics["requests_total"], 1);
+    assert_eq!(metrics["successful_requests"], 1);
     assert_eq!(metrics["failed_requests"], 0);
     assert_eq!(metrics["transport_failures"], 0);
 }
@@ -1158,12 +1182,10 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n",
-            BackendChatContext {
-                messages: backend_messages(vec![
-                    ChatMessage::system("You are Kir."),
-                    ChatMessage::user("hello gemma"),
-                ]),
-            },
+            backend_chat_context(vec![
+                ChatMessage::system("You are Kir."),
+                ChatMessage::user("hello gemma"),
+            ]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -1213,16 +1235,21 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("use lookup")]),
-            },
+            backend_chat_context_with_tools(
+                vec![ChatMessage::user("use lookup")],
+                vec![BackendToolDefinition::function(
+                    "lookup",
+                    "Lookup docs.",
+                    serde_json::json!({}),
+                )],
+            ),
             Some(12),
             SamplingConfig::Greedy,
             None,
             false,
             BackendCacheContext::chat_template(
                 "gemma/gemma4/v1",
-                Some(r#"[{"type":"function"}]"#.to_owned()),
+                Some("tool-schema-compatibility-v1".to_owned()),
             ),
         ))
         .await
@@ -1246,6 +1273,46 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
     );
 }
 
+#[test]
+fn mlx_request_builder_does_not_parse_cache_tool_schema_as_request_tools() {
+    let client = reqwest::Client::new();
+    let endpoint = Url::parse("http://127.0.0.1:54321").expect("valid loopback endpoint");
+    let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("gemma");
+    let request = BackendRequest::chat_completion(
+        "local-mlx",
+        "<bos><|turn>user\nplain chat<turn|>\n<|turn>model\n",
+        backend_chat_context(vec![ChatMessage::user("plain chat")]),
+        Some(12),
+        SamplingConfig::Greedy,
+        None,
+        false,
+        BackendCacheContext::chat_template(
+            "gemma/gemma4/v1",
+            Some("opaque-cache-compatibility-token".to_owned()),
+        ),
+    );
+
+    let (protocol, builder) = super::request::build_upstream_request(
+        &client,
+        &endpoint,
+        "/tmp/local-mlx",
+        &metadata,
+        &request,
+        false,
+        false,
+    )
+    .expect("MLX request building does not parse cache compatibility identity");
+
+    assert_eq!(protocol, MlxUpstreamProtocol::ChatCompletions);
+    let request = builder.build().expect("request builder serializes body");
+    let body = request
+        .body()
+        .and_then(reqwest::Body::as_bytes)
+        .expect("JSON body is buffered");
+    let request: Value = serde_json::from_slice(body).expect("request JSON parses");
+    assert!(request.get("tools").is_none());
+}
+
 #[tokio::test]
 async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
     let server = FakeMlxServer::start(
@@ -1267,9 +1334,14 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("hello")]),
-            },
+            backend_chat_context_with_tools(
+                vec![ChatMessage::user("hello")],
+                vec![BackendToolDefinition::function(
+                    "lookup",
+                    "Lookup docs.",
+                    serde_json::json!({}),
+                )],
+            ),
             Some(12),
             SamplingConfig::Greedy,
             Some(llm_backend::BackendToolChoice::RequiredFunction(
@@ -1278,10 +1350,7 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
             false,
             BackendCacheContext::chat_template(
                 "deepseek/chat/v1",
-                Some(
-                    r#"[{"type":"function","function":{"name":"lookup","parameters":{}}}]"#
-                        .to_owned(),
-                ),
+                Some("tool-schema-compatibility-v1".to_owned()),
             ),
         ))
         .await
@@ -1321,9 +1390,7 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("hello")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("hello")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -1398,9 +1465,7 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("return json")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("return json")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -1442,9 +1507,7 @@ async fn mlx_backend_uses_metadata_kwargs_for_request_body_and_fingerprint() {
     let request = BackendRequest::chat_completion(
         "local-mlx",
         "<|im_start|>user\nsay ok<|im_end|>\n<|im_start|>assistant\n",
-        BackendChatContext {
-            messages: backend_messages(vec![ChatMessage::user("say ok")]),
-        },
+        backend_chat_context(vec![ChatMessage::user("say ok")]),
         Some(12),
         SamplingConfig::Greedy,
         None,
@@ -1507,9 +1570,7 @@ async fn mlx_backend_uses_gemma_metadata_kwargs_for_request_body_and_fingerprint
     let request = BackendRequest::chat_completion(
         "local-mlx",
         "<bos><|turn>user\nsay ok<turn|>\n<|turn>model\n",
-        BackendChatContext {
-            messages: backend_messages(vec![ChatMessage::user("say ok")]),
-        },
+        backend_chat_context(vec![ChatMessage::user("say ok")]),
         Some(12),
         SamplingConfig::Greedy,
         None,
@@ -1865,9 +1926,14 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "read a file",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("read a file")]),
-            },
+            backend_chat_context_with_tools(
+                vec![ChatMessage::user("read a file")],
+                vec![BackendToolDefinition::function(
+                    "read_file",
+                    "Read a file.",
+                    serde_json::json!({}),
+                )],
+            ),
             Some(12),
             SamplingConfig::Greedy,
             Some(llm_backend::BackendToolChoice::RequiredFunction(
@@ -1876,10 +1942,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
             false,
             BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
-                Some(
-                    r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
-                        .to_owned(),
-                ),
+                Some("tool-schema-compatibility-v1".to_owned()),
             ),
         ))
         .await
@@ -1923,8 +1986,8 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "rendered prompt fallback should not be used for structured MLX chat",
-            BackendChatContext {
-                messages: backend_messages(vec![
+            backend_chat_context_with_tools(
+                vec![
                     ChatMessage::user("read src/lib.rs"),
                     ChatMessage::assistant_tool_call(
                         "call_read_1",
@@ -1933,18 +1996,20 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
                     ),
                     tool_result,
                     ChatMessage::user("summarize what you read"),
-                ]),
-            },
+                ],
+                vec![BackendToolDefinition::function(
+                    "read_file",
+                    "Read a file.",
+                    serde_json::json!({}),
+                )],
+            ),
             Some(12),
             SamplingConfig::Greedy,
             None,
             false,
             BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
-                Some(
-                    r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
-                        .to_owned(),
-                ),
+                Some("tool-schema-compatibility-v1".to_owned()),
             ),
         ))
         .await
@@ -2151,9 +2216,7 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "lookup rust",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("lookup rust")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("lookup rust")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -2190,9 +2253,7 @@ async fn mlx_backend_streams_gemma_tool_deltas_without_synthetic_markup() {
         .generate_stream(BackendRequest::chat_completion(
             "local-mlx",
             "lookup rust",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("lookup rust")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("lookup rust")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -2262,9 +2323,7 @@ async fn mlx_backend_records_zero_output_gemma_stream_success() {
         .generate_stream(BackendRequest::chat_completion(
             "local-mlx",
             "recall long context",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("recall long context")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("recall long context")]),
             Some(64),
             SamplingConfig::Greedy,
             None,
@@ -2316,9 +2375,7 @@ async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "lookup metal",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("lookup metal")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("lookup metal")]),
             Some(12),
             SamplingConfig::Greedy,
             None,
@@ -2355,9 +2412,7 @@ async fn mlx_backend_preserves_structured_llama_tool_call_response() {
         .generate(BackendRequest::chat_completion(
             "local-mlx",
             "lookup llama",
-            BackendChatContext {
-                messages: backend_messages(vec![ChatMessage::user("lookup llama")]),
-            },
+            backend_chat_context(vec![ChatMessage::user("lookup llama")]),
             Some(12),
             SamplingConfig::Greedy,
             None,

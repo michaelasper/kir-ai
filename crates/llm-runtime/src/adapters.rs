@@ -121,10 +121,11 @@ impl ChatAdapter for SelectedChatAdapter {
     fn backend_chat_context(
         self,
         messages: &[ChatMessage],
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> BackendChatContext {
         BackendChatContext {
             messages: messages.iter().map(backend_chat_message).collect(),
+            tools: crate::runtime::backend_tool_definitions(tools),
         }
     }
 

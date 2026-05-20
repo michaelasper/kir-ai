@@ -7,7 +7,8 @@ use super::{
 use llm_api::ChatMessage;
 use llm_backend::{
     BackendChatMessage, BackendChatRole, BackendError, BackendModelMetadata, BackendRequest,
-    BackendToolCall, BackendToolCallFunction, BackendToolCallType, SamplingConfig,
+    BackendToolCall, BackendToolCallFunction, BackendToolCallType, BackendToolDefinition,
+    SamplingConfig,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -43,7 +44,7 @@ pub(super) fn build_upstream_request(
         }),
         MlxUpstreamProtocol::ChatCompletions => {
             let messages = mlx_chat_messages(request);
-            let tools = mlx_tool_schema(request)?;
+            let tools = mlx_tools(request);
             let tool_choice = mlx_tool_choice(request);
             let response_format = mlx_response_format(request);
             let chat_template_kwargs = mlx_effective_chat_template_kwargs(metadata, request);
@@ -82,7 +83,7 @@ struct MlxChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Value>,
+    tools: Option<&'a [BackendToolDefinition]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,16 +155,11 @@ fn mlx_tool_call_function(function: &BackendToolCallFunction) -> llm_api::ToolCa
     }
 }
 
-fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendError> {
+fn mlx_tools(request: &BackendRequest) -> Option<&[BackendToolDefinition]> {
     request
         .as_chat()
-        .and_then(|chat| chat.cache_context.tool_schema.as_deref())
-        .map(|schema| {
-            serde_json::from_str::<Value>(schema).map_err(|err| {
-                BackendError::other(format!("MLX tool schema was not valid JSON: {err}"))
-            })
-        })
-        .transpose()
+        .map(|chat| chat.chat_context.tools.as_slice())
+        .filter(|tools| !tools.is_empty())
 }
 
 fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {

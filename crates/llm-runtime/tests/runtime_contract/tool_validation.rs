@@ -61,6 +61,10 @@ async fn runtime_preserves_structured_chat_context_when_tools_are_declared() {
             .as_deref()
             .is_some_and(|schema| schema.contains("lookup"))
     );
+    assert_eq!(
+        chat_context.tools,
+        backend_tool_definitions(&[ToolDefinition::function("lookup", "lookup", json!({}))])
+    );
 }
 
 #[tokio::test]

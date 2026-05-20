@@ -100,7 +100,7 @@ where
     }
 }
 
-fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefinition> {
+pub(crate) fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefinition> {
     tools.iter().map(backend_tool_definition).collect()
 }
 

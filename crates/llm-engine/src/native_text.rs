@@ -341,7 +341,7 @@ mod tests {
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
     use llm_backend::{
         BackendChatContext, BackendChatMessage, BackendChatRole, BackendStreamProgress,
-        SamplingConfig,
+        BackendToolChoice, SamplingConfig,
     };
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
@@ -873,6 +873,7 @@ mod tests {
                     tool_call_id: None,
                     tool_calls: Vec::new(),
                 }],
+                tools: Vec::new(),
             },
             Some(1),
             SamplingConfig::Greedy,
@@ -947,6 +948,67 @@ mod tests {
 
         assert_ne!(no_thinking, thinking);
         assert_ne!(no_thinking.cache_key, thinking.cache_key);
+    }
+
+    #[test]
+    fn prefix_namespace_identity_changes_with_tool_schema_and_request_mode() {
+        fn chat_request(
+            tool_schema: &str,
+            required_tool_choice: Option<BackendToolChoice>,
+            json_object_mode: bool,
+        ) -> BackendRequest {
+            BackendRequest::chat_completion(
+                "model-a",
+                "hello",
+                BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: Some("hello".to_owned()),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
+                    }],
+                    tools: Vec::new(),
+                },
+                Some(1),
+                SamplingConfig::Greedy,
+                required_tool_choice,
+                json_object_mode,
+                llm_backend::BackendCacheContext::chat_template(
+                    "chatml/qwen/v1",
+                    Some(tool_schema.to_owned()),
+                ),
+            )
+        }
+
+        let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
+        let base_request = chat_request("schema-a", None, false);
+        let different_schema_request = chat_request("schema-b", None, false);
+        let required_tool_request = chat_request(
+            "schema-a",
+            Some(BackendToolChoice::RequiredFunction("lookup".to_owned())),
+            false,
+        );
+
+        let namespace_for = |request: &BackendRequest| {
+            native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+                model_id: "model-a",
+                metadata: &metadata,
+                request,
+                cache_layout_version: 1,
+                cache_tokens: 16,
+                max_prefill_tokens: 8,
+            })
+        };
+        let base = namespace_for(&base_request);
+        let different_schema = namespace_for(&different_schema_request);
+        let required_tool = namespace_for(&required_tool_request);
+
+        assert_ne!(base, different_schema);
+        assert_ne!(base.cache_key, different_schema.cache_key);
+        assert_ne!(base.tool_schema, different_schema.tool_schema);
+        assert_ne!(base, required_tool);
+        assert_ne!(base.request_mode, required_tool.request_mode);
     }
 
     #[test]

@@ -126,10 +126,9 @@ fn request_tool_definitions(
     request: &BackendRequest,
 ) -> Option<Vec<BackendToolDefinition>> {
     request
-        .cache_context()
-        .tool_schema
-        .as_deref()
-        .and_then(|tool_schema| serde_json::from_str(tool_schema).ok())
+        .as_chat()
+        .map(|chat| chat.chat_context.tools.clone())
+        .filter(|tools| !tools.is_empty())
         .or_else(|| rendered_tool_definitions(family, request.prompt()))
 }
 

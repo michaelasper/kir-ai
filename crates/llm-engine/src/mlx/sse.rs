@@ -1,7 +1,7 @@
 use super::protocol::MlxToolMarkup;
 use llm_backend::{
     BackendError, BackendFinishReason, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
-    BackendToolCallFunctionDelta, BackendToolCallType,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolDefinition,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -79,17 +79,45 @@ impl MlxSseParser {
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
     ) -> Self {
-        Self::new_inner(prompt, stop_tokens, tool_markup, false, None)
-            .expect("empty Qwen XML schema is always valid")
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            false,
+            QwenXmlToolSchema::default(),
+        )
+        .expect("empty Qwen XML schema is always valid")
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_tool_schema(
         prompt: &str,
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
         tool_schema: Option<&str>,
     ) -> Result<Self, BackendError> {
-        Self::new_inner(prompt, stop_tokens, tool_markup, false, tool_schema)
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            false,
+            QwenXmlToolSchema::parse(tool_schema)?,
+        )
+    }
+
+    pub(super) fn new_with_tools(
+        prompt: &str,
+        stop_tokens: &'static [&'static str],
+        tool_markup: MlxToolMarkup,
+        tools: &[BackendToolDefinition],
+    ) -> Result<Self, BackendError> {
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            false,
+            QwenXmlToolSchema::from_tools(tools),
+        )
     }
 
     fn new_inner(
@@ -97,7 +125,7 @@ impl MlxSseParser {
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
         emit_structured_tool_deltas: bool,
-        tool_schema: Option<&str>,
+        tool_schema: QwenXmlToolSchema,
     ) -> Result<Self, BackendError> {
         let qwen_xml = matches!(tool_markup, MlxToolMarkup::QwenXml)
             .then(|| QwenXmlToolParser::new(emit_structured_tool_deltas, tool_schema))
@@ -123,17 +151,45 @@ impl MlxSseParser {
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
     ) -> Self {
-        Self::new_streaming_with_tool_schema(prompt, stop_tokens, tool_markup, None)
-            .expect("empty Qwen XML schema is always valid")
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            true,
+            QwenXmlToolSchema::default(),
+        )
+        .expect("empty Qwen XML schema is always valid")
     }
 
+    #[cfg(test)]
     pub(super) fn new_streaming_with_tool_schema(
         prompt: &str,
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
         tool_schema: Option<&str>,
     ) -> Result<Self, BackendError> {
-        Self::new_inner(prompt, stop_tokens, tool_markup, true, tool_schema)
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            true,
+            QwenXmlToolSchema::parse(tool_schema)?,
+        )
+    }
+
+    pub(super) fn new_streaming_with_tools(
+        prompt: &str,
+        stop_tokens: &'static [&'static str],
+        tool_markup: MlxToolMarkup,
+        tools: &[BackendToolDefinition],
+    ) -> Result<Self, BackendError> {
+        Self::new_inner(
+            prompt,
+            stop_tokens,
+            tool_markup,
+            true,
+            QwenXmlToolSchema::from_tools(tools),
+        )
     }
 
     pub(super) fn push_str(
@@ -503,6 +559,31 @@ enum QwenXmlParameterKind {
 }
 
 impl QwenXmlToolSchema {
+    fn from_tools(tools: &[BackendToolDefinition]) -> Self {
+        let mut functions = BTreeMap::new();
+        for tool in tools {
+            let mut parameters = BTreeMap::new();
+            if let Some(properties) = tool
+                .function
+                .parameters
+                .get("properties")
+                .and_then(Value::as_object)
+            {
+                for (key, property) in properties {
+                    let kind = if schema_property_is_string(property) {
+                        QwenXmlParameterKind::String
+                    } else {
+                        QwenXmlParameterKind::Json
+                    };
+                    parameters.insert(key.clone(), kind);
+                }
+            }
+            functions.insert(tool.function.name.clone(), parameters);
+        }
+        Self { functions }
+    }
+
+    #[cfg(test)]
     fn parse(schema: Option<&str>) -> Result<Self, BackendError> {
         let Some(schema) = schema else {
             return Ok(Self::default());
@@ -602,10 +683,10 @@ struct QwenXmlActiveParameter {
 }
 
 impl QwenXmlToolParser {
-    fn new(structured_deltas: bool, tool_schema: Option<&str>) -> Result<Self, BackendError> {
+    fn new(structured_deltas: bool, schema: QwenXmlToolSchema) -> Result<Self, BackendError> {
         Ok(Self {
             structured_deltas,
-            schema: QwenXmlToolSchema::parse(tool_schema)?,
+            schema,
             state: QwenXmlState::Outside,
             buffer: String::new(),
             next_index: 0,
@@ -1260,6 +1341,7 @@ fn render_gemma_tool_value(value: &Value) -> Result<String, BackendError> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn parse_mlx_completion_body(
     body: &str,
     prompt: &str,
@@ -1269,6 +1351,30 @@ pub(super) fn parse_mlx_completion_body(
 ) -> Result<(BackendOutput, usize), BackendError> {
     let mut parser =
         MlxSseParser::new_with_tool_schema(prompt, stop_tokens, tool_markup, tool_schema)?;
+    let chunks = if body.trim_start().starts_with("data:") {
+        let mut chunks = parser.push_str(body)?;
+        chunks.extend(parser.finish()?);
+        chunks
+    } else {
+        let completion = serde_json::from_str::<MlxCompletionResponse>(body)
+            .map_err(|err| BackendError::other(format!("invalid MLX completion JSON: {err}")))?;
+        let mut chunks = Vec::new();
+        chunks.extend(parser.parse_completion(completion)?);
+        chunks.extend(parser.finish_non_streaming()?);
+        chunks
+    };
+    let chunk_count = chunks.len();
+    Ok((fold_mlx_chunks(chunks, prompt), chunk_count))
+}
+
+pub(super) fn parse_mlx_completion_body_with_tools(
+    body: &str,
+    prompt: &str,
+    stop_tokens: &'static [&'static str],
+    tool_markup: MlxToolMarkup,
+    tools: &[BackendToolDefinition],
+) -> Result<(BackendOutput, usize), BackendError> {
+    let mut parser = MlxSseParser::new_with_tools(prompt, stop_tokens, tool_markup, tools)?;
     let chunks = if body.trim_start().starts_with("data:") {
         let mut chunks = parser.push_str(body)?;
         chunks.extend(parser.finish()?);
