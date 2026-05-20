@@ -292,7 +292,7 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
 }
 
 #[tokio::test]
-async fn runtime_preserves_tool_schema_serialization_by_default() {
+async fn runtime_adapts_tool_schema_to_backend_contract_by_default() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {
         observed: observed.clone(),
@@ -326,11 +326,23 @@ async fn runtime_preserves_tool_schema_serialization_by_default() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
+    let backend_tools = vec![BackendToolDefinition::function(
+        "lookup",
+        "Lookup docs.",
+        json!({
+            "type": "object",
+            "required": ["source", "query"],
+            "properties": {
+                "source": {"type": "string"},
+                "query": {"type": "string"}
+            }
+        }),
+    )];
     assert_eq!(
         observed.cache_context.tool_schema.as_deref(),
         Some(
-            serde_json::to_string(&tools)
-                .expect("tools serialize")
+            serde_json::to_string(&backend_tools)
+                .expect("backend tools serialize")
                 .as_str()
         )
     );

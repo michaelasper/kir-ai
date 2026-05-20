@@ -1,10 +1,13 @@
 use crate::adapters::{ChatAdapter, SelectedChatAdapter, chat_adapter_for_metadata};
 use crate::{RuntimeError, ToolSchemaNormalization};
 use llm_api::{
-    RequestLimits, ToolDefinition, ValidateRequest, Validated, canonical_tool_schema_json,
-    canonicalize_tool_schemas,
+    RequestLimits, ToolCallType, ToolDefinition, ValidateRequest, Validated,
+    canonicalize_json_value, canonicalize_tool_schemas,
 };
-use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata, ModelBackend};
+use llm_backend::{
+    BackendCacheContext, BackendChatContext, BackendModelMetadata, BackendToolDefinition,
+    BackendToolFunctionDefinition, BackendToolType, ModelBackend,
+};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -84,10 +87,36 @@ where
         if tools.is_empty() {
             return Ok(None);
         }
+        let effective_tools = self.effective_tools(tools);
+        let backend_tools = backend_tool_definitions(effective_tools.as_ref());
         let schema = match self.options.tool_schema_normalization {
-            ToolSchemaNormalization::Preserve => serde_json::to_string(tools)?,
-            ToolSchemaNormalization::Canonical => canonical_tool_schema_json(tools)?,
+            ToolSchemaNormalization::Preserve => serde_json::to_string(&backend_tools)?,
+            ToolSchemaNormalization::Canonical => {
+                let value = serde_json::to_value(&backend_tools)?;
+                serde_json::to_string(&canonicalize_json_value(&value))?
+            }
         };
         Ok(Some(schema))
+    }
+}
+
+fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefinition> {
+    tools.iter().map(backend_tool_definition).collect()
+}
+
+fn backend_tool_definition(tool: &ToolDefinition) -> BackendToolDefinition {
+    BackendToolDefinition {
+        tool_type: backend_tool_type(&tool.tool_type),
+        function: BackendToolFunctionDefinition {
+            name: tool.function.name.clone(),
+            description: tool.function.description.clone(),
+            parameters: tool.function.parameters.clone(),
+        },
+    }
+}
+
+fn backend_tool_type(tool_type: &ToolCallType) -> BackendToolType {
+    match tool_type {
+        ToolCallType::Function => BackendToolType::Function,
     }
 }
