@@ -55,6 +55,7 @@ where
         request: Validated<ChatCompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionResponse, RuntimeError> {
+        let request = self.ensure_runtime_validated(request)?;
         if request.as_ref().stream {
             return Err(ApiError::unsupported_capability(
                 "streaming chat requests must use Runtime::chat_stream",
@@ -107,6 +108,7 @@ where
         request: Validated<ChatCompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
+        let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
         let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
@@ -172,6 +174,7 @@ where
         request: Validated<ChatCompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
+        let request = self.ensure_runtime_validated(request)?;
         let include_usage = request.as_ref().stream_options.include_usage;
         let completion = self.complete_chat(request, cancellation).await?;
         buffered_chat_stream(completion, include_usage)

@@ -110,6 +110,44 @@ async fn runtime_maps_omitted_completion_sampling_controls_to_top_p() {
 }
 
 #[tokio::test]
+async fn runtime_validated_completion_rechecks_requests_validated_with_looser_limits() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "should not run");
+    let runtime = Runtime::new_with_options(
+        backend,
+        RuntimeOptions {
+            request_limits: RequestLimits {
+                completion_prompt_bytes: 8,
+                ..RequestLimits::default()
+            },
+            ..RuntimeOptions::default()
+        },
+    );
+    let request = CompletionRequest {
+        model: "local-qwen36".to_owned(),
+        prompt: "123456789".to_owned(),
+        ..CompletionRequest::default()
+    }
+    .into_validated_with_limits(RequestLimits::default())
+    .expect("default limits accept longer completion prompt");
+
+    let err = runtime
+        .completion_validated_with_cancel(request, CancellationToken::new())
+        .await
+        .expect_err("runtime stricter limits reject default-validated request");
+
+    match err {
+        RuntimeError::Api(api_err) => {
+            assert_eq!(api_err.code(), "invalid_request");
+            assert!(
+                api_err.message().contains("prompt must be at most 8 bytes"),
+                "runtime limit error should mention strict prompt limit: {api_err:?}"
+            );
+        }
+        other => panic!("expected API validation error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn chat_preserves_assistant_text_whitespace() {
     let backend =
         ProtocolTestBackend::new("local-qwen36", "  keep leading space\n    indented line\n");

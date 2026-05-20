@@ -16,9 +16,14 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validated<T> {
     inner: T,
+    request_limits: RequestLimits,
 }
 
 impl<T> Validated<T> {
+    pub fn request_limits(&self) -> RequestLimits {
+        self.request_limits
+    }
+
     pub fn into_inner(self) -> T {
         self.inner
     }
@@ -47,7 +52,10 @@ pub trait ValidateRequest {
         Self: Sized,
     {
         self.validate_with_limits(limits)?;
-        Ok(Validated { inner: self })
+        Ok(Validated {
+            inner: self,
+            request_limits: limits,
+        })
     }
 
     fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError>;

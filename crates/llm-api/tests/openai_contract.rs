@@ -222,6 +222,7 @@ fn validated_request_wraps_after_successful_limit_validation() {
         .expect("valid request wraps");
 
     assert_eq!(validated.as_ref().model, "local-qwen36");
+    assert_eq!(validated.request_limits(), RequestLimits::default());
     assert_eq!(validated.into_inner().messages.len(), 1);
 }
 

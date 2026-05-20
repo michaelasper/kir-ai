@@ -203,6 +203,46 @@ async fn runtime_validates_chat_request_before_stream_mode_rejection() {
 }
 
 #[tokio::test]
+async fn runtime_validated_chat_rechecks_requests_validated_with_looser_limits() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "should not run");
+    let runtime = Runtime::new_with_options(
+        backend,
+        RuntimeOptions {
+            request_limits: RequestLimits {
+                message_content_bytes: 8,
+                ..RequestLimits::default()
+            },
+            ..RuntimeOptions::default()
+        },
+    );
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("123456789")],
+        ..ChatCompletionRequest::default()
+    }
+    .into_validated_with_limits(RequestLimits::default())
+    .expect("default limits accept longer message content");
+
+    let err = runtime
+        .chat_validated_with_cancel(request, CancellationToken::new())
+        .await
+        .expect_err("runtime stricter limits reject default-validated request");
+
+    match err {
+        RuntimeError::Api(api_err) => {
+            assert_eq!(api_err.code(), "invalid_request");
+            assert!(
+                api_err
+                    .message()
+                    .contains("messages[0].content must be at most 8 bytes"),
+                "runtime limit error should mention strict content limit: {api_err:?}"
+            );
+        }
+        other => panic!("expected API validation error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {

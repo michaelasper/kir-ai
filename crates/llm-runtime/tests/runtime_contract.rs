@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use llm_api::{
-    ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, ResponseFormat,
-    ToolChoice, ToolDefinition,
+    ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, RequestLimits,
+    ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
 };
 use llm_backend::{
     BackendCacheContext, BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata,

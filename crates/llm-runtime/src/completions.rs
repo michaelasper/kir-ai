@@ -49,6 +49,7 @@ where
         request: Validated<CompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<CompletionResponse, RuntimeError> {
+        let request = self.ensure_runtime_validated(request)?;
         if request.as_ref().stream {
             return Err(ApiError::unsupported_capability(
                 "streaming text completion requests must use Runtime::completion_stream",
@@ -94,6 +95,7 @@ where
         request: Validated<CompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
+        let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
         let include_usage = request_ref.stream_options.include_usage;
         let stop = request_ref.stop.clone();

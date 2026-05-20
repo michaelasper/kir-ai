@@ -1,7 +1,8 @@
 use crate::adapters::{ChatAdapter, SelectedChatAdapter, chat_adapter_for_metadata};
 use crate::{RuntimeError, ToolSchemaNormalization};
 use llm_api::{
-    RequestLimits, ToolDefinition, canonical_tool_schema_json, canonicalize_tool_schemas,
+    RequestLimits, ToolDefinition, ValidateRequest, Validated, canonical_tool_schema_json,
+    canonicalize_tool_schemas,
 };
 use llm_backend::{BackendCacheContext, BackendChatContext, BackendModelMetadata, ModelBackend};
 use std::borrow::Cow;
@@ -36,6 +37,22 @@ where
 
     pub fn model_metadata(&self) -> BackendModelMetadata {
         self.backend.model_metadata()
+    }
+
+    pub(crate) fn ensure_runtime_validated<T>(
+        &self,
+        request: Validated<T>,
+    ) -> Result<Validated<T>, RuntimeError>
+    where
+        T: ValidateRequest,
+    {
+        if request.request_limits() == self.options.request_limits {
+            return Ok(request);
+        }
+        request
+            .into_inner()
+            .into_validated_with_limits(self.options.request_limits)
+            .map_err(RuntimeError::from)
     }
 
     pub(crate) fn chat_adapter(&self) -> Result<SelectedChatAdapter, RuntimeError> {
