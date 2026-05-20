@@ -22,6 +22,26 @@ async fn chat_validation_error(payload: Value) -> Value {
 }
 
 #[tokio::test]
+async fn chat_validation_errors_return_stable_json_error_body() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": []
+    }))
+    .await;
+
+    assert_eq!(
+        body["error"],
+        json!({
+            "message": "invalid_request: messages must not be empty",
+            "code": "invalid_request",
+            "phase": "request_validation",
+            "retryable": false,
+            "type": "llm_engine_error"
+        })
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(

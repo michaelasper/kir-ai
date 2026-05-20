@@ -423,9 +423,22 @@ async fn chat_stream_runtime_errors_include_stable_metadata() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_text(response.into_body()).await;
     assert!(body.contains("\"content\":\"first\""));
-    assert!(body.contains("\"code\":\"backend_execution_failed\""));
-    assert!(body.contains("\"phase\":\"decode\""));
-    assert!(body.contains("\"retryable\":true"));
+    let frames = sse_json_frames(&body);
+    let error_frames: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame.get("error").is_some())
+        .collect();
+    assert_eq!(error_frames.len(), 1, "body: {body}");
+    assert_eq!(
+        error_frames[0]["error"],
+        json!({
+            "message": "backend error: backend error: stream failed",
+            "code": "backend_execution_failed",
+            "phase": "decode",
+            "retryable": true,
+            "type": "llm_engine_error"
+        })
+    );
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 

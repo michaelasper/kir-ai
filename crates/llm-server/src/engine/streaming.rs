@@ -1,6 +1,6 @@
 use super::scheduler::SchedulerPermit;
 use super::{
-    AppState,
+    AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
     metrics::{
         record_failure_metrics, record_first_tool_delta_metrics, record_runtime_error_metrics,
@@ -10,7 +10,6 @@ use super::{
         record_tool_intent_fill_metrics, record_tool_schema_validation_metrics,
         record_validated_tool_call_metrics,
     },
-    runtime_error_metadata,
 };
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
 use axum::response::sse::{Event, KeepAlive};
@@ -195,37 +194,18 @@ pub(super) fn engine_sse_keep_alive() -> KeepAlive {
 }
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
-    let metadata = runtime_error_metadata(&err);
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": err.to_string(),
-                "code": metadata.code,
-                "phase": metadata.phase,
-                "retryable": metadata.retryable,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
+    engine_error_stream_events(EngineErrorBody::from_runtime_error(&err))
+}
+
+fn engine_error_stream_events(body: EngineErrorBody) -> Vec<Result<Event, Infallible>> {
+    vec![sse_json_event(body), Ok(Event::default().data("[DONE]"))]
 }
 
 fn request_cancelled_stream_events(
     message: &'static str,
     phase: &'static str,
 ) -> Vec<Result<Event, Infallible>> {
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": message,
-                "code": "cancelled",
-                "phase": phase,
-                "retryable": false,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
+    engine_error_stream_events(EngineErrorBody::new(message, "cancelled", phase, false))
 }
 
 fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, Infallible>> {
@@ -236,33 +216,21 @@ fn stream_stalled_stream_events(timeout: Option<Duration>) -> Vec<Result<Event, 
         ),
         None => "stream stalled without meaningful backend output".to_owned(),
     };
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": message,
-                "code": "stream_stalled",
-                "phase": "streaming",
-                "retryable": true,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
+    engine_error_stream_events(EngineErrorBody::new(
+        message,
+        "stream_stalled",
+        "streaming",
+        true,
+    ))
 }
 
 fn stream_ended_without_completion_events() -> Vec<Result<Event, Infallible>> {
-    vec![
-        sse_json_event(json!({
-            "error": {
-                "message": "stream ended before completion marker",
-                "code": "stream_incomplete",
-                "phase": "streaming",
-                "retryable": true,
-                "type": "llm_engine_error"
-            }
-        })),
-        Ok(Event::default().data("[DONE]")),
-    ]
+    engine_error_stream_events(EngineErrorBody::new(
+        "stream ended before completion marker",
+        "stream_incomplete",
+        "streaming",
+        true,
+    ))
 }
 
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {

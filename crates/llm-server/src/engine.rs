@@ -28,7 +28,7 @@ pub use router::{
     build_router_with_backend_and_options_and_backend_metrics,
 };
 
-use error::{EngineError, runtime_error_metadata};
+use error::{EngineError, EngineErrorBody};
 use request::parse_json_request;
 use state::AppState;
 
