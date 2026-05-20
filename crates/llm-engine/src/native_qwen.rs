@@ -395,14 +395,6 @@ impl Drop for NativeQwenDecodeSession {
     }
 }
 
-#[cfg(test)]
-fn resolve_native_max_tokens(
-    requested: Option<u32>,
-    configured_max: u32,
-) -> Result<u32, BackendError> {
-    crate::native_text::resolve_native_text_max_tokens(requested, configured_max, "Qwen")
-}
-
 #[async_trait]
 impl ModelBackend for NativeQwenBackend {
     fn model_id(&self) -> &str {

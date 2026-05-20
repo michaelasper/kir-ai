@@ -323,6 +323,77 @@ fn splitmix64_next(seed: &mut u64) -> u64 {
 mod tests {
     use super::*;
 
+    fn assert_unsupported_message(err: BackendError, expected: &str) {
+        assert!(
+            err.is_unsupported_request(),
+            "expected UnsupportedRequest, got {err}"
+        );
+        assert_eq!(err.to_string(), expected);
+    }
+
+    #[test]
+    fn native_text_cache_token_capacity_rejects_zero_max_tokens_consistently() {
+        let qwen = resolve_native_text_max_tokens(Some(0), 8, "Qwen")
+            .expect_err("zero Qwen max_tokens fails closed");
+        let gemma = resolve_native_text_max_tokens(Some(0), 8, "Gemma")
+            .expect_err("zero Gemma max_tokens fails closed");
+
+        assert_eq!(qwen, gemma);
+        assert_unsupported_message(
+            qwen,
+            "unsupported backend request: max_tokens must be greater than 0",
+        );
+    }
+
+    #[test]
+    fn native_text_cache_token_capacity_clamps_zero_configured_generation_limit() {
+        assert_eq!(
+            resolve_native_text_max_tokens(None, 0, "Qwen")
+                .expect("omitted max_tokens clamps to one token"),
+            1
+        );
+        assert_eq!(
+            resolve_native_text_max_tokens(Some(1), 0, "Gemma")
+                .expect("one requested token fits clamped limit"),
+            1
+        );
+
+        let err = resolve_native_text_max_tokens(Some(2), 0, "Gemma")
+            .expect_err("request above clamped native limit fails closed");
+        assert_unsupported_message(
+            err,
+            "unsupported backend request: requested max_tokens 2 exceeds configured native Gemma limit 1",
+        );
+    }
+
+    #[test]
+    fn native_text_cache_token_capacity_formats_limit_errors_by_family() {
+        let qwen = resolve_native_text_max_tokens(Some(9), 8, "Qwen")
+            .expect_err("Qwen request above configured limit fails closed");
+        let gemma = resolve_native_text_max_tokens(Some(9), 8, "Gemma")
+            .expect_err("Gemma request above configured limit fails closed");
+
+        assert_unsupported_message(
+            qwen,
+            "unsupported backend request: requested max_tokens 9 exceeds configured native Qwen limit 8",
+        );
+        assert_unsupported_message(
+            gemma,
+            "unsupported backend request: requested max_tokens 9 exceeds configured native Gemma limit 8",
+        );
+    }
+
+    #[test]
+    fn native_text_cache_token_capacity_rejects_context_generation_overflow() {
+        let err = native_text_cache_token_capacity(usize::MAX, 1, 1, u32::MAX, "Qwen")
+            .expect_err("context plus generation overflow fails closed");
+
+        assert_unsupported_message(
+            err,
+            "unsupported backend request: native Qwen context length plus generation budget overflows usize",
+        );
+    }
+
     #[test]
     fn native_text_sampling_rng_uses_independent_seeded_streams() {
         let mut first = NativeTextSamplingRng::from_seed_words([1, 2, 3, 4]);

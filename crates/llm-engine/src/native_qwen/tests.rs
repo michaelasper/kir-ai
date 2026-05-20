@@ -7,7 +7,7 @@ use crate::native_matvec::{
 use crate::native_text::{
     NativeStreamTextDeltas, NativeTextCandidateDecision, NativeTextStopTokens,
     native_text_cache_token_capacity, native_text_prefill_context_with_cache,
-    native_text_worker_stream, sample_token_id_with_draw,
+    native_text_worker_stream, resolve_native_text_max_tokens, sample_token_id_with_draw,
 };
 use crate::sync_ext::FailPoisonedMutex;
 use futures::StreamExt;
@@ -645,7 +645,8 @@ fn native_qwen_system_default_reuses_shared_metal_state_for_same_model_budget() 
 #[test]
 fn native_max_tokens_defaults_to_configured_cache_limit() {
     assert_eq!(
-        resolve_native_max_tokens(None, 4).expect("omitted max tokens uses configured cap"),
+        resolve_native_text_max_tokens(None, 4, "Qwen")
+            .expect("omitted max tokens uses configured cap"),
         4
     );
 }
@@ -654,12 +655,12 @@ fn native_max_tokens_defaults_to_configured_cache_limit() {
 fn native_qwen_default_max_new_tokens_is_interactive_budget() {
     assert_eq!(DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, 256);
     assert_eq!(
-        resolve_native_max_tokens(None, DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS)
+        resolve_native_text_max_tokens(None, DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, "Qwen")
             .expect("omitted max tokens uses native default"),
         256
     );
     assert_eq!(
-        resolve_native_max_tokens(Some(128), DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS)
+        resolve_native_text_max_tokens(Some(128), DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, "Qwen")
             .expect("requests below native default are accepted"),
         128
     );
@@ -668,14 +669,14 @@ fn native_qwen_default_max_new_tokens_is_interactive_budget() {
 #[test]
 fn native_max_tokens_accepts_multi_token_decode_with_cache() {
     assert_eq!(
-        resolve_native_max_tokens(Some(2), 4).expect("multi-token decode uses cache"),
+        resolve_native_text_max_tokens(Some(2), 4, "Qwen").expect("multi-token decode uses cache"),
         2
     );
 }
 
 #[test]
 fn native_max_tokens_rejects_requests_above_configured_limit() {
-    let err = resolve_native_max_tokens(Some(5), 4)
+    let err = resolve_native_text_max_tokens(Some(5), 4, "Qwen")
         .expect_err("request above configured limit fails closed");
 
     assert!(err.is_unsupported_request());
