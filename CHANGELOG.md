@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.4](https://github.com/michaelasper/kir-ai/compare/v1.17.3...v1.17.4) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-201:** restore workspace all-targets compile ([88032a0](https://github.com/michaelasper/kir-ai/commit/88032a0ceb8eda05d898877f4ab6fb2b86e8c641))
+
 ## [1.17.3](https://github.com/michaelasper/kir-ai/compare/v1.17.2...v1.17.3) (2026-05-16)
 
 ### Bug Fixes
