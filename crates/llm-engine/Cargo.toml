@@ -62,3 +62,11 @@ llm-backend = { path = "../llm-backend", features = ["test-utils"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
+
+[[bench]]
+name = "prefix_cache_lookup"
+harness = false
+
+[[bench]]
+name = "prefix_cache_clone"
+harness = false
