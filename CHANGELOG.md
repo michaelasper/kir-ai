@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.10](https://github.com/michaelasper/kir-ai/compare/v1.17.9...v1.17.10) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-220:** harden request validation before rendering ([a22e1f3](https://github.com/michaelasper/kir-ai/commit/a22e1f3aed4fe4996eac72466021e7e783953567))
+
 ## [1.17.9](https://github.com/michaelasper/kir-ai/compare/v1.17.8...v1.17.9) (2026-05-20)
 
 ### Bug Fixes
