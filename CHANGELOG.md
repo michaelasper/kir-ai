@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.20.0](https://github.com/michaelasper/kir-ai/compare/v1.19.0...v1.20.0) (2026-05-20)
+
+### Features
+
+* **COR-230:** add native prefill work metrics ([6c046e2](https://github.com/michaelasper/kir-ai/commit/6c046e2cf047df4544b7d88b3d3eadcec6c929be))
+
 ## [1.19.0](https://github.com/michaelasper/kir-ai/compare/v1.18.0...v1.19.0) (2026-05-20)
 
 ### Features
