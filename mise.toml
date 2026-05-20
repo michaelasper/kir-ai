@@ -25,6 +25,8 @@ depends = ["fmt-check", "test", "clippy"]
 description = "Compile all workspace targets without running tests"
 run = "cargo check --workspace --all-targets"
 
+# Focused validation lanes. Keep these tasks composable so local iteration and
+# CI can call the same aliases without defaulting to full workspace tests.
 [tasks.check-fast]
 description = "Run compile baseline plus fast cache, sampler, and API contract slices"
 run = """
@@ -87,8 +89,8 @@ description = "Run parser and tokenizer tests"
 depends = ["test-parser", "test-tokenizer"]
 
 [tasks.test-hub]
-description = "Run model hub planning and store tests"
-run = "cargo test -p llm-hub"
+description = "Run model hub download planning tests"
+run = "cargo test -p llm-hub --test download_plan"
 
 [tasks.test-backend-cpu]
 description = "Run backend CPU safetensors and native math tests"

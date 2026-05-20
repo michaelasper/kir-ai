@@ -58,7 +58,7 @@ contract tests when behavior crosses crate boundaries.
 | `crates/llm-tool-parser/**` | `mise run test-parser` | `cargo test -p llm-tool-parser` |
 | `crates/llm-tokenizer/**` | `mise run test-tokenizer` | `cargo test -p llm-tokenizer` |
 | Parser and tokenizer family changes together | `mise run test-parser-tokenizer` | `cargo test -p llm-tool-parser` and `cargo test -p llm-tokenizer` |
-| `crates/llm-hub/**` | `mise run test-hub` | `cargo test -p llm-hub` |
+| Hub profile or download planning changes in `crates/llm-hub/**` | `mise run test-hub` | `cargo test -p llm-hub --test download_plan` |
 | `crates/llm-backend/src/core/**` or safetensors CPU paths | `mise run test-backend-cpu` | `cargo test -p llm-backend --test safetensors_loader` |
 | `crates/llm-metal/**` | `mise run test-metal-smoke` | `cargo test -p llm-metal --test metal_smoke -- --test-threads=1` |
 
