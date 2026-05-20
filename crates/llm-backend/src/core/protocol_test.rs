@@ -1,10 +1,9 @@
 use super::{
     BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendToolChoice, ModelBackend,
+    BackendRequest, BackendToolChoice, BackendToolDefinition, ModelBackend,
 };
 use async_trait::async_trait;
 use llm_models::ModelFamily;
-use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -112,20 +111,6 @@ fn protocol_test_tool_call(
     let tools = request_tool_definitions(family, request)?;
     let user = request_last_user_message(family, request);
     protocol_test_tool_call_from_tools(&user, &tools, request.required_tool_choice.as_ref())
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BackendToolDefinition {
-    function: BackendFunctionDefinition,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BackendFunctionDefinition {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    parameters: serde_json::Value,
 }
 
 fn request_tool_definitions(

@@ -63,6 +63,49 @@ pub struct BackendToolCallFunction {
     pub arguments: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendToolType {
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackendToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: BackendToolType,
+    pub function: BackendToolFunctionDefinition,
+}
+
+impl BackendToolDefinition {
+    pub fn function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            tool_type: BackendToolType::Function,
+            function: BackendToolFunctionDefinition {
+                name: name.into(),
+                description: Some(description.into()),
+                parameters,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackendToolFunctionDefinition {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default = "empty_backend_tool_parameters")]
+    pub parameters: serde_json::Value,
+}
+
+fn empty_backend_tool_parameters() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {
     pub key: BackendCacheKey,

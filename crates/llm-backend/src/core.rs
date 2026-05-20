@@ -20,7 +20,8 @@ pub use backend::{
     BackendError, BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput,
     BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
     BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
-    BackendToolCallType, BackendToolChoice, ModelBackend, SamplingConfig,
+    BackendToolCallType, BackendToolChoice, BackendToolDefinition, BackendToolFunctionDefinition,
+    BackendToolType, ModelBackend, SamplingConfig,
 };
 pub use gemma::{
     GemmaLayerCache, GemmaLayerCacheSnapshot, gemma_cache_count_for_spec,

@@ -6,8 +6,8 @@ use llm_api::{
 use llm_backend::{
     BackendCacheContext, BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata,
     BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
-    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, ModelBackend,
-    ProtocolTestBackend, SamplingConfig,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
+    ModelBackend, ProtocolTestBackend, SamplingConfig,
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
