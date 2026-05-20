@@ -221,7 +221,6 @@ impl NativeGemmaBackend {
                     hidden,
                     sampling,
                     sampling_draw,
-                    &mut InferenceScratchpad::new(),
                     &mut llm_sampler::TopPSamplerScratch::new(),
                 ))?
         })
@@ -375,7 +374,6 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         hidden: &[f32],
         sampling: SamplingConfig,
         sampling_draw: Option<f32>,
-        _scratch: &mut InferenceScratchpad,
         sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
     ) -> Result<usize, BackendError> {
         NativeTextNextTokenContext {

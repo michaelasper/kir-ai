@@ -597,7 +597,6 @@ mod tests {
             hidden: &[f32],
             _sampling: SamplingConfig,
             sampling_draw: Option<f32>,
-            _scratch: &mut InferenceScratchpad,
             _sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.next_token_calls.fetch_add(1, Ordering::SeqCst);
@@ -754,11 +753,10 @@ mod tests {
             hidden: &[f32],
             sampling: SamplingConfig,
             sampling_draw: Option<f32>,
-            scratch: &mut InferenceScratchpad,
             sampling_scratch: &mut llm_sampler::TopPSamplerScratch,
         ) -> Result<usize, BackendError> {
             self.base
-                .next_token_from_hidden(hidden, sampling, sampling_draw, scratch, sampling_scratch)
+                .next_token_from_hidden(hidden, sampling, sampling_draw, sampling_scratch)
                 .await
         }
     }

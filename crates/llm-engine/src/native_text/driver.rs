@@ -101,7 +101,6 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         hidden: &[f32],
         sampling: SamplingConfig,
         sampling_draw: Option<f32>,
-        scratch: &mut InferenceScratchpad,
         sampling_scratch: &mut TopPSamplerScratch,
     ) -> Result<usize, BackendError>;
 }
@@ -417,7 +416,6 @@ where
                     self.adapter.hidden(&decode),
                     request.sampling,
                     native_text_sampling_draw_for_config(request.sampling, &mut sampling_rng),
-                    &mut scratch,
                     &mut sampling_scratch,
                 )
                 .await?;
@@ -527,7 +525,6 @@ where
                     self.adapter.hidden(&decode),
                     request.sampling,
                     native_text_sampling_draw_for_config(request.sampling, &mut sampling_rng),
-                    &mut scratch,
                     &mut sampling_scratch,
                 )
                 .await?;
