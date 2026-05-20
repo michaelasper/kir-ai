@@ -31,6 +31,37 @@ The north-star gate script writes JSON, Markdown, and per-gate logs under
 `target/north-star-gates/`. CI uploads those reports as artifacts and appends
 the Markdown summary to the workflow step summary.
 
+## Local Validation Tasks
+
+`mise run check-fast` is the default local iteration baseline before broader
+gates. It compiles all workspace targets and runs only the fastest cache,
+sampler, and API contract slices:
+
+```sh
+cargo check --workspace --all-targets
+cargo test -p llm-kv-cache
+cargo test -p llm-sampler
+cargo test -p llm-api --test openai_contract
+```
+
+It intentionally does not run `cargo test --workspace`.
+
+Use targeted tasks when a change is isolated to one area:
+
+| Area | Task |
+| --- | --- |
+| KV cache | `mise run test-cache` |
+| Sampler | `mise run test-sampler` |
+| API contract | `mise run test-api-contract` |
+| Runtime contracts | `mise run test-runtime-contract` or a runtime subset task |
+| Parser/tokenizer | `mise run test-parser-tokenizer` |
+| Hub planning/store | `mise run test-hub` |
+| Backend CPU ops | `mise run test-backend-cpu` |
+| Metal smoke | `mise run test-metal-smoke` |
+
+These tasks support local triage. CI still runs the workflow jobs listed above,
+and release candidates still use the full release checklist.
+
 ## Version And Tag Rules
 
 The workspace version is defined once in `[workspace.package]` in

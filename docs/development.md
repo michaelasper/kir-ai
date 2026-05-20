@@ -19,18 +19,65 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-## Run Focused Tests
+## Run The Fast Local Baseline
+
+Use the fast baseline for local iteration before broad gates:
+
+```sh
+mise run check-fast
+```
+
+This runs a compile baseline plus the fastest unit and contract slices:
+
+```sh
+cargo check --workspace --all-targets
+cargo test -p llm-kv-cache
+cargo test -p llm-sampler
+cargo test -p llm-api --test openai_contract
+```
+
+`check-fast` does not run `cargo test --workspace`, clippy, or release gates.
+
+## Run Targeted Validation
+
+Pick the narrowest command that matches the files changed, then add adjacent
+contract tests when behavior crosses crate boundaries.
+
+| Changed files | Mise task | Underlying command |
+| --- | --- | --- |
+| `crates/llm-kv-cache/**` | `mise run test-cache` | `cargo test -p llm-kv-cache` |
+| `crates/llm-sampler/**` | `mise run test-sampler` | `cargo test -p llm-sampler` |
+| `crates/llm-api/**` or request validation | `mise run test-api-contract` | `cargo test -p llm-api --test openai_contract` |
+| Broad runtime behavior in `crates/llm-runtime/**` | `mise run test-runtime-contract` | `cargo test -p llm-runtime --test runtime_contract` |
+| Runtime chat request flow, prompt rendering, stop handling | `mise run test-runtime-chat` | `cargo test -p llm-runtime --test runtime_contract chat::` |
+| Runtime text completion flow | `mise run test-runtime-completion` | `cargo test -p llm-runtime --test runtime_contract completion::` |
+| Runtime stream assembly, cancellation, streaming tool deltas | `mise run test-runtime-streaming` | `cargo test -p llm-runtime --test runtime_contract streaming::` |
+| Runtime tool-choice validation and tool-call retry behavior | `mise run test-runtime-tools` | `cargo test -p llm-runtime --test runtime_contract tool_validation::` |
+| Runtime JSON-object response mode | `mise run test-runtime-json` | `cargo test -p llm-runtime --test runtime_contract json_mode::` |
+| Runtime no-progress classification | `mise run test-runtime-no-progress` | `cargo test -p llm-runtime --test runtime_contract no_progress::` |
+| `crates/llm-tool-parser/**` | `mise run test-parser` | `cargo test -p llm-tool-parser` |
+| `crates/llm-tokenizer/**` | `mise run test-tokenizer` | `cargo test -p llm-tokenizer` |
+| Parser and tokenizer family changes together | `mise run test-parser-tokenizer` | `cargo test -p llm-tool-parser` and `cargo test -p llm-tokenizer` |
+| `crates/llm-hub/**` | `mise run test-hub` | `cargo test -p llm-hub` |
+| `crates/llm-backend/src/core/**` or safetensors CPU paths | `mise run test-backend-cpu` | `cargo test -p llm-backend --test safetensors_loader` |
+| `crates/llm-metal/**` | `mise run test-metal-smoke` | `cargo test -p llm-metal --test metal_smoke -- --test-threads=1` |
+
+Metal smoke tests are serialized because they use the host GPU. If they fail
+because Metal or sandbox permissions are unavailable, record the result as
+blocked and rerun on a host with Metal access.
+
+## Common Focused Commands
 
 API request and response contracts:
 
 ```sh
-cargo test -p llm-api --test openai_contract
+mise run test-api-contract
 ```
 
 Runtime orchestration:
 
 ```sh
-cargo test -p llm-runtime --test runtime_contract
+mise run test-runtime-contract
 ```
 
 HTTP server contract:
@@ -54,19 +101,19 @@ cargo test -p llm-models --test qwen36_config
 Tokenizer and prompt rendering:
 
 ```sh
-cargo test -p llm-tokenizer --test qwen_template
+mise run test-tokenizer
 ```
 
 Tool-call parsing:
 
 ```sh
-cargo test -p llm-tool-parser --test qwen_parser
+mise run test-parser
 ```
 
 Safetensors and native math probes:
 
 ```sh
-cargo test -p llm-backend
+mise run test-backend-cpu
 ```
 
 ## Add Or Change HTTP Fields
@@ -178,7 +225,7 @@ The current crate compiles and runs a vector-add kernel. The smoke test skips if
 no Metal device exists:
 
 ```sh
-cargo test -p llm-metal
+mise run test-metal-smoke
 ```
 
 Do not assume Metal code is part of the Qwen serving path until it is explicitly

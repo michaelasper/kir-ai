@@ -21,6 +21,83 @@ run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 description = "Run formatting, tests, and clippy"
 depends = ["fmt-check", "test", "clippy"]
 
+[tasks.check-compile]
+description = "Compile all workspace targets without running tests"
+run = "cargo check --workspace --all-targets"
+
+[tasks.check-fast]
+description = "Run compile baseline plus fast cache, sampler, and API contract slices"
+run = """
+cargo check --workspace --all-targets
+cargo test -p llm-kv-cache
+cargo test -p llm-sampler
+cargo test -p llm-api --test openai_contract
+"""
+
+[tasks.test-cache]
+description = "Run KV cache unit tests"
+run = "cargo test -p llm-kv-cache"
+
+[tasks.test-sampler]
+description = "Run sampler unit tests"
+run = "cargo test -p llm-sampler"
+
+[tasks.test-api-contract]
+description = "Run OpenAI API contract tests"
+run = "cargo test -p llm-api --test openai_contract"
+
+[tasks.test-runtime-contract]
+description = "Run all runtime contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract"
+
+[tasks.test-runtime-chat]
+description = "Run runtime chat contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract chat::"
+
+[tasks.test-runtime-completion]
+description = "Run runtime completion contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract completion::"
+
+[tasks.test-runtime-streaming]
+description = "Run runtime streaming contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract streaming::"
+
+[tasks.test-runtime-tools]
+description = "Run runtime tool validation contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract tool_validation::"
+
+[tasks.test-runtime-json]
+description = "Run runtime JSON mode contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract json_mode::"
+
+[tasks.test-runtime-no-progress]
+description = "Run runtime no-progress contract tests"
+run = "cargo test -p llm-runtime --test runtime_contract no_progress::"
+
+[tasks.test-parser]
+description = "Run tool parser tests"
+run = "cargo test -p llm-tool-parser"
+
+[tasks.test-tokenizer]
+description = "Run tokenizer and chat-template tests"
+run = "cargo test -p llm-tokenizer"
+
+[tasks.test-parser-tokenizer]
+description = "Run parser and tokenizer tests"
+depends = ["test-parser", "test-tokenizer"]
+
+[tasks.test-hub]
+description = "Run model hub planning and store tests"
+run = "cargo test -p llm-hub"
+
+[tasks.test-backend-cpu]
+description = "Run backend CPU safetensors and native math tests"
+run = "cargo test -p llm-backend --test safetensors_loader"
+
+[tasks.test-metal-smoke]
+description = "Run serialized Metal smoke tests"
+run = "cargo test -p llm-metal --test metal_smoke -- --test-threads=1"
+
 [tasks.gates-ci]
 description = "Run fast north-star CI gates with JSON and Markdown reports"
 run = "bash scripts/north-star-gates.sh ci"
