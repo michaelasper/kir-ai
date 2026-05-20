@@ -1,4 +1,4 @@
-use super::super::super::math::{InferenceScratchpad, silu_f32, softmax_top_k_f32};
+use super::super::super::math::{InferenceScratchpad, silu_f32};
 use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
 use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
 use llm_models::QwenModelSpec;
@@ -122,10 +122,56 @@ pub async fn qwen_layer_moe_router(
         )
         .await
         .map_err(|err| TensorLoadError::integrity(format!("Qwen MoE router failed: {err}")))?;
-    let selected = softmax_top_k_f32(&logits, top_k).map_err(|err| {
-        TensorLoadError::integrity(format!("Qwen MoE router softmax failed: {err}"))
-    })?;
+    let selected = matvec
+        .softmax_top_k_f32(&logits, top_k)
+        .await
+        .map_err(|err| {
+            TensorLoadError::integrity(format!("Qwen MoE router softmax failed: {err}"))
+        })?;
     Ok(QwenMoeRouterProbe { logits, selected })
+}
+
+pub async fn qwen_layer0_moe_router(
+    store: &SafeTensorShardStore,
+    hidden_states: &[f32],
+    top_k: usize,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<QwenMoeRouterProbe, TensorLoadError> {
+    qwen_layer_moe_router(store, 0, hidden_states, top_k, matvec).await
+}
+
+pub async fn qwen_layer_moe_forward(
+    store: &SafeTensorShardStore,
+    layer_idx: usize,
+    dims: &QwenMoeDims,
+    hidden_states: &[f32],
+    router: &QwenMoeRouterProbe,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
+    let mut scratch = InferenceScratchpad::default();
+    let mut output = vec![0.0; dims.hidden_size];
+    qwen_layer_moe_forward_in_place(
+        store,
+        layer_idx,
+        dims,
+        hidden_states,
+        router,
+        matvec,
+        &mut scratch,
+        &mut output,
+    )
+    .await?;
+    Ok(output)
+}
+
+pub async fn qwen_layer0_moe_forward(
+    store: &SafeTensorShardStore,
+    dims: &QwenMoeDims,
+    hidden_states: &[f32],
+    router: &QwenMoeRouterProbe,
+    matvec: &impl NativeMatvecBackend,
+) -> Result<Vec<f32>, TensorLoadError> {
+    qwen_layer_moe_forward(store, 0, dims, hidden_states, router, matvec).await
 }
 
 #[allow(clippy::too_many_arguments)]
