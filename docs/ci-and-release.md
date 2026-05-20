@@ -8,7 +8,7 @@ what each workflow produces, and how releases are cut.
 
 | Workflow | File | Trigger | Purpose | Primary output |
 | --- | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | Pull requests and pushes to `main` | Formatting, clippy, focused admin schema drift validation, release hygiene checks, named north-star product gates, and macOS build packaging | Gate reports, release-notes preview, and build artifact |
+| CI | `.github/workflows/ci.yml` | Pull requests and pushes to `main` | Formatting, compile checks, clippy, focused admin schema drift validation, release hygiene checks, and named north-star product gates | Gate reports and release-notes preview |
 | Nightly | `.github/workflows/nightly.yml` | Daily schedule and manual dispatch | Broad workspace tests, nightly north-star gates, long-context planning, optional live bench gates, and nightly build packaging | Nightly gate report and nightly build artifact |
 | Release | `.github/workflows/release.yml` | `v*.*.*` tags and manual dispatch | Validate tag/version, run release checks, build `llm-engine`, generate notes, publish GitHub release | macOS release archive, SHA-256 file, release notes |
 
@@ -24,12 +24,17 @@ coverage.
 
 - `Static Analysis` runs `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 - `Admin Schema Drift` runs `cargo test -p llm-server --all-features --lib generate_admin_api_schemas`, then fails if `docs/schemas/admin/` has uncommitted changes.
-- `Build` runs `cargo build --release --target aarch64-apple-darwin -p llm-engine` and uploads the packaged macOS binary.
+- `Compile Check` runs `cargo check --workspace --all-targets` to type-check library, binary, test, and bench targets without spending PR time on link/package work.
 - `North-Star Gate Report` runs versioning, conventional commits, release-note preview generation, and `scripts/north-star-gates.sh ci`.
 
 The north-star gate script writes JSON, Markdown, and per-gate logs under
 `target/north-star-gates/`. CI uploads those reports as artifacts and appends
 the Markdown summary to the workflow step summary.
+
+PR CI uses `cargo check --workspace --all-targets` for the compile gate because
+it catches workspace target type errors faster than a link step. Full binary
+linking and packaging remain in the `Release` workflow's `Build (macOS)` job
+and the `Nightly Build` workflow's `Nightly Build` job.
 
 The PR `ci` north-star profile runs the required product contract gates by
 name:
