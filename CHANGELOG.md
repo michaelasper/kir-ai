@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.8](https://github.com/michaelasper/kir-ai/compare/v1.17.7...v1.17.8) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-216:** bind validated requests to limits ([bb7eb01](https://github.com/michaelasper/kir-ai/commit/bb7eb01b0be1141c69efd1a518ed91ed079ef891))
+* **COR-216:** pass validated requests into runtime ([a7a25fa](https://github.com/michaelasper/kir-ai/commit/a7a25fa055fccc06aa8cecd3ba3c4daee742d337))
+
 ## [1.17.7](https://github.com/michaelasper/kir-ai/compare/v1.17.6...v1.17.7) (2026-05-20)
 
 ### Bug Fixes
