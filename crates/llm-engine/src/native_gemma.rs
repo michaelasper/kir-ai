@@ -532,7 +532,9 @@ impl ModelBackend for NativeGemmaBackend {
 mod tests {
     use super::*;
     use crate::native_text::NativeTextStopTokens;
-    use llm_backend::LayerKvCache;
+    use crate::sync_ext::FailPoisonedMutex;
+    use llm_backend::{BackendCacheContext, BackendToolChoice, LayerKvCache};
+    use llm_models::{GemmaFamilyAdapter, ModelFamilyAdapter};
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -651,6 +653,158 @@ mod tests {
     }
 
     #[test]
+    fn native_gemma_prefix_cache_reuses_longest_compatible_prefix() {
+        let cache = NativeGemmaPrefixCache::new(10_000);
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+        let namespace = native_gemma_test_prefix_namespace("base");
+        let mut layer_cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        layer_cache
+            .append(&[1.0, 2.0], &[3.0, 4.0])
+            .expect("token fits");
+        let original_cache_id = layer_cache.id();
+        let caches = vec![GemmaLayerCache::Attention(layer_cache)];
+
+        cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches, &metrics);
+
+        let hit = cache
+            .lookup(&namespace, &[1, 2, 3], &metrics)
+            .expect("compatible longer prompt reuses stored prefix");
+        assert_eq!(hit.token_count, 2);
+        assert_eq!(hit.hidden, vec![0.25, 0.75]);
+        match &hit.caches[0] {
+            GemmaLayerCache::Attention(cache) => {
+                assert_ne!(cache.id(), original_cache_id);
+                assert_eq!(cache.token_count(), 1);
+            }
+        }
+
+        let incompatible_namespace = NativeTextPrefixCacheNamespace {
+            tool_schema: Some("different-tool-schema".to_owned()),
+            ..namespace.clone()
+        };
+        assert!(
+            cache
+                .lookup(&incompatible_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "tool schema changes must not reuse prefix state"
+        );
+    }
+
+    #[test]
+    fn native_gemma_prefix_cache_separates_capacity_manifest_profile_and_required_tool_name() {
+        let cache = NativeGemmaPrefixCache::new(10_000);
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+        let namespace = native_gemma_test_prefix_namespace("namespace-policy");
+        let larger_capacity_namespace = NativeTextPrefixCacheNamespace {
+            cache_tokens: namespace.cache_tokens * 2,
+            ..namespace.clone()
+        };
+        let different_manifest_namespace = NativeTextPrefixCacheNamespace {
+            resolved_commit: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+            ..namespace.clone()
+        };
+        let different_profile_namespace = NativeTextPrefixCacheNamespace {
+            profile: Some("gemma-other-profile".to_owned()),
+            ..namespace.clone()
+        };
+        let lookup_required_tool = NativeTextPrefixCacheNamespace {
+            request_mode: format!(
+                "chat,json_object=false,required_tool={:?}",
+                BackendToolChoice::RequiredFunction("lookup".to_owned())
+            ),
+            ..namespace.clone()
+        };
+        let search_required_tool = NativeTextPrefixCacheNamespace {
+            request_mode: format!(
+                "chat,json_object=false,required_tool={:?}",
+                BackendToolChoice::RequiredFunction("search".to_owned())
+            ),
+            ..namespace.clone()
+        };
+
+        cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &[], &metrics);
+        cache.store(
+            lookup_required_tool.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &[],
+            &metrics,
+        );
+
+        assert!(
+            cache
+                .lookup(&larger_capacity_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "cache capacity changes must not reuse Gemma prefix state"
+        );
+        assert!(
+            cache
+                .lookup(&different_manifest_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "manifest identity changes must not reuse Gemma prefix state"
+        );
+        assert!(
+            cache
+                .lookup(&different_profile_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "profile changes must not reuse Gemma prefix state"
+        );
+        assert!(
+            cache
+                .lookup(&search_required_tool, &[1, 2], &metrics)
+                .is_none(),
+            "required tool-choice names must not reuse Gemma prefix state"
+        );
+    }
+
+    #[test]
+    fn native_gemma_prefix_cache_evicts_lru_entries_to_fit_budget() {
+        let cache = NativeGemmaPrefixCache::new(40);
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+        let namespace = native_gemma_test_prefix_namespace("eviction");
+        let hidden = vec![1.0; 8];
+
+        cache.store(namespace.clone(), &[1], &hidden, &[], &metrics);
+        cache.store(namespace.clone(), &[2], &hidden, &[], &metrics);
+
+        assert!(
+            cache.lookup(&namespace, &[1], &metrics).is_none(),
+            "oldest entry should be evicted"
+        );
+        assert!(
+            cache.lookup(&namespace, &[2], &metrics).is_some(),
+            "newest entry should remain resident"
+        );
+        let inner = cache.inner.lock_or_panic("native Gemma prefix cache");
+        assert_eq!(inner.entries.len(), 1);
+        assert_eq!(inner.used_bytes, 32);
+    }
+
+    #[test]
+    fn native_gemma_prefix_cache_metrics_expose_hits_misses_and_evictions() {
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+
+        metrics.record_hit(3);
+        metrics.record_miss();
+        metrics.record_store(32);
+        metrics.record_eviction(16);
+        metrics.record_rejected();
+        metrics.record_residency(32, 1);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["hits"], 1);
+        assert_eq!(snapshot["misses"], 1);
+        assert_eq!(snapshot["stores"], 1);
+        assert_eq!(snapshot["evictions"], 1);
+        assert_eq!(snapshot["rejected"], 1);
+        assert_eq!(snapshot["reused_tokens"], 3);
+        assert_eq!(snapshot["bytes_stored"], 32);
+        assert_eq!(snapshot["bytes_evicted"], 16);
+        assert_eq!(snapshot["resident_bytes"], 32);
+        assert_eq!(snapshot["resident_entries"], 1);
+    }
+
+    #[test]
     fn native_gemma_backend_rejects_quantized_mlx_snapshot_explicitly() {
         let snapshot = temp_snapshot_dir("native-gemma-quantized");
         std::fs::remove_dir_all(&snapshot).ok();
@@ -725,6 +879,33 @@ mod tests {
 
     fn native_gemma_test_request(model: &str) -> BackendRequest {
         BackendRequest::raw_completion(model, "hello", Some(1), SamplingConfig::Greedy)
+    }
+
+    fn native_gemma_test_prefix_namespace(label: &str) -> NativeTextPrefixCacheNamespace {
+        NativeTextPrefixCacheNamespace {
+            model_id: format!("model-{label}"),
+            backend: "native-gemma".to_owned(),
+            family: Some("gemma".to_owned()),
+            quantization: Some("bf16".to_owned()),
+            repo_id: Some("local/test".to_owned()),
+            resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            profile: Some("gemma-test".to_owned()),
+            cache_key: BackendCacheContext::chat_template_with_kwargs(
+                GemmaFamilyAdapter.cache_template_id(),
+                Some("tool-schema-v1".to_owned()),
+                GemmaFamilyAdapter
+                    .chat_template_kwargs_json()
+                    .map(str::to_owned),
+            )
+            .key
+            .as_str()
+            .to_owned(),
+            tool_schema: Some("tool-schema-v1".to_owned()),
+            request_mode: "chat,json_object=false,required_tool=None".to_owned(),
+            cache_layout_version: NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION,
+            cache_tokens: 8,
+            max_prefill_tokens: 8,
+        }
     }
 
     fn write_tiny_gemma4_decoder_snapshot(root: &Path) {

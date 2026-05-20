@@ -12,9 +12,9 @@ use crate::native_text::{
 use crate::sync_ext::FailPoisonedMutex;
 use futures::StreamExt;
 use llm_backend::{
-    BackendCacheContext, CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError,
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
-    qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
+    BackendCacheContext, BackendToolChoice, CpuNativeMatvecBackend, InferenceScratchpad,
+    LayerKvCache, MathError, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+    qwen_layer_caches_for_spec, qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
 };
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
@@ -236,6 +236,73 @@ fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
             .lookup(&incompatible_namespace, &[1, 2], &metrics)
             .is_none(),
         "tool schema changes must not reuse prefix state"
+    );
+}
+
+#[test]
+fn native_qwen_prefix_cache_separates_capacity_manifest_profile_and_required_tool_name() {
+    let cache = NativeQwenPrefixCache::new(10_000);
+    let metrics = NativeQwenPrefixCacheMetrics::default();
+    let namespace = native_qwen_test_prefix_namespace("namespace-policy");
+    let larger_capacity_namespace = NativeQwenPrefixCacheNamespace {
+        cache_tokens: namespace.cache_tokens * 2,
+        ..namespace.clone()
+    };
+    let different_manifest_namespace = NativeQwenPrefixCacheNamespace {
+        resolved_commit: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+        ..namespace.clone()
+    };
+    let different_profile_namespace = NativeQwenPrefixCacheNamespace {
+        profile: Some("qwen-other-profile".to_owned()),
+        ..namespace.clone()
+    };
+    let lookup_required_tool = NativeQwenPrefixCacheNamespace {
+        request_mode: format!(
+            "chat,json_object=false,required_tool={:?}",
+            BackendToolChoice::RequiredFunction("lookup".to_owned())
+        ),
+        ..namespace.clone()
+    };
+    let search_required_tool = NativeQwenPrefixCacheNamespace {
+        request_mode: format!(
+            "chat,json_object=false,required_tool={:?}",
+            BackendToolChoice::RequiredFunction("search".to_owned())
+        ),
+        ..namespace.clone()
+    };
+
+    cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &[], &metrics);
+    cache.store(
+        lookup_required_tool.clone(),
+        &[1, 2],
+        &[0.25, 0.75],
+        &[],
+        &metrics,
+    );
+
+    assert!(
+        cache
+            .lookup(&larger_capacity_namespace, &[1, 2], &metrics)
+            .is_none(),
+        "cache capacity changes must not reuse Qwen prefix state"
+    );
+    assert!(
+        cache
+            .lookup(&different_manifest_namespace, &[1, 2], &metrics)
+            .is_none(),
+        "manifest identity changes must not reuse Qwen prefix state"
+    );
+    assert!(
+        cache
+            .lookup(&different_profile_namespace, &[1, 2], &metrics)
+            .is_none(),
+        "profile changes must not reuse Qwen prefix state"
+    );
+    assert!(
+        cache
+            .lookup(&search_required_tool, &[1, 2], &metrics)
+            .is_none(),
+        "required tool-choice names must not reuse Qwen prefix state"
     );
 }
 
@@ -1858,7 +1925,7 @@ fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamesp
         .as_str()
         .to_owned(),
         tool_schema: Some("tool-schema-v1".to_owned()),
-        request_mode: "conversation=true,json_object=false,required_tool=None".to_owned(),
+        request_mode: "chat,json_object=false,required_tool=None".to_owned(),
         cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
         cache_tokens: 8,
         max_prefill_tokens: 8,

@@ -915,6 +915,132 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_reuses_namespace_when_only_sampling_changes() {
+        let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
+        let greedy_request = BackendRequest::raw_completion_with_cache_context(
+            "model-a",
+            "hello",
+            Some(1),
+            SamplingConfig::Greedy,
+            llm_backend::BackendCacheContext::chat_template_with_kwargs(
+                "chatml/qwen/v1",
+                Some("schema-a".to_owned()),
+                Some(r#"{"enable_thinking":false}"#.to_owned()),
+            ),
+        );
+        let mut top_p_request = greedy_request.clone();
+        top_p_request.sampling = SamplingConfig::TopP {
+            temperature: 0.7,
+            top_p: 0.8,
+        };
+        let namespace_for = |request: &BackendRequest| {
+            native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+                model_id: "model-a",
+                metadata: &metadata,
+                request,
+                cache_layout_version: 1,
+                cache_tokens: 16,
+                max_prefill_tokens: 8,
+            })
+        };
+        let greedy_namespace = namespace_for(&greedy_request);
+        let top_p_namespace = namespace_for(&top_p_request);
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let caches = vec![TestCache {
+            bytes: 8,
+            marker: 1,
+        }];
+
+        cache.store(
+            greedy_namespace.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &caches,
+            &metrics,
+        );
+
+        assert_eq!(greedy_namespace, top_p_namespace);
+        assert!(
+            cache
+                .lookup(&top_p_namespace, &[1, 2, 3], &metrics)
+                .is_some(),
+            "sampling controls are intentionally outside the prefix cache namespace"
+        );
+    }
+
+    #[test]
+    fn prefix_cache_namespace_separates_cache_capacity() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let namespace = namespace("capacity-key");
+        let larger_capacity_namespace = NativeTextPrefixCacheNamespace {
+            cache_tokens: namespace.cache_tokens * 2,
+            ..namespace.clone()
+        };
+
+        cache.store(
+            namespace.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &[TestCache {
+                bytes: 8,
+                marker: 1,
+            }],
+            &metrics,
+        );
+
+        assert_ne!(namespace, larger_capacity_namespace);
+        assert!(
+            cache
+                .lookup(&larger_capacity_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "cache capacity buckets are prefix cache compatibility keys"
+        );
+    }
+
+    #[test]
+    fn prefix_cache_namespace_separates_manifest_identity_and_profile() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let namespace = namespace("manifest");
+        let different_manifest_namespace = NativeTextPrefixCacheNamespace {
+            resolved_commit: Some("def456".to_owned()),
+            ..namespace.clone()
+        };
+        let different_profile_namespace = NativeTextPrefixCacheNamespace {
+            profile: Some("profile-b".to_owned()),
+            ..namespace.clone()
+        };
+
+        cache.store(
+            namespace.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &[TestCache {
+                bytes: 8,
+                marker: 1,
+            }],
+            &metrics,
+        );
+
+        assert_ne!(namespace, different_manifest_namespace);
+        assert_ne!(namespace, different_profile_namespace);
+        assert!(
+            cache
+                .lookup(&different_manifest_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "manifest identity changes must not reuse prefix state"
+        );
+        assert!(
+            cache
+                .lookup(&different_profile_namespace, &[1, 2], &metrics)
+                .is_none(),
+            "profile changes must not reuse prefix state"
+        );
+    }
+
+    #[test]
     fn prefix_namespace_identity_changes_with_chat_template_kwargs() {
         let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
         let mut request = driver_test_request(1);
@@ -1009,6 +1135,72 @@ mod tests {
         assert_ne!(base.tool_schema, different_schema.tool_schema);
         assert_ne!(base, required_tool);
         assert_ne!(base.request_mode, required_tool.request_mode);
+    }
+
+    #[test]
+    fn prefix_cache_namespace_separates_required_tool_choice_names() {
+        fn chat_request(required_tool_name: &str) -> BackendRequest {
+            BackendRequest::chat_completion(
+                "model-a",
+                "hello",
+                BackendChatContext {
+                    messages: vec![BackendChatMessage {
+                        role: BackendChatRole::User,
+                        content: Some("hello".to_owned()),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
+                    }],
+                    tools: Vec::new(),
+                },
+                Some(1),
+                SamplingConfig::Greedy,
+                Some(BackendToolChoice::RequiredFunction(
+                    required_tool_name.to_owned(),
+                )),
+                false,
+                llm_backend::BackendCacheContext::chat_template(
+                    "chatml/qwen/v1",
+                    Some("schema-a".to_owned()),
+                ),
+            )
+        }
+
+        let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
+        let lookup_request = chat_request("lookup");
+        let search_request = chat_request("search");
+        let namespace_for = |request: &BackendRequest| {
+            native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
+                model_id: "model-a",
+                metadata: &metadata,
+                request,
+                cache_layout_version: 1,
+                cache_tokens: 16,
+                max_prefill_tokens: 8,
+            })
+        };
+        let lookup_namespace = namespace_for(&lookup_request);
+        let search_namespace = namespace_for(&search_request);
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+
+        cache.store(
+            lookup_namespace.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &[TestCache {
+                bytes: 8,
+                marker: 1,
+            }],
+            &metrics,
+        );
+
+        assert_ne!(lookup_namespace, search_namespace);
+        assert_ne!(lookup_namespace.request_mode, search_namespace.request_mode);
+        assert!(
+            cache.lookup(&search_namespace, &[1, 2], &metrics).is_none(),
+            "required tool-choice names are prefix cache compatibility keys"
+        );
     }
 
     #[test]

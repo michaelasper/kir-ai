@@ -79,6 +79,29 @@ fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     assert_eq!(value["hardware"]["os"], std::env::consts::OS);
     assert_eq!(value["hardware"]["arch"], std::env::consts::ARCH);
     assert_eq!(value["cache_policy"]["cache_layout"], "shared-prefix-v1");
+    assert_eq!(
+        value["cache_policy"]["namespace_fields"]
+            .as_array()
+            .expect("namespace fields")
+            .iter()
+            .map(|field| field.as_str().expect("namespace field"))
+            .collect::<Vec<_>>(),
+        [
+            "model_id",
+            "backend",
+            "family",
+            "quantization",
+            "repo_id",
+            "resolved_commit",
+            "profile",
+            "prompt_cache_key",
+            "tool_schema",
+            "request_mode",
+            "cache_layout_version",
+            "cache_capacity_bucket",
+            "max_prefill_tokens",
+        ]
+    );
     assert!(
         value["cache_policy"]["benchmark_metrics"]
             .as_array()
