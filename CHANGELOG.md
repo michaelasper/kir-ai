@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.9](https://github.com/michaelasper/kir-ai/compare/v1.17.8...v1.17.9) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-219:** stop using cache schema as tool transport ([237cfde](https://github.com/michaelasper/kir-ai/commit/237cfde45c90cc649af1ba07e365873287b0874d))
+
 ## [1.17.8](https://github.com/michaelasper/kir-ai/compare/v1.17.7...v1.17.8) (2026-05-20)
 
 ### Bug Fixes
