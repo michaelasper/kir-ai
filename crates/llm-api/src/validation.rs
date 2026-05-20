@@ -2,12 +2,12 @@ mod helpers;
 
 use crate::{
     ApiError, ChatCompletionRequest, CompletionRequest, MAX_CHAT_MESSAGES, MAX_TOOLS,
-    RequestLimits, ResponseFormat, ToolChoice,
+    RequestLimits, ResponseFormat, ToolChoice, ToolDefinition,
 };
 use helpers::{
     validate_chat_messages, validate_choice_count, validate_len_at_most, validate_neutral_penalty,
-    validate_sampling_controls, validate_stop_sequence_values, validate_string_bytes,
-    validate_tools,
+    validate_non_empty_string, validate_sampling_controls, validate_stop_sequence_values,
+    validate_string_bytes, validate_tools,
 };
 use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::Value;
@@ -82,23 +82,7 @@ impl ValidateRequest for ChatCompletionRequest {
                 "json_schema response_format is not supported; use json_object",
             ));
         }
-        if matches!(self.tool_choice, Some(ToolChoice::Required)) && self.tools.is_empty() {
-            return Err(ApiError::invalid_request(
-                "tool_choice required needs at least one declared tool",
-            ));
-        }
-        if let Some(ToolChoice::Function { name }) = &self.tool_choice {
-            let names = self
-                .tools
-                .iter()
-                .map(|tool| tool.function.name.as_str())
-                .collect::<BTreeSet<_>>();
-            if !names.contains(name.as_str()) {
-                return Err(ApiError::unsupported_capability(format!(
-                    "required tool `{name}` was not declared"
-                )));
-            }
-        }
+        validate_tool_choice(&self.tools, self.tool_choice.as_ref())?;
         if matches!(self.parallel_tool_calls, Some(true)) {
             return Err(ApiError::unsupported_capability(
                 "parallel tool calls are not supported yet; use parallel_tool_calls false",
@@ -138,6 +122,49 @@ impl ValidateRequest for ChatCompletionRequest {
         validate_choice_count(self.n)?;
         Ok(())
     }
+}
+
+fn validate_tool_choice(
+    tools: &[ToolDefinition],
+    tool_choice: Option<&ToolChoice>,
+) -> Result<(), ApiError> {
+    match tool_choice {
+        Some(ToolChoice::Required) => {
+            if tools.is_empty() {
+                return Err(ApiError::invalid_request(
+                    "tool_choice required needs at least one declared tool",
+                ));
+            }
+            validate_unique_tool_names(tools)
+        }
+        Some(ToolChoice::Function { name }) => {
+            validate_non_empty_string("tool_choice.function.name", name)?;
+            validate_unique_tool_names(tools)?;
+            if !tools
+                .iter()
+                .any(|tool| tool.function.name.as_str() == name.as_str())
+            {
+                return Err(ApiError::unsupported_capability(format!(
+                    "required tool `{name}` was not declared"
+                )));
+            }
+            Ok(())
+        }
+        Some(ToolChoice::Auto | ToolChoice::None) | None => Ok(()),
+    }
+}
+
+fn validate_unique_tool_names(tools: &[ToolDefinition]) -> Result<(), ApiError> {
+    let mut seen = BTreeSet::new();
+    for (index, tool) in tools.iter().enumerate() {
+        let name = tool.function.name.as_str();
+        if !seen.insert(name) {
+            return Err(ApiError::invalid_request(format!(
+                "duplicate tool name `{name}` in tools[{index}].function.name"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl ValidateRequest for CompletionRequest {

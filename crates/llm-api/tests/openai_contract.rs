@@ -155,6 +155,151 @@ fn validates_required_tool_choice_against_declared_tools() {
 }
 
 #[test]
+fn rejects_user_and_system_messages_without_content() {
+    for role in ["user", "system"] {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "local-qwen36",
+            "messages": [{"role": role}]
+        }))
+        .expect("request json should parse");
+
+        let err = request
+            .validate()
+            .expect_err("plain chat messages need content");
+
+        assert_eq!(err.code(), "invalid_request");
+        assert!(err.message().contains("messages[0].content"));
+    }
+}
+
+#[test]
+fn rejects_tool_messages_without_tool_call_id() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "tool", "content": "lookup result"}]
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("tool messages must identify their tool call");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].tool_call_id"));
+}
+
+#[test]
+fn rejects_empty_declared_tool_function_name() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function("", "lookup docs", json!({}))],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("empty tool names are invalid");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("tools[0].function.name"));
+}
+
+#[test]
+fn rejects_empty_assistant_tool_call_function_name() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::assistant_tool_call("call_1", "", json!({}))],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("empty assistant tool call names are invalid");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(
+        err.message()
+            .contains("messages[0].tool_calls[0].function.name")
+    );
+}
+
+#[test]
+fn rejects_empty_named_tool_choice_function_name() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "call a tool"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {}}
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": ""}
+        }
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("empty named tool choice is invalid");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("tool_choice.function.name"));
+}
+
+#[test]
+fn rejects_duplicate_tool_names_for_required_tool_choice() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![
+            ToolDefinition::function("lookup", "first lookup", json!({})),
+            ToolDefinition::function("lookup", "second lookup", json!({})),
+        ],
+        tool_choice: Some(ToolChoice::Required),
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("required tool choice needs unique tool names");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("duplicate tool name"));
+}
+
+#[test]
+fn rejects_duplicate_tool_names_for_named_tool_choice() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "user", "content": "call lookup"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {}}
+            },
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {}}
+            }
+        ],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "lookup"}
+        }
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("named tool choice needs unique tool names");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("duplicate tool name"));
+}
+
+#[test]
 fn request_limits_reject_too_many_chat_messages() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -266,6 +411,73 @@ fn request_limits_reject_oversized_tool_schema() {
 
     assert_eq!(err.code(), "invalid_request");
     assert!(err.message().contains("parameters"));
+}
+
+#[test]
+fn rejects_tool_schema_parameters_that_are_not_objects() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!("not a schema object"),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("tool schema parameters must be objects");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("tools[0].function.parameters"));
+}
+
+#[test]
+fn rejects_malformed_tool_schema_required_keyword() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "required": "query",
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request.validate().expect_err("required must be an array");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("required"));
+}
+
+#[test]
+fn rejects_malformed_tool_schema_properties_keyword() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "properties": ["query"],
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("properties must be an object");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("properties"));
 }
 
 #[test]

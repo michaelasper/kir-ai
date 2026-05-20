@@ -1,9 +1,9 @@
 use crate::{
-    ApiError, ChatMessage, MAX_NAME_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
+    ApiError, ChatMessage, ChatRole, MAX_NAME_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
     MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS_PER_MESSAGE, MAX_TOOL_DESCRIPTION_BYTES,
     MAX_TOOL_SCHEMA_BYTES, RequestLimits, ToolDefinition,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::io::{self, Write};
 
 pub(super) fn validate_chat_messages(
@@ -12,6 +12,17 @@ pub(super) fn validate_chat_messages(
 ) -> Result<(), ApiError> {
     for (index, message) in messages.iter().enumerate() {
         let label = format!("messages[{index}].content");
+        if matches!(message.role, ChatRole::System | ChatRole::User) && message.content.is_none() {
+            return Err(ApiError::invalid_request(format!(
+                "{label} is required for {} messages",
+                message.role.as_str()
+            )));
+        }
+        if message.role == ChatRole::Tool && message.tool_call_id.is_none() {
+            return Err(ApiError::invalid_request(format!(
+                "messages[{index}].tool_call_id is required for tool messages"
+            )));
+        }
         if let Some(content) = &message.content {
             validate_string_bytes(&label, content, limits.message_content_bytes)?;
         }
@@ -19,6 +30,12 @@ pub(super) fn validate_chat_messages(
             validate_string_bytes(&format!("messages[{index}].name"), name, MAX_NAME_BYTES)?;
         }
         if let Some(tool_call_id) = &message.tool_call_id {
+            if message.role == ChatRole::Tool {
+                validate_non_empty_string(
+                    &format!("messages[{index}].tool_call_id"),
+                    tool_call_id,
+                )?;
+            }
             validate_string_bytes(
                 &format!("messages[{index}].tool_call_id"),
                 tool_call_id,
@@ -37,6 +54,10 @@ pub(super) fn validate_chat_messages(
                 &tool_call.id,
                 MAX_NAME_BYTES,
             )?;
+            validate_non_empty_string(
+                &format!("messages[{index}].tool_calls[{tool_call_index}].function.name"),
+                &tool_call.function.name,
+            )?;
             validate_string_bytes(
                 &format!("messages[{index}].tool_calls[{tool_call_index}].function.name"),
                 &tool_call.function.name,
@@ -54,6 +75,10 @@ pub(super) fn validate_chat_messages(
 
 pub(super) fn validate_tools(tools: &[ToolDefinition]) -> Result<(), ApiError> {
     for (index, tool) in tools.iter().enumerate() {
+        validate_non_empty_string(
+            &format!("tools[{index}].function.name"),
+            &tool.function.name,
+        )?;
         validate_string_bytes(
             &format!("tools[{index}].function.name"),
             &tool.function.name,
@@ -70,6 +95,10 @@ pub(super) fn validate_tools(tools: &[ToolDefinition]) -> Result<(), ApiError> {
             &format!("tools[{index}].function.parameters"),
             &tool.function.parameters,
             MAX_TOOL_SCHEMA_BYTES,
+        )?;
+        validate_tool_schema_shape(
+            &format!("tools[{index}].function.parameters"),
+            &tool.function.parameters,
         )?;
     }
     Ok(())
@@ -106,6 +135,15 @@ pub(super) fn validate_string_bytes(label: &str, value: &str, max: usize) -> Res
     Ok(())
 }
 
+pub(super) fn validate_non_empty_string(label: &str, value: &str) -> Result<(), ApiError> {
+    if value.trim().is_empty() {
+        return Err(ApiError::invalid_request(format!(
+            "{label} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_json_bytes_at_most(label: &str, value: &Value, max: usize) -> Result<(), ApiError> {
     let mut counter = JsonByteCounter::new(max);
     match serde_json::to_writer(&mut counter, value) {
@@ -117,6 +155,66 @@ fn validate_json_bytes_at_most(label: &str, value: &Value, max: usize) -> Result
             "{label} must serialize as JSON: {err}"
         ))),
     }
+}
+
+fn validate_tool_schema_shape(label: &str, value: &Value) -> Result<(), ApiError> {
+    let Some(schema) = value.as_object() else {
+        return Err(ApiError::invalid_request(format!(
+            "{label} must be a JSON object"
+        )));
+    };
+    validate_schema_object(label, schema)
+}
+
+fn validate_schema_object(label: &str, schema: &Map<String, Value>) -> Result<(), ApiError> {
+    if let Some(schema_type) = schema.get("type") {
+        match schema_type {
+            Value::String(_) => {}
+            Value::Array(types) if types.iter().all(Value::is_string) => {}
+            _ => {
+                return Err(ApiError::invalid_request(format!(
+                    "{label}.type must be a string or array of strings"
+                )));
+            }
+        }
+    }
+    if let Some(required) = schema.get("required") {
+        let Some(required) = required.as_array() else {
+            return Err(ApiError::invalid_request(format!(
+                "{label}.required must be an array of strings"
+            )));
+        };
+        if !required.iter().all(Value::is_string) {
+            return Err(ApiError::invalid_request(format!(
+                "{label}.required must contain only strings"
+            )));
+        }
+    }
+    if let Some(enum_values) = schema.get("enum")
+        && !enum_values.is_array()
+    {
+        return Err(ApiError::invalid_request(format!(
+            "{label}.enum must be an array"
+        )));
+    }
+    if let Some(properties) = schema.get("properties") {
+        let Some(properties) = properties.as_object() else {
+            return Err(ApiError::invalid_request(format!(
+                "{label}.properties must be a JSON object"
+            )));
+        };
+        for (name, property_schema) in properties {
+            if let Some(property_schema) = property_schema.as_object() {
+                validate_schema_object(&format!("{label}.properties.{name}"), property_schema)?;
+            }
+        }
+    }
+    if let Some(items) = schema.get("items")
+        && let Some(items_schema) = items.as_object()
+    {
+        validate_schema_object(&format!("{label}.items"), items_schema)?;
+    }
+    Ok(())
 }
 
 struct JsonByteCounter {

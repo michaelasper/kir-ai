@@ -1,5 +1,26 @@
 use super::*;
 
+async fn chat_validation_error(payload: Value) -> Value {
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .expect("request builds"),
+        )
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert_eq!(body["error"]["retryable"], false);
+    body
+}
+
 #[tokio::test]
 async fn chat_completions_rejects_zero_max_tokens() {
     let response = build_router_with_protocol_test_backend()
@@ -26,6 +47,117 @@ async fn chat_completions_rejects_zero_max_tokens() {
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["phase"], "request_validation");
     assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_user_message_without_content() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user"}]
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("messages[0].content"),
+        "missing user content should be a request validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_tool_message_without_tool_call_id() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "tool", "content": "lookup result"}]
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("messages[0].tool_call_id"),
+        "missing tool_call_id should be a request validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_empty_tool_function_name() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "use a tool"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "", "parameters": {}}
+        }]
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("tools[0].function.name"),
+        "empty function name should be a request validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_duplicate_tool_names_for_required_choice() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "use a tool"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {}}
+            },
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {}}
+            }
+        ],
+        "tool_choice": "required"
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("duplicate tool name"),
+        "duplicate tool names should be a request validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_malformed_tool_schema_required_keyword() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "lookup rust"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "required": "query"
+                }
+            }
+        }],
+        "tool_choice": "required"
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("required"),
+        "malformed schema should be a request validation error: {body}"
+    );
 }
 
 #[tokio::test]
