@@ -11,7 +11,9 @@ use crate::streaming::{
 };
 use chrono::Utc;
 use futures::{StreamExt, stream::BoxStream};
-use llm_api::{ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest};
+use llm_api::{
+    ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest, Validated,
+};
 use llm_backend::{
     BackendCacheContext, BackendError, BackendRequest, BackendStreamChunk, ModelBackend,
     SamplingConfig,
@@ -36,8 +38,18 @@ where
         request: CompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<CompletionResponse, RuntimeError> {
-        request.validate_with_limits(self.options.request_limits)?;
-        if request.stream {
+        let request = request.into_validated_with_limits(self.options.request_limits)?;
+        self.completion_validated_with_cancel(request, cancellation)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn completion_validated_with_cancel(
+        &self,
+        request: Validated<CompletionRequest>,
+        cancellation: CancellationToken,
+    ) -> Result<CompletionResponse, RuntimeError> {
+        if request.as_ref().stream {
             return Err(ApiError::unsupported_capability(
                 "streaming text completion requests must use Runtime::completion_stream",
             )
@@ -71,14 +83,26 @@ where
         request: CompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
-        request.validate_with_limits(self.options.request_limits)?;
-        let include_usage = request.stream_options.include_usage;
-        let stop = request.stop.clone();
+        let request = request.into_validated_with_limits(self.options.request_limits)?;
+        self.completion_stream_validated_with_cancel(request, cancellation)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn completion_stream_validated_with_cancel(
+        &self,
+        request: Validated<CompletionRequest>,
+        cancellation: CancellationToken,
+    ) -> Result<CompletionStream<'_>, RuntimeError> {
+        let request_ref = request.as_ref();
+        let include_usage = request_ref.stream_options.include_usage;
+        let stop = request_ref.stop.clone();
         let completion = RuntimeCompletionSeed {
             id: format!("cmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
-            model: request.model.clone(),
+            model: request_ref.model.clone(),
         };
+        let request = request.into_inner();
         let backend_stream = self.backend.generate_stream_with_cancel(
             BackendRequest {
                 model: request.model,
@@ -104,16 +128,18 @@ where
 
     async fn complete_text(
         &self,
-        request: CompletionRequest,
+        request: Validated<CompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<RuntimeCompletion, RuntimeError> {
-        request.validate_with_limits(self.options.request_limits)?;
+        let request = request.into_inner();
+        let model = request.model;
+        let stop = request.stop;
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
             .generate_with_cancel(
                 BackendRequest {
-                    model: request.model.clone(),
+                    model: model.clone(),
                     prompt: request.prompt,
                     chat_context: None,
                     max_tokens: request.max_tokens,
@@ -130,7 +156,7 @@ where
             )
             .await?;
         let mut text = output.text;
-        let stopped = apply_stop_sequences(&mut text, &request.stop);
+        let stopped = apply_stop_sequences(&mut text, &stop);
         let no_progress = classify_no_progress(&text, output.completion_tokens);
         if let Some(class) = no_progress {
             return Err(RuntimeError::NoProgress(class));
@@ -143,7 +169,7 @@ where
         Ok(RuntimeCompletion {
             id: format!("cmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
-            model: request.model,
+            model,
             text,
             finish_reason: if stopped {
                 llm_api::FinishReason::Stop

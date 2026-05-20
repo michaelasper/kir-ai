@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response, sse::Sse},
 };
 use futures::StreamExt;
-use llm_api::{ChatCompletionRequest, CompletionRequest, ValidateRequest};
+use llm_api::{ChatCompletionRequest, CompletionRequest, ValidateRequest, Validated};
 use llm_runtime::RuntimeError;
 
 pub(super) async fn chat_completions(
@@ -19,11 +19,11 @@ pub(super) async fn chat_completions(
     request: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
-    validate_api_request(&request, &state)?;
-    let streamed = request.stream;
-    if request.stream {
-        let model = request.model.clone();
-        let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
+    let request = validate_api_request(request, &state)?;
+    let streamed = request.as_ref().stream;
+    if streamed {
+        let model = request.as_ref().model.clone();
+        let run = lifecycle::start_chat_generation(&state, &headers, request.as_ref()).await?;
         let request_id = run.request_id().to_owned();
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
@@ -32,7 +32,7 @@ pub(super) async fn chat_completions(
                 super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
             match stream_state
                 .runtime
-                .chat_stream_with_cancel(request, stream_lifecycle.cancellation())
+                .chat_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
                 .await
             {
                 Ok(response) => {
@@ -59,10 +59,10 @@ pub(super) async fn chat_completions(
         lifecycle::insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let run = lifecycle::start_chat_generation(&state, &headers, &request).await?;
+    let run = lifecycle::start_chat_generation(&state, &headers, request.as_ref()).await?;
     let response = match state
         .runtime
-        .chat_with_cancel(request, run.cancellation())
+        .chat_validated_with_cancel(request, run.cancellation())
         .await
     {
         Ok(response) => response,
@@ -89,11 +89,12 @@ pub(super) async fn completions(
     request: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Result<Response, EngineError> {
     let request = parse_json_request(request, &state)?;
-    validate_api_request(&request, &state)?;
-    let streamed = request.stream;
-    if request.stream {
-        let model = request.model.clone();
-        let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
+    let request = validate_api_request(request, &state)?;
+    let streamed = request.as_ref().stream;
+    if streamed {
+        let model = request.as_ref().model.clone();
+        let run =
+            lifecycle::start_completion_generation(&state, &headers, request.as_ref()).await?;
         let request_id = run.request_id().to_owned();
         let stream_run = run.into_streaming();
         let stream_state = state.clone();
@@ -102,7 +103,7 @@ pub(super) async fn completions(
                 super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
             match stream_state
                 .runtime
-                .completion_stream_with_cancel(request, stream_lifecycle.cancellation())
+                .completion_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
                 .await
             {
                 Ok(response) => {
@@ -129,10 +130,10 @@ pub(super) async fn completions(
         lifecycle::insert_request_id_header(&mut response, &request_id);
         return Ok(response);
     }
-    let run = lifecycle::start_completion_generation(&state, &headers, &request).await?;
+    let run = lifecycle::start_completion_generation(&state, &headers, request.as_ref()).await?;
     let response = match state
         .runtime
-        .completion_with_cancel(request, run.cancellation())
+        .completion_validated_with_cancel(request, run.cancellation())
         .await
     {
         Ok(response) => response,
@@ -154,11 +155,11 @@ pub(super) async fn completions(
 }
 
 fn validate_api_request<T: ValidateRequest>(
-    request: &T,
+    request: T,
     state: &AppState,
-) -> Result<(), EngineError> {
+) -> Result<Validated<T>, EngineError> {
     request
-        .validate_with_limits(state.request_limits)
+        .into_validated_with_limits(state.request_limits)
         .map_err(|err| {
             record_failure_metrics(state);
             RuntimeError::Api(err).into()

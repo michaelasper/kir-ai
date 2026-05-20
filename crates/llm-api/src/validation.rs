@@ -13,9 +13,41 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Validated<T> {
+    inner: T,
+}
+
+impl<T> Validated<T> {
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> AsRef<T> for Validated<T> {
+    fn as_ref(&self) -> &T {
+        &self.inner
+    }
+}
+
 pub trait ValidateRequest {
     fn validate(&self) -> Result<(), ApiError> {
         self.validate_with_limits(RequestLimits::default())
+    }
+
+    fn into_validated(self) -> Result<Validated<Self>, ApiError>
+    where
+        Self: Sized,
+    {
+        self.into_validated_with_limits(RequestLimits::default())
+    }
+
+    fn into_validated_with_limits(self, limits: RequestLimits) -> Result<Validated<Self>, ApiError>
+    where
+        Self: Sized,
+    {
+        self.validate_with_limits(limits)?;
+        Ok(Validated { inner: self })
     }
 
     fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError>;

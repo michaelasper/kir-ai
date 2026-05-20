@@ -22,6 +22,7 @@ use futures::{StreamExt, stream};
 use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionDelta, ChatCompletionRequest,
     ChatCompletionResponse, ChatMessage, ChatRole, ResponseFormat, ToolChoice, ValidateRequest,
+    Validated,
 };
 use llm_backend::{BackendRequest, ModelBackend, SamplingConfig};
 use tokio_util::sync::CancellationToken;
@@ -44,7 +45,17 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionResponse, RuntimeError> {
-        if request.stream {
+        let request = request.into_validated_with_limits(self.options.request_limits)?;
+        self.chat_validated_with_cancel(request, cancellation).await
+    }
+
+    #[doc(hidden)]
+    pub async fn chat_validated_with_cancel(
+        &self,
+        request: Validated<ChatCompletionRequest>,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionResponse, RuntimeError> {
+        if request.as_ref().stream {
             return Err(ApiError::unsupported_capability(
                 "streaming chat requests must use Runtime::chat_stream",
             )
@@ -85,25 +96,40 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
-        request.validate_with_limits(self.options.request_limits)?;
-        let include_usage = request.stream_options.include_usage;
+        let request = request.into_validated_with_limits(self.options.request_limits)?;
+        self.chat_stream_validated_with_cancel(request, cancellation)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn chat_stream_validated_with_cancel(
+        &self,
+        request: Validated<ChatCompletionRequest>,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
+        let request_ref = request.as_ref();
+        let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
-        let (cache_context, prompt, chat_context) = self.prepare_chat_backend(adapter, &request)?;
+        let (cache_context, prompt, chat_context) =
+            self.prepare_chat_backend(adapter, request_ref)?;
         let completion = RuntimeCompletionSeed {
             id: format!("chatcmpl-{}", Uuid::now_v7()),
             created: Utc::now().timestamp(),
-            model: request.model.clone(),
+            model: request_ref.model.clone(),
         };
         let backend_stream = self.backend.generate_stream_with_cancel(
             BackendRequest {
-                model: request.model.clone(),
+                model: request_ref.model.clone(),
                 prompt,
                 chat_context,
-                max_tokens: request.effective_max_tokens(),
-                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
-                required_tool_choice: required_backend_tool_choice(&request),
+                max_tokens: request_ref.effective_max_tokens(),
+                sampling: SamplingConfig::from_openai_controls(
+                    request_ref.temperature,
+                    request_ref.top_p,
+                )?,
+                required_tool_choice: required_backend_tool_choice(request_ref),
                 json_object_mode: matches!(
-                    request.response_format,
+                    request_ref.response_format.as_ref(),
                     Some(ResponseFormat::JsonObject)
                 ),
                 conversation_mode: true,
@@ -111,6 +137,7 @@ where
             },
             cancellation.clone(),
         );
+        let request = request.into_inner();
         Ok(streaming_chat_stream(
             completion,
             request,
@@ -134,36 +161,48 @@ where
         request: ChatCompletionRequest,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-        let include_usage = request.stream_options.include_usage;
+        let request = request.into_validated_with_limits(self.options.request_limits)?;
+        self.chat_stream_buffered_validated_with_cancel(request, cancellation)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn chat_stream_buffered_validated_with_cancel(
+        &self,
+        request: Validated<ChatCompletionRequest>,
+        cancellation: CancellationToken,
+    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
+        let include_usage = request.as_ref().stream_options.include_usage;
         let completion = self.complete_chat(request, cancellation).await?;
         buffered_chat_stream(completion, include_usage)
     }
 
     async fn complete_chat(
         &self,
-        request: ChatCompletionRequest,
+        request: Validated<ChatCompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<RuntimeChatCompletion, RuntimeError> {
-        request.validate_with_limits(self.options.request_limits)?;
         let adapter = self.chat_adapter()?;
-        let (cache_context, prompt, chat_context) = self.prepare_chat_backend(adapter, &request)?;
-        let required_tool_choice = required_backend_tool_choice(&request);
+        let request_ref = request.as_ref();
+        let (cache_context, prompt, chat_context) =
+            self.prepare_chat_backend(adapter, request_ref)?;
+        let required_tool_choice = required_backend_tool_choice(request_ref);
         let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
             .generate_with_cancel(
                 BackendRequest {
-                    model: request.model.clone(),
+                    model: request_ref.model.clone(),
                     prompt,
                     chat_context,
-                    max_tokens: request.effective_max_tokens(),
+                    max_tokens: request_ref.effective_max_tokens(),
                     sampling: SamplingConfig::from_openai_controls(
-                        request.temperature,
-                        request.top_p,
+                        request_ref.temperature,
+                        request_ref.top_p,
                     )?,
                     required_tool_choice,
                     json_object_mode: matches!(
-                        request.response_format,
+                        request_ref.response_format.as_ref(),
                         Some(ResponseFormat::JsonObject)
                     ),
                     conversation_mode: true,
@@ -172,6 +211,7 @@ where
                 cancellation,
             )
             .await?;
+        let request = request.into_inner();
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);
         let mut parsed = parse_chat_text(adapter, &raw_text, &request)?;
@@ -181,11 +221,14 @@ where
             return Err(RuntimeError::NoProgress(class));
         }
         validate_tool_calls_against_request(&parsed, &request)?;
-        if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
+        if matches!(
+            request.response_format.as_ref(),
+            Some(ResponseFormat::JsonObject)
+        ) {
             validate_json_object_response(&parsed)?;
         }
         let required_tool_pending = matches!(
-            request.tool_choice,
+            request.tool_choice.as_ref(),
             Some(ToolChoice::Required | ToolChoice::Function { .. })
         );
         let no_progress = classify_chat_no_progress(

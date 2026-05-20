@@ -177,6 +177,32 @@ async fn runtime_rejects_chatml_control_tokens_before_prompt_rendering() {
 }
 
 #[tokio::test]
+async fn runtime_validates_chat_request_before_stream_mode_rejection() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "should not run");
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat_with_cancel(
+            ChatCompletionRequest {
+                model: "local-qwen36".to_owned(),
+                messages: Vec::new(),
+                stream: true,
+                ..ChatCompletionRequest::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("invalid streaming chat request is rejected by validation first");
+
+    match err {
+        RuntimeError::Api(api_err) => {
+            assert_eq!(api_err.code(), "invalid_request");
+            assert!(api_err.message().contains("messages"));
+        }
+        other => panic!("expected API validation error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {

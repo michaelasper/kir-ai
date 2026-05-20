@@ -210,6 +210,22 @@ fn request_limits_allow_long_context_chat_message_by_default() {
 }
 
 #[test]
+fn validated_request_wraps_after_successful_limit_validation() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("hello")],
+        ..ChatCompletionRequest::default()
+    };
+
+    let validated = request
+        .into_validated_with_limits(RequestLimits::default())
+        .expect("valid request wraps");
+
+    assert_eq!(validated.as_ref().model, "local-qwen36");
+    assert_eq!(validated.into_inner().messages.len(), 1);
+}
+
+#[test]
 fn request_limits_reject_too_many_tools() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
