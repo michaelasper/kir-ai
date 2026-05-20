@@ -8,11 +8,9 @@ use futures::StreamExt;
 use llm_backend::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
     BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta, BackendToolCallFunctionDelta,
-    BackendToolCallType, ModelBackend,
+    BackendToolCallType, ModelBackend, ProtocolTestBackend,
 };
-use llm_engine::{
-    EngineOptions, build_router, build_router_with_protocol_test_backend, router_builder,
-};
+use llm_engine::{EngineOptions, build_router, router_builder};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
 use std::{
@@ -67,6 +65,21 @@ fn build_router_with_unauthenticated_admin(backend: Box<dyn ModelBackend>) -> Ro
 
 fn build_router_with_backend(backend: Box<dyn ModelBackend>) -> Router {
     router_builder(backend).build().expect("test router builds")
+}
+
+fn build_router_with_protocol_test_backend() -> Router {
+    router_builder(Box::new(
+        ProtocolTestBackend::new(
+            llm_engine::DEFAULT_MODEL_ID,
+            "hello from rust native backend",
+        )
+        .with_required_tool_protocol()
+        .with_json_object_protocol(),
+    ))
+    .with_options(EngineOptions::default())
+    .allow_unauthenticated_admin()
+    .build()
+    .expect("protocol test router builds")
 }
 
 fn build_router_with_backend_and_options(

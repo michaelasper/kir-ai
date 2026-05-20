@@ -57,5 +57,6 @@ url = { workspace = true, optional = true }
 
 [dev-dependencies]
 axum.workspace = true
+llm-backend = { path = "../llm-backend", features = ["test-utils"] }
 tempfile.workspace = true
 tower.workspace = true

@@ -27,3 +27,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+llm-backend = { path = "../llm-backend", features = ["test-utils"] }

@@ -28,7 +28,7 @@ mod moe;
 use moe::qwen_layer_feed_forward;
 pub use moe::{qwen_layer_moe_forward_in_place, qwen_layer_moe_router};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "slow-tests"))]
 pub(crate) use lm_head::qwen_lm_head_logits;
 pub use lm_head::{
     qwen_final_norm, qwen_final_norm_for_spec, qwen_lm_head_logits_for_spec, qwen_lm_head_top_k,
