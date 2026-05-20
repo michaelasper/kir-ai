@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+slow-tests = []
+
 [dependencies]
 metal.workspace = true
 block.workspace = true
@@ -16,3 +20,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
 serde.workspace = true
 serde_json.workspace = true
+
+[[test]]
+name = "mlx_reference"
+required-features = ["slow-tests"]

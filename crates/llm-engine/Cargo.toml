@@ -9,12 +9,13 @@ rust-version.workspace = true
 default = ["mlx", "native-qwen", "native-gemma", "diagnostics", "tool-calls"]
 bench = ["dep:llm-bench"]
 diagnostics = ["dep:llm-tokenizer"]
+metal = ["dep:llm-metal"]
 mlx = ["dep:reqwest", "dep:sha2", "dep:url"]
 native-gemma = ["native-text"]
 native-qwen = ["native-text"]
 native-text = [
   "dep:getrandom",
-  "dep:llm-metal",
+  "metal",
   "dep:llm-tokenizer",
   "dep:llm-sampler",
   "dep:rand",

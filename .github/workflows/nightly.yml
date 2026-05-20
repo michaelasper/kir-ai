@@ -41,7 +41,7 @@ jobs:
           restore-keys: |
             macos-cargo-nightly-validation-
 
-      - name: Run nightly north-star gates
+      - name: Run nightly north-star gates with deep Metal and MLX reference validation
         run: bash scripts/north-star-gates.sh nightly
 
       - name: Publish nightly gate summary

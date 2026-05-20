@@ -51,7 +51,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --exclude llm-metal --all-targets --all-features -- -D warnings
+          cargo clippy -p llm-metal --all-targets -- -D warnings
 
   admin-schema-drift:
     name: Admin Schema Drift
@@ -92,11 +94,11 @@ jobs:
           fi
 
   compile-check:
-    name: Compile Check
-    runs-on: macos-latest
+    name: Compile Check (No Metal)
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    # PR CI uses cargo check for fast type coverage across lib, bin, test, and
-    # bench targets. Release and nightly workflows keep full link/package builds.
+    # PR CI keeps a cheap non-Metal type lane for lib, bin, test, and bench
+    # targets. Dedicated macOS smoke and nightly lanes cover Metal.
 
     steps:
       - name: Checkout
@@ -116,12 +118,42 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-check-no-metal-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            macos-cargo-check-
+            ubuntu-cargo-check-no-metal-
 
-      - name: Check all targets
-        run: cargo check --workspace --all-targets
+      - name: Check all targets without Metal
+        run: cargo check --workspace --all-targets --exclude llm-metal --no-default-features --features llm-engine/mlx,llm-engine/diagnostics,llm-engine/tool-calls,llm-server/tool-calls,llm-telemetry/tool-calls
+
+  metal-smoke:
+    name: Metal Smoke
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-metal-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-metal-smoke-
+
+      - name: Run Metal smoke tests
+        run: cargo test -p llm-metal --test metal_smoke -- --test-threads=1
 
   nextest-fast-packages:
     name: Nextest Fast Packages

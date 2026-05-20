@@ -178,7 +178,7 @@ run_ci_gates() {
 }
 
 record_workspace_covered_ci_gates() {
-  local reason="covered by workspace_tests (cargo test --workspace --all-features)"
+  local reason="covered by workspace_tests (cargo test --workspace --all-features --exclude llm-metal)"
   covered_gate "protocol_api_contracts" true "$reason" "cargo test -p llm-api --test openai_contract"
   covered_gate "runtime_agentic_contracts" true "$reason" "cargo test -p llm-runtime --test runtime_contract --all-features"
   covered_gate "engine_http_contracts" true "$reason" "cargo test -p llm-engine --test http_contract --all-features"
@@ -202,35 +202,36 @@ skip_workspace_covered_ci_gates() {
 }
 
 record_workspace_covered_nightly_gates() {
-  local reason="covered by workspace_tests (cargo test --workspace --all-features)"
+  local reason="covered by workspace_tests (cargo test --workspace --all-features --exclude llm-metal)"
   covered_gate "no_progress_replay_classifiers" true "$reason" "cargo test -p llm-runtime --test runtime_contract no_progress_transcript_replay_fixtures_return_stable_codes"
   covered_gate "native_backend_contracts" true "$reason" "cargo test -p llm-backend --tests"
-  if [ "$os_name" = "Darwin" ]; then
-    covered_gate "metal_smoke_contracts" true "$reason" "cargo test -p llm-metal --test metal_smoke"
-  else
-    skip_gate "metal_smoke_contracts" false "Metal smoke tests require a macOS runner" "cargo test -p llm-metal --test metal_smoke"
-  fi
 }
 
 skip_workspace_covered_nightly_gates() {
   local reason="workspace_tests failed before coverage could be credited"
   skip_gate "no_progress_replay_classifiers" true "$reason" "cargo test -p llm-runtime --test runtime_contract no_progress_transcript_replay_fixtures_return_stable_codes"
   skip_gate "native_backend_contracts" true "$reason" "cargo test -p llm-backend --tests"
+}
+
+run_nightly_metal_gates() {
   if [ "$os_name" = "Darwin" ]; then
-    skip_gate "metal_smoke_contracts" true "$reason" "cargo test -p llm-metal --test metal_smoke"
+    run_gate "metal_smoke_contracts" true cargo test -p llm-metal --test metal_smoke -- --test-threads=1
+    run_gate "mlx_reference_contracts" true cargo test -p llm-metal --features slow-tests --test mlx_reference -- --test-threads=1
   else
     skip_gate "metal_smoke_contracts" false "Metal smoke tests require a macOS runner" "cargo test -p llm-metal --test metal_smoke"
+    skip_gate "mlx_reference_contracts" false "MLX reference tests require a macOS Metal runner" "cargo test -p llm-metal --features slow-tests --test mlx_reference"
   fi
 }
 
 run_nightly_gates() {
-  if run_gate "workspace_tests" true cargo test --workspace --all-features; then
+  if run_gate "workspace_tests" true cargo test --workspace --all-features --exclude llm-metal; then
     record_workspace_covered_ci_gates
     record_workspace_covered_nightly_gates
   else
     skip_workspace_covered_ci_gates
     skip_workspace_covered_nightly_gates
   fi
+  run_nightly_metal_gates
   run_gate "slow_timeout_stall_contracts" true cargo test -p llm-engine --lib mlx_slow_ -- --ignored --test-threads=1
   run_gate "qwen_long_context_plan" true cargo run -p llm-engine -- bench qwen-long-context --dry-run --profile all --output "$out_dir/qwen-long-context-plan.json"
 
