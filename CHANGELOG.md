@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.6](https://github.com/michaelasper/kir-ai/compare/v1.17.5...v1.17.6) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-204:** finish qwen moe and matvec paths ([dbcb93d](https://github.com/michaelasper/kir-ai/commit/dbcb93d07bb4c19570aa00e952c6157c4ebc52e1))
+
 ## [1.17.5](https://github.com/michaelasper/kir-ai/compare/v1.17.4...v1.17.5) (2026-05-20)
 
 ### Bug Fixes
