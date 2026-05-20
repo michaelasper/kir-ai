@@ -12,7 +12,7 @@ use llm_backend::{
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_MODEL_ID, EngineOptions, SnapshotBackendLoader, SnapshotBackendOptions,
+    DEFAULT_MODEL_ID, EngineOptions, SnapshotBackendLoader, SnapshotBackendOptions, model_cli,
     open_snapshot_backend, parse_snapshot_model_family, router_builder,
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
@@ -22,17 +22,12 @@ use llm_engine::{
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
-use llm_hub::{
-    DeletedSnapshot, HubClient, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot,
-    ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
-    SnapshotRecord,
-};
+use llm_hub::{HubClient, ModelStore};
 #[cfg(feature = "diagnostics")]
 use llm_models::QwenModelSpec;
 #[cfg(feature = "diagnostics")]
 use llm_tokenizer::HuggingFaceTokenizer;
-use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, path::Path};
+use std::net::SocketAddr;
 
 const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
 const DETERMINISTIC_TEST_BACKEND_FLAG: &str = "--deterministic-test-backend";
@@ -520,90 +515,16 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
     match subcommand.as_str() {
         "list" => {
             let root = model_home_from_args(&args);
-            let store = ModelStore::new(root);
-            let aliases = store.list_aliases().await?;
-            let mut aliases_by_path: HashMap<std::path::PathBuf, Vec<String>> = HashMap::new();
-            for alias in aliases {
-                aliases_by_path
-                    .entry(alias.snapshot_path)
-                    .or_default()
-                    .push(alias.alias);
-            }
-            let inventory = store.snapshot_inventory().await?;
-            let snapshots = inventory
-                .ready_snapshots
-                .into_iter()
-                .map(|snapshot| {
-                    let aliases = aliases_by_path.remove(&snapshot.path).unwrap_or_default();
-                    promoted_snapshot_json(snapshot, "ready", None, aliases)
-                })
-                .collect::<Vec<_>>();
-            let metadata_only = inventory
-                .metadata_only_snapshots
-                .into_iter()
-                .map(|record| {
-                    let aliases = aliases_by_path
-                        .remove(&record.snapshot.path)
-                        .unwrap_or_default();
-                    snapshot_record_json(record, aliases)
-                })
-                .collect::<Vec<_>>();
-            let quarantined = inventory
-                .quarantined_snapshots
-                .into_iter()
-                .map(quarantined_snapshot_json)
-                .collect::<Vec<_>>();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "snapshots": snapshots,
-                    "metadata_only_snapshots": metadata_only,
-                    "quarantined_snapshots": quarantined,
-                }))?
-            );
+            let value = model_cli::model_list_json(&root).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         #[cfg(feature = "diagnostics")]
         "inspect" => {
             let snapshot_path = args.get(1).ok_or_else(|| {
                 anyhow::anyhow!("usage: llm-engine model inspect <snapshot-path>")
             })?;
-            if let Ok(quarantine) = ModelStore::inspect_quarantined_snapshot(snapshot_path).await {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&quarantined_snapshot_json(quarantine))?
-                );
-                return Ok(());
-            }
-            match ModelStore::inspect_snapshot_readiness(snapshot_path).await {
-                Ok(record) => {
-                    let snapshot = record.snapshot;
-                    let total_bytes = snapshot
-                        .manifest
-                        .files
-                        .iter()
-                        .map(|file| file.size)
-                        .sum::<u64>();
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "status": record.readiness.status(),
-                            "readiness_reason": record.readiness.reason(),
-                            "snapshot_path": snapshot.path,
-                            "repo_id": snapshot.manifest.repo_id,
-                            "requested_revision": snapshot.manifest.requested_revision,
-                            "resolved_commit": snapshot.manifest.resolved_commit,
-                            "profile": snapshot.manifest.profile,
-                            "family": snapshot.manifest.family,
-                            "loader": snapshot.manifest.loader,
-                            "quantization": snapshot.manifest.quantization,
-                            "manifest_digest": snapshot.manifest_digest,
-                            "files": snapshot.manifest.files.len(),
-                            "total_bytes": total_bytes,
-                        }))?
-                    );
-                }
-                Err(snapshot_err) => return Err(snapshot_err.into()),
-            }
+            let value = model_cli::model_inspect_json(snapshot_path).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         #[cfg(not(feature = "diagnostics"))]
         "inspect" => diagnostics_feature_required("inspect")?,
@@ -611,46 +532,15 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
             let snapshot_path = args
                 .get(1)
                 .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model verify <snapshot-path>"))?;
-            let verification = ModelStore::verify_runnable_snapshot(snapshot_path).await?;
-            ModelStore::mark_snapshot_used(snapshot_path).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "ok",
-                    "snapshot_path": verification.snapshot.path,
-                    "repo_id": verification.snapshot.manifest.repo_id,
-                    "resolved_commit": verification.snapshot.manifest.resolved_commit,
-                    "manifest_digest": verification.snapshot.manifest_digest,
-                    "verified_files": verification.verified_files,
-                    "verified_bytes": verification.verified_bytes,
-                }))?
-            );
+            let value = model_cli::model_verify_json(snapshot_path).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         "prune" => {
-            let dry_run = has_flag(&args, "--dry-run");
-            let confirmed = has_flag(&args, "--confirm-delete");
-            match (dry_run, confirmed) {
-                (true, false) | (false, true) => {}
-                (false, false) => {
-                    anyhow::bail!("llm-engine model prune requires --dry-run or --confirm-delete")
-                }
-                (true, true) => anyhow::bail!(
-                    "llm-engine model prune accepts only one of --dry-run or --confirm-delete"
-                ),
-            }
+            let mode = model_cli::prune_mode_from_args(&args)?;
             let root = model_home_from_args(&args);
-            let store = ModelStore::new(root);
-            let policy = prune_policy_from_args(&args)?;
-            let plan = store.prune_plan(policy).await?;
-            let report = if confirmed {
-                Some(store.apply_prune_plan(&plan).await?)
-            } else {
-                None
-            };
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&prune_output_json(dry_run, &plan, report.as_ref()))?
-            );
+            let policy = model_cli::prune_policy_from_args(&args)?;
+            let value = model_cli::model_prune_json(&root, policy, mode).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         #[cfg(feature = "diagnostics")]
         "inspect-safetensors" => {
@@ -1031,21 +921,18 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         #[cfg(not(feature = "diagnostics"))]
         "inspect-qwen-input" => diagnostics_feature_required("inspect-qwen-input")?,
         "plan" | "pull" => {
-            let repo = args
-                .get(1)
-                .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model {subcommand} <repo>"))?;
-            let revision = flag_value(&args, "--revision").unwrap_or("main");
-            let profile_name = flag_value(&args, "--profile").unwrap_or("qwen36-safetensors-bf16");
-            let metadata_only = args.iter().any(|arg| arg == "--metadata-only");
-            let profile = ModelProfile::builtin(profile_name)
-                .ok_or_else(|| anyhow::anyhow!("unknown model profile `{profile_name}`"))?;
-            let repo_id = HubRepoId::model(repo)?;
+            let options = model_cli::model_plan_options_from_args(subcommand, &args)?;
             let token = std::env::var("HF_TOKEN").ok();
             let client = HubClient::default();
             let mut plan = client
-                .plan_model(repo_id, revision, profile, token.as_deref())
+                .plan_model(
+                    options.repo_id,
+                    &options.revision,
+                    options.profile,
+                    token.as_deref(),
+                )
                 .await?;
-            if metadata_only {
+            if options.metadata_only {
                 plan = plan.metadata_only();
             }
             if subcommand == "plan" {
@@ -1105,153 +992,6 @@ fn model_home_from_args(args: &[String]) -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("LLM_MODEL_HOME").map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::path::PathBuf::from(".llm-models"))
-}
-
-fn prune_policy_from_args(args: &[String]) -> anyhow::Result<PrunePolicy> {
-    let mut policy = PrunePolicy::default();
-    if let Some(days) = flag_value(args, "--older-than-days") {
-        let days = days.parse::<u64>()?;
-        let seconds = days
-            .checked_mul(24 * 60 * 60)
-            .ok_or_else(|| anyhow::anyhow!("--older-than-days is too large"))?;
-        policy.keep_recent = Some(std::time::Duration::from_secs(seconds));
-    }
-    if let Some(count) = flag_value(args, "--keep-min-per-profile") {
-        policy.keep_min_per_profile = count.parse::<usize>()?;
-    }
-    if let Some(profile) = flag_value(args, "--profile") {
-        policy.profile = Some(profile.to_owned());
-    }
-    if let Some(now) = flag_value(args, "--now") {
-        policy.now = chrono::DateTime::parse_from_rfc3339(now)?.with_timezone(&chrono::Utc);
-    }
-    Ok(policy)
-}
-
-fn prune_output_json(dry_run: bool, plan: &PrunePlan, report: Option<&PruneReport>) -> Value {
-    let candidates = plan
-        .candidates
-        .iter()
-        .map(prune_candidate_json)
-        .collect::<Vec<_>>();
-    let protected = plan
-        .protected
-        .iter()
-        .map(protected_snapshot_json)
-        .collect::<Vec<_>>();
-    let deleted = report
-        .map(|report| {
-            report
-                .deleted
-                .iter()
-                .map(deleted_snapshot_json)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let quarantined = report
-        .map(|report| {
-            report
-                .quarantined
-                .iter()
-                .cloned()
-                .map(quarantined_snapshot_json)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let deleted_bytes = report.map_or(0, |report| report.deleted_bytes);
-    serde_json::json!({
-        "dry_run": dry_run,
-        "confirmed": report.is_some(),
-        "snapshots": plan.scanned_snapshots,
-        "total_bytes": plan.total_bytes,
-        "reclaimable_bytes": plan.reclaimable_bytes,
-        "deleted_bytes": deleted_bytes,
-        "candidates": candidates,
-        "protected": protected,
-        "deleted": deleted,
-        "quarantined": quarantined,
-    })
-}
-
-fn prune_candidate_json(candidate: &PruneCandidate) -> Value {
-    serde_json::json!({
-        "path": path_string(&candidate.path),
-        "repo_id": &candidate.repo_id,
-        "resolved_commit": &candidate.resolved_commit,
-        "profile": &candidate.profile,
-        "manifest_digest": &candidate.manifest_digest,
-        "bytes": candidate.bytes,
-        "last_used_at": candidate.last_used_at,
-        "aliases": &candidate.aliases,
-        "would_delete": true,
-    })
-}
-
-fn protected_snapshot_json(snapshot: &ProtectedSnapshot) -> Value {
-    serde_json::json!({
-        "path": path_string(&snapshot.path),
-        "repo_id": &snapshot.repo_id,
-        "resolved_commit": &snapshot.resolved_commit,
-        "profile": &snapshot.profile,
-        "manifest_digest": &snapshot.manifest_digest,
-        "bytes": snapshot.bytes,
-        "last_used_at": snapshot.last_used_at,
-        "aliases": &snapshot.aliases,
-        "reasons": &snapshot.reasons,
-        "would_delete": false,
-    })
-}
-
-fn deleted_snapshot_json(snapshot: &DeletedSnapshot) -> Value {
-    serde_json::json!({
-        "path": path_string(&snapshot.path),
-        "bytes": snapshot.bytes,
-    })
-}
-
-fn snapshot_record_json(record: SnapshotRecord, aliases: Vec<String>) -> Value {
-    let reason = record.readiness.reason().map(str::to_owned);
-    let status = record.readiness.status();
-    promoted_snapshot_json(record.snapshot, status, reason, aliases)
-}
-
-fn promoted_snapshot_json(
-    snapshot: PromotedSnapshot,
-    status: &str,
-    reason: Option<String>,
-    aliases: Vec<String>,
-) -> Value {
-    serde_json::json!({
-        "status": status,
-        "path": path_string(&snapshot.path),
-        "repo_id": snapshot.manifest.repo_id,
-        "requested_revision": snapshot.manifest.requested_revision,
-        "resolved_commit": snapshot.manifest.resolved_commit,
-        "profile": snapshot.manifest.profile,
-        "family": snapshot.manifest.family,
-        "loader": snapshot.manifest.loader,
-        "quantization": snapshot.manifest.quantization,
-        "manifest_digest": snapshot.manifest_digest,
-        "files": snapshot.manifest.files.len(),
-        "readiness_reason": reason,
-        "aliases": aliases,
-    })
-}
-
-fn quarantined_snapshot_json(snapshot: QuarantinedSnapshot) -> Value {
-    serde_json::json!({
-        "status": "quarantined",
-        "path": path_string(&snapshot.path),
-        "original_path": path_string(&snapshot.metadata.original_path),
-        "reason": snapshot.metadata.reason,
-        "quarantined_at": snapshot.metadata.quarantined_at,
-        "manifest_digest": snapshot.metadata.manifest_digest,
-        "bytes": snapshot.bytes,
-    })
-}
-
-fn path_string(path: &Path) -> String {
-    path.display().to_string()
 }
 
 #[cfg(feature = "diagnostics")]

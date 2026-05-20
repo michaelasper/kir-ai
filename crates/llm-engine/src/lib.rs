@@ -1,6 +1,7 @@
 mod fs_util;
 #[cfg(feature = "mlx")]
 mod mlx;
+pub mod model_cli;
 #[cfg(feature = "native-gemma")]
 mod native_gemma;
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
