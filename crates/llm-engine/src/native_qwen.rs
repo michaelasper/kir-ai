@@ -216,7 +216,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         request: &BackendRequest,
     ) -> Result<Vec<u32>, BackendError> {
         tokenizer
-            .encode(&request.prompt, false)
+            .encode(request.prompt(), false)
             .map_err(|err| BackendError::other(err.to_string()))
     }
 

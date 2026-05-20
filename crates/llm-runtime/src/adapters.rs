@@ -97,7 +97,7 @@ pub(crate) trait ChatAdapter {
         self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> Option<BackendChatContext>;
+    ) -> BackendChatContext;
     fn render_prompt(
         self,
         messages: &[ChatMessage],
@@ -122,10 +122,10 @@ impl ChatAdapter for SelectedChatAdapter {
         self,
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
-    ) -> Option<BackendChatContext> {
-        (!messages.is_empty()).then(|| BackendChatContext {
+    ) -> BackendChatContext {
+        BackendChatContext {
             messages: messages.iter().map(backend_chat_message).collect(),
-        })
+        }
     }
 
     fn render_prompt(

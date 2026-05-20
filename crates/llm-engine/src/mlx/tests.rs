@@ -650,20 +650,15 @@ async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     let metrics = backend.metrics.clone();
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::TopP {
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::TopP {
                 temperature: 0.7,
                 top_p: 0.9,
             },
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -731,24 +726,23 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
     .await
     .expect("backend opens");
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "read a file".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "read a file",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("read Cargo.toml")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            Some(llm_backend::BackendToolChoice::RequiredFunction(
                 "read_file".to_owned(),
             )),
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
+            false,
+            BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
                 Some(r#"[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]"#.to_owned()),
             ),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -790,17 +784,12 @@ async fn mlx_backend_streaming_completion_requests_include_usage_by_default() {
     .expect("backend opens");
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -832,19 +821,18 @@ async fn mlx_backend_streaming_chat_requests_include_usage_by_default() {
     .expect("backend opens");
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate_stream(BackendRequest::chat_completion(
+            "local-mlx",
+            "hello mlx",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("hello mlx")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
-        })
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("chatml/qwen/v1", None),
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -877,17 +865,12 @@ async fn mlx_backend_streaming_requests_omit_usage_when_disabled() {
     .expect("backend opens");
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -925,17 +908,12 @@ async fn mlx_backend_metrics_record_http_errors() {
     let metrics = backend.metrics.clone();
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("HTTP error is surfaced");
 
@@ -968,22 +946,18 @@ async fn mlx_backend_metrics_skip_local_request_build_errors() {
     let metrics = backend.metrics.clone();
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "use lookup".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "use lookup",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("use lookup")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
-                "chatml/qwen/v1",
-                Some("not json".to_owned()),
-            ),
-        })
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("chatml/qwen/v1", Some("not json".to_owned())),
+        ))
         .await
         .expect_err("invalid local request build fails before HTTP");
 
@@ -1017,17 +991,12 @@ async fn mlx_backend_metrics_count_http_status_even_when_error_body_fails() {
     let metrics = backend.metrics.clone();
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("truncated HTTP error body is surfaced");
 
@@ -1058,17 +1027,12 @@ async fn mlx_backend_metrics_record_dropped_streams() {
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
 
-    let mut stream = backend.generate_stream(BackendRequest {
-        model: "local-mlx".to_owned(),
-        prompt: "hello mlx".to_owned(),
-        chat_context: None,
-        max_tokens: Some(12),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: false,
-        cache_context: BackendCacheContext::raw_prompt(),
-    });
+    let mut stream = backend.generate_stream(BackendRequest::raw_completion(
+        "local-mlx",
+        "hello mlx",
+        Some(12),
+        SamplingConfig::Greedy,
+    ));
     let first = stream
         .next()
         .await
@@ -1104,17 +1068,12 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
     backend.metrics = Arc::new(MlxBackendMetrics::default());
     let metrics = backend.metrics.clone();
 
-    let mut stream = backend.generate_stream(BackendRequest {
-        model: "local-mlx".to_owned(),
-        prompt: "hello mlx".to_owned(),
-        chat_context: None,
-        max_tokens: Some(12),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: false,
-        cache_context: BackendCacheContext::raw_prompt(),
-    });
+    let mut stream = backend.generate_stream(BackendRequest::raw_completion(
+        "local-mlx",
+        "hello mlx",
+        Some(12),
+        SamplingConfig::Greedy,
+    ));
     let chunk = stream
         .next()
         .await
@@ -1156,17 +1115,7 @@ async fn mlx_backend_metrics_record_in_flight_cancellations() {
     let cancellation = CancellationToken::new();
 
     let mut stream = backend.generate_stream_with_cancel(
-        BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        },
+        BackendRequest::raw_completion("local-mlx", "hello mlx", Some(12), SamplingConfig::Greedy),
         cancellation.clone(),
     );
     tokio::spawn(async move {
@@ -1206,22 +1155,21 @@ async fn mlx_backend_posts_gemma_structured_messages_to_chat_completion_endpoint
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "<bos><|turn>user\nhello gemma<turn|>\n<|turn>model\n",
+            BackendChatContext {
                 messages: backend_messages(vec![
                     ChatMessage::system("You are Kir."),
                     ChatMessage::user("hello gemma"),
                 ]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::raw_prompt(),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1262,22 +1210,21 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "<bos><|turn>user\nuse lookup<turn|>\n<|turn>model\n",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("use lookup")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template(
                 "gemma/gemma4/v1",
                 Some(r#"[{"type":"function"}]"#.to_owned()),
             ),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1317,27 +1264,26 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "<｜begin▁of▁sentence｜><｜User｜>hello<｜Assistant｜>",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("hello")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            Some(llm_backend::BackendToolChoice::RequiredFunction(
                 "lookup".to_owned(),
             )),
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
+            false,
+            BackendCacheContext::chat_template(
                 "deepseek/chat/v1",
                 Some(
                     r#"[{"type":"function","function":{"name":"lookup","parameters":{}}}]"#
                         .to_owned(),
                 ),
             ),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1372,21 +1318,20 @@ async fn mlx_backend_routes_llama_chat_to_chat_completion_endpoint() {
     .expect("backend opens");
 
     let output = backend
-            .generate(BackendRequest {
-                model: "local-mlx".to_owned(),
-                prompt: "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n".to_owned(),
-                chat_context: Some(BackendChatContext {
-                    messages: backend_messages(vec![ChatMessage::user("hello")]),
-                }),
-                max_tokens: Some(12),
-                sampling: SamplingConfig::Greedy,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: true,
-                cache_context: BackendCacheContext::chat_template("llama3/instruct/v1", None),
-            })
-            .await
-            .expect("mlx generation succeeds");
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("hello")]),
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("llama3/instruct/v1", None),
+        ))
+        .await
+        .expect("mlx generation succeeds");
 
     assert_eq!(output.text, "llama says hi");
     assert_eq!(server.received_path(), "/v1/chat/completions");
@@ -1415,17 +1360,13 @@ async fn mlx_backend_routes_llama_rendered_prompt_fallback_to_completion_endpoin
     let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nlookup rust<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{\"name\":\"lookup\",\"parameters\":{\"query\":\"rust\"}}<|eot_id|><|start_header_id|>ipython<|end_header_id|>\n\n{\"answer\":\"systems\"}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: prompt.to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template("llama3/instruct/v1", None),
-        })
+        .generate(BackendRequest::raw_completion_with_cache_context(
+            "local-mlx",
+            prompt,
+            Some(12),
+            SamplingConfig::Greedy,
+            BackendCacheContext::chat_template("llama3/instruct/v1", None),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1454,19 +1395,18 @@ async fn mlx_backend_posts_json_object_response_format_to_chat_completion_endpoi
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "<|im_start|>user\nreturn json<|im_end|>\n<|im_start|>assistant\n",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("return json")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: true,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
-        })
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            true,
+            BackendCacheContext::chat_template("chatml/qwen/v1", None),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1499,19 +1439,18 @@ async fn mlx_backend_uses_metadata_kwargs_for_request_body_and_fingerprint() {
     )
     .await
     .expect("backend opens");
-    let request = BackendRequest {
-        model: "local-mlx".to_owned(),
-        prompt: "<|im_start|>user\nsay ok<|im_end|>\n<|im_start|>assistant\n".to_owned(),
-        chat_context: Some(BackendChatContext {
+    let request = BackendRequest::chat_completion(
+        "local-mlx",
+        "<|im_start|>user\nsay ok<|im_end|>\n<|im_start|>assistant\n",
+        BackendChatContext {
             messages: backend_messages(vec![ChatMessage::user("say ok")]),
-        }),
-        max_tokens: Some(12),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: true,
-        cache_context: BackendCacheContext::chat_template("chatml/qwen/v1", None),
-    };
+        },
+        Some(12),
+        SamplingConfig::Greedy,
+        None,
+        false,
+        BackendCacheContext::chat_template("chatml/qwen/v1", None),
+    );
     let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("qwen");
 
     let chunks = backend
@@ -1565,19 +1504,18 @@ async fn mlx_backend_uses_gemma_metadata_kwargs_for_request_body_and_fingerprint
     )
     .await
     .expect("backend opens");
-    let request = BackendRequest {
-        model: "local-mlx".to_owned(),
-        prompt: "<bos><|turn>user\nsay ok<turn|>\n<|turn>model\n".to_owned(),
-        chat_context: Some(BackendChatContext {
+    let request = BackendRequest::chat_completion(
+        "local-mlx",
+        "<bos><|turn>user\nsay ok<turn|>\n<|turn>model\n",
+        BackendChatContext {
             messages: backend_messages(vec![ChatMessage::user("say ok")]),
-        }),
-        max_tokens: Some(12),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: true,
-        cache_context: BackendCacheContext::chat_template("gemma/text-it/v1", None),
-    };
+        },
+        Some(12),
+        SamplingConfig::Greedy,
+        None,
+        false,
+        BackendCacheContext::chat_template("gemma/text-it/v1", None),
+    );
     let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("gemma");
 
     let chunks = backend
@@ -1630,17 +1568,12 @@ async fn mlx_backend_strips_control_stop_tokens_from_completion_text() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1666,17 +1599,12 @@ async fn mlx_backend_strips_split_control_stop_tokens_from_stream() {
     .expect("backend opens");
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -1712,17 +1640,12 @@ async fn mlx_backend_strips_gemma_control_stop_tokens_from_completion_text() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello gemma".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello gemma",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1748,17 +1671,12 @@ async fn mlx_backend_strips_llama_control_stop_tokens_from_completion_text() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello llama".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello llama",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -1896,17 +1814,12 @@ async fn mlx_backend_streams_completion_chunks() {
     .await
     .expect("backend opens");
 
-    let mut stream = backend.generate_stream(BackendRequest {
-        model: "local-mlx".to_owned(),
-        prompt: "hello mlx".to_owned(),
-        chat_context: None,
-        max_tokens: Some(12),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: false,
-        cache_context: BackendCacheContext::raw_prompt(),
-    });
+    let mut stream = backend.generate_stream(BackendRequest::raw_completion(
+        "local-mlx",
+        "hello mlx",
+        Some(12),
+        SamplingConfig::Greedy,
+    ));
 
     let first = stream
         .next()
@@ -1949,27 +1862,26 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "read a file".to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "read a file",
+            BackendChatContext {
                 messages: backend_messages(vec![ChatMessage::user("read a file")]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: Some(llm_backend::BackendToolChoice::RequiredFunction(
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            Some(llm_backend::BackendToolChoice::RequiredFunction(
                 "read_file".to_owned(),
             )),
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
+            false,
+            BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
                 Some(
                     r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
                         .to_owned(),
                 ),
             ),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -2008,11 +1920,10 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
     tool_result.name = Some("read_file".to_owned());
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "rendered prompt fallback should not be used for structured MLX chat"
-                .to_owned(),
-            chat_context: Some(BackendChatContext {
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "rendered prompt fallback should not be used for structured MLX chat",
+            BackendChatContext {
                 messages: backend_messages(vec![
                     ChatMessage::user("read src/lib.rs"),
                     ChatMessage::assistant_tool_call(
@@ -2023,20 +1934,19 @@ async fn mlx_backend_posts_lossless_qwen_tool_history_to_chat_completion_endpoin
                     tool_result,
                     ChatMessage::user("summarize what you read"),
                 ]),
-            }),
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::chat_template(
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template(
                 "chatml/qwen/v1",
                 Some(
                     r#"[{"type":"function","function":{"name":"read_file","parameters":{}}}]"#
                         .to_owned(),
                 ),
             ),
-        })
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -2090,17 +2000,12 @@ async fn mlx_backend_accumulates_streamed_tool_call_fragments() {
     let metrics = backend.metrics.clone();
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "read a file".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "read a file",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -2176,17 +2081,12 @@ async fn mlx_backend_streams_qwen_xml_tool_deltas_and_records_first_tool_delta()
     let metrics = backend.metrics.clone();
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "read a file".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "read a file",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -2248,17 +2148,18 @@ async fn mlx_backend_preserves_structured_gemma_tool_call_response() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "lookup rust".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "lookup rust",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("lookup rust")]),
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("gemma/text-it/v1", None),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -2286,17 +2187,18 @@ async fn mlx_backend_streams_gemma_tool_deltas_without_synthetic_markup() {
     .expect("backend opens");
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "lookup rust".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::chat_completion(
+            "local-mlx",
+            "lookup rust",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("lookup rust")]),
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("gemma/text-it/v1", None),
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -2357,17 +2259,18 @@ async fn mlx_backend_records_zero_output_gemma_stream_success() {
     let metrics = backend.metrics.clone();
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "recall long context".to_owned(),
-            chat_context: None,
-            max_tokens: Some(64),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::chat_completion(
+            "local-mlx",
+            "recall long context",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("recall long context")]),
+            },
+            Some(64),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("gemma/text-it/v1", None),
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -2410,17 +2313,18 @@ async fn mlx_backend_preserves_structured_deepseek_tool_call_response() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "lookup metal".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "lookup metal",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("lookup metal")]),
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("deepseek/chat/v1", None),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -2448,17 +2352,18 @@ async fn mlx_backend_preserves_structured_llama_tool_call_response() {
     .expect("backend opens");
 
     let output = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "lookup llama".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: true,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "lookup llama",
+            BackendChatContext {
+                messages: backend_messages(vec![ChatMessage::user("lookup llama")]),
+            },
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template("llama3/instruct/v1", None),
+        ))
         .await
         .expect("mlx generation succeeds");
 
@@ -2483,17 +2388,12 @@ async fn mlx_backend_rejects_model_mismatch_before_http_request() {
     .expect("backend opens");
 
     let err = backend
-        .generate(BackendRequest {
-            model: "other-model".to_owned(),
-            prompt: "hello".to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "other-model",
+            "hello",
+            Some(1),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("model mismatch fails before HTTP");
 
@@ -2636,17 +2536,12 @@ async fn mlx_backend_rejects_sse_without_done_marker() {
     .expect("backend opens");
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello".to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello",
+            Some(1),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("missing DONE fails closed");
 
@@ -2680,17 +2575,12 @@ async fn mlx_slow_backend_per_chunk_timeout_detects_stalled_stream() {
     let metrics = backend.metrics.clone();
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("stalled stream produces timeout error");
 
@@ -2730,17 +2620,12 @@ async fn mlx_slow_backend_read_timeout_allows_initial_prefill_silence() {
     let metrics = backend.metrics.clone();
 
     let chunks = backend
-        .generate_stream(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate_stream(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -2785,17 +2670,12 @@ async fn mlx_slow_backend_request_timeout_detects_delayed_response_headers() {
     let metrics = backend.metrics.clone();
 
     let err = backend
-        .generate(BackendRequest {
-            model: "local-mlx".to_owned(),
-            prompt: "hello mlx".to_owned(),
-            chat_context: None,
-            max_tokens: Some(12),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::raw_prompt(),
-        })
+        .generate(BackendRequest::raw_completion(
+            "local-mlx",
+            "hello mlx",
+            Some(12),
+            SamplingConfig::Greedy,
+        ))
         .await
         .expect_err("delayed response headers produce timeout error");
 

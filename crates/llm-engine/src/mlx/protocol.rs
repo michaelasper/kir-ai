@@ -104,19 +104,15 @@ pub(super) fn mlx_upstream_protocol_for_request(
     metadata: &BackendModelMetadata,
     request: &BackendRequest,
 ) -> MlxUpstreamProtocol {
-    if request.conversation_mode {
-        if request.chat_context.is_none()
-            && matches!(metadata_family(metadata), Some(ModelFamily::Llama))
-        {
-            return MlxUpstreamProtocol::Completions;
-        }
-        return MlxUpstreamProtocol::ChatCompletions;
-    }
-    match metadata_family(metadata) {
-        Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
-        Some(ModelFamily::Qwen) | Some(ModelFamily::DeepSeek) | Some(ModelFamily::Llama) | None => {
-            MlxUpstreamProtocol::Completions
-        }
+    match &request.kind {
+        llm_backend::BackendRequestKind::Chat(_) => MlxUpstreamProtocol::ChatCompletions,
+        llm_backend::BackendRequestKind::RawCompletion(_) => match metadata_family(metadata) {
+            Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
+            Some(ModelFamily::Qwen)
+            | Some(ModelFamily::DeepSeek)
+            | Some(ModelFamily::Llama)
+            | None => MlxUpstreamProtocol::Completions,
+        },
     }
 }
 

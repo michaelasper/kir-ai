@@ -72,7 +72,9 @@ impl ModelBackend for ProtocolTestBackend {
                 render_tool_call(self.family, &name, &arguments),
                 BackendFinishReason::ToolCalls,
             )
-        } else if self.json_object_protocol && request.json_object_mode {
+        } else if self.json_object_protocol
+            && request.as_chat().is_some_and(|chat| chat.json_object_mode)
+        {
             (
                 serde_json::json!({
                     "response": "ok",
@@ -86,7 +88,7 @@ impl ModelBackend for ProtocolTestBackend {
         Ok(BackendOutput {
             completion_tokens: count_tokens(self.family, &text),
             text,
-            prompt_tokens: count_tokens(self.family, &request.prompt),
+            prompt_tokens: count_tokens(self.family, request.prompt()),
             prompt_cached_tokens: None,
             finish_reason,
         })
@@ -110,7 +112,13 @@ fn protocol_test_tool_call(
 ) -> Option<(String, serde_json::Value)> {
     let tools = request_tool_definitions(family, request)?;
     let user = request_last_user_message(family, request);
-    protocol_test_tool_call_from_tools(&user, &tools, request.required_tool_choice.as_ref())
+    protocol_test_tool_call_from_tools(
+        &user,
+        &tools,
+        request
+            .as_chat()
+            .and_then(|chat| chat.required_tool_choice.as_ref()),
+    )
 }
 
 fn request_tool_definitions(
@@ -118,19 +126,19 @@ fn request_tool_definitions(
     request: &BackendRequest,
 ) -> Option<Vec<BackendToolDefinition>> {
     request
-        .cache_context
+        .cache_context()
         .tool_schema
         .as_deref()
         .and_then(|tool_schema| serde_json::from_str(tool_schema).ok())
-        .or_else(|| rendered_tool_definitions(family, &request.prompt))
+        .or_else(|| rendered_tool_definitions(family, request.prompt()))
 }
 
 fn request_last_user_message(family: ModelFamily, request: &BackendRequest) -> String {
     if let Some(content) = request
-        .chat_context
-        .as_ref()
+        .as_chat()
         .and_then(|context| {
             context
+                .chat_context
                 .messages
                 .iter()
                 .rev()
@@ -140,7 +148,7 @@ fn request_last_user_message(family: ModelFamily, request: &BackendRequest) -> S
     {
         return content.to_owned();
     }
-    last_user_message(family, &request.prompt)
+    last_user_message(family, request.prompt())
 }
 
 fn protocol_test_tool_call_from_tools(

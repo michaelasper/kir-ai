@@ -34,7 +34,7 @@ pub(super) fn build_upstream_request(
     let request = match protocol {
         MlxUpstreamProtocol::Completions => client.post(upstream_url).json(&MlxCompletionRequest {
             model: upstream_model,
-            prompt: &request.prompt,
+            prompt: request.prompt(),
             max_tokens: request.max_tokens,
             temperature,
             top_p,
@@ -103,10 +103,15 @@ struct MlxStreamOptions {
 }
 
 fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {
-    if let Some(chat_context) = &request.chat_context {
-        return chat_context.messages.iter().map(mlx_chat_message).collect();
+    if let Some(chat) = request.as_chat() {
+        return chat
+            .chat_context
+            .messages
+            .iter()
+            .map(mlx_chat_message)
+            .collect();
     }
-    vec![ChatMessage::user(request.prompt.clone())]
+    vec![ChatMessage::user(request.prompt().to_owned())]
 }
 
 fn mlx_chat_message(message: &BackendChatMessage) -> ChatMessage {
@@ -151,9 +156,8 @@ fn mlx_tool_call_function(function: &BackendToolCallFunction) -> llm_api::ToolCa
 
 fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendError> {
     request
-        .cache_context
-        .tool_schema
-        .as_deref()
+        .as_chat()
+        .and_then(|chat| chat.cache_context.tool_schema.as_deref())
         .map(|schema| {
             serde_json::from_str::<Value>(schema).map_err(|err| {
                 BackendError::other(format!("MLX tool schema was not valid JSON: {err}"))
@@ -164,8 +168,8 @@ fn mlx_tool_schema(request: &BackendRequest) -> Result<Option<Value>, BackendErr
 
 fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {
     request
-        .required_tool_choice
-        .as_ref()
+        .as_chat()
+        .and_then(|chat| chat.required_tool_choice.as_ref())
         .map(|choice| match choice {
             llm_backend::BackendToolChoice::RequiredAny => Value::String("required".to_owned()),
             llm_backend::BackendToolChoice::RequiredFunction(name) => serde_json::json!({
@@ -179,6 +183,7 @@ fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {
 
 fn mlx_response_format(request: &BackendRequest) -> Option<Value> {
     request
-        .json_object_mode
+        .as_chat()
+        .is_some_and(|chat| chat.json_object_mode)
         .then(|| serde_json::json!({"type": "json_object"}))
 }

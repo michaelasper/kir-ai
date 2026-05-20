@@ -212,9 +212,9 @@ impl ModelBackend for MlxQwenMetadataBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         assert!(
-            request.prompt.contains("<|im_start|>user"),
+            request.prompt().contains("<|im_start|>user"),
             "Qwen adapter should render ChatML prompt: {}",
-            request.prompt
+            request.prompt()
         );
         Ok(BackendOutput {
             text: "hello from mlx".to_owned(),
@@ -248,9 +248,9 @@ impl ModelBackend for MlxGemmaMetadataBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         assert!(
-            request.prompt.contains("<|turn>user\nsay hi<turn|>"),
+            request.prompt().contains("<|turn>user\nsay hi<turn|>"),
             "Gemma adapter should render Gemma 4 prompt: {}",
-            request.prompt
+            request.prompt()
         );
         Ok(BackendOutput {
             text: "hello from gemma<turn|>".to_owned(),
@@ -284,9 +284,9 @@ impl ModelBackend for MlxDeepSeekMetadataBackend {
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         assert!(
-            request.prompt.contains("<｜User｜>say hi<｜Assistant｜>"),
+            request.prompt().contains("<｜User｜>say hi<｜Assistant｜>"),
             "DeepSeek adapter should render DeepSeek prompt: {}",
-            request.prompt
+            request.prompt()
         );
         Ok(BackendOutput {
             text: "hello from deepseek<｜end▁of▁sentence｜>".to_owned(),
@@ -321,10 +321,10 @@ impl ModelBackend for MlxLlamaMetadataBackend {
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
         assert!(
             request
-                .prompt
+                .prompt()
                 .contains("<|start_header_id|>user<|end_header_id|>\n\nsay hi<|eot_id|>"),
             "Llama adapter should render Llama 3 prompt: {}",
-            request.prompt
+            request.prompt()
         );
         Ok(BackendOutput {
             text: "hello from llama<|eot_id|>".to_owned(),

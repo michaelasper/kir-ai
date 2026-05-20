@@ -47,9 +47,7 @@ async fn runtime_preserves_structured_chat_context_when_tools_are_declared() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
-    let chat_context = observed
-        .chat_context
-        .expect("structured chat context is available for MLX chat sidecars");
+    let chat_context = &observed.as_chat().expect("chat request kind").chat_context;
     assert_eq!(chat_context.messages.len(), 1);
     assert_eq!(chat_context.messages[0].role, BackendChatRole::User);
     assert_eq!(
@@ -58,7 +56,7 @@ async fn runtime_preserves_structured_chat_context_when_tools_are_declared() {
     );
     assert!(
         observed
-            .cache_context
+            .cache_context()
             .tool_schema
             .as_deref()
             .is_some_and(|schema| schema.contains("lookup"))
@@ -465,9 +463,7 @@ async fn runtime_preserves_chat_context_when_tool_messages_are_present() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
-    let chat_context = observed
-        .chat_context
-        .expect("structured chat context must be present even when tool messages exist");
+    let chat_context = &observed.as_chat().expect("chat request kind").chat_context;
     assert_eq!(
         chat_context.messages.len(),
         5,

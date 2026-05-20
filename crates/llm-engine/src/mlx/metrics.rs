@@ -371,14 +371,16 @@ pub(super) fn mlx_request_fingerprint(
     json!({
         "protocol": mlx_protocol_label(protocol),
         "stream": stream,
-        "cache_key": request.cache_context.key.as_str(),
-        "prompt_hash": hash_str(&request.prompt),
-        "tool_schema_hash": request.cache_context.tool_schema.as_deref().map(hash_str),
+        "cache_key": request.cache_context().key.as_str(),
+        "prompt_hash": hash_str(request.prompt()),
+        "tool_schema_hash": request.cache_context().tool_schema.as_deref().map(hash_str),
         "messages_hash": request
-            .chat_context
-            .as_ref()
-            .and_then(|context| hash_json(&context.messages)),
-        "tool_choice_hash": request.required_tool_choice.as_ref().and_then(hash_tool_choice),
+            .as_chat()
+            .and_then(|chat| hash_json(&chat.chat_context.messages)),
+        "tool_choice_hash": request
+            .as_chat()
+            .and_then(|chat| chat.required_tool_choice.as_ref())
+            .and_then(hash_tool_choice),
         "chat_template_kwargs_hash": mlx_effective_chat_template_kwargs(metadata, request)
             .as_ref()
             .and_then(hash_json),

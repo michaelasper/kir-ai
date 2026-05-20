@@ -1054,17 +1054,12 @@ async fn native_qwen_generate_with_cancel_observes_pre_cancelled_token() {
 
     let err = backend
         .generate_with_cancel(
-            BackendRequest {
-                model: crate::DEFAULT_MODEL_ID.to_owned(),
-                prompt: "say hi".to_owned(),
-                chat_context: None,
-                max_tokens: Some(1),
-                sampling: SamplingConfig::Greedy,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: false,
-                cache_context: BackendCacheContext::default(),
-            },
+            BackendRequest::raw_completion(
+                crate::DEFAULT_MODEL_ID,
+                "say hi",
+                Some(1),
+                SamplingConfig::Greedy,
+            ),
             cancellation,
         )
         .await
@@ -1091,17 +1086,12 @@ async fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut stream = backend.generate_stream_with_cancel(
-        BackendRequest {
-            model: crate::DEFAULT_MODEL_ID.to_owned(),
-            prompt: "say hi".to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::default(),
-        },
+        BackendRequest::raw_completion(
+            crate::DEFAULT_MODEL_ID,
+            "say hi",
+            Some(1),
+            SamplingConfig::Greedy,
+        ),
         cancellation,
     );
     let err = stream
@@ -1846,17 +1836,7 @@ fn native_qwen_test_backend(
 }
 
 fn native_qwen_test_request(model: &str) -> BackendRequest {
-    BackendRequest {
-        model: model.to_owned(),
-        prompt: "test".to_owned(),
-        chat_context: None,
-        max_tokens: Some(1),
-        sampling: SamplingConfig::Greedy,
-        required_tool_choice: None,
-        json_object_mode: false,
-        conversation_mode: false,
-        cache_context: BackendCacheContext::default(),
-    }
+    BackendRequest::raw_completion(model, "test", Some(1), SamplingConfig::Greedy)
 }
 fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamespace {
     NativeQwenPrefixCacheNamespace {

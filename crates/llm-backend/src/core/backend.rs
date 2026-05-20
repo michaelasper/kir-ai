@@ -11,13 +11,124 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendRequest {
     pub model: String,
-    pub prompt: String,
-    pub chat_context: Option<BackendChatContext>,
     pub max_tokens: Option<u32>,
     pub sampling: SamplingConfig,
+    pub kind: BackendRequestKind,
+}
+
+impl BackendRequest {
+    pub fn raw_completion(
+        model: impl Into<String>,
+        prompt: impl Into<String>,
+        max_tokens: Option<u32>,
+        sampling: SamplingConfig,
+    ) -> Self {
+        Self::raw_completion_with_cache_context(
+            model,
+            prompt,
+            max_tokens,
+            sampling,
+            BackendCacheContext::raw_prompt(),
+        )
+    }
+
+    pub fn raw_completion_with_cache_context(
+        model: impl Into<String>,
+        prompt: impl Into<String>,
+        max_tokens: Option<u32>,
+        sampling: SamplingConfig,
+        cache_context: BackendCacheContext,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            max_tokens,
+            sampling,
+            kind: BackendRequestKind::RawCompletion(BackendCompletionRequest {
+                prompt: prompt.into(),
+                cache_context,
+            }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn chat_completion(
+        model: impl Into<String>,
+        prompt: impl Into<String>,
+        chat_context: BackendChatContext,
+        max_tokens: Option<u32>,
+        sampling: SamplingConfig,
+        required_tool_choice: Option<BackendToolChoice>,
+        json_object_mode: bool,
+        cache_context: BackendCacheContext,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            max_tokens,
+            sampling,
+            kind: BackendRequestKind::Chat(BackendChatRequest {
+                prompt: prompt.into(),
+                chat_context,
+                required_tool_choice,
+                json_object_mode,
+                cache_context,
+            }),
+        }
+    }
+
+    pub fn prompt(&self) -> &str {
+        match &self.kind {
+            BackendRequestKind::RawCompletion(request) => &request.prompt,
+            BackendRequestKind::Chat(request) => &request.prompt,
+        }
+    }
+
+    pub fn cache_context(&self) -> &BackendCacheContext {
+        match &self.kind {
+            BackendRequestKind::RawCompletion(request) => &request.cache_context,
+            BackendRequestKind::Chat(request) => &request.cache_context,
+        }
+    }
+
+    pub fn cache_context_mut(&mut self) -> &mut BackendCacheContext {
+        match &mut self.kind {
+            BackendRequestKind::RawCompletion(request) => &mut request.cache_context,
+            BackendRequestKind::Chat(request) => &mut request.cache_context,
+        }
+    }
+
+    pub fn as_raw_completion(&self) -> Option<&BackendCompletionRequest> {
+        match &self.kind {
+            BackendRequestKind::RawCompletion(request) => Some(request),
+            BackendRequestKind::Chat(_) => None,
+        }
+    }
+
+    pub fn as_chat(&self) -> Option<&BackendChatRequest> {
+        match &self.kind {
+            BackendRequestKind::RawCompletion(_) => None,
+            BackendRequestKind::Chat(request) => Some(request),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendRequestKind {
+    RawCompletion(BackendCompletionRequest),
+    Chat(BackendChatRequest),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendCompletionRequest {
+    pub prompt: String,
+    pub cache_context: BackendCacheContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendChatRequest {
+    pub prompt: String,
+    pub chat_context: BackendChatContext,
     pub required_tool_choice: Option<BackendToolChoice>,
     pub json_object_mode: bool,
-    pub conversation_mode: bool,
     pub cache_context: BackendCacheContext,
 }
 
@@ -596,17 +707,47 @@ mod tests {
     }
 
     fn backend_request(prompt: &str) -> BackendRequest {
-        BackendRequest {
-            model: "local-qwen36".to_owned(),
-            prompt: prompt.to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::default(),
-        }
+        BackendRequest::raw_completion("local-qwen36", prompt, Some(1), SamplingConfig::Greedy)
+    }
+
+    #[test]
+    fn backend_request_kind_separates_raw_completion_and_chat_fields() {
+        let raw = BackendRequest::raw_completion(
+            "local-qwen36",
+            "hello",
+            Some(1),
+            SamplingConfig::Greedy,
+        );
+        assert!(matches!(raw.kind, BackendRequestKind::RawCompletion(_)));
+        assert!(raw.as_chat().is_none());
+        assert_eq!(raw.prompt(), "hello");
+
+        let chat_context = BackendChatContext {
+            messages: vec![BackendChatMessage {
+                role: BackendChatRole::User,
+                content: Some("hello".to_owned()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            }],
+        };
+        let chat = BackendRequest::chat_completion(
+            "local-qwen36",
+            "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n",
+            chat_context,
+            Some(1),
+            SamplingConfig::Greedy,
+            Some(BackendToolChoice::RequiredAny),
+            true,
+            BackendCacheContext::chat_template("chatml/qwen/v1", None),
+        );
+        let chat_request = chat.as_chat().expect("chat request kind");
+        assert_eq!(chat_request.prompt, chat.prompt());
+        assert_eq!(
+            chat_request.required_tool_choice.as_ref(),
+            Some(&BackendToolChoice::RequiredAny)
+        );
+        assert!(chat_request.json_object_mode);
     }
 
     #[test]

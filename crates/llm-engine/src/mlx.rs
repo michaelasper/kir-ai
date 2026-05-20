@@ -247,10 +247,12 @@ impl MlxBackend {
         };
         let (output, chunk_count) = match parse_mlx_completion_body(
             body,
-            &request.prompt,
+            request.prompt(),
             self.control_stop_tokens,
             self.tool_markup,
-            request.cache_context.tool_schema.as_deref(),
+            request
+                .as_chat()
+                .and_then(|chat| chat.cache_context.tool_schema.as_deref()),
         ) {
             Ok(parsed) => parsed,
             Err(err) => {
@@ -318,16 +320,18 @@ impl MlxBackend {
                 request_metrics.record_stream_response_headers();
                 let mut bytes = response.bytes_stream();
                 let mut parser = MlxSseParser::new_streaming(
-                    &request.prompt,
+                    request.prompt(),
                     self.control_stop_tokens,
                     self.tool_markup,
                 );
                 if matches!(self.tool_markup, protocol::MlxToolMarkup::QwenXml) {
                     parser = MlxSseParser::new_streaming_with_tool_schema(
-                        &request.prompt,
+                        request.prompt(),
                         self.control_stop_tokens,
                         self.tool_markup,
-                        request.cache_context.tool_schema.as_deref(),
+                        request
+                            .as_chat()
+                            .and_then(|chat| chat.cache_context.tool_schema.as_deref()),
                     )
                     .inspect_err(|_| {
                         request_metrics.finish_failure(MlxBackendFailureKind::SseParse);

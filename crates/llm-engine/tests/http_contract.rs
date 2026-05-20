@@ -261,9 +261,9 @@ impl ModelBackend for ScriptedChatBackend {
                 self.model_id().to_owned(),
             ));
         }
-        let text = scripted_chat_response(&request.prompt);
+        let text = scripted_chat_response(request.prompt());
         Ok(BackendOutput {
-            prompt_tokens: test_token_count(&request.prompt),
+            prompt_tokens: test_token_count(request.prompt()),
             prompt_cached_tokens: None,
             completion_tokens: test_token_count(&text),
             text,
@@ -333,11 +333,11 @@ impl ModelBackend for FairnessBackend {
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
-        let label = if request.prompt.contains("first-long") {
+        let label = if request.prompt().contains("first-long") {
             "first-long"
-        } else if request.prompt.contains("second-long") {
+        } else if request.prompt().contains("second-long") {
             "second-long"
-        } else if request.prompt.contains("third-short") {
+        } else if request.prompt().contains("third-short") {
             "third-short"
         } else {
             "unknown"

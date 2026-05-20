@@ -250,7 +250,7 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         request: &BackendRequest,
     ) -> Result<Vec<u32>, BackendError> {
         tokenizer
-            .encode(&request.prompt, false)
+            .encode(request.prompt(), false)
             .map_err(|err| BackendError::other(err.to_string()))
     }
 
@@ -532,7 +532,7 @@ impl ModelBackend for NativeGemmaBackend {
 mod tests {
     use super::*;
     use crate::native_text::NativeTextStopTokens;
-    use llm_backend::{BackendCacheContext, LayerKvCache};
+    use llm_backend::LayerKvCache;
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -710,17 +710,12 @@ mod tests {
             .expect("real BF16 Gemma snapshot opens")
             .with_max_new_tokens(1);
         let output = backend
-            .generate(BackendRequest {
-                model: "local-gemma".to_owned(),
-                prompt: "Hello".to_owned(),
-                chat_context: None,
-                max_tokens: Some(1),
-                sampling: SamplingConfig::Greedy,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: false,
-                cache_context: BackendCacheContext::default(),
-            })
+            .generate(BackendRequest::raw_completion(
+                "local-gemma",
+                "Hello",
+                Some(1),
+                SamplingConfig::Greedy,
+            ))
             .await
             .expect("real BF16 Gemma snapshot generates");
 
@@ -729,17 +724,7 @@ mod tests {
     }
 
     fn native_gemma_test_request(model: &str) -> BackendRequest {
-        BackendRequest {
-            model: model.to_owned(),
-            prompt: "hello".to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: BackendCacheContext::default(),
-        }
+        BackendRequest::raw_completion(model, "hello", Some(1), SamplingConfig::Greedy)
     }
 
     fn write_tiny_gemma4_decoder_snapshot(root: &Path) {

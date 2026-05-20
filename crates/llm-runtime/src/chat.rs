@@ -120,23 +120,19 @@ where
             model: request_ref.model.clone(),
         };
         let backend_stream = self.backend.generate_stream_with_cancel(
-            BackendRequest {
-                model: request_ref.model.clone(),
+            BackendRequest::chat_completion(
+                request_ref.model.clone(),
                 prompt,
                 chat_context,
-                max_tokens: request_ref.effective_max_tokens(),
-                sampling: SamplingConfig::from_openai_controls(
-                    request_ref.temperature,
-                    request_ref.top_p,
-                )?,
-                required_tool_choice: required_backend_tool_choice(request_ref),
-                json_object_mode: matches!(
+                request_ref.effective_max_tokens(),
+                SamplingConfig::from_openai_controls(request_ref.temperature, request_ref.top_p)?,
+                required_backend_tool_choice(request_ref),
+                matches!(
                     request_ref.response_format.as_ref(),
                     Some(ResponseFormat::JsonObject)
                 ),
-                conversation_mode: true,
                 cache_context,
-            },
+            ),
             cancellation.clone(),
         );
         let request = request.into_inner();
@@ -194,23 +190,22 @@ where
         let output = self
             .backend
             .generate_with_cancel(
-                BackendRequest {
-                    model: request_ref.model.clone(),
+                BackendRequest::chat_completion(
+                    request_ref.model.clone(),
                     prompt,
                     chat_context,
-                    max_tokens: request_ref.effective_max_tokens(),
-                    sampling: SamplingConfig::from_openai_controls(
+                    request_ref.effective_max_tokens(),
+                    SamplingConfig::from_openai_controls(
                         request_ref.temperature,
                         request_ref.top_p,
                     )?,
                     required_tool_choice,
-                    json_object_mode: matches!(
+                    matches!(
                         request_ref.response_format.as_ref(),
                         Some(ResponseFormat::JsonObject)
                     ),
-                    conversation_mode: true,
                     cache_context,
-                },
+                ),
                 cancellation,
             )
             .await?;

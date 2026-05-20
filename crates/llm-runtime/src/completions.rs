@@ -14,10 +14,7 @@ use futures::{StreamExt, stream::BoxStream};
 use llm_api::{
     ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest, Validated,
 };
-use llm_backend::{
-    BackendCacheContext, BackendError, BackendRequest, BackendStreamChunk, ModelBackend,
-    SamplingConfig,
-};
+use llm_backend::{BackendError, BackendRequest, BackendStreamChunk, ModelBackend, SamplingConfig};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -106,17 +103,12 @@ where
         };
         let request = request.into_inner();
         let backend_stream = self.backend.generate_stream_with_cancel(
-            BackendRequest {
-                model: request.model,
-                prompt: request.prompt,
-                chat_context: None,
-                max_tokens: request.max_tokens,
-                sampling: SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
-                required_tool_choice: None,
-                json_object_mode: false,
-                conversation_mode: false,
-                cache_context: BackendCacheContext::raw_prompt(),
-            },
+            BackendRequest::raw_completion(
+                request.model,
+                request.prompt,
+                request.max_tokens,
+                SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
+            ),
             cancellation.clone(),
         );
         Ok(streaming_completion_stream(
@@ -140,20 +132,12 @@ where
         let output = self
             .backend
             .generate_with_cancel(
-                BackendRequest {
-                    model: model.clone(),
-                    prompt: request.prompt,
-                    chat_context: None,
-                    max_tokens: request.max_tokens,
-                    sampling: SamplingConfig::from_openai_controls(
-                        request.temperature,
-                        request.top_p,
-                    )?,
-                    required_tool_choice: None,
-                    json_object_mode: false,
-                    conversation_mode: false,
-                    cache_context: BackendCacheContext::raw_prompt(),
-                },
+                BackendRequest::raw_completion(
+                    model.clone(),
+                    request.prompt,
+                    request.max_tokens,
+                    SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
+                ),
                 cancellation,
             )
             .await?;

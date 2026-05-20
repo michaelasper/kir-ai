@@ -66,7 +66,7 @@ where
         &self,
         adapter: SelectedChatAdapter,
         request: &llm_api::ChatCompletionRequest,
-    ) -> Result<(BackendCacheContext, String, Option<BackendChatContext>), RuntimeError> {
+    ) -> Result<(BackendCacheContext, String, BackendChatContext), RuntimeError> {
         let effective_tools = self.effective_tools(&request.tools);
         let tool_schema = self.tool_schema_json(&request.tools)?;
         let cache_context = adapter.cache_context(tool_schema);

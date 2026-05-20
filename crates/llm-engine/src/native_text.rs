@@ -339,7 +339,10 @@ impl ModelBackend for NativeTextBackend {
 mod tests {
     use super::*;
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
-    use llm_backend::{BackendStreamProgress, SamplingConfig};
+    use llm_backend::{
+        BackendChatContext, BackendChatMessage, BackendChatRole, BackendStreamProgress,
+        SamplingConfig,
+    };
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
         sync::{
@@ -786,17 +789,12 @@ mod tests {
     }
 
     fn driver_test_request(max_tokens: u32) -> BackendRequest {
-        BackendRequest {
-            model: "model-test".to_owned(),
-            prompt: "test".to_owned(),
-            chat_context: None,
-            max_tokens: Some(max_tokens),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: false,
-            conversation_mode: false,
-            cache_context: llm_backend::BackendCacheContext::default(),
-        }
+        BackendRequest::raw_completion(
+            "model-test",
+            "test",
+            Some(max_tokens),
+            SamplingConfig::Greedy,
+        )
     }
 
     fn driver_for_test<A>(adapter: A) -> NativeTextDriver<A>
@@ -864,22 +862,29 @@ mod tests {
         metadata.repo_id = Some("org/model".to_owned());
         metadata.resolved_commit = Some("abc123".to_owned());
         metadata.profile = Some("profile-a".to_owned());
-        let request = BackendRequest {
-            model: "model-a".to_owned(),
-            prompt: "hello".to_owned(),
-            chat_context: None,
-            max_tokens: Some(1),
-            sampling: SamplingConfig::Greedy,
-            required_tool_choice: None,
-            json_object_mode: true,
-            conversation_mode: true,
-            cache_context: llm_backend::BackendCacheContext::chat_template_with_kwargs(
+        let request = BackendRequest::chat_completion(
+            "model-a",
+            "hello",
+            BackendChatContext {
+                messages: vec![BackendChatMessage {
+                    role: BackendChatRole::User,
+                    content: Some("hello".to_owned()),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                }],
+            },
+            Some(1),
+            SamplingConfig::Greedy,
+            None,
+            true,
+            llm_backend::BackendCacheContext::chat_template_with_kwargs(
                 "chatml/qwen/v1",
                 Some("schema-a".to_owned()),
                 Some(r#"{"enable_thinking":false}"#.to_owned()),
             ),
-        };
-        let expected_cache_key = request.cache_context.key.as_str().to_owned();
+        );
+        let expected_cache_key = request.cache_context().key.as_str().to_owned();
 
         let namespace = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
@@ -901,7 +906,7 @@ mod tests {
         assert_eq!(namespace.tool_schema.as_deref(), Some("schema-a"));
         assert_eq!(
             namespace.request_mode,
-            "conversation=true,json_object=true,required_tool=None"
+            "chat,json_object=true,required_tool=None"
         );
         assert_eq!(namespace.cache_layout_version, 7);
         assert_eq!(namespace.cache_tokens, 64);
@@ -912,7 +917,7 @@ mod tests {
     fn prefix_namespace_identity_changes_with_chat_template_kwargs() {
         let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
         let mut request = driver_test_request(1);
-        request.cache_context = llm_backend::BackendCacheContext::chat_template_with_kwargs(
+        *request.cache_context_mut() = llm_backend::BackendCacheContext::chat_template_with_kwargs(
             "chatml/qwen/v1",
             None,
             Some(r#"{"enable_thinking":false}"#.to_owned()),
@@ -926,7 +931,7 @@ mod tests {
             cache_tokens: 16,
             max_prefill_tokens: 8,
         });
-        request.cache_context = llm_backend::BackendCacheContext::chat_template_with_kwargs(
+        *request.cache_context_mut() = llm_backend::BackendCacheContext::chat_template_with_kwargs(
             "chatml/qwen/v1",
             None,
             Some(r#"{"enable_thinking":true}"#.to_owned()),

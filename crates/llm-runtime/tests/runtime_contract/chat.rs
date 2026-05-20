@@ -269,9 +269,7 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
         .expect("observed request lock")
         .clone()
         .expect("backend request captured");
-    let chat_context = observed
-        .chat_context
-        .expect("structured chat context is carried");
+    let chat_context = &observed.as_chat().expect("chat request kind").chat_context;
     assert_eq!(chat_context.messages.len(), 3);
     assert_eq!(chat_context.messages[0].role, BackendChatRole::System);
     assert_eq!(
@@ -286,7 +284,7 @@ async fn runtime_carries_structured_chat_messages_for_chat_sidecars() {
         Some("previous answer")
     );
     assert!(
-        observed.prompt.contains("<|turn>user\nsay hi"),
+        observed.prompt().contains("<|turn>user\nsay hi"),
         "rendered prompt remains available for native/prompt backends"
     );
 }
@@ -339,7 +337,7 @@ async fn runtime_adapts_tool_schema_to_backend_contract_by_default() {
         }),
     )];
     assert_eq!(
-        observed.cache_context.tool_schema.as_deref(),
+        observed.cache_context().tool_schema.as_deref(),
         Some(
             serde_json::to_string(&backend_tools)
                 .expect("backend tools serialize")
@@ -376,7 +374,8 @@ async fn runtime_qwen_cache_context_includes_no_thinking_template_kwargs() {
         Some(r#"{"enable_thinking":false}"#.to_owned()),
     );
     assert_eq!(
-        observed.cache_context.key, expected.key,
+        observed.cache_context().key.as_str(),
+        expected.key.as_str(),
         "Qwen no-thinking kwargs should participate in the opaque backend cache key"
     );
 }
@@ -409,7 +408,8 @@ async fn runtime_gemma_cache_context_includes_no_thinking_template_kwargs() {
         Some(r#"{"enable_thinking":false}"#.to_owned()),
     );
     assert_eq!(
-        observed.cache_context.key, expected.key,
+        observed.cache_context().key.as_str(),
+        expected.key.as_str(),
         "Gemma no-thinking kwargs should participate in the opaque backend cache key"
     );
 }
@@ -437,7 +437,7 @@ async fn runtime_non_qwen_cache_context_omits_template_kwargs() {
         .clone()
         .expect("backend request captured");
     let expected = BackendCacheContext::chat_template("llama3/instruct/v1", None);
-    assert_eq!(observed.cache_context.key, expected.key);
+    assert_eq!(observed.cache_context().key.as_str(), expected.key.as_str());
 }
 
 #[tokio::test]
@@ -491,25 +491,21 @@ async fn runtime_canonicalizes_tool_schema_when_opted_in() {
         serde_json::to_string(&canonical_tools).expect("canonical tools serialize");
 
     assert_eq!(
-        observed.cache_context.tool_schema.as_deref(),
+        observed.cache_context().tool_schema.as_deref(),
         Some(canonical_json.as_str())
     );
     assert!(
-        observed.prompt.contains(&rendered_canonical_tools),
+        observed.prompt().contains(&rendered_canonical_tools),
         "rendered prompt should use canonicalized effective tools: {}",
-        observed.prompt
+        observed.prompt()
     );
+    let chat = observed.as_chat().expect("chat request kind");
     assert_eq!(
-        observed.required_tool_choice,
+        chat.required_tool_choice,
         Some(BackendToolChoice::RequiredFunction("lookup".to_owned()))
     );
     assert_eq!(
-        observed
-            .chat_context
-            .expect("chat context is preserved")
-            .messages[0]
-            .content
-            .as_deref(),
+        chat.chat_context.messages[0].content.as_deref(),
         Some("lookup rust")
     );
 }

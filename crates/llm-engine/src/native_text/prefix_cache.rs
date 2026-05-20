@@ -69,8 +69,8 @@ pub(crate) fn native_text_prefix_namespace(
         repo_id: context.metadata.repo_id.clone(),
         resolved_commit: context.metadata.resolved_commit.clone(),
         profile: context.metadata.profile.clone(),
-        cache_key: context.request.cache_context.key.as_str().to_owned(),
-        tool_schema: context.request.cache_context.tool_schema.clone(),
+        cache_key: context.request.cache_context().key.as_str().to_owned(),
+        tool_schema: context.request.cache_context().tool_schema.clone(),
         request_mode: native_text_prefix_request_mode(context.request),
         cache_layout_version: context.cache_layout_version,
         cache_tokens: context.cache_tokens,
@@ -79,10 +79,13 @@ pub(crate) fn native_text_prefix_namespace(
 }
 
 pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> String {
-    format!(
-        "conversation={},json_object={},required_tool={:?}",
-        request.conversation_mode, request.json_object_mode, request.required_tool_choice
-    )
+    match request.as_chat() {
+        Some(chat) => format!(
+            "chat,json_object={},required_tool={:?}",
+            chat.json_object_mode, chat.required_tool_choice
+        ),
+        None => "raw_completion".to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
