@@ -53,10 +53,10 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  test-macos:
-    name: Test (macOS)
+  admin-schema-drift:
+    name: Admin Schema Drift
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -76,17 +76,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: macos-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-cargo-schema-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            macos-cargo-test-
+            macos-cargo-schema-
 
-      - name: Run workspace tests
-        run: cargo test --workspace --all-features
+      - name: Generate admin API schemas
+        run: cargo test -p llm-server --all-features --lib generate_admin_api_schemas
 
       - name: Verify API schemas are up-to-date
         run: |
           if [ -n "$(git status --porcelain docs/schemas/admin/)" ]; then
-            echo "Error: API schemas are out of date. Please run 'cargo test -p llm-engine generate_admin_api_schemas' locally and commit the changes."
+            echo "Error: API schemas are out of date. Please run 'cargo test -p llm-server --all-features --lib generate_admin_api_schemas' locally and commit the changes."
             git diff docs/schemas/admin/
             exit 1
           fi

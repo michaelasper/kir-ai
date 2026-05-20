@@ -7,12 +7,60 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUST_TOOLCHAIN: "1.95.0"
 
 permissions:
   contents: write
 
 jobs:
+  nightly-validation:
+    name: Nightly Validation
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-nightly-validation-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-nightly-validation-
+
+      - name: Run nightly north-star gates
+        run: bash scripts/north-star-gates.sh nightly
+
+      - name: Publish nightly gate summary
+        if: always()
+        run: |
+          if [ -f target/north-star-gates/nightly-report.md ]; then
+            cat target/north-star-gates/nightly-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "North-star nightly report was not produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload nightly gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: north-star-nightly-report
+          path: target/north-star-gates/
+          retention-days: 30
+
   nightly-build:
     name: Nightly Build
     runs-on: macos-latest

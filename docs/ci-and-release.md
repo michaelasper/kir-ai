@@ -8,28 +8,66 @@ what each workflow produces, and how releases are cut.
 
 | Workflow | File | Trigger | Purpose | Primary output |
 | --- | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | Pull requests and pushes to `main` | Formatting, build, clippy, workspace tests, installer smoke test, and north-star gates | Gate reports and release-notes preview |
-| Nightly | `.github/workflows/nightly.yml` | Daily schedule and manual dispatch | Full north-star gate profile plus long-context planning and optional live bench gates | Nightly gate report |
+| CI | `.github/workflows/ci.yml` | Pull requests and pushes to `main` | Formatting, clippy, focused admin schema drift validation, release hygiene checks, named north-star product gates, and macOS build packaging | Gate reports, release-notes preview, and build artifact |
+| Nightly | `.github/workflows/nightly.yml` | Daily schedule and manual dispatch | Broad workspace tests, nightly north-star gates, long-context planning, optional live bench gates, and nightly build packaging | Nightly gate report and nightly build artifact |
 | Release | `.github/workflows/release.yml` | `v*.*.*` tags and manual dispatch | Validate tag/version, run release checks, build `llm-engine`, generate notes, publish GitHub release | macOS release archive, SHA-256 file, release notes |
 
 All workflows run on macOS because Metal smoke coverage and Apple Silicon
-serving are first-class project concerns. Actions are pinned by SHA with the
-source major version noted in comments.
+serving are first-class project concerns.
 
 ## CI Jobs
 
-The CI workflow uses separate job names for separate responsibilities:
+The CI workflow uses separate job names for separate responsibilities. It does
+not run `cargo test --workspace` before the north-star gates; the named
+north-star product gates are the PR source of truth for required contract
+coverage.
 
-- `Formatting` runs `cargo fmt --all -- --check`.
-- `Workspace Build` runs `cargo build --workspace`.
-- `Clippy` runs `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-- `Workspace Tests` runs `cargo test --workspace`.
-- `Installer Smoke Test` runs `bash scripts/install-macos.sh --check`.
+- `Static Analysis` runs `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- `Admin Schema Drift` runs `cargo test -p llm-server --all-features --lib generate_admin_api_schemas`, then fails if `docs/schemas/admin/` has uncommitted changes.
+- `Build` runs `cargo build --release --target aarch64-apple-darwin -p llm-engine` and uploads the packaged macOS binary.
 - `North-Star Gate Report` runs versioning, conventional commits, release-note preview generation, and `scripts/north-star-gates.sh ci`.
 
 The north-star gate script writes JSON, Markdown, and per-gate logs under
 `target/north-star-gates/`. CI uploads those reports as artifacts and appends
 the Markdown summary to the workflow step summary.
+
+The PR `ci` north-star profile runs the required product contract gates by
+name:
+
+- `cargo test -p llm-api --test openai_contract`
+- `cargo test -p llm-runtime --test runtime_contract --all-features`
+- `cargo test -p llm-engine --test http_contract --all-features`
+- `cargo test -p llm-engine --test model_cli --all-features`
+- `cargo test -p llm-hub`
+- `cargo test -p llm-models --test family_adapter`
+- Deferred family tokenizer/parser template tests for DeepSeek, Gemma, and Llama.
+- Full tokenizer and tool-parser crate tests.
+
+`cargo test --workspace --all-features` covers those same API, runtime,
+engine, hub, model, tokenizer, and parser suites plus the rest of the
+workspace. That broad validation belongs to nightly and explicit release/deep
+validation, not the PR path.
+
+## Nightly Validation
+
+The nightly workflow has a `Nightly Validation` job that runs
+`scripts/north-star-gates.sh nightly`. The nightly profile first runs
+`workspace_tests` with:
+
+```sh
+cargo test --workspace --all-features
+```
+
+After that broad gate passes, the report records the PR product gates and other
+workspace-covered test gates as `covered` instead of rerunning the same suites.
+That includes the no-progress replay classifier, native backend, and Metal
+smoke test gates. The nightly profile then runs non-workspace gates such as
+long-context dry-run planning and optional live long-context inference gates
+when `LLM_BENCH_ENDPOINT` and `LLM_BENCH_SNAPSHOT` are set.
+
+If `workspace_tests` fails, the covered PR gate rows are marked skipped with a
+reason that broad workspace coverage could not be credited, and the nightly
+report fails because `workspace_tests` is required.
 
 ## Local Validation Tasks
 
@@ -45,6 +83,12 @@ cargo test -p llm-api --test openai_contract
 ```
 
 It intentionally does not run `cargo test --workspace`.
+
+Use `mise run gates-ci` to reproduce the PR north-star product gate report.
+Use `mise run gates-nightly` for the broad nightly profile, including
+`cargo test --workspace --all-features` and the additional nightly-only gates.
+Use `mise run test` when you specifically want broad workspace tests without
+the north-star report.
 
 Use targeted tasks when a change is isolated to one area:
 

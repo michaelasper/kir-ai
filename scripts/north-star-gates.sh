@@ -134,6 +134,7 @@ run_gate() {
     end_seconds="$(date +%s)"
     duration=$((end_seconds - start_seconds))
     append_gate "$name" "passed" "$required" "none" "" "$command" "$duration" "$log_path"
+    return 0
   else
     end_seconds="$(date +%s)"
     duration=$((end_seconds - start_seconds))
@@ -143,6 +144,7 @@ run_gate() {
     if [ "$required" = "true" ]; then
       failures=$((failures + 1))
     fi
+    return 1
   fi
 }
 
@@ -153,6 +155,15 @@ skip_gate() {
   local command="$4"
   echo "==> north-star gate: $name skipped: $reason"
   append_gate "$name" "skipped" "$required" "skipped" "$reason" "$command" 0 ""
+}
+
+covered_gate() {
+  local name="$1"
+  local required="$2"
+  local reason="$3"
+  local command="$4"
+  echo "==> north-star gate: $name covered: $reason"
+  append_gate "$name" "covered" "$required" "covered_by_workspace" "$reason" "$command" 0 ""
 }
 
 run_ci_gates() {
@@ -166,14 +177,59 @@ run_ci_gates() {
   run_gate "tokenizer_parser_contracts" true bash -lc 'cargo test -p llm-tokenizer && cargo test -p llm-tool-parser'
 }
 
-run_nightly_gates() {
-  run_ci_gates
-  run_gate "no_progress_replay_classifiers" true cargo test -p llm-runtime --test runtime_contract no_progress_transcript_replay_fixtures_return_stable_codes
-  run_gate "native_backend_contracts" true cargo test -p llm-backend --tests
+record_workspace_covered_ci_gates() {
+  local reason="covered by workspace_tests (cargo test --workspace --all-features)"
+  covered_gate "protocol_api_contracts" true "$reason" "cargo test -p llm-api --test openai_contract"
+  covered_gate "runtime_agentic_contracts" true "$reason" "cargo test -p llm-runtime --test runtime_contract --all-features"
+  covered_gate "engine_http_contracts" true "$reason" "cargo test -p llm-engine --test http_contract --all-features"
+  covered_gate "engine_model_cli_contracts" true "$reason" "cargo test -p llm-engine --test model_cli --all-features"
+  covered_gate "model_acquisition_contracts" true "$reason" "cargo test -p llm-hub"
+  covered_gate "model_family_backend_profiles" true "$reason" "cargo test -p llm-models --test family_adapter"
+  covered_gate "deferred_family_contracts" true "$reason" "cargo test -p llm-tokenizer --test deepseek_template && cargo test -p llm-tokenizer --test gemma_template && cargo test -p llm-tokenizer --test llama_template && cargo test -p llm-tool-parser --test deepseek_parser && cargo test -p llm-tool-parser --test gemma_parser && cargo test -p llm-tool-parser --test llama_parser"
+  covered_gate "tokenizer_parser_contracts" true "$reason" "cargo test -p llm-tokenizer && cargo test -p llm-tool-parser"
+}
+
+skip_workspace_covered_ci_gates() {
+  local reason="workspace_tests failed before coverage could be credited"
+  skip_gate "protocol_api_contracts" true "$reason" "cargo test -p llm-api --test openai_contract"
+  skip_gate "runtime_agentic_contracts" true "$reason" "cargo test -p llm-runtime --test runtime_contract --all-features"
+  skip_gate "engine_http_contracts" true "$reason" "cargo test -p llm-engine --test http_contract --all-features"
+  skip_gate "engine_model_cli_contracts" true "$reason" "cargo test -p llm-engine --test model_cli --all-features"
+  skip_gate "model_acquisition_contracts" true "$reason" "cargo test -p llm-hub"
+  skip_gate "model_family_backend_profiles" true "$reason" "cargo test -p llm-models --test family_adapter"
+  skip_gate "deferred_family_contracts" true "$reason" "cargo test -p llm-tokenizer --test deepseek_template && cargo test -p llm-tokenizer --test gemma_template && cargo test -p llm-tokenizer --test llama_template && cargo test -p llm-tool-parser --test deepseek_parser && cargo test -p llm-tool-parser --test gemma_parser && cargo test -p llm-tool-parser --test llama_parser"
+  skip_gate "tokenizer_parser_contracts" true "$reason" "cargo test -p llm-tokenizer && cargo test -p llm-tool-parser"
+}
+
+record_workspace_covered_nightly_gates() {
+  local reason="covered by workspace_tests (cargo test --workspace --all-features)"
+  covered_gate "no_progress_replay_classifiers" true "$reason" "cargo test -p llm-runtime --test runtime_contract no_progress_transcript_replay_fixtures_return_stable_codes"
+  covered_gate "native_backend_contracts" true "$reason" "cargo test -p llm-backend --tests"
   if [ "$os_name" = "Darwin" ]; then
-    run_gate "metal_smoke_contracts" true cargo test -p llm-metal --test metal_smoke
+    covered_gate "metal_smoke_contracts" true "$reason" "cargo test -p llm-metal --test metal_smoke"
   else
     skip_gate "metal_smoke_contracts" false "Metal smoke tests require a macOS runner" "cargo test -p llm-metal --test metal_smoke"
+  fi
+}
+
+skip_workspace_covered_nightly_gates() {
+  local reason="workspace_tests failed before coverage could be credited"
+  skip_gate "no_progress_replay_classifiers" true "$reason" "cargo test -p llm-runtime --test runtime_contract no_progress_transcript_replay_fixtures_return_stable_codes"
+  skip_gate "native_backend_contracts" true "$reason" "cargo test -p llm-backend --tests"
+  if [ "$os_name" = "Darwin" ]; then
+    skip_gate "metal_smoke_contracts" true "$reason" "cargo test -p llm-metal --test metal_smoke"
+  else
+    skip_gate "metal_smoke_contracts" false "Metal smoke tests require a macOS runner" "cargo test -p llm-metal --test metal_smoke"
+  fi
+}
+
+run_nightly_gates() {
+  if run_gate "workspace_tests" true cargo test --workspace --all-features; then
+    record_workspace_covered_ci_gates
+    record_workspace_covered_nightly_gates
+  else
+    skip_workspace_covered_ci_gates
+    skip_workspace_covered_nightly_gates
   fi
   run_gate "qwen_long_context_plan" true cargo run -p llm-engine -- bench qwen-long-context --dry-run --profile all --output "$out_dir/qwen-long-context-plan.json"
 

@@ -10,8 +10,8 @@ description = "Check Rust formatting"
 run = "cargo fmt --all --check"
 
 [tasks.test]
-description = "Run all Rust tests"
-run = "cargo test --workspace"
+description = "Run broad Rust workspace tests for nightly/full validation"
+run = "cargo test --workspace --all-features"
 
 [tasks.clippy]
 description = "Run strict Rust lints"
@@ -99,11 +99,11 @@ description = "Run serialized Metal smoke tests"
 run = "cargo test -p llm-metal --test metal_smoke -- --test-threads=1"
 
 [tasks.gates-ci]
-description = "Run fast north-star CI gates with JSON and Markdown reports"
+description = "Run PR north-star product gates with JSON and Markdown reports"
 run = "bash scripts/north-star-gates.sh ci"
 
 [tasks.gates-nightly]
-description = "Run nightly north-star gates with JSON and Markdown reports"
+description = "Run nightly broad validation and north-star gates with JSON and Markdown reports"
 run = "bash scripts/north-star-gates.sh nightly"
 
 [tasks.run]
