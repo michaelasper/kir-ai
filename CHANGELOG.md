@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.5](https://github.com/michaelasper/kir-ai/compare/v1.17.4...v1.17.5) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-203:** normalize native text next-token adapter ([cc59e0f](https://github.com/michaelasper/kir-ai/commit/cc59e0f16adde654814b5b957bb46fd5bef24224))
+
 ## [1.17.4](https://github.com/michaelasper/kir-ai/compare/v1.17.3...v1.17.4) (2026-05-20)
 
 ### Bug Fixes
