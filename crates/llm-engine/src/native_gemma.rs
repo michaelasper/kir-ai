@@ -76,10 +76,7 @@ impl NativeTextPrefixCacheValue for GemmaLayerCache {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;
         caches.iter().fold(hidden_bytes, |total, cache| {
             total.saturating_add(match cache {
-                GemmaLayerCache::Attention(cache) => {
-                    ((cache.key_storage().len() + cache.value_storage().len())
-                        * std::mem::size_of::<f32>()) as u64
-                }
+                GemmaLayerCache::Attention(cache) => cache.resident_bytes(),
             })
         })
     }

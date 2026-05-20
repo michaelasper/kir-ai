@@ -9,6 +9,10 @@ fn next_cache_id() -> u64 {
     NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+fn f32_resident_bytes(values: &[f32]) -> u64 {
+    (values.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KvCacheBudget {
     max_tokens: usize,
@@ -214,6 +218,11 @@ impl LayerKvCache {
 
     pub fn remaining_tokens(&self) -> usize {
         self.max_tokens - self.token_count
+    }
+
+    /// Returns bytes retained by the allocated key/value backing storage.
+    pub fn resident_bytes(&self) -> u64 {
+        f32_resident_bytes(&self.keys).saturating_add(f32_resident_bytes(&self.values))
     }
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
@@ -484,6 +493,12 @@ impl LinearAttentionCache {
 
     pub fn token_count(&self) -> usize {
         self.token_count
+    }
+
+    /// Returns bytes retained by the allocated convolution and recurrent state storage.
+    pub fn resident_bytes(&self) -> u64 {
+        f32_resident_bytes(&self.conv_window)
+            .saturating_add(f32_resident_bytes(&self.recurrent_state))
     }
 
     pub fn conv_window(&self) -> &[f32] {
@@ -803,6 +818,19 @@ mod tests {
     }
 
     #[test]
+    fn layer_kv_cache_resident_bytes_use_allocated_storage() {
+        let mut cache = LayerKvCache::new(3, 2, 2).expect("cache shape is valid");
+
+        assert_eq!(cache.resident_bytes(), 96);
+
+        cache
+            .append(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
+            .expect("token fits");
+        assert_eq!(cache.token_count(), 1);
+        assert_eq!(cache.resident_bytes(), 96);
+    }
+
+    #[test]
     fn linear_attention_cache_tracks_conv_window_and_recurrent_state() {
         let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
 
@@ -940,5 +968,18 @@ mod tests {
 
         let err = LinearAttentionCache::new(0, 3, 1, 2, 2).expect_err("zero kernel is invalid");
         assert_eq!(err, KvCacheError::InvalidShape);
+    }
+
+    #[test]
+    fn linear_attention_cache_resident_bytes_use_allocated_storage() {
+        let mut cache = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("cache shape is valid");
+
+        assert_eq!(cache.resident_bytes(), 40);
+
+        cache
+            .push_conv_input(&[1.0, 2.0, 3.0])
+            .expect("conv input fits");
+        assert_eq!(cache.token_count(), 1);
+        assert_eq!(cache.resident_bytes(), 40);
     }
 }

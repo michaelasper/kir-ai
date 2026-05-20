@@ -63,25 +63,15 @@ fn native_qwen_prefix_cache_metrics() -> &'static NativeQwenPrefixCacheMetrics {
     METRICS.get_or_init(NativeQwenPrefixCacheMetrics::default)
 }
 
-fn native_qwen_prefix_entry_bytes(hidden: &[f32], caches: &[QwenLayerCache]) -> u64 {
-    let hidden_bytes = std::mem::size_of_val(hidden) as u64;
-    caches.iter().fold(hidden_bytes, |total, cache| {
-        total.saturating_add(match cache {
-            QwenLayerCache::Full(cache) => {
-                ((cache.key_storage().len() + cache.value_storage().len())
-                    * std::mem::size_of::<f32>()) as u64
-            }
-            QwenLayerCache::Linear(cache) => {
-                ((cache.conv_window().len() + cache.recurrent_state().len())
-                    * std::mem::size_of::<f32>()) as u64
-            }
-        })
-    })
-}
-
 impl NativeTextPrefixCacheValue for QwenLayerCache {
     fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
-        native_qwen_prefix_entry_bytes(hidden, caches)
+        let hidden_bytes = std::mem::size_of_val(hidden) as u64;
+        caches.iter().fold(hidden_bytes, |total, cache| {
+            total.saturating_add(match cache {
+                QwenLayerCache::Full(cache) => cache.resident_bytes(),
+                QwenLayerCache::Linear(cache) => cache.resident_bytes(),
+            })
+        })
     }
 }
 
