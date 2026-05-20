@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.19.0](https://github.com/michaelasper/kir-ai/compare/v1.18.0...v1.19.0) (2026-05-20)
+
+### Features
+
+* **COR-229:** expose native prefix cache byte limit ([e835904](https://github.com/michaelasper/kir-ai/commit/e835904d3a414790faa233a469fbf87f5c3a44b8))
+
 ## [1.18.0](https://github.com/michaelasper/kir-ai/compare/v1.17.10...v1.18.0) (2026-05-20)
 
 ### Features
