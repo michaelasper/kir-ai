@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.17.7](https://github.com/michaelasper/kir-ai/compare/v1.17.6...v1.17.7) (2026-05-20)
+
+### Bug Fixes
+
+* **COR-205:** remove stale native qwen cfg-test wrappers ([74b29c7](https://github.com/michaelasper/kir-ai/commit/74b29c773c893f4824826e1187ede15e28202a62))
+
 ## [1.17.6](https://github.com/michaelasper/kir-ai/compare/v1.17.5...v1.17.6) (2026-05-20)
 
 ### Bug Fixes
