@@ -12,7 +12,7 @@ use crate::runtime::Runtime;
 use crate::stop::apply_stop_sequences;
 use crate::streaming::{
     CancelOnDrop, ChatCompletionStream, RuntimeChatCompletion, RuntimeCompletionSeed,
-    api_finish_reason, buffered_chat_stream, streaming_chat_stream, usage_from_tokens,
+    api_finish_reason, streaming_chat_stream, usage_from_tokens,
 };
 use crate::tool_call::fill_missing_tool_intent_arguments;
 use chrono::Utc;
@@ -126,36 +126,6 @@ where
             include_usage,
             cancellation,
         ))
-    }
-
-    pub async fn chat_stream_buffered(
-        &self,
-        request: ChatCompletionRequest,
-    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-        self.chat_stream_buffered_with_cancel(request, CancellationToken::new())
-            .await
-    }
-
-    pub async fn chat_stream_buffered_with_cancel(
-        &self,
-        request: ChatCompletionRequest,
-        cancellation: CancellationToken,
-    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-        let request = request.into_validated_with_limits(self.options.request_limits)?;
-        self.chat_stream_buffered_validated_with_cancel(request, cancellation)
-            .await
-    }
-
-    #[doc(hidden)]
-    pub async fn chat_stream_buffered_validated_with_cancel(
-        &self,
-        request: Validated<ChatCompletionRequest>,
-        cancellation: CancellationToken,
-    ) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-        let request = self.ensure_runtime_validated(request)?;
-        let include_usage = request.as_ref().stream_options.include_usage;
-        let completion = self.complete_chat(request, cancellation).await?;
-        buffered_chat_stream(completion, include_usage)
     }
 
     async fn complete_chat(

@@ -15,10 +15,7 @@ use crate::tool_call::{
     request_may_fill_tool_intent_arguments, request_requires_tool_choice,
     structured_tool_delta_without_arguments, tool_call_arguments_delta, tool_call_delta,
 };
-use futures::{
-    StreamExt,
-    stream::{self, BoxStream},
-};
+use futures::{StreamExt, stream::BoxStream};
 use llm_api::{
     ChatCompletionDelta, ChatCompletionRequest, ChatCompletionStreamChoice,
     ChatCompletionStreamResponse, ChatRole, CompletionChoice, CompletionStreamResponse,
@@ -283,38 +280,6 @@ pub(crate) fn api_finish_reason(reason: BackendFinishReason) -> llm_api::FinishR
     }
 }
 
-pub(crate) fn stream_chunk(
-    completion: &RuntimeChatCompletion,
-    delta: ChatCompletionDelta,
-    finish_reason: Option<llm_api::FinishReason>,
-) -> ChatCompletionStreamResponse {
-    ChatCompletionStreamResponse {
-        id: completion.id.clone(),
-        object: "chat.completion.chunk".to_owned(),
-        created: completion.created,
-        model: completion.model.clone(),
-        choices: vec![ChatCompletionStreamChoice {
-            index: 0,
-            delta,
-            finish_reason,
-        }],
-        usage: None,
-    }
-}
-
-pub(crate) fn stream_usage_chunk(
-    completion: &RuntimeChatCompletion,
-) -> ChatCompletionStreamResponse {
-    ChatCompletionStreamResponse {
-        id: completion.id.clone(),
-        object: "chat.completion.chunk".to_owned(),
-        created: completion.created,
-        model: completion.model.clone(),
-        choices: Vec::new(),
-        usage: Some(completion.usage.clone()),
-    }
-}
-
 pub(crate) fn stream_seed_chunk(
     completion: &RuntimeCompletionSeed,
     delta: ChatCompletionDelta,
@@ -361,64 +326,6 @@ pub(crate) fn completion_stream_seed_chunk(
         },
         usage,
     }
-}
-
-pub(crate) fn buffered_chat_stream(
-    completion: RuntimeChatCompletion,
-    include_usage: bool,
-) -> Result<ChatCompletionStream<'static>, RuntimeError> {
-    let mut events = Vec::new();
-    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-        &completion,
-        ChatCompletionDelta {
-            role: Some(ChatRole::Assistant),
-            ..ChatCompletionDelta::default()
-        },
-        None,
-    ))));
-    if !completion.parsed.content.is_empty() {
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-            &completion,
-            ChatCompletionDelta {
-                content: Some(completion.parsed.content.clone()),
-                ..ChatCompletionDelta::default()
-            },
-            None,
-        ))));
-    }
-    for (index, tool_call) in completion.parsed.tool_calls.iter().enumerate() {
-        if index == 0 {
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolArgumentAssemblyComplete,
-            )));
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolIntentFillComplete,
-            )));
-            events.push(Ok(ChatCompletionStreamEvent::Stage(
-                ChatCompletionStreamStage::ToolSchemaValidationComplete,
-            )));
-        }
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-            &completion,
-            ChatCompletionDelta {
-                tool_calls: vec![tool_call_delta(index, tool_call)?],
-                ..ChatCompletionDelta::default()
-            },
-            None,
-        ))));
-    }
-    events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_chunk(
-        &completion,
-        ChatCompletionDelta::default(),
-        Some(completion.finish_reason.clone()),
-    ))));
-    if include_usage {
-        events.push(Ok(ChatCompletionStreamEvent::Chunk(stream_usage_chunk(
-            &completion,
-        ))));
-    }
-    events.push(Ok(ChatCompletionStreamEvent::Complete(completion.usage)));
-    Ok(ChatCompletionStream::new(stream::iter(events).boxed()))
 }
 
 pub(crate) fn streaming_completion_stream<'a>(
