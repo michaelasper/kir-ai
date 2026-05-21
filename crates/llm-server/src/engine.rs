@@ -9,6 +9,7 @@ mod metrics;
 #[cfg(feature = "test-utils")]
 // Security: gated behind non-default feature to prevent production exposure (GH#139).
 mod protocol;
+mod rate_limit;
 mod request;
 mod requests;
 mod router;
@@ -16,7 +17,7 @@ mod scheduler;
 mod state;
 mod streaming;
 
-pub use config::{EngineConfigError, EngineOptions};
+pub use config::{EngineConfigError, EngineOptions, PublicInferenceRateLimit};
 #[cfg(feature = "test-utils")]
 pub use router::build_router_with_protocol_test_backend;
 #[allow(deprecated)]

@@ -57,6 +57,7 @@ Mise tasks:
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
+| `--max-public-inference-requests-per-second` | `usize` | `60` | Global fixed-window rate limit for `/v1/chat/completions` and `/v1/completions`. Values below `1` are rejected. |
 | `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Chat requests use `/v1/chat/completions` with lossless OpenAI message history; legacy text completions use a completions-capable sidecar endpoint when the selected family exposes one. Qwen, DeepSeek, and Llama use `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-prefix-cache-bytes` | `u64` | `536870912` | Per-backend Qwen/Gemma prefix-cache budget. Set `0` to reject stores while generation continues without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when omitted. |
 | `--native-metal-weight-cache-bytes` | `u64` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |

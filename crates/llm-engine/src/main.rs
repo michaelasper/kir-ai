@@ -12,8 +12,9 @@ use llm_backend::{
     qwen_linear_decoder_layer_first_token, qwen_lm_head_top_k,
 };
 use llm_engine::{
-    DEFAULT_MODEL_ID, EngineOptions, SnapshotBackendLoader, SnapshotBackendOptions, model_cli,
-    open_snapshot_backend, parse_snapshot_model_family, router_builder,
+    DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit, SnapshotBackendLoader,
+    SnapshotBackendOptions, model_cli, open_snapshot_backend, parse_snapshot_model_family,
+    router_builder,
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
@@ -77,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
             let canonical_tool_schemas = canonical_tool_schemas_enabled(&serve_args)?;
             let request_limits = request_limits_from_args(&serve_args)?;
+            let public_inference_rate_limit = public_inference_rate_limit_from_args(&serve_args)?;
             let stream_stall_timeout = serve_stream_stall_timeout_from_args(&serve_args)?;
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
@@ -91,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 hub_endpoint,
                 hf_token: std::env::var("HF_TOKEN").ok(),
                 canonical_tool_schemas,
+                public_inference_rate_limit,
                 request_limits,
                 stream_stall_timeout,
                 ..EngineOptions::default()
@@ -316,6 +319,8 @@ Options:
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
+  --max-public-inference-requests-per-second <n>
+                                             Public chat/completion requests per second [default: 60]
   --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
   --admin-token <token>                      Bearer token for admin endpoints
   --model-home <path>                        Model store root
@@ -354,6 +359,20 @@ fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
             "--max-completion-prompt-bytes",
             defaults.completion_prompt_bytes,
         )?,
+    })
+}
+
+fn public_inference_rate_limit_from_args(
+    args: &[String],
+) -> anyhow::Result<PublicInferenceRateLimit> {
+    let defaults = PublicInferenceRateLimit::default();
+    Ok(PublicInferenceRateLimit {
+        max_requests: parse_positive_usize_flag(
+            args,
+            "--max-public-inference-requests-per-second",
+            defaults.max_requests,
+        )?,
+        window: defaults.window,
     })
 }
 
@@ -468,6 +487,42 @@ mod serve_arg_tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn public_inference_rate_limit_defaults_to_60_per_second() {
+        assert_eq!(
+            public_inference_rate_limit_from_args(&args(&[])).expect("default rate limit parses"),
+            PublicInferenceRateLimit {
+                max_requests: 60,
+                window: Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn public_inference_rate_limit_parses_custom_positive_value() {
+        assert_eq!(
+            public_inference_rate_limit_from_args(&args(&[
+                "--max-public-inference-requests-per-second",
+                "7"
+            ]))
+            .expect("custom rate limit parses"),
+            PublicInferenceRateLimit {
+                max_requests: 7,
+                window: Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn public_inference_rate_limit_rejects_zero() {
+        let err = public_inference_rate_limit_from_args(&args(&[
+            "--max-public-inference-requests-per-second",
+            "0",
+        ]))
+        .expect_err("zero rate limit fails");
+        assert!(err.to_string().contains("greater than 0"), "error: {err}");
     }
 
     #[test]

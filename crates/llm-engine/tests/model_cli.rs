@@ -1168,6 +1168,10 @@ fn serve_help_prints_without_backend_validation() {
         "serve help should document configurable completion prompt limits: {stdout}"
     );
     assert!(
+        stdout.contains("--max-public-inference-requests-per-second <n>"),
+        "serve help should document configurable public inference rate limits: {stdout}"
+    );
+    assert!(
         stdout.contains("--stream-stall-timeout <secs>"),
         "serve help should document configurable stream stall timeout: {stdout}"
     );

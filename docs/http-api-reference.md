@@ -477,6 +477,8 @@ Response shape:
 
 ## Error Shape
 
+Public inference endpoints (`/v1/chat/completions` and `/v1/completions`) are rate-limited globally. When the limit is exceeded, the server returns `429`, includes `Retry-After`, and does not parse or validate the request body.
+
 All engine errors use this body shape:
 
 ```json
@@ -498,6 +500,7 @@ Known codes:
 | `invalid_request` | `400` | `request_validation` | `false` |
 | `unsupported_capability` | `400` | `request_validation` | `false` |
 | `model_not_found` | `404` | `model_resolution` | `false` |
+| `rate_limited` | `429` | `rate_limit` | `true` |
 | `backend_execution_failed` | `500` | `decode` | `true` |
 | `cancelled` | `408` | `decode` | `false` |
 | `request_not_found` | `404` | `cancellation` | `false` |

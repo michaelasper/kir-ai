@@ -1,6 +1,7 @@
 use super::{
     admin::ModelStoreUsageCache,
     metrics::RequestCacheObservations,
+    rate_limit::PublicInferenceRateLimiter,
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler},
 };
@@ -27,6 +28,7 @@ pub(super) struct AppState {
     pub(super) generation_phases: Arc<GenerationPhaseMetrics>,
     pub(super) model_scheduler: Arc<ModelScheduler>,
     pub(super) active_requests: ActiveRequestRegistry,
+    pub(super) public_inference_rate_limiter: Arc<PublicInferenceRateLimiter>,
     pub(super) backend_metrics: Arc<dyn ServerBackendMetrics>,
     pub(super) admin_token: Option<Arc<str>>,
     pub(super) allow_unauthenticated_admin: bool,

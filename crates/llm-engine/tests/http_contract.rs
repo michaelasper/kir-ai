@@ -10,7 +10,7 @@ use llm_backend::{
     BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta, BackendToolCallFunctionDelta,
     BackendToolCallType, ModelBackend, ProtocolTestBackend,
 };
-use llm_engine::{EngineOptions, build_router, router_builder};
+use llm_engine::{EngineOptions, PublicInferenceRateLimit, build_router, router_builder};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
 use serde_json::{Value, json};
 use std::{
@@ -33,6 +33,8 @@ mod chat_contract;
 mod completion_contract;
 #[path = "http_contract/core_contract.rs"]
 mod core_contract;
+#[path = "http_contract/rate_limit_contract.rs"]
+mod rate_limit_contract;
 #[path = "http_contract/streaming_contract.rs"]
 mod streaming_contract;
 

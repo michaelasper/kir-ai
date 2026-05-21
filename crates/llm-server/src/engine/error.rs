@@ -126,6 +126,7 @@ pub(super) enum EngineError {
     Runtime(RuntimeError),
     ModelStore(HubError),
     Overloaded(String),
+    RateLimited,
     RequestCancelled {
         phase: &'static str,
         message: &'static str,
@@ -165,6 +166,15 @@ impl IntoResponse for EngineError {
             Self::Overloaded(message) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 EngineErrorBody::new(message, "model_overloaded", "scheduler", true),
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                EngineErrorBody::new(
+                    "public inference rate limit exceeded; retry later",
+                    "rate_limited",
+                    "rate_limit",
+                    true,
+                ),
             ),
             Self::RequestCancelled { phase, message } => (
                 StatusCode::REQUEST_TIMEOUT,

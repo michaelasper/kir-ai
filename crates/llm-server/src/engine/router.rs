@@ -17,16 +17,22 @@ use axum::{
     Router,
     body::Body,
     extract::{DefaultBodyLimit, State},
-    http::{Request, header::HeaderName},
+    http::{
+        Request,
+        header::{HeaderName, RETRY_AFTER},
+    },
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use llm_backend::ModelBackend;
 use llm_hub::HubClient;
 use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::Semaphore;
 
 /// Fails closed because a production router must be constructed with an
@@ -203,7 +209,16 @@ fn build_router_from_parts(
 
 fn router_for_state(state: AppState) -> Router {
     let request_id_state = state.clone();
+    let rate_limit_state = state.clone();
     let json_body_limit = state.request_limits.json_body_bytes;
+    let inference_routes = Router::new()
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/completions", post(completions))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limit_state,
+            enforce_public_inference_rate_limit,
+        ));
+
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
@@ -218,14 +233,40 @@ fn router_for_state(state: AppState) -> Router {
         )
         .route("/admin/metrics", get(admin_metrics))
         .route("/admin/metrics.mlx", get(admin_mlx_metrics))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/completions", post(completions))
+        .merge(inference_routes)
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(json_body_limit))
         .layer(middleware::from_fn_with_state(
             request_id_state,
             attach_request_id_header,
         ))
+}
+
+async fn enforce_public_inference_rate_limit(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    match state.public_inference_rate_limiter.acquire() {
+        Ok(()) => next.run(request).await,
+        Err(retry_after) => rate_limited_response(retry_after),
+    }
+}
+
+fn rate_limited_response(retry_after: Duration) -> Response {
+    let mut response = super::EngineError::RateLimited.into_response();
+    let seconds = retry_after_seconds(retry_after);
+    if let Ok(value) = seconds.to_string().parse() {
+        response.headers_mut().insert(RETRY_AFTER, value);
+    }
+    response
+}
+
+fn retry_after_seconds(duration: Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
+        .max(1)
 }
 
 async fn attach_request_id_header(
@@ -272,6 +313,9 @@ fn engine_state(
             prefill_burst: options.scheduler_prefill_burst.max(1),
         })),
         active_requests: ActiveRequestRegistry::default(),
+        public_inference_rate_limiter: Arc::new(
+            super::rate_limit::PublicInferenceRateLimiter::new(options.public_inference_rate_limit),
+        ),
         backend_metrics,
         admin_token: options.admin_token.map(Arc::from),
         allow_unauthenticated_admin,
