@@ -1244,6 +1244,9 @@ dependencies = [
 [[package]]
 name = "llm-util"
 version = "0.1.0"
+dependencies = [
+ "tracing",
+]
 
 [[package]]
 name = "lock_api"

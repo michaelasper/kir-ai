@@ -39,24 +39,17 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
-    fn poisoned_mutex_lock_panics_instead_of_recovering_inner_state() {
+    fn poisoned_mutex_lock_recovers_inner_state() {
         let mutex = Mutex::new(7_u32);
         let _ = std::panic::catch_unwind(|| {
             let _guard = mutex.lock().expect("test lock");
             panic!("poison test mutex");
         });
 
-        let result = std::panic::catch_unwind(|| {
-            let _guard = mutex.lock_or_panic("test");
-        })
-        .expect_err("poisoned locks must not expose protected state");
-
-        let message = result
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| result.downcast_ref::<&'static str>().copied())
-            .expect("panic message is text");
-        assert!(message.contains("test"));
+        let guard = mutex.lock_or_panic("test");
+        assert_eq!(*guard, 7);
+        drop(guard);
+        assert!(!mutex.is_poisoned());
     }
 
     #[test]
