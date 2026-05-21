@@ -305,8 +305,13 @@ fn has_english_deferred_action_stance(terms: &[String]) -> bool {
         .iter()
         .any(|term| matches!(term.as_str(), "will" | "ll" | "can"));
     let has_action = terms.iter().any(|term| english_deferred_action_term(term));
+    let has_working_on_target = terms.windows(3).any(|window| {
+        window[0] == "working"
+            && window[1] == "on"
+            && matches!(window[2].as_str(), "it" | "this" | "that")
+    });
 
-    terms.iter().any(|term| term == "working")
+    has_working_on_target
         || terms
             .windows(2)
             .any(|window| window[0] == "let" && window[1] == "me")
@@ -336,7 +341,7 @@ fn english_deferred_action_term(term: &str) -> bool {
 fn has_spanish_deferred_action_stance(terms: &[String]) -> bool {
     let has_future_or_modal = terms
         .iter()
-        .any(|term| matches!(term.as_str(), "voy" | "puedo" | "puede"));
+        .any(|term| matches!(term.as_str(), "voy" | "puedo"));
     has_future_or_modal && terms.iter().any(|term| spanish_deferred_action_term(term))
 }
 
@@ -515,6 +520,7 @@ mod tests {
         .unwrap();
 
         assert!(stalled_assistant_turn("I will get started.", &request));
+        assert!(stalled_assistant_turn("Working on it.", &request));
         assert!(stalled_assistant_turn("Voy a empezar.", &request));
     }
 
@@ -564,6 +570,30 @@ mod tests {
         .unwrap();
 
         assert!(!stalled_assistant_turn("It means hello.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_bare_working_translation_answer() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate \"trabajando\" to English."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Working.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_non_first_person_spanish_modal_answer() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate \"can help\" to Spanish."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Puede ayudar.", &request));
     }
 
     #[test]
