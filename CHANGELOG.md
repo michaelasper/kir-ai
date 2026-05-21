@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.5](https://github.com/michaelasper/kir-ai/compare/v1.27.4...v1.27.5) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-352:** saturate token counter updates ([9e7377c](https://github.com/michaelasper/kir-ai/commit/9e7377c2f12bdc6204752b76cc632bb71e5044a7))
+
 ## [1.27.4](https://github.com/michaelasper/kir-ai/compare/v1.27.3...v1.27.4) (2026-05-21)
 
 ### Bug Fixes
