@@ -227,6 +227,56 @@ fn qwen_mlx_tool_normalized_stable_prefix_profile_expands_expected_lanes() {
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_profile_lane_filter_selects_after_expansion() {
+    let snapshot =
+        "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
+    let lanes = parse_lane_specs(&args(&[
+        "--sweep-profile",
+        "qwen-mlx-stable-prefix",
+        "--snapshot",
+        snapshot,
+        "--only-lanes",
+        "kir-stable-prefix",
+    ]))
+    .expect("lane filter applies after profile expansion");
+
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].name, "kir-stable-prefix");
+    assert_eq!(lanes[0].endpoint, "http://127.0.0.1:3000");
+
+    let alias_lanes = parse_lane_specs(&args(&[
+        "--sweep-profile",
+        "qwen-mlx-stable-prefix",
+        "--snapshot",
+        snapshot,
+        "--profile-lanes",
+        "mlx-stable-prefix,kir-stable-prefix",
+    ]))
+    .expect("profile-lanes alias applies");
+    assert_eq!(
+        alias_lanes
+            .iter()
+            .map(|lane| lane.name.as_str())
+            .collect::<Vec<_>>(),
+        ["mlx-stable-prefix", "kir-stable-prefix"]
+    );
+
+    let err = parse_lane_specs(&args(&[
+        "--sweep-profile",
+        "qwen-mlx-stable-prefix",
+        "--snapshot",
+        snapshot,
+        "--only-lanes",
+        "missing-lane",
+    ]))
+    .expect_err("unknown lane filter fails");
+    assert!(
+        err.to_string().contains("missing-lane"),
+        "error should mention missing lane: {err}"
+    );
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_prefill_135k_profile_expands_direct_proxy_pairs() {
     let snapshot =
         "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
@@ -383,7 +433,7 @@ fn qwen_mlx_tool_normalized_lane_spec_parses_mlx_lm_sweep_knobs_and_serializes_m
 
     let report = NormalizedLaneReport::dry_run(
         &parsed_lane,
-        NormalizedRunConfig::new(1, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(1, 1, 128, 1, 0),
         None,
         &NormalizedProbePlan::all(),
     );
@@ -404,7 +454,7 @@ fn qwen_mlx_tool_normalized_lane_spec_parses_tool_parser_metadata() {
 
     let report = NormalizedLaneReport::dry_run(
         &parsed_lane,
-        NormalizedRunConfig::new(0, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(0, 1, 128, 1, 0),
         None,
         &NormalizedProbePlan::all(),
     );
@@ -414,7 +464,7 @@ fn qwen_mlx_tool_normalized_lane_spec_parses_tool_parser_metadata() {
     let defaulted = lane("name=json,endpoint=http://127.0.0.1:3000,model=local-qwen36");
     let value = serde_json::to_value(NormalizedLaneReport::dry_run(
         &defaulted,
-        NormalizedRunConfig::new(0, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(0, 1, 128, 1, 0),
         None,
         &NormalizedProbePlan::all(),
     ))
@@ -504,7 +554,7 @@ fn qwen_mlx_tool_normalized_model_addressing_controls_effective_request_model_id
 
     let report = NormalizedLaneReport::dry_run(
         &default_model,
-        NormalizedRunConfig::new(1, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(1, 1, 128, 1, 0),
         None,
         &NormalizedProbePlan::all(),
     );
@@ -536,7 +586,7 @@ fn qwen_mlx_tool_normalized_lane_can_pin_launched_model_identity() {
 
     let report = NormalizedLaneReport::dry_run(
         &lane,
-        NormalizedRunConfig::new(0, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(0, 1, 128, 1, 0),
         None,
         &NormalizedProbePlan::all(),
     );
@@ -933,7 +983,7 @@ fn qwen_mlx_tool_normalized_chat_completions_url_accepts_openai_base_with_or_wit
 
 #[test]
 fn qwen_mlx_tool_normalized_cache_phase_plan_excludes_warmups_from_measured_samples() {
-    let plan = phase_plan(2, 3);
+    let plan = phase_plan(&CachePhase::all(), 2, 3);
     let measured = plan
         .iter()
         .filter(|run| run.kind == PlannedRunKind::Measured)
@@ -996,12 +1046,45 @@ fn qwen_mlx_tool_normalized_cache_phase_plan_excludes_warmups_from_measured_samp
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_cache_phase_flag_selects_warm_phases() {
+    let phases = parse_cache_phases_flag(&args(&[
+        "--cache-phases",
+        "warm_same_prompt,warm_same_tool_schema",
+    ]))
+    .expect("cache phases parse");
+
+    assert_eq!(
+        phases,
+        vec![CachePhase::WarmSamePrompt, CachePhase::WarmSameToolSchema]
+    );
+    assert_eq!(
+        phase_plan(&phases, 1, 1)
+            .iter()
+            .map(|run| (run.kind, run.phase))
+            .collect::<Vec<_>>(),
+        vec![
+            (PlannedRunKind::Warmup, CachePhase::WarmSamePrompt),
+            (PlannedRunKind::Measured, CachePhase::WarmSamePrompt),
+            (PlannedRunKind::Warmup, CachePhase::WarmSameToolSchema),
+            (PlannedRunKind::Measured, CachePhase::WarmSameToolSchema),
+        ]
+    );
+
+    let err = parse_cache_phases_flag(&args(&["--cache-phases", "warm_same_prompt,coldish"]))
+        .expect_err("unknown cache phase fails");
+    assert!(
+        err.to_string().contains("coldish"),
+        "error should mention unknown phase: {err}"
+    );
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_concurrent_phase_plan_preserves_sample_and_request_indexes() {
     assert_eq!(effective_concurrent_samples(1, 2, 0), 0);
     assert_eq!(effective_concurrent_samples(3, 2, 0), 2);
     assert_eq!(effective_concurrent_samples(1, 2, 4), 4);
 
-    let plan = concurrent_phase_plan(3, 2);
+    let plan = concurrent_phase_plan(&CachePhase::all(), 3, 2);
 
     assert_eq!(plan.len(), 18);
     assert!(plan.iter().all(|run| run.kind == PlannedRunKind::Measured));
@@ -1019,6 +1102,23 @@ fn qwen_mlx_tool_normalized_concurrent_phase_plan_preserves_sample_and_request_i
             (Some(1), Some(1)),
             (Some(1), Some(2)),
         ]
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_stable_prefix_smoke_uses_single_probe() {
+    let suite = parse_probe_suite_flag(&args(&["--probe-suite", "stable-prefix-smoke"]), None)
+        .expect("stable prefix smoke parses");
+
+    assert_eq!(suite, NormalizedProbeSuite::StablePrefixSmoke);
+    assert_eq!(suite.name(), "stable_prefix_smoke");
+    assert_eq!(
+        suite.probes(),
+        vec![NormalizedProbePlan::new(
+            NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        )]
     );
 }
 
@@ -1053,7 +1153,7 @@ fn qwen_mlx_tool_normalized_focused_agentic_gate_uses_small_probe_plan() {
     let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen");
     let report = NormalizedLaneReport::dry_run(
         &lane,
-        NormalizedRunConfig::new(0, 1, 128, 1, 0),
+        &NormalizedRunConfig::new(0, 1, 128, 1, 0),
         None,
         &probes,
     );
@@ -1063,6 +1163,98 @@ fn qwen_mlx_tool_normalized_focused_agentic_gate_uses_small_probe_plan() {
             .samples
             .iter()
             .all(|sample| sample.case != "json_object")
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_smoke_plan_summary_counts_warmups_and_tokens() {
+    let lanes = vec![
+        lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-a"),
+        lane("name=proxy,endpoint=http://127.0.0.1:3000,model=qwen-b"),
+    ];
+    let probes = NormalizedProbeSuite::StablePrefixSmoke.probes();
+    let run_config = NormalizedRunConfig::new(1, 1, 135_000, 1, 0)
+        .with_cache_phases(vec![CachePhase::WarmSamePrompt]);
+
+    let summary = normalized_plan_summary(&lanes, &probes, &run_config);
+
+    assert_eq!(summary.probe_count, 1);
+    assert_eq!(summary.lane_count, 2);
+    assert_eq!(summary.warmup_requests, 2);
+    assert_eq!(summary.measured_requests, 2);
+    assert_eq!(summary.total_http_requests, 4);
+    assert_eq!(summary.planned_prompt_token_budget, 540_000);
+    assert_eq!(summary.cache_phases, vec!["warm_same_prompt"]);
+    assert_eq!(summary.lanes, vec!["direct", "proxy"]);
+    assert_eq!(summary.probes[0].case, "warm_prefix_repeated_turn_stream");
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_dry_run_records_warmups_as_planned_requests() {
+    let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-a");
+    let probes = NormalizedProbeSuite::StablePrefixSmoke.probes();
+    let run_config = NormalizedRunConfig::new(1, 1, 256, 1, 0)
+        .with_cache_phases(vec![CachePhase::WarmSamePrompt]);
+
+    let report = NormalizedLaneReport::dry_run(&lane, &run_config, None, &probes);
+
+    assert_eq!(report.samples.len(), 1);
+    assert_eq!(report.planned_requests.len(), 2);
+    assert_eq!(report.planned_requests[0].request_kind, "warmup");
+    assert_eq!(report.planned_requests[0].cache_phase, "warm_same_prompt");
+    assert_eq!(report.planned_requests[0].warmup_index, Some(0));
+    assert_eq!(report.planned_requests[1].request_kind, "measured");
+    assert_eq!(report.planned_requests[1].sample_index, Some(0));
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_live_and_dry_run_reports_share_selected_plan() {
+    let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-a");
+    let probes = NormalizedProbeSuite::StablePrefixSmoke.probes();
+    let run_config = NormalizedRunConfig::new(1, 1, 256, 1, 0)
+        .with_cache_phases(vec![CachePhase::WarmSamePrompt]);
+
+    let dry_run = NormalizedLaneReport::dry_run(&lane, &run_config, None, &probes);
+    let live_plan = NormalizedLaneReport::planned_with_requests(
+        &lane,
+        run_config.warmups,
+        run_config.samples,
+        &run_config,
+        None,
+        &probes,
+    );
+
+    assert_eq!(
+        serde_json::to_value(&dry_run.planned_requests).expect("dry-run plan serializes"),
+        serde_json::to_value(&live_plan.planned_requests).expect("live plan serializes")
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_budget_guards_reject_oversized_plan() {
+    let lanes = vec![
+        lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen-a"),
+        lane("name=proxy,endpoint=http://127.0.0.1:3000,model=qwen-b"),
+    ];
+    let probes = NormalizedProbeSuite::StablePrefixSmoke.probes();
+    let run_config = NormalizedRunConfig::new(1, 1, 135_000, 1, 0)
+        .with_cache_phases(vec![CachePhase::WarmSamePrompt]);
+    let summary = normalized_plan_summary(&lanes, &probes, &run_config);
+
+    let requests_err =
+        enforce_plan_budget(&summary, Some(3), None).expect_err("request budget rejects plan");
+    assert!(
+        requests_err.to_string().contains("--max-requests"),
+        "error should mention request guard: {requests_err}"
+    );
+
+    let tokens_err =
+        enforce_plan_budget(&summary, None, Some(539_999)).expect_err("token budget rejects plan");
+    assert!(
+        tokens_err
+            .to_string()
+            .contains("--max-planned-prompt-tokens"),
+        "error should mention token guard: {tokens_err}"
     );
 }
 
@@ -1877,15 +2069,20 @@ async fn qwen_mlx_tool_normalized_admin_metrics_skips_non_proxy_lanes() {
         .timeout(Duration::from_millis(50))
         .build()
         .expect("client builds");
+    let run_config = NormalizedRunConfig::new(0, 1, 128, 1, 0);
+    let progress = NormalizedProgress::new(0);
 
     run_lane(
-        &client,
         &lane_config,
         &mut lane_report,
-        NormalizedRunConfig::new(0, 1, 128, 1, 0),
-        &[],
-        None,
-        None,
+        LaneRunContext {
+            client: &client,
+            run_config: &run_config,
+            probes: &[],
+            admin_token: None,
+            prompt_tokenizer: None,
+            progress: &progress,
+        },
     )
     .await;
 

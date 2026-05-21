@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const BENCHMARK_NAME: &str = "qwen-mlx-tool-normalized";
@@ -66,13 +67,15 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         DEFAULT_CONCURRENT_SAMPLES,
         true,
     )?;
+    let cache_phases = parse_cache_phases_flag(args)?;
     let run_config = NormalizedRunConfig::new(
         warmups,
         samples,
         context_tokens,
         concurrent_requests,
         concurrent_samples,
-    );
+    )
+    .with_cache_phases(cache_phases);
     let timeout_ms = parse_millis_flag(args, "--timeout-ms", DEFAULT_TIMEOUT_MS)?;
     let connect_timeout_ms =
         parse_millis_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
@@ -82,22 +85,27 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let engine_db_baselines =
         load_engine_db_baseline_export(engine_db_baseline_path.as_deref()).await?;
     let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
+    let max_requests = parse_optional_count_flag(args, "--max-requests")?;
+    let max_planned_prompt_tokens = parse_optional_count_flag(args, "--max-planned-prompt-tokens")?;
     let sweep_profile = parse_sweep_profile_flag(args)?;
     let probe_suite = parse_probe_suite_flag(args, sweep_profile)?;
     let probes = probe_suite.probes();
     let lanes = parse_lane_specs(args)?;
+    let plan_summary = normalized_plan_summary(&lanes, &probes, &run_config);
 
     let mut lane_reports = Vec::with_capacity(lanes.len());
     for lane in &lanes {
         let snapshot_identity = load_lane_snapshot_identity(lane, dry_run).await?;
         lane_reports.push(if dry_run {
-            NormalizedLaneReport::dry_run(lane, run_config, snapshot_identity, &probes)
+            NormalizedLaneReport::dry_run(lane, &run_config, snapshot_identity, &probes)
         } else {
-            NormalizedLaneReport::planned(
+            NormalizedLaneReport::planned_with_requests(
                 lane,
                 run_config.warmups,
                 run_config.samples,
+                &run_config,
                 snapshot_identity,
+                &probes,
             )
         });
     }
@@ -123,8 +131,17 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         cases: probe_suite.case_names(&probes),
         schema_variants: probe_suite.schema_variant_names(&probes),
         tool_choice_variants: probe_suite.tool_choice_variant_names(&probes),
-        cache_phases: CachePhase::all().iter().map(|phase| phase.name()).collect(),
-        summary: aggregate_normalized_summary(&lane_reports, &probes),
+        cache_phases: run_config
+            .cache_phases
+            .iter()
+            .map(|phase| phase.name())
+            .collect(),
+        plan_summary,
+        summary: aggregate_normalized_summary_for_phases(
+            &lane_reports,
+            &probes,
+            &run_config.cache_phases,
+        ),
         tool_required_stream: NormalizedToolRequiredStreamTimingReport::dry_run(&lane_reports),
         lanes: lane_reports,
         hardware: HardwareReport::detect(),
@@ -143,12 +160,19 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         return Ok(());
     }
 
+    enforce_plan_budget(
+        &report.plan_summary,
+        max_requests,
+        max_planned_prompt_tokens,
+    )?;
+
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(connect_timeout_ms))
         .timeout(Duration::from_millis(timeout_ms))
         .build()
         .context("build qwen mlx tool normalized benchmark HTTP client")?;
 
+    let progress = NormalizedProgress::new(report.plan_summary.total_http_requests);
     for (lane, lane_report) in lanes.iter().zip(&mut report.lanes) {
         let tokenizer = if sweep_profile_requires_exact_token_prompt(sweep_profile) {
             Some(load_lane_tokenizer(lane)?)
@@ -156,25 +180,32 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
             None
         };
         run_lane(
-            &client,
             lane,
             lane_report,
-            run_config,
-            &probes,
-            admin_token.as_deref(),
-            tokenizer.as_ref(),
+            LaneRunContext {
+                client: &client,
+                run_config: &run_config,
+                probes: &probes,
+                admin_token: admin_token.as_deref(),
+                prompt_tokenizer: tokenizer.as_ref(),
+                progress: &progress,
+            },
         )
         .await;
     }
-    report.summary = aggregate_normalized_summary(&report.lanes, &probes);
+    report.summary =
+        aggregate_normalized_summary_for_phases(&report.lanes, &probes, &run_config.cache_phases);
     report.tool_required_stream = tool_required_stream_timing_report(&report.lanes);
-    report.comparison = compare_normalized_lanes(&report.lanes, &probes);
-    report.agentic_gate = agentic_gate_report(&report.lanes);
+    report.comparison =
+        compare_normalized_lanes_for_phases(&report.lanes, &probes, &run_config.cache_phases);
+    report.agentic_gate = agentic_gate_report_for_phases(&report.lanes, &run_config.cache_phases);
     report.agentic_streaming_fast_path_ab =
         load_agentic_streaming_fast_path_ab_report(ab_baseline_path.as_deref(), &report.lanes)
             .await?;
-    report.prefill_sweep = prefill_sweep_report(&report.lanes, &probes);
-    report.stable_prefix = stable_prefix_report(&report.lanes, &probes);
+    report.prefill_sweep =
+        prefill_sweep_report_for_phases(&report.lanes, &probes, &run_config.cache_phases);
+    report.stable_prefix =
+        stable_prefix_report_for_phases(&report.lanes, &probes, &run_config.cache_phases);
     report.latest_performance_comparison =
         latest_performance_comparison_report(&report.lanes, engine_db_baselines.as_ref());
     report.status = if report.lanes.iter().all(|lane| lane.status == "passed")
@@ -200,14 +231,20 @@ Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
   --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
-  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, prefill-sweep-135k, or stable-agent-prefix
+  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
+  --cache-phases <csv>          Cache phases to run: cold, warm_same_prompt, warm_same_tool_schema [default: all]
+  --only-lanes <csv>            Keep only the named lanes after built-in profile expansion
+  --profile-lanes <csv>         Alias for --only-lanes
   --lane <spec>                 Lane: name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,tool_parser=auto|json|qwen-xml][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                 Warmup requests for warm phases [default: 1]
   --samples <n>                 Measured samples per case and phase [default: 1]
   --context-tokens <n>          Stable long-context prompt target [default: 135000]
   --concurrent-requests <n>     Requests to issue together during the concurrent pass [default: 1]
   --concurrent-samples <n>      Concurrent sample batches per case and phase; 0 disables unless concurrent requests > 1 [default: 0]
+  --max-requests <n>            Fail before live HTTP requests if the selected plan exceeds this many requests
+  --max-planned-prompt-tokens <n>
+                                Fail before live HTTP requests if planned prompt-token budget exceeds this value
   --focused-agentic-gate        Compatibility alias for --probe-suite focused-agentic-gate
   --ab-baseline <path>          Compare against a prior qwen-mlx-tool-normalized trace; fails if Kir proxy first tool delta does not advance or final validation changes
   --output <path>               Write the trace JSON to a file as well as stdout
@@ -222,16 +259,21 @@ Options:
 
 fn parse_lane_specs(args: &[String]) -> anyhow::Result<Vec<NormalizedLaneConfig>> {
     let lane_specs = flag_values(args, "--lane");
-    if let Some(profile) = parse_sweep_profile_flag(args)? {
+    let lanes = if let Some(profile) = parse_sweep_profile_flag(args)? {
         if !lane_specs.is_empty() {
             anyhow::bail!("--sweep-profile cannot be combined with explicit --lane specs");
         }
-        return expand_sweep_profile(profile, args);
-    }
-    if lane_specs.is_empty() {
-        anyhow::bail!("qwen mlx tool normalized benchmark requires at least one --lane <spec>");
-    }
-    lane_specs.into_iter().map(parse_lane_spec).collect()
+        expand_sweep_profile(profile, args)?
+    } else {
+        if lane_specs.is_empty() {
+            anyhow::bail!("qwen mlx tool normalized benchmark requires at least one --lane <spec>");
+        }
+        lane_specs
+            .into_iter()
+            .map(parse_lane_spec)
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
+    filter_lanes_by_flag(args, lanes)
 }
 
 fn parse_sweep_profile_flag(args: &[String]) -> anyhow::Result<Option<NormalizedSweepProfile>> {
@@ -265,6 +307,44 @@ fn parse_probe_suite_flag(
             .map(NormalizedSweepProfile::default_probe_suite)
             .unwrap_or(NormalizedProbeSuite::FullMatrix)
     }))
+}
+
+fn filter_lanes_by_flag(
+    args: &[String],
+    lanes: Vec<NormalizedLaneConfig>,
+) -> anyhow::Result<Vec<NormalizedLaneConfig>> {
+    let only_lanes = flag_values(args, "--only-lanes");
+    let profile_lanes = flag_values(args, "--profile-lanes");
+    let (flag, values) = match (only_lanes.as_slice(), profile_lanes.as_slice()) {
+        ([], []) => return Ok(lanes),
+        ([value], []) => ("--only-lanes", *value),
+        ([], [value]) => ("--profile-lanes", *value),
+        _ => anyhow::bail!(
+            "--only-lanes and --profile-lanes may only be provided once and cannot be combined"
+        ),
+    };
+    let selected = parse_csv_names(flag, values)?;
+    let available = lanes
+        .iter()
+        .map(|lane| lane.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing = selected
+        .iter()
+        .filter(|name| !available.contains(name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{flag} referenced unknown lanes: {}; available lanes: {}",
+            missing.join(", "),
+            available.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    let selected = selected.into_iter().collect::<BTreeSet<_>>();
+    Ok(lanes
+        .into_iter()
+        .filter(|lane| selected.contains(&lane.name))
+        .collect())
 }
 
 fn expand_sweep_profile(
@@ -537,6 +617,38 @@ fn parse_mlx_tool_parser_mode(value: &str) -> anyhow::Result<MlxToolParserMode> 
         .ok_or_else(|| anyhow!("unknown tool_parser `{value}`; expected auto, json, or qwen-xml"))
 }
 
+fn parse_cache_phases_flag(args: &[String]) -> anyhow::Result<Vec<CachePhase>> {
+    let values = flag_values(args, "--cache-phases");
+    let Some(value) = values.first() else {
+        return Ok(CachePhase::all().to_vec());
+    };
+    if values.len() > 1 {
+        anyhow::bail!("--cache-phases may only be provided once");
+    }
+    parse_csv_names("--cache-phases", value)?
+        .into_iter()
+        .map(|name| CachePhase::parse(&name))
+        .collect()
+}
+
+fn parse_csv_names(flag: &str, value: &str) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for name in value.split(',').map(str::trim) {
+        if name.is_empty() {
+            anyhow::bail!("{flag} contains an empty value");
+        }
+        let name = name.to_owned();
+        if names.contains(&name) {
+            anyhow::bail!("{flag} contains duplicate value `{name}`");
+        }
+        names.push(name);
+    }
+    if names.is_empty() {
+        anyhow::bail!("{flag} requires at least one value");
+    }
+    Ok(names)
+}
+
 fn parse_count_flag(
     args: &[String],
     flag: &str,
@@ -554,6 +666,23 @@ fn parse_count_flag(
     Ok(value)
 }
 
+fn parse_optional_count_flag(args: &[String], flag: &str) -> anyhow::Result<Option<usize>> {
+    let values = flag_values(args, flag);
+    let Some(value) = values.first() else {
+        return Ok(None);
+    };
+    if values.len() > 1 {
+        anyhow::bail!("{flag} may only be provided once");
+    }
+    let parsed = value
+        .parse::<usize>()
+        .with_context(|| format!("parse {flag}"))?;
+    if parsed == 0 {
+        anyhow::bail!("{flag} must be greater than zero");
+    }
+    Ok(Some(parsed))
+}
+
 fn parse_millis_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
     let value = flag_value(args, flag)
         .map(str::parse::<u64>)
@@ -566,7 +695,7 @@ fn parse_millis_flag(args: &[String], flag: &str, default: u64) -> anyhow::Resul
     Ok(value)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct NormalizedRunConfig {
     warmups: usize,
     samples: usize,
@@ -574,6 +703,7 @@ struct NormalizedRunConfig {
     concurrent_requests: usize,
     concurrent_samples: usize,
     effective_concurrent_samples: usize,
+    cache_phases: Vec<CachePhase>,
 }
 
 impl NormalizedRunConfig {
@@ -595,7 +725,61 @@ impl NormalizedRunConfig {
                 samples,
                 concurrent_samples,
             ),
+            cache_phases: CachePhase::all().to_vec(),
         }
+    }
+
+    fn with_cache_phases(mut self, cache_phases: Vec<CachePhase>) -> Self {
+        self.cache_phases = cache_phases;
+        self
+    }
+}
+
+#[derive(Debug)]
+struct NormalizedProgress {
+    total_requests: usize,
+    started_requests: AtomicUsize,
+    started_at: Instant,
+}
+
+impl NormalizedProgress {
+    fn new(total_requests: usize) -> Self {
+        Self {
+            total_requests,
+            started_requests: AtomicUsize::new(0),
+            started_at: Instant::now(),
+        }
+    }
+
+    fn record_request_start(
+        &self,
+        lane: &NormalizedLaneConfig,
+        probe: NormalizedProbePlan,
+        planned: PlannedRun,
+    ) {
+        if self.total_requests == 0 {
+            return;
+        }
+        let started = self.started_requests.fetch_add(1, Ordering::Relaxed) + 1;
+        let elapsed = self.started_at.elapsed();
+        let remaining = self.total_requests.saturating_sub(started);
+        let eta = if started > 0 && remaining > 0 {
+            elapsed.mul_f64(remaining as f64 / started as f64)
+        } else {
+            Duration::ZERO
+        };
+        eprintln!(
+            "qwen-mlx-tool-normalized progress: request {started}/{} lane={} case={} schema_variant={} tool_choice_variant={} cache_phase={} request_kind={} run_mode={} eta_seconds={:.1}",
+            self.total_requests,
+            lane.name,
+            probe.case.name(),
+            probe.schema_variant.name(),
+            probe.tool_choice_variant.name(),
+            planned.phase.name(),
+            planned.kind.name(),
+            planned.run_mode.name(),
+            eta.as_secs_f64()
+        );
     }
 }
 
@@ -736,27 +920,34 @@ fn admin_metrics_url(endpoint: &str) -> String {
     format!("{root}/admin/metrics")
 }
 
+struct LaneRunContext<'a> {
+    client: &'a reqwest::Client,
+    run_config: &'a NormalizedRunConfig,
+    probes: &'a [NormalizedProbePlan],
+    admin_token: Option<&'a str>,
+    prompt_tokenizer: Option<&'a HuggingFaceTokenizer>,
+    progress: &'a NormalizedProgress,
+}
+
 async fn run_lane(
-    client: &reqwest::Client,
     lane: &NormalizedLaneConfig,
     lane_report: &mut NormalizedLaneReport,
-    run_config: NormalizedRunConfig,
-    probes: &[NormalizedProbePlan],
-    admin_token: Option<&str>,
-    prompt_tokenizer: Option<&HuggingFaceTokenizer>,
+    context: LaneRunContext<'_>,
 ) {
     if should_capture_admin_metrics(lane) {
-        lane_report
-            .admin_metrics
-            .record_before(capture_normalized_admin_metrics(client, lane, admin_token).await);
+        lane_report.admin_metrics.record_before(
+            capture_normalized_admin_metrics(context.client, lane, context.admin_token).await,
+        );
     }
-    for &probe in probes {
-        for planned in phase_plan(run_config.warmups, run_config.samples) {
+    for &probe in context.probes {
+        for planned in phase_plan(
+            &context.run_config.cache_phases,
+            context.run_config.warmups,
+            context.run_config.samples,
+        ) {
             match planned.kind {
                 PlannedRunKind::Warmup => {
-                    let result =
-                        execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
-                            .await;
+                    let result = execute_probe(lane, probe, planned, &context).await;
                     if result.status != "passed" {
                         lane_report.warmup_failures.push(NormalizedWarmupFailure {
                             case: probe.case.name(),
@@ -771,18 +962,16 @@ async fn run_lane(
                     }
                 }
                 PlannedRunKind::Measured => {
-                    let sample =
-                        execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
-                            .await;
+                    let sample = execute_probe(lane, probe, planned, &context).await;
                     lane_report.samples.push(sample);
                 }
             }
         }
     }
-    for &probe in probes {
-        for phase in CachePhase::all() {
-            for sample_index in 0..run_config.effective_concurrent_samples {
-                let requests = (0..run_config.concurrent_requests).map(|request_index| {
+    for &probe in context.probes {
+        for &phase in &context.run_config.cache_phases {
+            for sample_index in 0..context.run_config.effective_concurrent_samples {
+                let requests = (0..context.run_config.concurrent_requests).map(|request_index| {
                     let planned = PlannedRun {
                         phase,
                         kind: PlannedRunKind::Measured,
@@ -791,7 +980,7 @@ async fn run_lane(
                         request_index: Some(request_index),
                         warmup_index: None,
                     };
-                    execute_probe(client, lane, probe, planned, prompt_tokenizer, run_config)
+                    execute_probe(lane, probe, planned, &context)
                 });
                 lane_report
                     .concurrent_samples
@@ -811,36 +1000,38 @@ async fn run_lane(
     }
     .to_owned();
     if should_capture_admin_metrics(lane) {
-        lane_report
-            .admin_metrics
-            .record_after(capture_normalized_admin_metrics(client, lane, admin_token).await);
+        lane_report.admin_metrics.record_after(
+            capture_normalized_admin_metrics(context.client, lane, context.admin_token).await,
+        );
     }
 }
 
 async fn execute_probe(
-    client: &reqwest::Client,
     lane: &NormalizedLaneConfig,
     probe: NormalizedProbePlan,
     planned: PlannedRun,
-    prompt_tokenizer: Option<&HuggingFaceTokenizer>,
-    run_config: NormalizedRunConfig,
+    context: &LaneRunContext<'_>,
 ) -> NormalizedSampleReport {
-    let prompt = match planned.prompt(run_config.context_tokens, probe.case, prompt_tokenizer) {
+    let prompt = match planned.prompt(
+        context.run_config.context_tokens,
+        probe.case,
+        context.prompt_tokenizer,
+    ) {
         Ok(prompt) => prompt,
         Err(err) => {
-            let context = SampleContext {
+            let sample_context = SampleContext {
                 probe,
                 phase: planned.phase,
                 run_mode: planned.run_mode,
                 sample_index: planned.sample_index.unwrap_or_default(),
                 request_index: planned.request_index,
                 planned_prompt_tokens: 0,
-                prewarmed: planned.phase.warms_before_samples() && run_config.warmups > 0,
+                prewarmed: planned.phase.warms_before_samples() && context.run_config.warmups > 0,
                 expected_probe_id: probe.case.probe_id().to_owned(),
                 expected_marker: None,
             };
             return failed_sample(
-                context,
+                sample_context,
                 "prompt_build_failed",
                 Duration::from_millis(0),
                 None,
@@ -852,22 +1043,23 @@ async fn execute_probe(
     };
     let expected_probe_id = prompt.probe_id(probe.case);
     let expected_marker = prompt.expected_marker(probe.case);
-    let context = SampleContext {
+    let sample_context = SampleContext {
         probe,
         phase: planned.phase,
         run_mode: planned.run_mode,
         sample_index: planned.sample_index.unwrap_or_default(),
         request_index: planned.request_index,
         planned_prompt_tokens: prompt.planned_prompt_tokens(),
-        prewarmed: planned.phase.warms_before_samples() && run_config.warmups > 0,
+        prewarmed: planned.phase.warms_before_samples() && context.run_config.warmups > 0,
         expected_probe_id,
         expected_marker,
     };
     let body = probe_request_body(lane, probe, prompt);
+    context.progress.record_request_start(lane, probe, planned);
     if probe.case.streams() {
-        run_streaming_probe(client, lane, context, body).await
+        run_streaming_probe(context.client, lane, sample_context, body).await
     } else {
-        run_buffered_probe(client, lane, context, body).await
+        run_buffered_probe(context.client, lane, sample_context, body).await
     }
 }
 
@@ -1557,9 +1749,9 @@ fn validate_recall_arguments(
     Ok(())
 }
 
-fn phase_plan(warmups: usize, samples: usize) -> Vec<PlannedRun> {
+fn phase_plan(phases: &[CachePhase], warmups: usize, samples: usize) -> Vec<PlannedRun> {
     let mut runs = Vec::new();
-    for phase in CachePhase::all() {
+    for &phase in phases {
         if phase.warms_before_samples() {
             for warmup_index in 0..warmups {
                 runs.push(PlannedRun {
@@ -1586,9 +1778,13 @@ fn phase_plan(warmups: usize, samples: usize) -> Vec<PlannedRun> {
     runs
 }
 
-fn concurrent_phase_plan(concurrent_requests: usize, concurrent_samples: usize) -> Vec<PlannedRun> {
+fn concurrent_phase_plan(
+    phases: &[CachePhase],
+    concurrent_requests: usize,
+    concurrent_samples: usize,
+) -> Vec<PlannedRun> {
     let mut runs = Vec::new();
-    for phase in CachePhase::all() {
+    for &phase in phases {
         for sample_index in 0..concurrent_samples {
             for request_index in 0..concurrent_requests {
                 runs.push(PlannedRun {
@@ -1619,13 +1815,131 @@ fn effective_concurrent_samples(
     }
 }
 
-fn compare_normalized_lanes(
+fn normalized_plan_summary(
+    lanes: &[NormalizedLaneConfig],
+    probes: &[NormalizedProbePlan],
+    run_config: &NormalizedRunConfig,
+) -> NormalizedPlanSummaryReport {
+    let sequential_plan = phase_plan(
+        &run_config.cache_phases,
+        run_config.warmups,
+        run_config.samples,
+    );
+    let concurrent_plan = concurrent_phase_plan(
+        &run_config.cache_phases,
+        run_config.concurrent_requests,
+        run_config.effective_concurrent_samples,
+    );
+    let per_probe_warmups = sequential_plan
+        .iter()
+        .filter(|run| run.kind == PlannedRunKind::Warmup)
+        .count();
+    let per_probe_sequential_measured = sequential_plan
+        .iter()
+        .filter(|run| run.kind == PlannedRunKind::Measured)
+        .count();
+    let per_probe_concurrent_measured = concurrent_plan.len();
+    let plan_multiplier = lanes.len().saturating_mul(probes.len());
+    let warmup_requests = per_probe_warmups.saturating_mul(plan_multiplier);
+    let sequential_measured_requests =
+        per_probe_sequential_measured.saturating_mul(plan_multiplier);
+    let concurrent_measured_requests =
+        per_probe_concurrent_measured.saturating_mul(plan_multiplier);
+    let measured_requests =
+        sequential_measured_requests.saturating_add(concurrent_measured_requests);
+    let total_http_requests = warmup_requests.saturating_add(measured_requests);
+
+    NormalizedPlanSummaryReport {
+        probe_count: probes.len(),
+        lane_count: lanes.len(),
+        warmups_per_warm_phase: run_config.warmups,
+        samples_per_phase: run_config.samples,
+        concurrent_requests: run_config.concurrent_requests,
+        concurrent_samples: run_config.concurrent_samples,
+        effective_concurrent_samples: run_config.effective_concurrent_samples,
+        cache_phases: run_config
+            .cache_phases
+            .iter()
+            .map(|phase| phase.name())
+            .collect(),
+        probes: probes
+            .iter()
+            .map(|probe| NormalizedPlanProbeReport {
+                case: probe.case.name(),
+                schema_variant: probe.schema_variant.name(),
+                tool_choice_variant: probe.tool_choice_variant.name(),
+            })
+            .collect(),
+        lanes: lanes.iter().map(|lane| lane.name.clone()).collect(),
+        warmup_requests,
+        measured_requests,
+        sequential_measured_requests,
+        concurrent_measured_requests,
+        total_http_requests,
+        planned_prompt_token_budget: total_http_requests.saturating_mul(run_config.context_tokens),
+    }
+}
+
+fn enforce_plan_budget(
+    summary: &NormalizedPlanSummaryReport,
+    max_requests: Option<usize>,
+    max_planned_prompt_tokens: Option<usize>,
+) -> anyhow::Result<()> {
+    if let Some(max_requests) = max_requests
+        && summary.total_http_requests > max_requests
+    {
+        anyhow::bail!(
+            "selected benchmark plan requires {} HTTP requests, exceeding --max-requests {max_requests}",
+            summary.total_http_requests
+        );
+    }
+    if let Some(max_planned_prompt_tokens) = max_planned_prompt_tokens
+        && summary.planned_prompt_token_budget > max_planned_prompt_tokens
+    {
+        anyhow::bail!(
+            "selected benchmark plan requires {} planned prompt tokens, exceeding --max-planned-prompt-tokens {max_planned_prompt_tokens}",
+            summary.planned_prompt_token_budget
+        );
+    }
+    Ok(())
+}
+
+fn planned_requests_for(
+    probes: &[NormalizedProbePlan],
+    run_config: &NormalizedRunConfig,
+) -> Vec<NormalizedPlannedRequestReport> {
+    let mut planned_requests = Vec::new();
+    for &probe in probes {
+        for planned in phase_plan(
+            &run_config.cache_phases,
+            run_config.warmups,
+            run_config.samples,
+        ) {
+            planned_requests.push(NormalizedPlannedRequestReport::new(
+                probe, planned, run_config,
+            ));
+        }
+        for planned in concurrent_phase_plan(
+            &run_config.cache_phases,
+            run_config.concurrent_requests,
+            run_config.effective_concurrent_samples,
+        ) {
+            planned_requests.push(NormalizedPlannedRequestReport::new(
+                probe, planned, run_config,
+            ));
+        }
+    }
+    planned_requests
+}
+
+fn compare_normalized_lanes_for_phases(
     lanes: &[NormalizedLaneReport],
     probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
 ) -> NormalizedComparisonReport {
     let mut fastest = Vec::new();
     for &probe in probes {
-        for phase in CachePhase::all() {
+        for &phase in phases {
             let mut fastest_lane = None;
             let mut fastest_latency_ms = None;
             let mut lane_metrics = Vec::new();
@@ -1676,14 +1990,23 @@ fn compare_normalized_lanes(
     }
 }
 
+#[cfg(test)]
 fn aggregate_normalized_summary(
     lanes: &[NormalizedLaneReport],
     probes: &[NormalizedProbePlan],
 ) -> Vec<NormalizedAggregateSummaryRow> {
+    aggregate_normalized_summary_for_phases(lanes, probes, &CachePhase::all())
+}
+
+fn aggregate_normalized_summary_for_phases(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
+) -> Vec<NormalizedAggregateSummaryRow> {
     let mut rows = Vec::new();
     for lane in lanes {
         for &probe in probes {
-            for phase in CachePhase::all() {
+            for &phase in phases {
                 for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                     let samples = lane_samples(lane)
                         .filter(|sample| {
@@ -1743,10 +2066,18 @@ fn aggregate_normalized_summary(
     rows
 }
 
+#[cfg(test)]
 fn agentic_gate_report(lanes: &[NormalizedLaneReport]) -> NormalizedAgenticGateReport {
+    agentic_gate_report_for_phases(lanes, &CachePhase::all())
+}
+
+fn agentic_gate_report_for_phases(
+    lanes: &[NormalizedLaneReport],
+    phases: &[CachePhase],
+) -> NormalizedAgenticGateReport {
     let mut rows = Vec::new();
     for probe in NormalizedProbePlan::focused_agentic_gate() {
-        for phase in CachePhase::all() {
+        for &phase in phases {
             for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                 let mut lane_metrics = Vec::new();
                 let mut fastest_lane = None;
@@ -2185,13 +2516,22 @@ fn increment_count(counts: &mut BTreeMap<String, usize>, value: &str) {
     *counts.entry(value.to_owned()).or_insert(0) += 1;
 }
 
+#[cfg(test)]
 fn prefill_sweep_report(
     lanes: &[NormalizedLaneReport],
     probes: &[NormalizedProbePlan],
 ) -> NormalizedPrefillSweepReport {
+    prefill_sweep_report_for_phases(lanes, probes, &CachePhase::all())
+}
+
+fn prefill_sweep_report_for_phases(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
+) -> NormalizedPrefillSweepReport {
     let mut rows = Vec::new();
     for &probe in probes {
-        for phase in CachePhase::all() {
+        for &phase in phases {
             for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                 let mut lane_metrics = lanes
                     .iter()
@@ -2354,13 +2694,22 @@ fn prefill_metric_sort_key(metric: &NormalizedPrefillSweepLaneMetric) -> (bool, 
     )
 }
 
+#[cfg(test)]
 fn stable_prefix_report(
     lanes: &[NormalizedLaneReport],
     probes: &[NormalizedProbePlan],
 ) -> NormalizedStablePrefixReport {
+    stable_prefix_report_for_phases(lanes, probes, &CachePhase::all())
+}
+
+fn stable_prefix_report_for_phases(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
+) -> NormalizedStablePrefixReport {
     let mut rows = Vec::new();
     for &probe in probes {
-        for phase in CachePhase::all() {
+        for &phase in phases {
             for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                 let mut lane_metrics = lanes
                     .iter()
@@ -3800,6 +4149,7 @@ enum NormalizedProbeSuite {
     FocusedAgenticGate,
     PrefillSweep135k,
     StableAgentPrefix,
+    StablePrefixSmoke,
 }
 
 impl NormalizedProbeSuite {
@@ -3809,8 +4159,9 @@ impl NormalizedProbeSuite {
             "focused-agentic-gate" | "focused_agentic_gate" => Ok(Self::FocusedAgenticGate),
             "prefill-sweep-135k" | "prefill_sweep_135k" => Ok(Self::PrefillSweep135k),
             "stable-agent-prefix" | "stable_agent_prefix" => Ok(Self::StableAgentPrefix),
+            "stable-prefix-smoke" | "stable_prefix_smoke" => Ok(Self::StablePrefixSmoke),
             other => anyhow::bail!(
-                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, prefill-sweep-135k, or stable-agent-prefix"
+                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke"
             ),
         }
     }
@@ -3821,6 +4172,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate => "focused_agentic_gate",
             Self::PrefillSweep135k => "prefill_sweep_135k",
             Self::StableAgentPrefix => "stable_agent_prefix",
+            Self::StablePrefixSmoke => "stable_prefix_smoke",
         }
     }
 
@@ -3830,6 +4182,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
             Self::PrefillSweep135k => NormalizedProbePlan::prefill_sweep_135k(),
             Self::StableAgentPrefix => NormalizedProbePlan::stable_agent_prefix(),
+            Self::StablePrefixSmoke => NormalizedProbePlan::stable_prefix_smoke(),
         }
     }
 
@@ -3839,9 +4192,10 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|case| case.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
-                probe_case_names(probes)
-            }
+            Self::FocusedAgenticGate
+            | Self::PrefillSweep135k
+            | Self::StableAgentPrefix
+            | Self::StablePrefixSmoke => probe_case_names(probes),
         }
     }
 
@@ -3851,9 +4205,10 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
-                probe_schema_variant_names(probes)
-            }
+            Self::FocusedAgenticGate
+            | Self::PrefillSweep135k
+            | Self::StableAgentPrefix
+            | Self::StablePrefixSmoke => probe_schema_variant_names(probes),
         }
     }
 
@@ -3863,9 +4218,10 @@ impl NormalizedProbeSuite {
                 .iter()
                 .map(|variant| variant.name())
                 .collect(),
-            Self::FocusedAgenticGate | Self::PrefillSweep135k | Self::StableAgentPrefix => {
-                probe_tool_choice_variant_names(probes)
-            }
+            Self::FocusedAgenticGate
+            | Self::PrefillSweep135k
+            | Self::StableAgentPrefix
+            | Self::StablePrefixSmoke => probe_tool_choice_variant_names(probes),
         }
     }
 }
@@ -3974,6 +4330,14 @@ impl NormalizedProbePlan {
             ),
         ]
     }
+
+    fn stable_prefix_smoke() -> Vec<Self> {
+        vec![Self::new(
+            NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        )]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3986,6 +4350,17 @@ enum CachePhase {
 impl CachePhase {
     fn all() -> [Self; 3] {
         [Self::Cold, Self::WarmSamePrompt, Self::WarmSameToolSchema]
+    }
+
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "cold" => Ok(Self::Cold),
+            "warm_same_prompt" => Ok(Self::WarmSamePrompt),
+            "warm_same_tool_schema" => Ok(Self::WarmSameToolSchema),
+            other => anyhow::bail!(
+                "unknown cache phase `{other}`; expected cold, warm_same_prompt, or warm_same_tool_schema"
+            ),
+        }
     }
 
     fn name(self) -> &'static str {
@@ -4005,6 +4380,15 @@ impl CachePhase {
 enum PlannedRunKind {
     Warmup,
     Measured,
+}
+
+impl PlannedRunKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Warmup => "warmup",
+            Self::Measured => "measured",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4308,6 +4692,33 @@ For OMP repeated-prefix probes, only the final user delta changes after the shar
 }
 
 #[derive(Debug, Serialize)]
+struct NormalizedPlanSummaryReport {
+    probe_count: usize,
+    lane_count: usize,
+    warmups_per_warm_phase: usize,
+    samples_per_phase: usize,
+    concurrent_requests: usize,
+    concurrent_samples: usize,
+    effective_concurrent_samples: usize,
+    cache_phases: Vec<&'static str>,
+    probes: Vec<NormalizedPlanProbeReport>,
+    lanes: Vec<String>,
+    warmup_requests: usize,
+    measured_requests: usize,
+    sequential_measured_requests: usize,
+    concurrent_measured_requests: usize,
+    total_http_requests: usize,
+    planned_prompt_token_budget: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPlanProbeReport {
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct NormalizedBenchReport {
     benchmark: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4329,6 +4740,7 @@ struct NormalizedBenchReport {
     schema_variants: Vec<&'static str>,
     tool_choice_variants: Vec<&'static str>,
     cache_phases: Vec<&'static str>,
+    plan_summary: NormalizedPlanSummaryReport,
     summary: Vec<NormalizedAggregateSummaryRow>,
     tool_required_stream: NormalizedToolRequiredStreamTimingReport,
     lanes: Vec<NormalizedLaneReport>,
@@ -4426,6 +4838,7 @@ struct NormalizedLaneReport {
     qwen_thinking_policy: Value,
     warmups: usize,
     sample_count: usize,
+    planned_requests: Vec<NormalizedPlannedRequestReport>,
     samples: Vec<NormalizedSampleReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     concurrent_samples: Vec<NormalizedSampleReport>,
@@ -4436,11 +4849,30 @@ struct NormalizedLaneReport {
 }
 
 impl NormalizedLaneReport {
+    #[cfg(test)]
     fn planned(
         lane: &NormalizedLaneConfig,
         warmups: usize,
         samples: usize,
         snapshot_identity: Option<ModelIdentityReport>,
+    ) -> Self {
+        let run_config = NormalizedRunConfig::new(
+            warmups,
+            samples,
+            DEFAULT_CONTEXT_TOKENS,
+            DEFAULT_CONCURRENT_REQUESTS,
+            DEFAULT_CONCURRENT_SAMPLES,
+        );
+        Self::planned_with_requests(lane, warmups, samples, &run_config, snapshot_identity, &[])
+    }
+
+    fn planned_with_requests(
+        lane: &NormalizedLaneConfig,
+        warmups: usize,
+        samples: usize,
+        run_config: &NormalizedRunConfig,
+        snapshot_identity: Option<ModelIdentityReport>,
+        probes: &[NormalizedProbePlan],
     ) -> Self {
         Self {
             name: lane.name.clone(),
@@ -4462,6 +4894,7 @@ impl NormalizedLaneReport {
             qwen_thinking_policy: lane.thinking_policy_report(),
             warmups,
             sample_count: samples,
+            planned_requests: planned_requests_for(probes, run_config),
             samples: Vec::new(),
             concurrent_samples: Vec::new(),
             warmup_failures: Vec::new(),
@@ -4471,19 +4904,25 @@ impl NormalizedLaneReport {
 
     fn dry_run(
         lane: &NormalizedLaneConfig,
-        run_config: NormalizedRunConfig,
+        run_config: &NormalizedRunConfig,
         snapshot_identity: Option<ModelIdentityReport>,
         probes: &[NormalizedProbePlan],
     ) -> Self {
-        let mut report = Self::planned(
+        let mut report = Self::planned_with_requests(
             lane,
             run_config.warmups,
             run_config.samples,
+            run_config,
             snapshot_identity,
+            probes,
         );
         report.status = "dry_run".to_owned();
         for &probe in probes {
-            for planned in phase_plan(run_config.warmups, run_config.samples) {
+            for planned in phase_plan(
+                &run_config.cache_phases,
+                run_config.warmups,
+                run_config.samples,
+            ) {
                 if planned.kind == PlannedRunKind::Measured {
                     let mut sample = NormalizedSampleReport::base(
                         probe,
@@ -4501,6 +4940,7 @@ impl NormalizedLaneReport {
                 }
             }
             for planned in concurrent_phase_plan(
+                &run_config.cache_phases,
                 run_config.concurrent_requests,
                 run_config.effective_concurrent_samples,
             ) {
@@ -4568,6 +5008,46 @@ struct NormalizedWarmupFailure {
     http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPlannedRequestReport {
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    request_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warmup_index: Option<usize>,
+    planned_prompt_tokens: usize,
+    prewarmed: bool,
+}
+
+impl NormalizedPlannedRequestReport {
+    fn new(
+        probe: NormalizedProbePlan,
+        planned: PlannedRun,
+        run_config: &NormalizedRunConfig,
+    ) -> Self {
+        Self {
+            case: probe.case.name(),
+            schema_variant: probe.schema_variant.name(),
+            tool_choice_variant: probe.tool_choice_variant.name(),
+            cache_phase: planned.phase.name(),
+            run_mode: planned.run_mode.name(),
+            request_kind: planned.kind.name(),
+            sample_index: planned.sample_index,
+            request_index: planned.request_index,
+            warmup_index: planned.warmup_index,
+            planned_prompt_tokens: run_config.context_tokens,
+            prewarmed: planned.phase.warms_before_samples() && run_config.warmups > 0,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

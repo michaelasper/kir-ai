@@ -678,6 +678,136 @@ fn qwen_mlx_tool_normalized_prefill_135k_profile_dry_run_defaults_to_prefill_sui
 
 #[test]
 #[cfg(feature = "bench")]
+fn qwen_mlx_tool_normalized_stable_prefix_smoke_dry_run_reports_selected_plan() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp
+        .path()
+        .join("huggingface")
+        .join("models--mlx-community--Qwen3.6-35B-A3B-4bit")
+        .join("snapshots")
+        .join("abcdef1234567890");
+    std::fs::create_dir_all(&snapshot).expect("raw HF snapshot dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--dry-run",
+            "--sweep-profile",
+            "qwen-mlx-stable-prefix",
+            "--probe-suite",
+            "stable-prefix-smoke",
+            "--cache-phases",
+            "warm_same_prompt",
+            "--only-lanes",
+            "kir-stable-prefix",
+            "--warmups",
+            "1",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--snapshot",
+        ])
+        .arg(&snapshot)
+        .output()
+        .expect("run qwen mlx stable-prefix smoke dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["sweep_profile"], "qwen-mlx-stable-prefix");
+    assert_eq!(value["probe_suite"], "stable_prefix_smoke");
+    assert_eq!(value["cache_phases"], json!(["warm_same_prompt"]));
+    assert_eq!(value["plan_summary"]["probe_count"], 1);
+    assert_eq!(value["plan_summary"]["lane_count"], 1);
+    assert_eq!(value["plan_summary"]["warmup_requests"], 1);
+    assert_eq!(value["plan_summary"]["measured_requests"], 1);
+    assert_eq!(value["plan_summary"]["total_http_requests"], 2);
+    assert_eq!(value["plan_summary"]["planned_prompt_token_budget"], 256);
+    assert_eq!(
+        value["plan_summary"]["probes"][0]["case"],
+        "warm_prefix_repeated_turn_stream"
+    );
+    assert_eq!(value["plan_summary"]["lanes"], json!(["kir-stable-prefix"]));
+
+    let lanes = value["lanes"].as_array().expect("lanes array");
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0]["name"], "kir-stable-prefix");
+    let planned_requests = lanes[0]["planned_requests"]
+        .as_array()
+        .expect("planned requests");
+    assert_eq!(planned_requests.len(), 2);
+    assert_eq!(planned_requests[0]["request_kind"], "warmup");
+    assert_eq!(planned_requests[0]["cache_phase"], "warm_same_prompt");
+    assert_eq!(planned_requests[0]["warmup_index"], 0);
+    assert_eq!(planned_requests[1]["request_kind"], "measured");
+    assert_eq!(planned_requests[1]["sample_index"], 0);
+    assert_eq!(lanes[0]["samples"].as_array().expect("samples").len(), 1);
+}
+
+#[test]
+#[cfg(feature = "bench")]
+fn qwen_mlx_tool_normalized_max_requests_fails_before_live_http() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp
+        .path()
+        .join("huggingface")
+        .join("models--mlx-community--Qwen3.6-35B-A3B-4bit")
+        .join("snapshots")
+        .join("abcdef1234567890");
+    std::fs::create_dir_all(&snapshot).expect("raw HF snapshot dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "bench",
+            "qwen-mlx-tool-normalized",
+            "--sweep-profile",
+            "qwen-mlx-stable-prefix",
+            "--probe-suite",
+            "stable-prefix-smoke",
+            "--cache-phases",
+            "warm_same_prompt",
+            "--only-lanes",
+            "kir-stable-prefix",
+            "--warmups",
+            "1",
+            "--samples",
+            "1",
+            "--context-tokens",
+            "128",
+            "--max-requests",
+            "1",
+            "--connect-timeout-ms",
+            "1",
+            "--timeout-ms",
+            "1",
+            "--snapshot",
+        ])
+        .arg(&snapshot)
+        .output()
+        .expect("run qwen mlx stable-prefix smoke with request guard");
+
+    assert!(
+        !output.status.success(),
+        "guard should fail before live run"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--max-requests"),
+        "stderr should mention request guard: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Connection refused") && !stderr.contains("error sending request"),
+        "guard should fail before HTTP attempt: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(feature = "bench")]
 fn qwen_mlx_tool_normalized_repo_revision_uses_kir_ai_checkout_when_run_from_harness_repo() {
     let temp = tempfile::tempdir().expect("tempdir");
     let harness_repo = temp.path().join("llm-server");

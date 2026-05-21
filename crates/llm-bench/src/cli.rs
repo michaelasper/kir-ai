@@ -28,15 +28,20 @@ Options:
   -h, --help                          Print help
 
 qwen-mlx-tool-normalized:
-  --sweep-profile <name>              Built-in lane matrix: qwen-mlx-cache-prefill or qwen-mlx-prefill-135k (requires --snapshot)
-  --probe-suite <name>                full-matrix, focused-agentic-gate, or prefill-sweep-135k
+  --sweep-profile <name>              Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
+  --probe-suite <name>                full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
   --snapshot <path>                   Raw Hugging Face snapshot path for built-in sweep profiles
+  --cache-phases <csv>                cold, warm_same_prompt, warm_same_tool_schema [default: all]
+  --only-lanes <csv>                  Keep only named lanes after built-in profile expansion
+  --profile-lanes <csv>               Alias for --only-lanes
   --lane <spec>                       name=<id>,endpoint=<url>,model=<id>[,launched_model_id=<id-or-path>][,snapshot=<path>][,kind=direct_mlx|kir_ai_proxy|other][,model_addressing=loaded_model_id|default_model|server_default|custom][,template=qwen-no-thinking|sidecar-chat-template-args|none][,tool_parser=auto|json|qwen-xml][,mlx_prompt_cache_size=default|<n>][,mlx_prompt_cache_bytes=unset|<n>][,mlx_prefill_step_size=default|<n>][,mlx_prompt_concurrency=default|<n>][,mlx_decode_concurrency=default|<n>]
   --warmups <n>                       Warmups for warm phases [default: 1]
   --samples <n>                       Sequential measured samples per case and phase [default: 1]
   --context-tokens <n>                Stable long-context prompt target [default: 135000]
   --concurrent-requests <n>           Requests issued together during the concurrent pass [default: 1]
   --concurrent-samples <n>            Concurrent sample batches per case and phase [default: 0]
+  --max-requests <n>                  Fail before live HTTP requests if selected plan exceeds this count
+  --max-planned-prompt-tokens <n>     Fail before live HTTP requests if planned prompt-token budget exceeds this count
   --focused-agentic-gate              Compatibility alias for --probe-suite focused-agentic-gate
   --ab-baseline <path>                Compare against a prior qwen-mlx-tool-normalized trace and fail if Kir proxy first tool delta does not advance or final validation changes
   --engine-db-baselines <path>        JSON export of benchmark DB baseline rows for latest comparison",

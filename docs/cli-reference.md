@@ -342,6 +342,25 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-stable-prefix.json
 ```
 
+For routine cache regression smoke checks, run only the stable warm-prefix probe
+and one warm cache phase:
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --sweep-profile qwen-mlx-stable-prefix \
+  --snapshot "$SNAPSHOT" \
+  --probe-suite stable-prefix-smoke \
+  --cache-phases warm_same_prompt \
+  --samples 1 \
+  --max-requests 4 \
+  --output qwen-mlx-stable-prefix-smoke.json
+```
+
+That smoke command plans one warmup and one measured request per selected lane.
+Use `--only-lanes mlx-stable-prefix` or `--only-lanes kir-stable-prefix` to
+reduce it to one lane, or `--profile-lanes <csv>` as the same post-profile lane
+filter under a name that emphasizes built-in profile selection.
+
 The `qwen-mlx-prefill-135k` profile defaults to `--probe-suite
 prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
 `mlx-prefill-512`, `kir-prefill-512`, `mlx-prefill-1024`,
@@ -358,20 +377,25 @@ stable-agent-prefix` and expands `mlx-stable-prefix` on
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill`, `qwen-mlx-prefill-135k`, and `qwen-mlx-stable-prefix` require `--snapshot` and use the default MLX/Kir proxy ports above. |
-| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `prefill-sweep-135k`, or `stable-agent-prefix`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
+| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `prefill-sweep-135k`, `stable-agent-prefix`, or `stable-prefix-smoke`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
 | `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
+| `--cache-phases <csv>` | `cold,warm_same_prompt,warm_same_tool_schema` | Selects cache phases after probe-suite expansion. For example, `warm_same_prompt` runs one warmup pass for that phase before measured samples when `--warmups` is greater than `0`. |
+| `--only-lanes <csv>` | all lanes | Filters lanes by name after built-in profile expansion or explicit lane parsing. Unknown lane names fail before execution. |
+| `--profile-lanes <csv>` | all lanes | Alias for `--only-lanes`. |
 | `--lane <spec>` | none | Adds an explicit lane. Specs are comma-separated `key=value` pairs: required `name`, `endpoint`, `model`; optional `launched_model_id`, `snapshot`, `kind=direct_mlx\|kir_ai_proxy\|other`, `model_addressing=loaded_model_id\|default_model\|server_default\|custom`, `template=qwen-no-thinking\|sidecar-chat-template-args\|none`, `tool_parser=auto\|json\|qwen-xml`, `mlx_prompt_cache_size=default\|<u64>`, `mlx_prompt_cache_bytes=unset\|<u64>`, `mlx_prefill_step_size=default\|<u64>`, `mlx_prompt_concurrency=default\|<u32>`, and `mlx_decode_concurrency=default\|<u32>`. Do not combine explicit lanes with `--sweep-profile`. |
 | `--warmups <n>` | `1` | Warmup requests issued before measured samples for `warm_same_prompt` and `warm_same_tool_schema`. `cold` never performs command-issued warmups. |
 | `--samples <n>` | `1` | Sequential measured samples per lane, case, schema variant, tool-choice variant, and cache phase. |
 | `--context-tokens <n>` | `135000` | Stable long-context prompt target for all probes. |
 | `--concurrent-requests <n>` | `1` | Requests issued together for the separate concurrent pass. If this is greater than `1` and `--concurrent-samples` is `0`, the concurrent pass uses `--samples` batches. |
 | `--concurrent-samples <n>` | `0` | Concurrent sample batches per lane, case, schema variant, tool-choice variant, and cache phase. Values greater than `0` enable the concurrent pass even when `--concurrent-requests` is `1`. |
+| `--max-requests <n>` | none | Fails before live HTTP requests when the selected plan exceeds this total request count, including warmups, sequential measured samples, and concurrent measured requests. |
+| `--max-planned-prompt-tokens <n>` | none | Fails before live HTTP requests when `plan_summary.planned_prompt_token_budget` exceeds this value. |
 | `--ab-baseline <path>` | none | Loads a previous `qwen-mlx-tool-normalized` JSON trace and emits `agentic_streaming_fast_path_ab`. The command fails when a `kir_ai_proxy` lane does not advance p50 `tool_required_stream` first tool delta versus the baseline, or when final validation signatures change. |
 | `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
 | `--engine-db-baselines <path>` | none | Reads a JSON export of benchmark DB baseline rows and includes them in `latest_performance_comparison` beside latest direct MLX and Kir proxy lane metrics. |
 | `--timeout-ms <n>` | `1800000` | Whole request timeout. |
 | `--connect-timeout-ms <n>` | `10000` | HTTP connect timeout. |
-| `--dry-run` | absent | Emits the planned cases, phases, lanes, model/template assumptions, and sample grid without HTTP requests. |
+| `--dry-run` | absent | Emits the selected cases, probes, phases, lanes, model/template assumptions, `plan_summary`, per-lane `planned_requests`, measured sample grid, and concurrent sample grid without HTTP requests. |
 
 Cases are `tool_required`, `tool_required_stream`, `json_object`, and
 `omp_repeated_prefix`. Tool cases run the schema variants `baseline_current`,
@@ -381,8 +405,10 @@ Cases are `tool_required`, `tool_required_stream`, `json_object`, and
 "none"` and `tool_choice_variant: "none"`. The OMP case uses a multi-turn
 history with stable system/user context, an assistant tool call, a tool result,
 and a small final user delta requiring `record_qwen_tool_probe`. Cache phases are
-`cold`, `warm_same_prompt`, and `warm_same_tool_schema`; warmups are excluded
-from measured `samples`, and concurrent measurements are reported in a separate
+`cold`, `warm_same_prompt`, and `warm_same_tool_schema`; `--cache-phases` can
+select a subset for focused runs. Warmups are excluded from measured `samples`
+and are listed as `request_kind: "warmup"` entries in each lane's
+`planned_requests`; concurrent measurements are reported in a separate
 `concurrent_samples` array. The default `template=qwen-no-thinking` injects
 `chat_template_kwargs: {"enable_thinking": false}` into requests.
 `template=sidecar-chat-template-args` records that the sidecar is expected to
@@ -395,8 +421,12 @@ Each measured sample reports `schema_variant`, `tool_choice_variant`,
 reason, prompt/completion/total tokens, cached-token status/count when provided
 by upstream `usage.prompt_tokens_details.cached_tokens`, validation
 classification, and the stream timing fields when observed. The top-level
-`repo_revision` records the kir-ai source checkout branch, commit SHA, and dirty
-status. Exported benchmark harnesses without a `.git` directory should set
+`plan_summary` records probe and lane counts, selected phase/probe/lane names,
+warmup request count, measured request count, total HTTP requests, and planned
+prompt-token budget. Live runs print progress and ETA lines to stderr while
+keeping the final JSON trace on stdout. The top-level `repo_revision` records
+the kir-ai source checkout branch, commit SHA, and dirty status. Exported
+benchmark harnesses without a `.git` directory should set
 `LLM_ENGINE_BENCH_REPO_COMMIT`, `LLM_ENGINE_BENCH_REPO_BRANCH`, and
 `LLM_ENGINE_BENCH_REPO_DIRTY`, or include a `.kir-ai-origin.json` file with
 `repo_revision.commit_sha`, `repo_revision.branch`, and `repo_revision.dirty`;
