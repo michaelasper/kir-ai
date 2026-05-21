@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.24.0](https://github.com/michaelasper/kir-ai/compare/v1.23.0...v1.24.0) (2026-05-21)
+
+### Features
+
+* **COR-291:** centralize no-progress thresholds ([7bf66bc](https://github.com/michaelasper/kir-ai/commit/7bf66bc6be0ea9468c1349c140542daab088f012))
+
 ## [1.23.0](https://github.com/michaelasper/kir-ai/compare/v1.22.2...v1.23.0) (2026-05-21)
 
 ### Features
