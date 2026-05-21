@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.23.0](https://github.com/michaelasper/kir-ai/compare/v1.22.2...v1.23.0) (2026-05-21)
+
+### Features
+
+* **COR-237:** add snapshot readiness modes ([ba7eb13](https://github.com/michaelasper/kir-ai/commit/ba7eb133905ace5a724db63fd5ebce210dd77d08))
+
 ## [1.22.2](https://github.com/michaelasper/kir-ai/compare/v1.22.1...v1.22.2) (2026-05-21)
 
 ### Bug Fixes
