@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.30.0](https://github.com/michaelasper/kir-ai/compare/v1.29.0...v1.30.0) (2026-05-21)
+
+### Features
+
+* **COR-325:** reapply stable-prefix smoke benchmark guards ([ec4d286](https://github.com/michaelasper/kir-ai/commit/ec4d28678890ce23091944fc727900f644fe894e))
+
 ## [1.29.0](https://github.com/michaelasper/kir-ai/compare/v1.28.0...v1.29.0) (2026-05-21)
 
 ### Features
