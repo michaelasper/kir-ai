@@ -1,3 +1,4 @@
+use super::safetensors::TensorLoadError;
 use async_trait::async_trait;
 use futures::{
     StreamExt,
@@ -542,6 +543,8 @@ where
     }
 }
 
+const BACKEND_EXECUTION_FAILED_CODE: &str = "backend_execution_failed";
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(transparent)]
 pub struct BackendError {
@@ -561,8 +564,8 @@ pub(crate) enum BackendErrorKind {
     InvalidSamplingConfig(String),
     #[error("backend generation cancelled")]
     Cancelled,
-    #[error("backend error: {0}")]
-    Other(String),
+    #[error("backend error: {message}")]
+    BackendFailure { code: &'static str, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,8 +610,15 @@ impl BackendError {
     }
 
     pub fn other(message: impl Into<String>) -> Self {
+        Self::backend_failure(BACKEND_EXECUTION_FAILED_CODE, message)
+    }
+
+    pub fn backend_failure(code: &'static str, message: impl Into<String>) -> Self {
         Self {
-            kind: BackendErrorKind::Other(message.into()),
+            kind: BackendErrorKind::BackendFailure {
+                code,
+                message: message.into(),
+            },
         }
     }
 
@@ -630,7 +640,14 @@ impl BackendError {
 
     pub fn other_message(&self) -> Option<&str> {
         match &self.kind {
-            BackendErrorKind::Other(message) => Some(message.as_str()),
+            BackendErrorKind::BackendFailure { message, .. } => Some(message.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn backend_failure_code(&self) -> Option<&'static str> {
+        match &self.kind {
+            BackendErrorKind::BackendFailure { code, .. } => Some(*code),
             _ => None,
         }
     }
@@ -649,16 +666,23 @@ impl BackendError {
                 BackendErrorDomain::InvalidRequest { reason }
             }
             BackendErrorKind::Cancelled => BackendErrorDomain::Cancelled,
-            BackendErrorKind::Other(message) => {
-                BackendErrorDomain::BackendFailure(BackendError::other(message))
+            BackendErrorKind::BackendFailure { code, message } => {
+                BackendErrorDomain::BackendFailure(BackendError::backend_failure(code, message))
             }
         }
+    }
+}
+
+impl From<TensorLoadError> for BackendError {
+    fn from(value: TensorLoadError) -> Self {
+        Self::backend_failure(value.code(), value.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::safetensors::TensorLoadError;
     use async_trait::async_trait;
     use futures::{StreamExt, executor::block_on};
     use tokio_util::sync::CancellationToken;
@@ -886,6 +910,17 @@ mod tests {
         assert!(
             err.is_invalid_sampling_config(),
             "expected InvalidSamplingConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tensor_load_error_context_survives_backend_error_conversion() {
+        let err = BackendError::from(TensorLoadError::integrity("bad tensor header"));
+
+        assert_eq!(err.backend_failure_code(), Some("model_integrity_failed"));
+        assert_eq!(
+            err.other_message(),
+            Some("model_integrity_failed: bad tensor header")
         );
     }
 }

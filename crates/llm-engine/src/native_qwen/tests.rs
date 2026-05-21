@@ -908,7 +908,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
                 &NativeTextMatvecBackend::Cpu,
                 scratch,
             ))
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(BackendError::from)
         },
     );
     let expected_hidden = expected_hidden.expect("fresh prefill succeeds");
@@ -956,7 +956,7 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
                 &NativeTextMatvecBackend::Cpu,
                 scratch,
             ))
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(BackendError::from)
         },
     );
     let hidden = hidden.expect("sequence prefill succeeds");
@@ -1000,7 +1000,7 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
             rt.block_on(qwen_prefill_sequence_with_cache(
                 &store, &spec, chunk, caches, &matvec, scratch,
             ))
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(BackendError::from)
         },
     )
     .expect_err("cancelled after first chunk");

@@ -298,8 +298,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
     }
 
     fn allocate_caches(&self, cache_tokens: usize) -> Result<Vec<QwenLayerCache>, BackendError> {
-        qwen_layer_caches_for_spec(&self.spec, cache_tokens)
-            .map_err(|err| BackendError::other(err.to_string()))
+        qwen_layer_caches_for_spec(&self.spec, cache_tokens).map_err(BackendError::from)
     }
 
     async fn prefill_chunk_with_cache(
@@ -317,7 +316,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::other(err.to_string()))
+        .map_err(BackendError::from)
     }
 
     fn make_decode_session(
@@ -401,7 +400,7 @@ impl NativeQwenDecodeSession {
             scratch,
         )
         .await
-        .map_err(|err| BackendError::other(err.to_string()))?;
+        .map_err(BackendError::from)?;
         Ok(())
     }
 }

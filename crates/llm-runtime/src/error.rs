@@ -76,6 +76,7 @@ impl From<BackendError> for RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_backend::TensorLoadError;
 
     #[test]
     fn backend_model_not_found_maps_to_model_unavailable() {
@@ -124,6 +125,19 @@ mod tests {
         assert!(matches!(
             err,
             RuntimeError::BackendFailed { source } if source.other_message() == Some("backend failed")
+        ));
+    }
+
+    #[test]
+    fn structured_backend_failure_context_survives_runtime_mapping() {
+        let err = RuntimeError::from(BackendError::from(TensorLoadError::integrity(
+            "bad tensor header",
+        )));
+
+        assert!(matches!(
+            err,
+            RuntimeError::BackendFailed { source }
+                if source.backend_failure_code() == Some("model_integrity_failed")
         ));
     }
 }

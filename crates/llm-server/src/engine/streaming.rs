@@ -203,9 +203,16 @@ pub(super) fn engine_sse_keep_alive() -> KeepAlive {
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
     let metadata = runtime_error_metadata(&err);
+    let backend_failure_code = match &err {
+        RuntimeError::BackendFailed { source } => {
+            source.backend_failure_code().unwrap_or("unknown")
+        }
+        _ => "none",
+    };
     tracing::warn!(
         error = %err,
         code = metadata.code,
+        backend_failure_code,
         phase = metadata.phase,
         retryable = metadata.retryable,
         "streaming runtime error"

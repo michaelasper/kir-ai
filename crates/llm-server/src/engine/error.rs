@@ -318,12 +318,13 @@ impl IntoResponse for EngineError {
 }
 
 fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata) {
-    if !matches!(err, RuntimeError::BackendFailed { .. }) {
+    let RuntimeError::BackendFailed { source } = err else {
         return;
-    }
+    };
     tracing::warn!(
         error = %err,
         code = metadata.code,
+        backend_failure_code = source.backend_failure_code().unwrap_or("unknown"),
         phase = metadata.phase,
         retryable = metadata.retryable,
         status = metadata.status.as_u16(),
@@ -334,6 +335,7 @@ fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_backend::{BackendError, TensorLoadError};
     use serde_json::json;
 
     const DOCUMENTED_ENGINE_ERROR_CODES: &[&str] = &[
@@ -382,6 +384,41 @@ mod tests {
                     "type": "llm_engine_error"
                 }
             })
+        );
+    }
+
+    #[test]
+    fn structured_backend_failure_context_survives_server_error_boundary() {
+        let err = RuntimeError::from(BackendError::from(TensorLoadError::integrity(
+            "bad tensor header",
+        )));
+
+        let RuntimeError::BackendFailed { source } = &err else {
+            panic!("expected backend failure, got {err:?}");
+        };
+        assert_eq!(
+            source.backend_failure_code(),
+            Some("model_integrity_failed")
+        );
+
+        let metadata = runtime_error_metadata(&err);
+        assert_eq!(metadata.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(metadata.code, "backend_execution_failed");
+        assert_eq!(metadata.phase, "decode");
+        assert!(metadata.retryable);
+
+        let body = EngineErrorBody::from_runtime_error(&err);
+        let value = serde_json::to_value(&body).expect("engine error body serializes");
+
+        assert_eq!(value["error"]["code"], "backend_execution_failed");
+        assert_eq!(value["error"]["phase"], "decode");
+        assert_eq!(value["error"]["retryable"], true);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .expect("error message is string")
+                .contains("model_integrity_failed: bad tensor header"),
+            "server body should retain source failure message while keeping stable metadata: {value}"
         );
     }
 

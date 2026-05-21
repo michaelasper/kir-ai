@@ -179,7 +179,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
     ) -> Result<usize, BackendError> {
         let final_norm = native_final_norm_for_spec_ref(self.store, self.spec, hidden, self.matvec)
             .await
-            .map_err(|err| BackendError::other(err.to_string()))?;
+            .map_err(BackendError::from)?;
         if !sampling.is_greedy() {
             let logits = native_lm_head_logits_for_spec_ref(
                 self.store,
@@ -189,7 +189,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
                 self.matvec,
             )
             .await
-            .map_err(|err| BackendError::other(err.to_string()))?;
+            .map_err(BackendError::from)?;
             let sampling_draw = sampling_draw.ok_or_else(|| {
                 BackendError::other(format!(
                     "{} non-greedy sampling requires an RNG draw",
@@ -217,7 +217,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             self.matvec,
         )
         .await
-        .map_err(|err| BackendError::other(err.to_string()))?;
+        .map_err(BackendError::from)?;
         let item = top_logits.into_iter().next().ok_or_else(|| {
             BackendError::other(format!(
                 "{} lm head returned no logits",
