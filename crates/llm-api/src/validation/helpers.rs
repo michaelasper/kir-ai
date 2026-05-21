@@ -9,6 +9,10 @@ use std::{
     io::{self, Write},
 };
 
+const SUPPORTED_JSON_SCHEMA_TYPES: &[&str] = &[
+    "array", "boolean", "integer", "null", "number", "object", "string",
+];
+
 pub(super) fn validate_chat_messages(
     messages: &[ChatMessage],
     limits: RequestLimits,
@@ -326,15 +330,7 @@ fn validate_tool_schema_shape(label: &str, value: &Value) -> Result<(), ApiError
 
 fn validate_schema_object(label: &str, schema: &Map<String, Value>) -> Result<(), ApiError> {
     if let Some(schema_type) = schema.get("type") {
-        match schema_type {
-            Value::String(_) => {}
-            Value::Array(types) if types.iter().all(Value::is_string) => {}
-            _ => {
-                return Err(ApiError::invalid_request(format!(
-                    "{label}.type must be a string or array of strings"
-                )));
-            }
-        }
+        validate_schema_type(label, schema_type)?;
     }
     if let Some(required) = schema.get("required") {
         let Some(required) = required.as_array() else {
@@ -362,17 +358,57 @@ fn validate_schema_object(label: &str, schema: &Map<String, Value>) -> Result<()
             )));
         };
         for (name, property_schema) in properties {
-            if let Some(property_schema) = property_schema.as_object() {
-                validate_schema_object(&format!("{label}.properties.{name}"), property_schema)?;
-            }
+            validate_nested_schema_object(&format!("{label}.properties.{name}"), property_schema)?;
         }
     }
-    if let Some(items) = schema.get("items")
-        && let Some(items_schema) = items.as_object()
-    {
-        validate_schema_object(&format!("{label}.items"), items_schema)?;
+    if let Some(items) = schema.get("items") {
+        validate_nested_schema_object(&format!("{label}.items"), items)?;
     }
     Ok(())
+}
+
+fn validate_schema_type(label: &str, schema_type: &Value) -> Result<(), ApiError> {
+    match schema_type {
+        Value::String(type_name) => validate_schema_type_name(&format!("{label}.type"), type_name),
+        Value::Array(types) => {
+            if types.is_empty() {
+                return Err(ApiError::invalid_request(format!(
+                    "{label}.type must contain at least one JSON Schema type"
+                )));
+            }
+            for (index, type_value) in types.iter().enumerate() {
+                let Some(type_name) = type_value.as_str() else {
+                    return Err(ApiError::invalid_request(format!(
+                        "{label}.type must be a string or array of strings"
+                    )));
+                };
+                validate_schema_type_name(&format!("{label}.type[{index}]"), type_name)?;
+            }
+            Ok(())
+        }
+        _ => Err(ApiError::invalid_request(format!(
+            "{label}.type must be a string or array of strings"
+        ))),
+    }
+}
+
+fn validate_schema_type_name(label: &str, type_name: &str) -> Result<(), ApiError> {
+    if SUPPORTED_JSON_SCHEMA_TYPES.contains(&type_name) {
+        return Ok(());
+    }
+    Err(ApiError::invalid_request(format!(
+        "{label} has unsupported JSON Schema type `{type_name}`; supported types: {}",
+        SUPPORTED_JSON_SCHEMA_TYPES.join(", ")
+    )))
+}
+
+fn validate_nested_schema_object(label: &str, value: &Value) -> Result<(), ApiError> {
+    let Some(schema) = value.as_object() else {
+        return Err(ApiError::invalid_request(format!(
+            "{label} must be a JSON object"
+        )));
+    };
+    validate_schema_object(label, schema)
 }
 
 struct JsonByteCounter {

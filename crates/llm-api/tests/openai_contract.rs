@@ -584,6 +584,149 @@ fn rejects_tool_schema_parameters_that_are_not_objects() {
 }
 
 #[test]
+fn rejects_tool_schema_unknown_type_keyword() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "str" }
+                }
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("unknown JSON Schema types must fail closed");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("properties.query.type"));
+    assert!(err.message().contains("str"));
+}
+
+#[test]
+fn rejects_tool_schema_unknown_type_array_entry() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": ["string", "str"] }
+                }
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("unknown JSON Schema union types must fail closed");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("properties.query.type[1]"));
+    assert!(err.message().contains("str"));
+}
+
+#[test]
+fn rejects_malformed_nested_tool_schema_property() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": "string"
+                }
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("nested property schemas must be schema objects");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("properties.query"));
+    assert!(err.message().contains("JSON object"));
+}
+
+#[test]
+fn rejects_malformed_tool_schema_items_keyword() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "array",
+                "items": "string"
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("items schemas must be schema objects");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("items"));
+    assert!(err.message().contains("JSON object"));
+}
+
+#[test]
+fn accepts_supported_tool_schema_types_and_unions() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer" },
+                    "score": { "type": "number" },
+                    "exact": { "type": "boolean" },
+                    "deleted_at": { "type": "null" },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "metadata": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "source": { "type": "string" }
+                        }
+                    }
+                }
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("supported JSON Schema types remain valid");
+}
+
+#[test]
 fn rejects_malformed_tool_schema_required_keyword() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),

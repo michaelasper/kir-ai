@@ -339,6 +339,13 @@ Tool definitions use OpenAI function-tool shape:
 }
 ```
 
+Tool `parameters` must be JSON objects. The local schema validator accepts
+`type` values `object`, `array`, `string`, `boolean`, `null`, `integer`, and
+`number`, including string arrays such as `["string", "null"]`. Nested
+`properties` entries and `items` schemas must also be JSON objects. Unknown
+types or malformed supported keywords fail with `invalid_request` during request
+validation.
+
 `tool_choice` may be:
 
 ```json

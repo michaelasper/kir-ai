@@ -206,6 +206,38 @@ async fn chat_completions_rejects_malformed_tool_schema_required_keyword() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_unknown_tool_schema_type() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "lookup rust"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "str"}
+                    }
+                }
+            }
+        }],
+        "tool_choice": "required"
+    }))
+    .await;
+
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("properties.query.type"),
+        "unknown schema type should report the offending path: {body}"
+    );
+    assert!(
+        message.contains("str"),
+        "unknown schema type should report the offending type: {body}"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_body_above_json_body_limit() {
     let request_limits = llm_api::RequestLimits {
         json_body_bytes: 512,
