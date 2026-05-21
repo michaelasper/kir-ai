@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.10](https://github.com/michaelasper/kir-ai/compare/v1.25.9...v1.25.10) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-365:** document streaming error metadata ([a64214d](https://github.com/michaelasper/kir-ai/commit/a64214d14b7a294a16e9ce1a90fc6684c627934e))
+
 ## [1.25.9](https://github.com/michaelasper/kir-ai/compare/v1.25.8...v1.25.9) (2026-05-21)
 
 ### Bug Fixes
