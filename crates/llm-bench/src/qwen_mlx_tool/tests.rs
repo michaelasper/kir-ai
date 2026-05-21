@@ -2202,6 +2202,127 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_tool_stream_attribution_reports_per_sample_admin_timing() {
+    let lane_config =
+        lane("name=proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut lane_report = NormalizedLaneReport::planned(&lane_config, 0, 0, None);
+    let mut sample = passed_sample(
+        NormalizedCaseKind::ToolRequiredStream,
+        CachePhase::Cold,
+        RunMode::Sequential,
+        0,
+        None,
+        800,
+        16,
+    );
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: Some(12),
+        first_sse_data_latency_ms: Some(13),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(30),
+        tool_finish_latency_ms: Some(70),
+        first_semantic_delta_latency_ms: Some(30),
+    };
+    sample.tool_required_stream_admin_metrics = Some(NormalizedAdminMetricsCapture {
+        before: Some(json!({
+            "first_tool_delta_ms": {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0},
+            "validated_tool_call_ms": {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0},
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_upstream_byte_ms": {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0},
+                    "stream_first_parsed_chunk_ms": {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0},
+                    "stream_first_tool_delta_ms": {"count": 0, "min": 0.0, "max": 0.0, "avg": 0.0}
+                }
+            }
+        })),
+        after: Some(json!({
+            "first_tool_delta_ms": {"count": 1, "min": 29.0, "max": 29.0, "avg": 29.0},
+            "validated_tool_call_ms": {"count": 1, "min": 68.0, "max": 68.0, "avg": 68.0},
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_upstream_byte_ms": {"count": 1, "min": 8.0, "max": 8.0, "avg": 8.0},
+                    "stream_first_parsed_chunk_ms": {"count": 1, "min": 12.0, "max": 12.0, "avg": 12.0},
+                    "stream_first_tool_delta_ms": {"count": 1, "min": 30.0, "max": 30.0, "avg": 30.0}
+                }
+            }
+        })),
+        error: None,
+    });
+    lane_report.samples.push(sample);
+
+    let report = tool_required_stream_timing_report(&[lane_report]);
+
+    assert_eq!(report.attribution.status, "reported");
+    let row = report.attribution.rows.first().expect("attribution row");
+    assert_eq!(row.admin_metrics_scope, "per_sample");
+    assert_eq!(row.client.first_byte_ms, Some(12));
+    assert_eq!(row.client.first_sse_data_ms, Some(13));
+    assert_eq!(row.client.first_tool_delta_ms, Some(30));
+    assert_eq!(row.client.tool_finish_ms, Some(70));
+    let admin = row.admin_metrics.as_ref().expect("admin attribution");
+    assert_eq!(
+        admin.mlx_stream_first_tool_delta_ms.window_avg_ms,
+        Some(30.0)
+    );
+    assert_eq!(
+        row.first_tool_delta_gap_ms.mlx_stream_to_client_ms,
+        Some(0.0)
+    );
+    assert_eq!(row.decision, "upstream_aligned_with_client");
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_tool_stream_attribution_flags_kir_buffering_gap() {
+    let lane_config =
+        lane("name=proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut lane_report = NormalizedLaneReport::planned(&lane_config, 0, 0, None);
+    let mut sample = passed_sample(
+        NormalizedCaseKind::ToolRequiredStream,
+        CachePhase::Cold,
+        RunMode::Sequential,
+        0,
+        None,
+        800,
+        16,
+    );
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: Some(100),
+        first_sse_data_latency_ms: Some(120),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(700),
+        tool_finish_latency_ms: Some(760),
+        first_semantic_delta_latency_ms: Some(700),
+    };
+    sample.tool_required_stream_admin_metrics = Some(NormalizedAdminMetricsCapture {
+        before: Some(json!({
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_tool_delta_ms": {"count": 3, "min": 10.0, "max": 10.0, "avg": 10.0}
+                }
+            }
+        })),
+        after: Some(json!({
+            "backend_metrics": {
+                "mlx": {
+                    "stream_first_tool_delta_ms": {"count": 4, "min": 10.0, "max": 10.0, "avg": 10.0}
+                }
+            }
+        })),
+        error: None,
+    });
+    lane_report.samples.push(sample);
+
+    let report = tool_required_stream_timing_report(&[lane_report]);
+    let row = report.attribution.rows.first().expect("attribution row");
+
+    assert_eq!(
+        row.first_tool_delta_gap_ms.mlx_stream_to_client_ms,
+        Some(690.0)
+    );
+    assert_eq!(row.decision, "kir_buffering_or_validation_gap");
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_tool_stream_timing_report_keeps_admin_errors_nonfatal() {
     let lane_config = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen");
     let mut lane_report = NormalizedLaneReport::planned(&lane_config, 0, 0, None);

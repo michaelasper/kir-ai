@@ -908,6 +908,17 @@ fn should_capture_admin_metrics(lane: &NormalizedLaneConfig) -> bool {
     matches!(lane.kind, NormalizedLaneKind::KirAiProxy)
 }
 
+fn should_capture_tool_stream_attribution_metrics(
+    lane: &NormalizedLaneConfig,
+    probe: NormalizedProbePlan,
+    planned: PlannedRun,
+) -> bool {
+    should_capture_admin_metrics(lane)
+        && probe.case == NormalizedCaseKind::ToolRequiredStream
+        && planned.kind == PlannedRunKind::Measured
+        && planned.run_mode == RunMode::Sequential
+}
+
 fn admin_metrics_timeout() -> Duration {
     Duration::from_millis(ADMIN_METRICS_TIMEOUT_MS)
 }
@@ -1055,12 +1066,27 @@ async fn execute_probe(
         expected_marker,
     };
     let body = probe_request_body(lane, probe, prompt);
+    let mut attribution_admin_metrics =
+        should_capture_tool_stream_attribution_metrics(lane, probe, planned)
+            .then(NormalizedAdminMetricsCapture::default);
+    if let Some(capture) = &mut attribution_admin_metrics {
+        capture.record_before(
+            capture_normalized_admin_metrics(context.client, lane, context.admin_token).await,
+        );
+    }
     context.progress.record_request_start(lane, probe, planned);
-    if probe.case.streams() {
+    let mut sample = if probe.case.streams() {
         run_streaming_probe(context.client, lane, sample_context, body).await
     } else {
         run_buffered_probe(context.client, lane, sample_context, body).await
+    };
+    if let Some(mut capture) = attribution_admin_metrics {
+        capture.record_after(
+            capture_normalized_admin_metrics(context.client, lane, context.admin_token).await,
+        );
+        sample.tool_required_stream_admin_metrics = Some(capture);
     }
+    sample
 }
 
 async fn run_buffered_probe(
@@ -3217,8 +3243,10 @@ fn tool_required_stream_timing_report(
         (false, false, true) => "client_only",
         (false, false, false) => "no_samples",
     };
+    let attribution = tool_required_stream_attribution_report(lanes, &lane_reports);
     NormalizedToolRequiredStreamTimingReport {
         status: status.to_owned(),
+        attribution,
         lanes: lane_reports,
     }
 }
@@ -3254,6 +3282,263 @@ fn tool_required_stream_lane_timing_report(
         admin_metrics: normalized_tool_stream_admin_metrics(&lane.admin_metrics),
         admin_metrics_error: lane.admin_metrics.error.clone(),
     }
+}
+
+fn tool_required_stream_attribution_report(
+    lanes: &[NormalizedLaneReport],
+    lane_reports: &[NormalizedToolRequiredStreamLaneTimingReport],
+) -> NormalizedToolRequiredStreamAttributionReport {
+    let rows = lanes
+        .iter()
+        .zip(lane_reports)
+        .map(tool_required_stream_attribution_row)
+        .collect::<Vec<_>>();
+    let has_admin = rows.iter().any(|row| row.admin_metrics.is_some());
+    let has_admin_error = rows.iter().any(|row| row.admin_metrics_error.is_some());
+    let has_samples = rows.iter().any(|row| row.pass_count > 0);
+    let status = match (has_admin, has_admin_error, has_samples) {
+        (true, true, _) => "partial_admin_metrics",
+        (true, false, _) => "reported",
+        (false, true, _) => "admin_metrics_unavailable",
+        (false, false, true) => "client_only",
+        (false, false, false) => "no_samples",
+    };
+    NormalizedToolRequiredStreamAttributionReport {
+        status: status.to_owned(),
+        rows,
+    }
+}
+
+fn tool_required_stream_attribution_row(
+    (lane, lane_report): (
+        &NormalizedLaneReport,
+        &NormalizedToolRequiredStreamLaneTimingReport,
+    ),
+) -> NormalizedToolRequiredStreamAttributionRow {
+    let samples = lane_samples(lane)
+        .filter(|sample| {
+            sample.case == NormalizedCaseKind::ToolRequiredStream.name()
+                && sample.status == "passed"
+        })
+        .collect::<Vec<_>>();
+    let client = NormalizedToolRequiredStreamClientTiming {
+        first_byte_ms: lane_report.p50_first_byte_latency_ms,
+        first_sse_data_ms: lane_report.p50_first_sse_data_latency_ms,
+        first_tool_delta_ms: lane_report.p50_first_tool_delta_latency_ms,
+        tool_finish_ms: lane_report.p50_tool_finish_latency_ms,
+    };
+    let (admin_metrics_scope, admin_metrics, admin_metrics_error) =
+        tool_required_stream_attribution_admin_metrics(lane, &samples);
+    let first_tool_delta_gap_ms = tool_required_stream_gap(&client, admin_metrics.as_ref());
+    let decision = tool_required_stream_attribution_decision(
+        client.first_tool_delta_ms,
+        admin_metrics.as_ref(),
+        admin_metrics_error.as_deref(),
+    );
+
+    NormalizedToolRequiredStreamAttributionRow {
+        lane: lane.name.clone(),
+        kind: lane.kind,
+        pass_count: samples.len(),
+        client,
+        admin_metrics_scope,
+        admin_metrics,
+        admin_metrics_error,
+        first_tool_delta_gap_ms,
+        decision,
+    }
+}
+
+fn tool_required_stream_attribution_admin_metrics(
+    lane: &NormalizedLaneReport,
+    samples: &[&NormalizedSampleReport],
+) -> (
+    &'static str,
+    Option<NormalizedToolRequiredStreamAdminMetrics>,
+    Option<String>,
+) {
+    let sample_captures = samples
+        .iter()
+        .filter_map(|sample| sample.tool_required_stream_admin_metrics.as_ref())
+        .collect::<Vec<_>>();
+    let sample_metrics = sample_captures
+        .iter()
+        .filter_map(|capture| normalized_tool_stream_admin_metrics(capture))
+        .collect::<Vec<_>>();
+    if !sample_metrics.is_empty() {
+        return (
+            "per_sample",
+            Some(aggregate_tool_stream_admin_metrics(&sample_metrics)),
+            join_admin_metric_errors(&sample_captures),
+        );
+    }
+    if !sample_captures.is_empty() {
+        return (
+            "per_sample_unavailable",
+            None,
+            join_admin_metric_errors(&sample_captures),
+        );
+    }
+
+    (
+        "lane_window",
+        normalized_tool_stream_admin_metrics(&lane.admin_metrics),
+        lane.admin_metrics.error.clone(),
+    )
+}
+
+fn join_admin_metric_errors(captures: &[&NormalizedAdminMetricsCapture]) -> Option<String> {
+    let errors = captures
+        .iter()
+        .filter_map(|capture| capture.error.as_deref())
+        .collect::<Vec<_>>();
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+fn aggregate_tool_stream_admin_metrics(
+    metrics: &[NormalizedToolRequiredStreamAdminMetrics],
+) -> NormalizedToolRequiredStreamAdminMetrics {
+    NormalizedToolRequiredStreamAdminMetrics {
+        first_tool_delta_ms: aggregate_admin_latency_metric(
+            metrics.iter().map(|metric| metric.first_tool_delta_ms),
+        ),
+        tool_argument_assembly_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.tool_argument_assembly_ms),
+        ),
+        tool_intent_fill_ms: aggregate_admin_latency_metric(
+            metrics.iter().map(|metric| metric.tool_intent_fill_ms),
+        ),
+        tool_schema_validation_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.tool_schema_validation_ms),
+        ),
+        tool_finish_ms: aggregate_admin_latency_metric(
+            metrics.iter().map(|metric| metric.tool_finish_ms),
+        ),
+        validated_tool_call_ms: aggregate_admin_latency_metric(
+            metrics.iter().map(|metric| metric.validated_tool_call_ms),
+        ),
+        mlx_stream_first_upstream_byte_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.mlx_stream_first_upstream_byte_ms),
+        ),
+        mlx_stream_first_parsed_chunk_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.mlx_stream_first_parsed_chunk_ms),
+        ),
+        mlx_stream_first_tool_delta_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.mlx_stream_first_tool_delta_ms),
+        ),
+    }
+}
+
+fn aggregate_admin_latency_metric(
+    metrics: impl Iterator<Item = NormalizedAdminLatencyMetricReport>,
+) -> NormalizedAdminLatencyMetricReport {
+    let metrics = metrics.collect::<Vec<_>>();
+    NormalizedAdminLatencyMetricReport {
+        count_delta: sum_present_i64(metrics.iter().map(|metric| metric.count_delta)),
+        count_after: max_present_u64(metrics.iter().map(|metric| metric.count_after)),
+        min_ms_after: min_present_f64(metrics.iter().map(|metric| metric.min_ms_after)),
+        max_ms_after: max_present_f64(metrics.iter().map(|metric| metric.max_ms_after)),
+        avg_ms_after: avg_present_f64(metrics.iter().map(|metric| metric.avg_ms_after)),
+        window_avg_ms: avg_present_f64(metrics.iter().map(|metric| metric.window_avg_ms)),
+    }
+}
+
+fn tool_required_stream_gap(
+    client: &NormalizedToolRequiredStreamClientTiming,
+    admin_metrics: Option<&NormalizedToolRequiredStreamAdminMetrics>,
+) -> NormalizedToolRequiredStreamGap {
+    let client_tool = client.first_tool_delta_ms.map(|value| value as f64);
+    let client_finish = client.tool_finish_ms.map(|value| value as f64);
+    NormalizedToolRequiredStreamGap {
+        mlx_stream_to_client_ms: metric_gap_ms(
+            client_tool,
+            admin_metrics.and_then(|metrics| metrics.mlx_stream_first_tool_delta_ms.window_avg_ms),
+        ),
+        kir_first_tool_delta_to_client_ms: metric_gap_ms(
+            client_tool,
+            admin_metrics.and_then(|metrics| metrics.first_tool_delta_ms.window_avg_ms),
+        ),
+        validated_tool_call_to_tool_finish_ms: metric_gap_ms(
+            client_finish,
+            admin_metrics.and_then(|metrics| metrics.validated_tool_call_ms.window_avg_ms),
+        ),
+    }
+}
+
+fn tool_required_stream_attribution_decision(
+    client_first_tool_delta_ms: Option<u128>,
+    admin_metrics: Option<&NormalizedToolRequiredStreamAdminMetrics>,
+    admin_metrics_error: Option<&str>,
+) -> &'static str {
+    let Some(client_ms) = client_first_tool_delta_ms else {
+        return "missing_client_first_tool_delta";
+    };
+    let Some(upstream_ms) =
+        admin_metrics.and_then(|metrics| metrics.mlx_stream_first_tool_delta_ms.window_avg_ms)
+    else {
+        return if admin_metrics_error.is_some() {
+            "admin_metrics_unavailable"
+        } else {
+            "missing_mlx_stream_first_tool_delta"
+        };
+    };
+
+    let client_ms = client_ms as f64;
+    let gap_ms = client_ms - upstream_ms;
+    let aligned_threshold_ms = (client_ms * 0.10).max(50.0);
+    if gap_ms.abs() <= aligned_threshold_ms {
+        "upstream_aligned_with_client"
+    } else if gap_ms > aligned_threshold_ms {
+        "kir_buffering_or_validation_gap"
+    } else {
+        "upstream_slower_than_client"
+    }
+}
+
+fn metric_gap_ms(client_ms: Option<f64>, metric_ms: Option<f64>) -> Option<f64> {
+    Some(client_ms? - metric_ms?)
+}
+
+fn sum_present_i64(values: impl Iterator<Item = Option<i64>>) -> Option<i64> {
+    let mut found = false;
+    let mut sum = 0;
+    for value in values.flatten() {
+        found = true;
+        sum += value;
+    }
+    found.then_some(sum)
+}
+
+fn max_present_u64(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    values.flatten().max()
+}
+
+fn min_present_f64(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
+    values.flatten().reduce(f64::min)
+}
+
+fn max_present_f64(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
+    values.flatten().reduce(f64::max)
+}
+
+fn avg_present_f64(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
+    let mut count = 0;
+    let mut sum = 0.0;
+    for value in values.flatten() {
+        count += 1;
+        sum += value;
+    }
+    (count > 0).then_some(sum / f64::from(count))
 }
 
 fn normalized_tool_stream_admin_metrics(
@@ -3310,11 +3595,16 @@ fn admin_latency_metric(
     after: &Value,
     path: &[&str],
 ) -> NormalizedAdminLatencyMetricReport {
+    let before_summary = before.and_then(|value| value_path(value, path));
     let after_summary = value_path(after, path);
-    let before_count = before
-        .and_then(|value| value_path(value, path))
-        .and_then(metric_count);
+    let before_count = before_summary.and_then(metric_count);
     let after_count = after_summary.and_then(metric_count);
+    let before_avg = before_summary
+        .and_then(|summary| summary.get("avg"))
+        .and_then(Value::as_f64);
+    let after_avg = after_summary
+        .and_then(|summary| summary.get("avg"))
+        .and_then(Value::as_f64);
     NormalizedAdminLatencyMetricReport {
         count_delta: match (before_count, after_count) {
             (Some(before_count), Some(after_count)) => Some(after_count - before_count),
@@ -3327,10 +3617,32 @@ fn admin_latency_metric(
         max_ms_after: after_summary
             .and_then(|summary| summary.get("max"))
             .and_then(Value::as_f64),
-        avg_ms_after: after_summary
-            .and_then(|summary| summary.get("avg"))
-            .and_then(Value::as_f64),
+        avg_ms_after: after_avg,
+        window_avg_ms: admin_latency_window_avg_ms(
+            before_count,
+            before_avg,
+            after_count,
+            after_avg,
+        ),
     }
+}
+
+fn admin_latency_window_avg_ms(
+    before_count: Option<i64>,
+    before_avg_ms: Option<f64>,
+    after_count: Option<i64>,
+    after_avg_ms: Option<f64>,
+) -> Option<f64> {
+    let before_count = before_count?;
+    let after_count = after_count?;
+    let count_delta = after_count.checked_sub(before_count)?;
+    if count_delta <= 0 {
+        return None;
+    }
+    let before_total = before_avg_ms? * before_count as f64;
+    let after_total = after_avg_ms? * after_count as f64;
+    let window_total = after_total - before_total;
+    (window_total >= 0.0).then_some(window_total / count_delta as f64)
 }
 
 fn value_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -5095,6 +5407,8 @@ struct NormalizedSampleReport {
     finish_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip)]
+    tool_required_stream_admin_metrics: Option<NormalizedAdminMetricsCapture>,
 }
 
 impl NormalizedSampleReport {
@@ -5137,6 +5451,7 @@ impl NormalizedSampleReport {
             response_headers: None,
             finish_reason: None,
             error: None,
+            tool_required_stream_admin_metrics: None,
         }
     }
 }
@@ -5500,6 +5815,7 @@ struct NormalizedLatestPerformanceComparisonRow {
 #[derive(Debug, Serialize)]
 struct NormalizedToolRequiredStreamTimingReport {
     status: String,
+    attribution: NormalizedToolRequiredStreamAttributionReport,
     lanes: Vec<NormalizedToolRequiredStreamLaneTimingReport>,
 }
 
@@ -5507,6 +5823,7 @@ impl NormalizedToolRequiredStreamTimingReport {
     fn dry_run(lanes: &[NormalizedLaneReport]) -> Self {
         Self {
             status: "dry_run".to_owned(),
+            attribution: NormalizedToolRequiredStreamAttributionReport::dry_run(),
             lanes: lanes
                 .iter()
                 .map(|lane| NormalizedToolRequiredStreamLaneTimingReport {
@@ -5527,6 +5844,51 @@ impl NormalizedToolRequiredStreamTimingReport {
 }
 
 #[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamAttributionReport {
+    status: String,
+    rows: Vec<NormalizedToolRequiredStreamAttributionRow>,
+}
+
+impl NormalizedToolRequiredStreamAttributionReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamAttributionRow {
+    lane: String,
+    kind: &'static str,
+    pass_count: usize,
+    client: NormalizedToolRequiredStreamClientTiming,
+    admin_metrics_scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admin_metrics: Option<NormalizedToolRequiredStreamAdminMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admin_metrics_error: Option<String>,
+    first_tool_delta_gap_ms: NormalizedToolRequiredStreamGap,
+    decision: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamClientTiming {
+    first_byte_ms: Option<u128>,
+    first_sse_data_ms: Option<u128>,
+    first_tool_delta_ms: Option<u128>,
+    tool_finish_ms: Option<u128>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolRequiredStreamGap {
+    mlx_stream_to_client_ms: Option<f64>,
+    kir_first_tool_delta_to_client_ms: Option<f64>,
+    validated_tool_call_to_tool_finish_ms: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
 struct NormalizedToolRequiredStreamLaneTimingReport {
     lane: String,
     kind: &'static str,
@@ -5540,7 +5902,7 @@ struct NormalizedToolRequiredStreamLaneTimingReport {
     admin_metrics_error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct NormalizedToolRequiredStreamAdminMetrics {
     first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
     tool_argument_assembly_ms: NormalizedAdminLatencyMetricReport,
@@ -5553,13 +5915,14 @@ struct NormalizedToolRequiredStreamAdminMetrics {
     mlx_stream_first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 struct NormalizedAdminLatencyMetricReport {
     count_delta: Option<i64>,
     count_after: Option<u64>,
     min_ms_after: Option<f64>,
     max_ms_after: Option<f64>,
     avg_ms_after: Option<f64>,
+    window_avg_ms: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
