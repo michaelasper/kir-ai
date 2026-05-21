@@ -153,6 +153,31 @@ async fn chat_completions_rejects_duplicate_tool_names_for_required_choice() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_named_tool_choice_for_undeclared_tool() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "call the calculator"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {}}
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "calculator"}
+        }
+    }))
+    .await;
+
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("calculator"),
+        "undeclared named tool choice should report the missing tool: {body}"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_malformed_tool_schema_required_keyword() {
     let body = chat_validation_error(json!({
         "model": llm_engine::DEFAULT_MODEL_ID,

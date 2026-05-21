@@ -144,7 +144,7 @@ fn validate_tool_choice(
                 .iter()
                 .any(|tool| tool.function.name.as_str() == name.as_str())
             {
-                return Err(ApiError::unsupported_capability(format!(
+                return Err(ApiError::invalid_request(format!(
                     "required tool `{name}` was not declared"
                 )));
             }

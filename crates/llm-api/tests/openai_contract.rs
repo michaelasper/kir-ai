@@ -744,7 +744,7 @@ fn request_limits_allow_long_context_completion_prompt_by_default() {
 }
 
 #[test]
-fn rejects_required_tool_choice_for_missing_tool() {
+fn rejects_named_tool_choice_for_undeclared_tool() {
     let request: ChatCompletionRequest = serde_json::from_value(json!({
         "model": "local-qwen36",
         "messages": [{"role": "user", "content": "call the calculator"}],
@@ -758,8 +758,9 @@ fn rejects_required_tool_choice_for_missing_tool() {
 
     let err = request
         .validate()
-        .expect_err("missing tool must fail closed");
-    assert_eq!(err.code(), "unsupported_capability");
+        .expect_err("undeclared named tool choice must fail closed");
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("calculator"));
 }
 
 #[test]
