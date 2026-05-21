@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.0](https://github.com/michaelasper/kir-ai/compare/v1.25.12...v1.26.0) (2026-05-21)
+
+### Features
+
+* **COR-333:** add HTTPS serve option ([5311be0](https://github.com/michaelasper/kir-ai/commit/5311be0d4c49e6f8a040fba7ea26725e7ec27b16))
+
+### Bug Fixes
+
+* **COR-333:** decouple TLS handshakes from accept ([c5530f2](https://github.com/michaelasper/kir-ai/commit/c5530f278d4ce8dcc8f158f3eed94ee013bbf24f))
+
 ## [1.25.12](https://github.com/michaelasper/kir-ai/compare/v1.25.11...v1.25.12) (2026-05-21)
 
 ### Bug Fixes
