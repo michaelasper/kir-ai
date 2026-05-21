@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.3](https://github.com/michaelasper/kir-ai/compare/v1.27.2...v1.27.3) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-350:** land no-progress stalled-turn classifier ([0d39b1d](https://github.com/michaelasper/kir-ai/commit/0d39b1db4df16db4c33414f995f7f18f8f140981))
+* **COR-350:** refine stalled-turn stance heuristics ([7c63d1e](https://github.com/michaelasper/kir-ai/commit/7c63d1e32813e27e88738f1b170f809a8c80431d))
+* **COR-350:** tighten unicode stalled-turn stance detection ([f0a755e](https://github.com/michaelasper/kir-ai/commit/f0a755e04d1b4c2445f3f02028b37ab8ce424202))
+
 ## [1.27.2](https://github.com/michaelasper/kir-ai/compare/v1.27.1...v1.27.2) (2026-05-21)
 
 ### Bug Fixes
