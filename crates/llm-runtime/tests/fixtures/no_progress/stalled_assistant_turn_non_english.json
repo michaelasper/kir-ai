@@ -1,0 +1,20 @@
+{
+  "name": "stalled_assistant_turn_non_english",
+  "expected_code": "no_progress_stalled_assistant_turn",
+  "request": {
+    "model": "local-qwen36",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Aplica la correccion solicitada ahora."
+      }
+    ],
+    "max_tokens": 64
+  },
+  "backend_output": {
+    "text": "Voy a empezar.",
+    "prompt_tokens": 8,
+    "completion_tokens": 4,
+    "finish_reason": "stop"
+  }
+}

@@ -73,7 +73,7 @@ pub(crate) fn classify_chat_no_progress(
         if repeated_assistant_content(&parsed.content, request) {
             return Some(NoProgressClass::RepeatedAssistantContent);
         }
-        if stalled_assistant_turn(&parsed.content) {
+        if stalled_assistant_turn(&parsed.content, request) {
             return Some(NoProgressClass::StalledAssistantTurn);
         }
     } else if let Some(class) = classify_repeated_invalid_tool_call_no_progress(parsed, request) {
@@ -209,40 +209,214 @@ fn tool_result_indicates_failure(content: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-fn stalled_assistant_turn(content: &str) -> bool {
-    let normalized = normalized_progress_text(content);
-    if normalized.is_empty() || normalized.split_whitespace().count() > 16 {
+fn stalled_assistant_turn(content: &str, request: &ChatCompletionRequest) -> bool {
+    let terms = normalized_progress_terms(content);
+    if terms.is_empty() || terms.len() > 6 || !plain_short_turn_shape(content) {
         return false;
     }
-    [
-        "i will get started",
-        "i ll get started",
-        "i will check",
-        "i will look",
-        "let me check",
-        "let me look",
-        "working on it",
-        "i can help with that",
-        "sure i can help",
-    ]
-    .iter()
-    .any(|phrase| normalized.contains(phrase))
+
+    let Some(user_content) = latest_user_content(request) else {
+        return false;
+    };
+    let user_terms = normalized_progress_terms(user_content);
+    if meaningful_progress_term_count(&user_terms) < 3 {
+        return false;
+    }
+
+    has_deferred_action_stance(&terms, content)
 }
 
 fn normalized_progress_text(content: &str) -> String {
-    content
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
+    normalized_progress_terms(content).join(" ")
+}
+
+fn normalized_progress_terms(content: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+
+    for ch in content.chars() {
+        if no_space_progress_char(ch) {
+            if !current.is_empty() {
+                terms.push(std::mem::take(&mut current));
             }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+            terms.push(ch.to_string());
+        } else if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+        } else if !current.is_empty() {
+            terms.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        terms.push(current);
+    }
+
+    terms
+}
+
+fn no_space_progress_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{3040}'..='\u{309F}'
+            | '\u{30A0}'..='\u{30FF}'
+            | '\u{AC00}'..='\u{D7AF}'
+    )
+}
+
+fn plain_short_turn_shape(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 96 || trimmed.ends_with('?') {
+        return false;
+    }
+    !trimmed.chars().any(|ch| {
+        ch.is_ascii_digit()
+            || matches!(
+                ch,
+                '\n' | '\r' | '`' | '{' | '}' | '[' | ']' | '<' | '>' | '|' | '=' | ':' | ';'
+            )
+    })
+}
+
+fn latest_user_content(request: &ChatCompletionRequest) -> Option<&str> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == ChatRole::User)
+        .and_then(|message| message.content.as_deref())
+}
+
+// A stalled turn is a short promise to act later, not merely a terse answer with little
+// prompt overlap. Keep this signal stance-based so answers like `This is blue.` pass.
+fn has_deferred_action_stance(terms: &[String], content: &str) -> bool {
+    has_english_deferred_action_stance(terms)
+        || has_spanish_deferred_action_stance(terms)
+        || has_cyrillic_deferred_action_stance(terms)
+        || has_no_space_deferred_action_stance(content)
+}
+
+fn has_english_deferred_action_stance(terms: &[String]) -> bool {
+    let has_first_person = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "i" | "me" | "my"));
+    let has_future_or_modal = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "will" | "ll" | "can"));
+    let has_action = terms.iter().any(|term| english_deferred_action_term(term));
+    let has_working_on_target = terms.windows(3).any(|window| {
+        window[0] == "working"
+            && window[1] == "on"
+            && matches!(window[2].as_str(), "it" | "this" | "that")
+    });
+
+    has_working_on_target
+        || terms
+            .windows(2)
+            .any(|window| window[0] == "let" && window[1] == "me")
+            && has_action
+        || has_first_person && has_future_or_modal && has_action
+}
+
+fn english_deferred_action_term(term: &str) -> bool {
+    matches!(
+        term,
+        "check"
+            | "checking"
+            | "get"
+            | "handle"
+            | "help"
+            | "investigate"
+            | "look"
+            | "proceed"
+            | "start"
+            | "started"
+            | "starting"
+            | "work"
+            | "working"
+    )
+}
+
+fn has_spanish_deferred_action_stance(terms: &[String]) -> bool {
+    let has_future_or_modal = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "voy" | "puedo"));
+    has_future_or_modal && terms.iter().any(|term| spanish_deferred_action_term(term))
+}
+
+fn spanish_deferred_action_term(term: &str) -> bool {
+    matches!(
+        term,
+        "ayudar" | "comenzar" | "empezar" | "mirar" | "revisar" | "trabajar" | "verificar"
+    )
+}
+
+fn has_cyrillic_deferred_action_stance(terms: &[String]) -> bool {
+    let has_future_or_modal = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "буду" | "будем" | "могу" | "можем"));
+
+    terms
+        .iter()
+        .any(|term| cyrillic_first_person_future_action_term(term))
+        || has_future_or_modal && terms.iter().any(|term| cyrillic_deferred_action_term(term))
+}
+
+fn cyrillic_first_person_future_action_term(term: &str) -> bool {
+    matches!(
+        term,
+        "займусь" | "начну" | "помогу" | "посмотрю" | "проверю" | "сделаю"
+    )
+}
+
+fn cyrillic_deferred_action_term(term: &str) -> bool {
+    matches!(
+        term,
+        "начать"
+            | "начинать"
+            | "помогать"
+            | "помочь"
+            | "посмотреть"
+            | "проверить"
+            | "проверять"
+            | "работать"
+            | "сделать"
+            | "смотреть"
+    )
+}
+
+fn has_no_space_deferred_action_stance(content: &str) -> bool {
+    let compact: String = content
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+
+    has_no_space_first_person_future_stance(&compact) && has_no_space_deferred_action(&compact)
+}
+
+fn has_no_space_first_person_future_stance(compact: &str) -> bool {
+    ["我会", "我将", "我要", "我来"]
+        .iter()
+        .any(|marker| compact.contains(marker))
+}
+
+fn has_no_space_deferred_action(compact: &str) -> bool {
+    ["开始", "处理", "检查", "修复", "着手"]
+        .iter()
+        .any(|marker| compact.contains(marker))
+}
+
+fn meaningful_progress_term_count(terms: &[String]) -> usize {
+    terms
+        .iter()
+        .filter(|term| meaningful_progress_term(term))
+        .count()
+}
+
+fn meaningful_progress_term(term: &str) -> bool {
+    term.chars().count() >= 3 || term.chars().next().is_some_and(no_space_progress_char)
 }
 
 #[cfg(test)]
@@ -334,5 +508,219 @@ mod tests {
             classify_chat_no_progress(raw_text, &parsed, 100, true, &minimal_request(), policy);
 
         assert_ne!(result, Some(NoProgressClass::TextFallbackRequiredTool));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_uses_language_neutral_shape() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Apply the requested code fix now."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("I will get started.", &request));
+        assert!(stalled_assistant_turn("Working on it.", &request));
+        assert!(stalled_assistant_turn("Voy a empezar.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_ignores_short_content_with_request_terms() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Should I use cargo fmt?"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Use cargo fmt.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_ignores_short_answers_to_short_prompts() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What color?"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("It is blue.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_short_answer_with_new_answer_term() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the color?"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("It is blue.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_short_answer_to_command_prompt() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate bonjour to English."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("It means hello.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_bare_working_translation_answer() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate \"trabajando\" to English."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Working.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_non_first_person_spanish_modal_answer() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate \"can help\" to Spanish."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Puede ayudar.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_terse_assertive_answers() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the color?"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("This is blue.", &request));
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate bonjour to English."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Bonjour means hello.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_allows_unicode_terse_substantive_answers() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Translate start to Chinese."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("开始。", &request));
+        assert!(!stalled_assistant_turn("着手。", &request));
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the Russian word for beginning?"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(!stalled_assistant_turn("Начало.", &request));
+        assert!(!stalled_assistant_turn("Начало работы.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_detects_unicode_stalls_without_three_whitespace_words() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Проверь падение теста сейчас."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("Начну проверку.", &request));
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "请现在修复这个测试失败。"}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("我会开始。", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_preserves_commitments_that_share_prompt_verbs() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Check the failing test now."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("I will check.", &request));
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Look at the parser failure now."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("Let me look.", &request));
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Help with the parser failure now."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("I can help with that.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_preserves_get_started_commitment_with_prompt_overlap() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Please get started on the code fix now."}],
+            "max_tokens": 64
+        }))
+        .unwrap();
+
+        assert!(stalled_assistant_turn("I will get started.", &request));
+    }
+
+    #[test]
+    fn stalled_assistant_turn_ignores_structured_content() {
+        let request = minimal_request();
+
+        assert!(!stalled_assistant_turn("status: done", &request));
+        assert!(!stalled_assistant_turn("`cargo fmt`", &request));
+    }
+
+    #[test]
+    fn normalized_progress_text_preserves_unicode_terms() {
+        assert_eq!(normalized_progress_text("Voy a empezar."), "voy a empezar");
+        assert_eq!(
+            normalized_progress_text("Revisare la correccion."),
+            "revisare la correccion"
+        );
+        assert_eq!(
+            normalized_progress_text("Начну проверку."),
+            "начну проверку"
+        );
     }
 }
