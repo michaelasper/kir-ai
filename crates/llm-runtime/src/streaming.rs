@@ -208,17 +208,24 @@ fn tool_call_delta_progress_bytes(tool_call: &llm_api::ToolCallDelta) -> usize {
 #[derive(Debug)]
 pub(crate) struct CancelOnDrop {
     token: CancellationToken,
+    armed: bool,
 }
 
 impl CancelOnDrop {
     pub(crate) fn new(token: CancellationToken) -> Self {
-        Self { token }
+        Self { token, armed: true }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.token.cancel();
+        if self.armed {
+            self.token.cancel();
+        }
     }
 }
 
@@ -337,7 +344,7 @@ pub(crate) fn streaming_completion_stream<'a>(
 ) -> CompletionStream<'a> {
     let cancel_on_drop = CancelOnDrop::new(cancellation);
     let events = async_stream::try_stream! {
-        let _cancel_on_drop = cancel_on_drop;
+        let mut cancel_on_drop = cancel_on_drop;
         let mut backend_stream = backend_stream;
         let mut raw_text = String::new();
         let mut emitted_len = 0;
@@ -385,6 +392,7 @@ pub(crate) fn streaming_completion_stream<'a>(
                 break;
             }
         }
+        cancel_on_drop.disarm();
         if finish_reason != llm_api::FinishReason::Stop && emitted_len < raw_text.len() {
             yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
                 &completion,
@@ -474,7 +482,7 @@ pub(crate) fn streaming_chat_stream<'a>(
     let cancel_on_drop = CancelOnDrop::new(cancellation);
     let tool_markup_policy = adapter.tool_markup_policy();
     let events = async_stream::try_stream! {
-        let _cancel_on_drop = cancel_on_drop;
+        let mut cancel_on_drop = cancel_on_drop;
         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
             &completion,
             ChatCompletionDelta {
@@ -646,6 +654,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                 break;
             }
         }
+        cancel_on_drop.disarm();
         let visible_len = stop_at_len.unwrap_or(raw_text.len());
         if !stopped_by_sequence
             && emitted_len < visible_len

@@ -136,11 +136,13 @@ where
         let adapter = self.chat_adapter()?;
         let request_ref = request.as_ref();
         let backend_request = self.chat_backend_request(adapter, request_ref)?;
-        let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
+        let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
             .generate_with_cancel(backend_request, cancellation)
-            .await?;
+            .await;
+        cancel_on_drop.disarm();
+        let output = output?;
         let request = request.into_inner();
         let mut raw_text = output.text;
         let stopped = apply_stop_sequences(&mut raw_text, &request.stop);

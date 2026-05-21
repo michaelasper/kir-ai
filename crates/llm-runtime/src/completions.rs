@@ -121,11 +121,13 @@ where
         let model = request.model.clone();
         let stop = request.stop.clone();
         let backend_request = completion_backend_request(request)?;
-        let _cancel_on_drop = CancelOnDrop::new(cancellation.clone());
+        let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
             .generate_with_cancel(backend_request, cancellation)
-            .await?;
+            .await;
+        cancel_on_drop.disarm();
+        let output = output?;
         let mut text = output.text;
         let stopped = apply_stop_sequences(&mut text, &stop);
         let no_progress = classify_no_progress(&text, output.completion_tokens);
