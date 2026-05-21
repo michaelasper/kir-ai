@@ -1,3 +1,4 @@
+use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 #[cfg(feature = "native-gemma")]
 use crate::{NativeGemmaAdapter, NativeGemmaBackend, NativeGemmaLoadOptions};
 #[cfg(feature = "native-qwen")]
@@ -164,20 +165,40 @@ impl NativeTextBackend {
         snapshot_path: impl AsRef<Path>,
         options: NativeTextLoadOptions,
     ) -> anyhow::Result<Self> {
+        let snapshot_path = snapshot_path.as_ref();
+        let identity = ResolvedSnapshotBackend::resolve(
+            snapshot_path,
+            None,
+            options.family,
+            SnapshotBackendLoader::NativeMetal,
+            true,
+            false,
+        )
+        .await?;
+        Self::open_with_snapshot_identity(model_id, snapshot_path, options, identity).await
+    }
+
+    pub(crate) async fn open_with_snapshot_identity(
+        model_id: impl Into<String>,
+        snapshot_path: impl AsRef<Path>,
+        options: NativeTextLoadOptions,
+        identity: ResolvedSnapshotBackend,
+    ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
-        let family = match options.family {
-            Some(family) => family,
-            None => infer_native_text_family(snapshot_path).await?,
-        };
+        let family = identity
+            .family()
+            .or(options.family)
+            .ok_or_else(|| anyhow::anyhow!("native text snapshot identity is missing family"))?;
         match family {
             ModelFamily::Gemma => {
                 #[cfg(feature = "native-gemma")]
                 {
-                    let driver = NativeGemmaBackend::open_with_options(
+                    let driver = NativeGemmaBackend::open_with_snapshot_identity(
                         model_id,
                         snapshot_path,
                         options.gemma,
+                        identity,
                     )
                     .await?
                     .into_driver();
@@ -205,10 +226,14 @@ impl NativeTextBackend {
             ModelFamily::Qwen => {
                 #[cfg(feature = "native-qwen")]
                 {
-                    let driver =
-                        NativeQwenBackend::open_with_options(model_id, snapshot_path, options.qwen)
-                            .await?
-                            .into_driver();
+                    let driver = NativeQwenBackend::open_with_snapshot_identity(
+                        model_id,
+                        snapshot_path,
+                        options.qwen,
+                        identity,
+                    )
+                    .await?
+                    .into_driver();
                     Ok(Self {
                         inner: NativeTextBackendInner::Qwen(driver),
                     })

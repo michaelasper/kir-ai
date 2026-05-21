@@ -9,7 +9,9 @@ mod store;
 
 pub use client::{HubClient, HubModelInfo, HubTimeouts};
 pub use error::HubError;
-pub use manifest::{ManifestFile, PromotedSnapshot, SnapshotManifest, SnapshotVerification};
+pub use manifest::{
+    ManifestFile, PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest, SnapshotVerification,
+};
 pub use plan::{ArtifactClass, DownloadPlan, PlannedFile, build_download_plan};
 pub use profile::ModelProfile;
 pub use prune::{

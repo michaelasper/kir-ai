@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 
-pub(crate) const SNAPSHOT_MANIFEST_FILE: &str = "llm-engine-manifest.json";
+pub const SNAPSHOT_MANIFEST_FILE: &str = "llm-engine-manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotManifest {

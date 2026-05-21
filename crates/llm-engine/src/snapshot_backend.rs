@@ -5,8 +5,8 @@ use crate::{
 };
 #[cfg(feature = "mlx")]
 use crate::{MlxBackend, MlxBackendOptions};
-use llm_backend::ModelBackend;
-use llm_hub::SnapshotManifest;
+use llm_backend::{BackendModelMetadata, ModelBackend};
+use llm_hub::{ModelStore, PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest};
 use llm_models::{BackendKind, ModelFamily};
 use std::path::Path;
 
@@ -18,6 +18,117 @@ pub fn parse_snapshot_model_family(value: &str) -> anyhow::Result<ModelFamily> {
             "unsupported snapshot family `{value}`; expected `qwen`, `deep_seek`, `gemma`, or `llama`"
         )
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSnapshotBackend {
+    loader: SnapshotBackendLoader,
+    family: Option<ModelFamily>,
+    manifest_digest: Option<String>,
+    quantization: Option<String>,
+    repo_id: Option<String>,
+    resolved_commit: Option<String>,
+    profile: Option<String>,
+}
+
+impl ResolvedSnapshotBackend {
+    pub(crate) async fn resolve(
+        snapshot_path: &Path,
+        requested_loader: Option<SnapshotBackendLoader>,
+        requested_family: Option<ModelFamily>,
+        default_loader: SnapshotBackendLoader,
+        detect_native_family: bool,
+        require_mlx_family: bool,
+    ) -> anyhow::Result<Self> {
+        let promoted_snapshot = inspect_snapshot_manifest(snapshot_path).await?;
+        let manifest = promoted_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.manifest);
+        let manifest_family = snapshot_manifest_family(manifest)?;
+        let loader = select_snapshot_backend_loader(manifest, requested_loader, default_loader)?;
+        let detected_family = detect_snapshot_family(
+            snapshot_path,
+            loader,
+            manifest_family,
+            requested_family,
+            detect_native_family,
+        )
+        .await?;
+        let family = requested_family.or(manifest_family).or(detected_family);
+        validate_snapshot_family(manifest_family, requested_family)?;
+        if require_mlx_family {
+            validate_snapshot_loader_has_family(loader, family)?;
+        }
+        validate_snapshot_loader_family(loader, family)?;
+        Ok(Self::from_parts(promoted_snapshot, loader, family))
+    }
+
+    fn from_parts(
+        promoted_snapshot: Option<PromotedSnapshot>,
+        loader: SnapshotBackendLoader,
+        family: Option<ModelFamily>,
+    ) -> Self {
+        let manifest_digest = promoted_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.manifest_digest.clone());
+        let manifest = promoted_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.manifest);
+        Self {
+            loader,
+            family,
+            manifest_digest,
+            quantization: manifest.map(|manifest| manifest.quantization.clone()),
+            repo_id: manifest.map(|manifest| manifest.repo_id.clone()),
+            resolved_commit: manifest.map(|manifest| manifest.resolved_commit.clone()),
+            profile: manifest.map(|manifest| manifest.profile.clone()),
+        }
+    }
+
+    pub fn loader(&self) -> SnapshotBackendLoader {
+        self.loader
+    }
+
+    pub fn family(&self) -> Option<ModelFamily> {
+        self.family
+    }
+
+    pub fn manifest_digest(&self) -> Option<&str> {
+        self.manifest_digest.as_deref()
+    }
+
+    pub fn quantization(&self) -> Option<&str> {
+        self.quantization.as_deref()
+    }
+
+    pub fn repo_id(&self) -> Option<&str> {
+        self.repo_id.as_deref()
+    }
+
+    pub fn resolved_commit(&self) -> Option<&str> {
+        self.resolved_commit.as_deref()
+    }
+
+    pub fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+
+    pub(crate) fn backend_metadata(
+        &self,
+        model_id: impl Into<String>,
+        backend: impl Into<String>,
+        fallback_family: Option<ModelFamily>,
+    ) -> BackendModelMetadata {
+        let mut metadata = BackendModelMetadata::new(model_id, backend);
+        if let Some(family) = self.family.or(fallback_family) {
+            metadata.family = Some(family.canonical_slug().to_owned());
+        }
+        metadata.quantization = self.quantization.clone();
+        metadata.repo_id = self.repo_id.clone();
+        metadata.resolved_commit = self.resolved_commit.clone();
+        metadata.profile = self.profile.clone();
+        metadata
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,29 +168,33 @@ pub async fn open_snapshot_backend(
     options: SnapshotBackendOptions,
 ) -> anyhow::Result<Box<dyn ModelBackend>> {
     let snapshot_path = snapshot_path.as_ref();
-    let manifest = snapshot_manifest(snapshot_path).await?;
     let requested_family = options.family;
     #[cfg(feature = "mlx")]
     let requested_family = requested_family.or(options.mlx.family);
     #[cfg(not(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma")))]
     let _ = &model_id;
-    let manifest_family = snapshot_manifest_family(manifest.as_ref())?;
-    let loader = select_snapshot_backend_loader(manifest.as_ref(), options.loader)?;
-    let detected_family =
-        detect_snapshot_family(snapshot_path, loader, manifest_family, requested_family).await?;
-    let effective_family = requested_family.or(manifest_family).or(detected_family);
-    validate_snapshot_family(manifest_family, requested_family)?;
-    validate_snapshot_loader_has_family(loader, manifest_family, requested_family)?;
-    validate_snapshot_loader_family(loader, effective_family)?;
-    match loader {
+    let identity = ResolvedSnapshotBackend::resolve(
+        snapshot_path,
+        options.loader,
+        requested_family,
+        SnapshotBackendLoader::NativeMetal,
+        true,
+        true,
+    )
+    .await?;
+    match identity.loader() {
         SnapshotBackendLoader::Mlx => {
             #[cfg(feature = "mlx")]
             {
                 let model_id = model_id.into();
-                let mut mlx_options = options.mlx;
-                mlx_options.family = effective_family;
                 Ok(Box::new(
-                    MlxBackend::open_with_options(model_id, snapshot_path, mlx_options).await?,
+                    MlxBackend::open_with_snapshot_identity(
+                        model_id,
+                        snapshot_path,
+                        options.mlx,
+                        identity,
+                    )
+                    .await?,
                 ))
             }
             #[cfg(not(feature = "mlx"))]
@@ -93,15 +208,16 @@ pub async fn open_snapshot_backend(
             #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
             {
                 let model_id = model_id.into();
-                let mut native_options = options.native_text;
-                if let Some(family) = effective_family {
-                    native_options = native_options.with_family(family);
-                }
                 Ok(Box::new(
-                    NativeTextBackend::open_with_options(model_id, snapshot_path, native_options)
-                        .await?
-                        .with_max_new_tokens(options.max_new_tokens)
-                        .with_max_prefill_tokens(options.max_prefill_tokens),
+                    NativeTextBackend::open_with_snapshot_identity(
+                        model_id,
+                        snapshot_path,
+                        options.native_text,
+                        identity,
+                    )
+                    .await?
+                    .with_max_new_tokens(options.max_new_tokens)
+                    .with_max_prefill_tokens(options.max_prefill_tokens),
                 ))
             }
             #[cfg(not(any(feature = "native-qwen", feature = "native-gemma")))]
@@ -119,8 +235,10 @@ async fn detect_snapshot_family(
     loader: SnapshotBackendLoader,
     manifest_family: Option<ModelFamily>,
     requested_family: Option<ModelFamily>,
+    enabled: bool,
 ) -> anyhow::Result<Option<ModelFamily>> {
-    if loader == SnapshotBackendLoader::NativeMetal
+    if enabled
+        && loader == SnapshotBackendLoader::NativeMetal
         && manifest_family.is_none()
         && requested_family.is_none()
     {
@@ -134,6 +252,7 @@ async fn detect_snapshot_family(
 fn select_snapshot_backend_loader(
     manifest: Option<&SnapshotManifest>,
     requested: Option<SnapshotBackendLoader>,
+    default_loader: SnapshotBackendLoader,
 ) -> anyhow::Result<SnapshotBackendLoader> {
     let manifest_loader = snapshot_manifest_loader(manifest)?;
     if let (Some(requested), Some(manifest_loader)) = (requested, manifest_loader)
@@ -149,7 +268,7 @@ fn select_snapshot_backend_loader(
     }
     match manifest_loader {
         Some(loader) => Ok(loader),
-        None => Ok(SnapshotBackendLoader::NativeMetal),
+        None => Ok(default_loader),
     }
 }
 
@@ -170,10 +289,9 @@ fn validate_snapshot_family(
 
 fn validate_snapshot_loader_has_family(
     loader: SnapshotBackendLoader,
-    manifest_family: Option<ModelFamily>,
-    requested_family: Option<ModelFamily>,
+    family: Option<ModelFamily>,
 ) -> anyhow::Result<()> {
-    if loader == SnapshotBackendLoader::Mlx && manifest_family.or(requested_family).is_none() {
+    if loader == SnapshotBackendLoader::Mlx && family.is_none() {
         anyhow::bail!(
             "snapshot loader `mlx` requires model family metadata; add --family qwen, deep_seek, gemma, or llama for raw MLX snapshots or promote the snapshot with an llm-engine manifest"
         );
@@ -227,13 +345,14 @@ fn snapshot_manifest_family(
         .transpose()
 }
 
-async fn snapshot_manifest(snapshot_path: &Path) -> anyhow::Result<Option<SnapshotManifest>> {
-    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
+async fn inspect_snapshot_manifest(
+    snapshot_path: &Path,
+) -> anyhow::Result<Option<PromotedSnapshot>> {
+    let manifest_path = snapshot_path.join(SNAPSHOT_MANIFEST_FILE);
+    if !tokio::fs::try_exists(&manifest_path).await? {
         return Ok(None);
-    };
-    let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
-    Ok(Some(manifest))
+    }
+    Ok(Some(ModelStore::inspect_snapshot(snapshot_path).await?))
 }
 
 #[cfg(all(
@@ -260,6 +379,27 @@ mod tests {
         rt.block_on(open_snapshot_backend(model_id, snapshot_path, options))
     }
 
+    fn resolve_identity_blocking(
+        snapshot_path: &Path,
+        requested_loader: Option<SnapshotBackendLoader>,
+        requested_family: Option<ModelFamily>,
+        default_loader: SnapshotBackendLoader,
+        detect_native_family: bool,
+    ) -> anyhow::Result<ResolvedSnapshotBackend> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(ResolvedSnapshotBackend::resolve(
+            snapshot_path,
+            requested_loader,
+            requested_family,
+            default_loader,
+            detect_native_family,
+            true,
+        ))
+    }
+
     #[test]
     fn snapshot_backend_default_prefill_tokens_match_long_context_default() {
         assert_eq!(
@@ -267,6 +407,38 @@ mod tests {
             crate::DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS
         );
         assert_eq!(crate::DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS, 2048);
+    }
+
+    #[test]
+    fn resolved_snapshot_backend_includes_manifest_identity_fields() {
+        let snapshot = temp_snapshot_dir("resolved-snapshot-identity");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest(&snapshot, "mlx");
+
+        let identity = resolve_identity_blocking(
+            &snapshot,
+            None,
+            None,
+            SnapshotBackendLoader::NativeMetal,
+            false,
+        )
+        .expect("identity resolves");
+
+        assert_eq!(identity.loader(), SnapshotBackendLoader::Mlx);
+        assert_eq!(identity.family(), Some(ModelFamily::Qwen));
+        assert_eq!(identity.manifest_digest().map(str::len), Some(64));
+        assert_eq!(
+            identity.repo_id(),
+            Some("mlx-community/Qwen3.6-35B-A3B-4bit")
+        );
+        assert_eq!(identity.profile(), Some("qwen36-mlx-4bit"));
+        assert_eq!(identity.quantization(), Some("4bit"));
+        assert_eq!(
+            identity.resolved_commit(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        std::fs::remove_dir_all(snapshot).ok();
     }
 
     #[test]
@@ -293,6 +465,7 @@ mod tests {
 
         assert_eq!(metadata.backend, "mlx");
         assert_eq!(metadata.profile.as_deref(), Some("qwen36-mlx-4bit"));
+        assert_manifest_metadata(&metadata);
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -345,6 +518,33 @@ mod tests {
 
         assert_eq!(metadata.backend, "native-qwen");
         assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn snapshot_backend_factory_passes_manifest_identity_to_native_qwen() {
+        let snapshot = temp_snapshot_dir("native-qwen-manifest-identity");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_manifest_with_family(&snapshot, "native-metal", "qwen");
+        copy_qwen36_fixture("config.json", snapshot.join("config.json"));
+        copy_qwen36_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+        copy_qwen36_fixture(
+            "model.safetensors.index.json",
+            snapshot.join("model.safetensors.index.json"),
+        );
+
+        let backend = open_blocking(
+            crate::DEFAULT_MODEL_ID,
+            &snapshot,
+            SnapshotBackendOptions::default(),
+        )
+        .expect("native Qwen backend opens promoted snapshot");
+        let metadata = backend.model_metadata();
+
+        assert_eq!(metadata.backend, "native-qwen");
+        assert_eq!(metadata.family.as_deref(), Some("qwen"));
+        assert_manifest_metadata(&metadata);
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -619,6 +819,7 @@ mod tests {
 
         assert_eq!(backend.model_metadata().backend, "native-gemma");
         assert_eq!(backend.model_metadata().family.as_deref(), Some("gemma"));
+        assert_manifest_metadata(&backend.model_metadata());
         std::fs::remove_dir_all(snapshot).ok();
     }
 
@@ -687,6 +888,19 @@ mod tests {
 
     fn write_manifest(root: &Path, loader: &str) {
         write_manifest_with_family(root, loader, "qwen");
+    }
+
+    fn assert_manifest_metadata(metadata: &BackendModelMetadata) {
+        assert_eq!(
+            metadata.repo_id.as_deref(),
+            Some("mlx-community/Qwen3.6-35B-A3B-4bit")
+        );
+        assert_eq!(metadata.profile.as_deref(), Some("qwen36-mlx-4bit"));
+        assert_eq!(metadata.quantization.as_deref(), Some("4bit"));
+        assert_eq!(
+            metadata.resolved_commit.as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
     }
 
     fn copy_qwen36_fixture(name: &str, destination: impl AsRef<Path>) {

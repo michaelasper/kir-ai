@@ -1,3 +1,4 @@
+use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use llm_backend::{
@@ -101,10 +102,35 @@ impl MlxBackend {
                 options.endpoint
             );
         }
+        let snapshot_path = snapshot_path.as_ref();
+        let identity = ResolvedSnapshotBackend::resolve(
+            snapshot_path,
+            None,
+            options.family,
+            SnapshotBackendLoader::Mlx,
+            false,
+            false,
+        )
+        .await?;
+        Self::open_with_snapshot_identity(model_id, snapshot_path, options, identity).await
+    }
+
+    pub(crate) async fn open_with_snapshot_identity(
+        model_id: impl Into<String>,
+        snapshot_path: impl AsRef<Path>,
+        options: MlxBackendOptions,
+        identity: ResolvedSnapshotBackend,
+    ) -> anyhow::Result<Self> {
+        if !is_loopback_endpoint(&options.endpoint) {
+            anyhow::bail!(
+                "MLX endpoint `{}` is not loopback; refusing to proxy generation to a remote sidecar",
+                options.endpoint
+            );
+        }
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let metadata = mlx_metadata(&model_id, snapshot_path, options.family).await?;
+        let metadata = mlx_metadata(&model_id, &identity)?;
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
         let tool_markup =
             mlx_tool_markup_for_metadata(&metadata, Some(snapshot_path), options.tool_parser)?;

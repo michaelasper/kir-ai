@@ -1,3 +1,4 @@
+use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use crate::{
     DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
@@ -20,8 +21,7 @@ use llm_backend::{
     native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
     qwen_layer_caches_for_spec, qwen_static_f32_tensors_for_spec,
 };
-use llm_hub::SnapshotManifest;
-use llm_models::QwenModelSpec;
+use llm_models::{ModelFamily, QwenModelSpec};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
@@ -104,11 +104,30 @@ impl NativeQwenBackend {
         snapshot_path: impl AsRef<Path>,
         options: NativeQwenLoadOptions,
     ) -> anyhow::Result<Self> {
+        let snapshot_path = snapshot_path.as_ref();
+        let identity = ResolvedSnapshotBackend::resolve(
+            snapshot_path,
+            None,
+            None,
+            SnapshotBackendLoader::NativeMetal,
+            false,
+            false,
+        )
+        .await?;
+        Self::open_with_snapshot_identity(model_id, snapshot_path, options, identity).await
+    }
+
+    pub(crate) async fn open_with_snapshot_identity(
+        model_id: impl Into<String>,
+        snapshot_path: impl AsRef<Path>,
+        options: NativeQwenLoadOptions,
+        identity: ResolvedSnapshotBackend,
+    ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
         let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
-        let metadata = native_qwen_metadata(&model_id, snapshot_path).await?;
+        let metadata = native_qwen_metadata(&model_id, &identity)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
         let spec = QwenModelSpec::from_config_json(&config_json)?;
         store.index().validate_qwen_text_weights(&spec)?;
@@ -437,35 +456,25 @@ impl ModelBackend for NativeQwenBackend {
     }
 }
 
-async fn native_qwen_metadata(
+fn native_qwen_metadata(
     model_id: &str,
-    snapshot_path: &Path,
+    identity: &ResolvedSnapshotBackend,
 ) -> anyhow::Result<BackendModelMetadata> {
-    let manifest_path = snapshot_path.join("llm-engine-manifest.json");
-    let mut metadata =
-        BackendModelMetadata::new(model_id.to_owned(), "native-qwen").with_family("qwen");
-    let Some(manifest_bytes) = crate::fs_util::read_optional_bytes(&manifest_path).await? else {
-        return Ok(metadata);
-    };
-    let manifest = serde_json::from_slice::<SnapshotManifest>(&manifest_bytes)?;
-    if manifest.family != "qwen" {
+    if let Some(family) = identity.family()
+        && family != ModelFamily::Qwen
+    {
         anyhow::bail!(
             "native Qwen backend only supports family `qwen`, not `{}`",
-            manifest.family
+            family.canonical_slug()
         );
     }
-    if manifest.loader != "native-metal" {
+    if identity.loader() != SnapshotBackendLoader::NativeMetal {
         anyhow::bail!(
             "native Qwen backend only supports loader `native-metal`, not `{}`",
-            manifest.loader
+            identity.loader().canonical_slug()
         );
     }
-    metadata.family = Some(manifest.family.clone());
-    metadata.quantization = Some(manifest.quantization.clone());
-    metadata.repo_id = Some(manifest.repo_id.clone());
-    metadata.resolved_commit = Some(manifest.resolved_commit.clone());
-    metadata.profile = Some(manifest.profile.clone());
-    Ok(metadata)
+    Ok(identity.backend_metadata(model_id.to_owned(), "native-qwen", Some(ModelFamily::Qwen)))
 }
 
 fn native_qwen_metal_weight_cache_bytes(configured: Option<u64>) -> u64 {
