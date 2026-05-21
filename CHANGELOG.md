@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.9](https://github.com/michaelasper/kir-ai/compare/v1.25.8...v1.25.9) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-359:** reject invalid tool JSON schemas ([6bf400d](https://github.com/michaelasper/kir-ai/commit/6bf400d0f428503db0962f61700fdecabc58aefb))
+
 ## [1.25.8](https://github.com/michaelasper/kir-ai/compare/v1.25.7...v1.25.8) (2026-05-21)
 
 ### Bug Fixes
