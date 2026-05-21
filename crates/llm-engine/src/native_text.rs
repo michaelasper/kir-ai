@@ -415,12 +415,14 @@ mod tests {
         prefix_cache: std::sync::Arc<NativeTextPrefixCache<TestCache>>,
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
         cleanup_calls: Arc<AtomicUsize>,
+        cleanup_markers: Arc<Mutex<Vec<Vec<u32>>>>,
         next_token_calls: Arc<AtomicUsize>,
         sampling_draws: Arc<Mutex<Vec<Option<f32>>>>,
         decoded_token_total: Arc<AtomicUsize>,
         encoded_prompt: std::sync::Arc<[u32]>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
+        cancel_on_prefill: Option<CancellationToken>,
     }
 
     impl TestAdapter {
@@ -432,12 +434,14 @@ mod tests {
                 prefix_cache: std::sync::Arc::new(NativeTextPrefixCache::new(1024)),
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
                 cleanup_calls: Arc::new(AtomicUsize::new(0)),
+                cleanup_markers: Arc::new(Mutex::new(Vec::new())),
                 next_token_calls: Arc::new(AtomicUsize::new(0)),
                 sampling_draws: Arc::new(Mutex::new(Vec::new())),
                 decoded_token_total: Arc::new(AtomicUsize::new(0)),
                 encoded_prompt: std::sync::Arc::from([42_u32]),
                 next_token_delay: None,
                 fail_prefill: false,
+                cancel_on_prefill: None,
             }
         }
 
@@ -448,6 +452,11 @@ mod tests {
 
         fn with_prefill_failure(mut self) -> Self {
             self.fail_prefill = true;
+            self
+        }
+
+        fn with_prefill_cancellation(mut self, cancellation: CancellationToken) -> Self {
+            self.cancel_on_prefill = Some(cancellation);
             self
         }
 
@@ -468,6 +477,10 @@ mod tests {
 
         fn cleanup_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.cleanup_calls)
+        }
+
+        fn cleanup_markers(&self) -> Arc<Mutex<Vec<Vec<u32>>>> {
+            Arc::clone(&self.cleanup_markers)
         }
 
         fn next_token_calls(&self) -> Arc<AtomicUsize> {
@@ -572,6 +585,9 @@ mod tests {
             _caches: &mut [Self::LayerCache],
             _scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
+            if let Some(cancellation) = &self.cancel_on_prefill {
+                cancellation.cancel();
+            }
             if self.fail_prefill {
                 return Err(BackendError::other("test prefill failed".to_owned()));
             }
@@ -586,7 +602,12 @@ mod tests {
             TestDecodeSession { hidden }
         }
 
-        fn cleanup_cache_mirrors(&self, _caches: &[Self::LayerCache]) {
+        fn cleanup_cache_mirrors(&self, caches: &[Self::LayerCache]) {
+            let markers = caches.iter().map(|cache| cache.marker).collect();
+            self.cleanup_markers
+                .lock()
+                .expect("cleanup markers lock is not poisoned")
+                .push(markers);
             self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -838,6 +859,72 @@ mod tests {
             }
         }
         final_chunk.expect("streaming generation emits a final chunk")
+    }
+
+    fn store_driver_prefix_hit(
+        adapter: &TestAdapter,
+        request: &BackendRequest,
+        prompt_tokens: usize,
+        max_new_tokens: u32,
+        prefix_tokens: &[usize],
+        cache: TestCache,
+    ) -> (NativeTextPrefixCacheNamespace, u64) {
+        let cache_tokens = native_text_cache_token_capacity(
+            prompt_tokens,
+            max_new_tokens,
+            adapter.max_prefill_tokens(),
+            adapter.max_position_embeddings(),
+            adapter.family_display_name(),
+        )
+        .expect("test cache token capacity is valid");
+        let namespace_cache_tokens = native_text_cache_namespace_token_bucket(
+            cache_tokens,
+            adapter.max_position_embeddings(),
+            adapter.family_display_name(),
+        )
+        .expect("test namespace cache token bucket is valid");
+        let namespace = adapter.prefix_cache_namespace(request, namespace_cache_tokens);
+        let hidden = [0.25_f32];
+        let caches = [cache];
+        let byte_len = TestCache::prefix_cache_entry_bytes(&hidden, &caches);
+
+        adapter.prefix_cache.store(
+            namespace.clone(),
+            prefix_tokens,
+            &hidden,
+            &caches,
+            &adapter.prefix_cache_metrics,
+        );
+
+        (namespace, byte_len)
+    }
+
+    fn assert_only_prefix_cache_entry(
+        cache: &NativeTextPrefixCache<TestCache>,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        byte_len: u64,
+    ) {
+        let inner = cache
+            .inner
+            .lock()
+            .expect("prefix cache lock is not poisoned");
+        let bucket = inner
+            .entries
+            .get(namespace)
+            .expect("prefix namespace remains resident");
+
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.contains_key(&tokens.to_vec()));
+        assert_eq!(
+            inner
+                .entries
+                .values()
+                .map(std::collections::HashMap::len)
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(inner.used_bytes, byte_len);
     }
 
     #[test]
@@ -1532,6 +1619,91 @@ mod tests {
 
         assert!(err.to_string().contains("test prefill failed"));
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn driver_cleans_cloned_prefix_cache_when_suffix_prefill_fails() {
+        let request = driver_test_request(1);
+        let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11_u32, 12_u32]);
+        let cleanup_calls = adapter.cleanup_calls();
+        let cleanup_markers = adapter.cleanup_markers();
+        let prefix_cache = Arc::clone(&adapter.prefix_cache);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let (namespace, byte_len) = store_driver_prefix_hit(
+            &adapter,
+            &request,
+            3,
+            1,
+            &[10, 11],
+            TestCache {
+                bytes: 13,
+                marker: 77,
+            },
+        );
+        let driver = driver_for_test(adapter.with_prefill_failure());
+
+        let err = driver
+            .generate_blocking(request, CancellationToken::new())
+            .expect_err("suffix prefill failure is returned");
+
+        assert!(err.to_string().contains("test prefill failed"));
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+        let markers = cleanup_markers
+            .lock()
+            .expect("cleanup markers lock is not poisoned")
+            .clone();
+        assert_eq!(markers, vec![vec![77]]);
+        assert_only_prefix_cache_entry(&prefix_cache, &namespace, &[10, 11], byte_len);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["hits"], 1);
+        assert_eq!(snapshot["hit_tokens"], 2);
+        assert_eq!(snapshot["miss_tokens"], 1);
+        assert_eq!(snapshot["stores"], 1);
+        assert_eq!(snapshot["resident_entries"], 1);
+        assert_eq!(snapshot["resident_bytes"], byte_len);
+    }
+
+    #[test]
+    fn driver_cleans_cloned_prefix_cache_when_suffix_prefill_cancels() {
+        let request = driver_test_request(1);
+        let cancellation = CancellationToken::new();
+        let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([20_u32, 21_u32, 22_u32]);
+        let cleanup_calls = adapter.cleanup_calls();
+        let cleanup_markers = adapter.cleanup_markers();
+        let prefix_cache = Arc::clone(&adapter.prefix_cache);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let (namespace, byte_len) = store_driver_prefix_hit(
+            &adapter,
+            &request,
+            3,
+            1,
+            &[20, 21],
+            TestCache {
+                bytes: 17,
+                marker: 88,
+            },
+        );
+        let driver = driver_for_test(adapter.with_prefill_cancellation(cancellation.clone()));
+
+        let err = driver
+            .generate_blocking(request, cancellation)
+            .expect_err("suffix prefill cancellation is returned");
+
+        assert!(err.is_cancelled());
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+        let markers = cleanup_markers
+            .lock()
+            .expect("cleanup markers lock is not poisoned")
+            .clone();
+        assert_eq!(markers, vec![vec![88]]);
+        assert_only_prefix_cache_entry(&prefix_cache, &namespace, &[20, 21], byte_len);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["hits"], 1);
+        assert_eq!(snapshot["hit_tokens"], 2);
+        assert_eq!(snapshot["miss_tokens"], 1);
+        assert_eq!(snapshot["stores"], 1);
+        assert_eq!(snapshot["resident_entries"], 1);
+        assert_eq!(snapshot["resident_bytes"], byte_len);
     }
 
     #[test]
