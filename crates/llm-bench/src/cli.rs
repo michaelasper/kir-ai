@@ -37,7 +37,8 @@ qwen-mlx-tool-normalized:
   --context-tokens <n>                Stable long-context prompt target [default: 135000]
   --concurrent-requests <n>           Requests issued together during the concurrent pass [default: 1]
   --concurrent-samples <n>            Concurrent sample batches per case and phase [default: 0]
-  --focused-agentic-gate              Compatibility alias for --probe-suite focused-agentic-gate",
+  --focused-agentic-gate              Compatibility alias for --probe-suite focused-agentic-gate
+  --ab-baseline <path>                Compare against a prior qwen-mlx-tool-normalized trace and fail if Kir proxy first tool delta does not advance or final validation changes",
         crate::DEFAULT_MODEL_ID
     );
 }

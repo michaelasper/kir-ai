@@ -9,10 +9,10 @@ use futures::StreamExt;
 use futures::future::join_all;
 use llm_api::canonicalize_json_value;
 use llm_tokenizer::HuggingFaceTokenizer;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -39,6 +39,10 @@ const BENCH_REPO_BRANCH_ENV: &str = "LLM_ENGINE_BENCH_REPO_BRANCH";
 const BENCH_REPO_DIRTY_ENV: &str = "LLM_ENGINE_BENCH_REPO_DIRTY";
 const BENCH_REPO_ORIGIN_FILE: &str = ".kir-ai-origin.json";
 const ADMIN_METRICS_TIMEOUT_MS: u64 = 250;
+const AGENTIC_AB_CASE: &str = "tool_required_stream";
+const AGENTIC_AB_SCHEMA_VARIANT: &str = "canonical_current";
+const AGENTIC_AB_TOOL_CHOICE_VARIANT: &str = "required";
+const AGENTIC_AB_FAST_PATH_KIND: &str = "kir_ai_proxy";
 
 pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--help") || has_flag(args, "-h") {
@@ -73,6 +77,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let connect_timeout_ms =
         parse_millis_flag(args, "--connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS)?;
     let output_path = flag_value(args, "--output").map(PathBuf::from);
+    let ab_baseline_path = flag_value(args, "--ab-baseline").map(PathBuf::from);
     let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
     let sweep_profile = parse_sweep_profile_flag(args)?;
     let probe_suite = parse_probe_suite_flag(args, sweep_profile)?;
@@ -120,6 +125,9 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         hardware: HardwareReport::detect(),
         comparison: NormalizedComparisonReport::dry_run(),
         agentic_gate: NormalizedAgenticGateReport::dry_run(),
+        agentic_streaming_fast_path_ab: NormalizedAgenticStreamingFastPathAbReport::dry_run(
+            ab_baseline_path.as_deref(),
+        ),
         prefill_sweep: NormalizedPrefillSweepReport::dry_run(),
         stable_prefix: NormalizedStablePrefixReport::dry_run(),
     };
@@ -156,9 +164,14 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     report.tool_required_stream = tool_required_stream_timing_report(&report.lanes);
     report.comparison = compare_normalized_lanes(&report.lanes, &probes);
     report.agentic_gate = agentic_gate_report(&report.lanes);
+    report.agentic_streaming_fast_path_ab =
+        load_agentic_streaming_fast_path_ab_report(ab_baseline_path.as_deref(), &report.lanes)
+            .await?;
     report.prefill_sweep = prefill_sweep_report(&report.lanes, &probes);
     report.stable_prefix = stable_prefix_report(&report.lanes, &probes);
-    report.status = if report.lanes.iter().all(|lane| lane.status == "passed") {
+    report.status = if report.lanes.iter().all(|lane| lane.status == "passed")
+        && report.agentic_streaming_fast_path_ab.status != "failed"
+    {
         "passed"
     } else {
         "failed"
@@ -188,6 +201,7 @@ Options:
   --concurrent-requests <n>     Requests to issue together during the concurrent pass [default: 1]
   --concurrent-samples <n>      Concurrent sample batches per case and phase; 0 disables unless concurrent requests > 1 [default: 0]
   --focused-agentic-gate        Compatibility alias for --probe-suite focused-agentic-gate
+  --ab-baseline <path>          Compare against a prior qwen-mlx-tool-normalized trace; fails if Kir proxy first tool delta does not advance or final validation changes
   --output <path>               Write the trace JSON to a file as well as stdout
   --admin-token <token>         Optional bearer token for lane /admin/metrics snapshots
   --timeout-ms <n>              Whole request timeout [default: 1800000]
@@ -1811,6 +1825,355 @@ fn agentic_gate_report(lanes: &[NormalizedLaneReport]) -> NormalizedAgenticGateR
         .to_owned(),
         rows,
     }
+}
+
+async fn load_agentic_streaming_fast_path_ab_report(
+    baseline_path: Option<&Path>,
+    candidate_lanes: &[NormalizedLaneReport],
+) -> anyhow::Result<NormalizedAgenticStreamingFastPathAbReport> {
+    let Some(path) = baseline_path else {
+        return Ok(NormalizedAgenticStreamingFastPathAbReport::not_configured());
+    };
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("read A/B baseline trace {}", path.display()))?;
+    let baseline = serde_json::from_slice::<ComparableBenchReport>(&bytes)
+        .with_context(|| format!("parse A/B baseline trace {}", path.display()))?;
+    let candidate = comparable_lanes_from_normalized(candidate_lanes);
+    Ok(agentic_streaming_fast_path_ab_report(
+        Some(path.display().to_string()),
+        &baseline.lanes,
+        &candidate,
+    ))
+}
+
+fn agentic_streaming_fast_path_ab_report(
+    baseline_path: Option<String>,
+    baseline_lanes: &[ComparableLaneReport],
+    candidate_lanes: &[ComparableLaneReport],
+) -> NormalizedAgenticStreamingFastPathAbReport {
+    let baseline_by_name = baseline_lanes
+        .iter()
+        .map(|lane| (lane.name.as_str(), lane))
+        .collect::<BTreeMap<_, _>>();
+    let mut rows = Vec::new();
+    let mut top_level_failures = Vec::new();
+
+    for candidate_lane in candidate_lanes {
+        let Some(baseline_lane) = baseline_by_name.get(candidate_lane.name.as_str()).copied()
+        else {
+            top_level_failures.push(format!("missing_baseline_lane:{}", candidate_lane.name));
+            continue;
+        };
+        for (cache_phase, run_mode) in agentic_ab_group_keys(baseline_lane, candidate_lane) {
+            rows.push(agentic_streaming_fast_path_ab_row(
+                baseline_lane,
+                candidate_lane,
+                &cache_phase,
+                &run_mode,
+            ));
+        }
+    }
+
+    if rows.is_empty() {
+        top_level_failures.push("missing_comparison_samples".to_owned());
+    }
+    if !rows
+        .iter()
+        .any(|row| row.assertion_role == "fast_path_candidate")
+    {
+        top_level_failures.push("missing_fast_path_candidate_lane".to_owned());
+    }
+
+    let mut failure_reasons = top_level_failures;
+    for row in &rows {
+        for reason in &row.failure_reasons {
+            failure_reasons.push(format!(
+                "{}:{}:{}:{reason}",
+                row.lane, row.cache_phase, row.run_mode
+            ));
+        }
+    }
+    failure_reasons.sort();
+    failure_reasons.dedup();
+
+    NormalizedAgenticStreamingFastPathAbReport {
+        status: if failure_reasons.is_empty() {
+            "passed"
+        } else {
+            "failed"
+        }
+        .to_owned(),
+        baseline_path,
+        case: AGENTIC_AB_CASE,
+        schema_variant: AGENTIC_AB_SCHEMA_VARIANT,
+        tool_choice_variant: AGENTIC_AB_TOOL_CHOICE_VARIANT,
+        rows,
+        failure_reasons,
+    }
+}
+
+fn agentic_streaming_fast_path_ab_row(
+    baseline_lane: &ComparableLaneReport,
+    candidate_lane: &ComparableLaneReport,
+    cache_phase: &str,
+    run_mode: &str,
+) -> NormalizedAgenticStreamingFastPathAbRow {
+    let baseline_samples = agentic_ab_samples(baseline_lane, cache_phase, run_mode);
+    let candidate_samples = agentic_ab_samples(candidate_lane, cache_phase, run_mode);
+    let baseline_first_tool_delta =
+        percentile_for_comparable_samples(&baseline_samples, |sample| {
+            sample.stream_timing.first_tool_delta_latency_ms
+        });
+    let candidate_first_tool_delta =
+        percentile_for_comparable_samples(&candidate_samples, |sample| {
+            sample.stream_timing.first_tool_delta_latency_ms
+        });
+    let baseline_tool_finish = percentile_for_comparable_samples(&baseline_samples, |sample| {
+        sample.stream_timing.tool_finish_latency_ms
+    });
+    let candidate_tool_finish = percentile_for_comparable_samples(&candidate_samples, |sample| {
+        sample.stream_timing.tool_finish_latency_ms
+    });
+
+    let assertion_role = if candidate_lane.kind == AGENTIC_AB_FAST_PATH_KIND {
+        "fast_path_candidate"
+    } else {
+        "control"
+    };
+    let first_tool_delta_advanced = if assertion_role == "fast_path_candidate" {
+        Some(matches!(
+            (baseline_first_tool_delta, candidate_first_tool_delta),
+            (Some(baseline), Some(candidate)) if candidate < baseline
+        ))
+    } else {
+        None
+    };
+    let baseline_validation = ToolValidationSignature::from_samples(&baseline_samples);
+    let candidate_validation = ToolValidationSignature::from_samples(&candidate_samples);
+    let final_validation_unchanged = baseline_validation == candidate_validation
+        && baseline_validation.successful_tool_stream()
+        && candidate_validation.successful_tool_stream();
+
+    let mut failure_reasons = Vec::new();
+    if baseline_samples.is_empty() {
+        failure_reasons.push("missing_baseline_samples".to_owned());
+    }
+    if candidate_samples.is_empty() {
+        failure_reasons.push("missing_candidate_samples".to_owned());
+    }
+    if assertion_role == "fast_path_candidate" && first_tool_delta_advanced != Some(true) {
+        failure_reasons.push("first_tool_delta_not_advanced".to_owned());
+    }
+    if !final_validation_unchanged {
+        failure_reasons.push("final_validation_changed".to_owned());
+    }
+
+    NormalizedAgenticStreamingFastPathAbRow {
+        lane: candidate_lane.name.clone(),
+        kind: candidate_lane.kind.clone(),
+        assertion_role,
+        cache_phase: cache_phase.to_owned(),
+        run_mode: run_mode.to_owned(),
+        baseline_sample_count: baseline_samples.len(),
+        candidate_sample_count: candidate_samples.len(),
+        baseline_pass_count: baseline_validation.pass_count,
+        candidate_pass_count: candidate_validation.pass_count,
+        baseline_fail_count: baseline_validation.fail_count,
+        candidate_fail_count: candidate_validation.fail_count,
+        baseline_p50_first_tool_delta_latency_ms: baseline_first_tool_delta,
+        candidate_p50_first_tool_delta_latency_ms: candidate_first_tool_delta,
+        first_tool_delta_delta_ms: metric_delta_ms(
+            candidate_first_tool_delta,
+            baseline_first_tool_delta,
+        ),
+        first_tool_delta_advanced,
+        baseline_p50_tool_finish_latency_ms: baseline_tool_finish,
+        candidate_p50_tool_finish_latency_ms: candidate_tool_finish,
+        tool_finish_delta_ms: metric_delta_ms(candidate_tool_finish, baseline_tool_finish),
+        final_validation_unchanged,
+        failure_reasons,
+    }
+}
+
+fn agentic_ab_group_keys(
+    baseline_lane: &ComparableLaneReport,
+    candidate_lane: &ComparableLaneReport,
+) -> BTreeSet<(String, String)> {
+    baseline_lane
+        .all_samples()
+        .chain(candidate_lane.all_samples())
+        .filter(|sample| sample.matches_agentic_ab_probe())
+        .map(|sample| (sample.cache_phase.clone(), sample.run_mode.clone()))
+        .collect()
+}
+
+fn agentic_ab_samples<'a>(
+    lane: &'a ComparableLaneReport,
+    cache_phase: &str,
+    run_mode: &str,
+) -> Vec<&'a ComparableSampleReport> {
+    lane.all_samples()
+        .filter(|sample| {
+            sample.matches_agentic_ab_probe()
+                && sample.cache_phase == cache_phase
+                && sample.run_mode == run_mode
+        })
+        .collect()
+}
+
+fn percentile_for_comparable_samples(
+    samples: &[&ComparableSampleReport],
+    value: impl Fn(&ComparableSampleReport) -> Option<u128>,
+) -> Option<u128> {
+    let mut values = samples
+        .iter()
+        .filter_map(|sample| value(sample))
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    percentile_latency(&values, 0.50)
+}
+
+fn metric_delta_ms(candidate: Option<u128>, baseline: Option<u128>) -> Option<i64> {
+    let candidate = i64::try_from(candidate?).ok()?;
+    let baseline = i64::try_from(baseline?).ok()?;
+    Some(candidate - baseline)
+}
+
+fn comparable_lanes_from_normalized(lanes: &[NormalizedLaneReport]) -> Vec<ComparableLaneReport> {
+    lanes
+        .iter()
+        .map(|lane| ComparableLaneReport {
+            name: lane.name.clone(),
+            kind: lane.kind.to_owned(),
+            samples: lane
+                .samples
+                .iter()
+                .map(comparable_sample_from_normalized)
+                .collect(),
+            concurrent_samples: lane
+                .concurrent_samples
+                .iter()
+                .map(comparable_sample_from_normalized)
+                .collect(),
+        })
+        .collect()
+}
+
+fn comparable_sample_from_normalized(sample: &NormalizedSampleReport) -> ComparableSampleReport {
+    ComparableSampleReport {
+        case: sample.case.to_owned(),
+        schema_variant: sample.schema_variant.to_owned(),
+        tool_choice_variant: sample.tool_choice_variant.to_owned(),
+        cache_phase: sample.cache_phase.to_owned(),
+        run_mode: sample.run_mode.to_owned(),
+        status: sample.status.clone(),
+        classification: sample.classification.clone(),
+        stream_timing: sample.stream_timing,
+        finish_reason: sample.finish_reason.clone(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ComparableBenchReport {
+    #[serde(default)]
+    lanes: Vec<ComparableLaneReport>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ComparableLaneReport {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    samples: Vec<ComparableSampleReport>,
+    #[serde(default)]
+    concurrent_samples: Vec<ComparableSampleReport>,
+}
+
+impl ComparableLaneReport {
+    fn all_samples(&self) -> impl Iterator<Item = &ComparableSampleReport> {
+        self.samples.iter().chain(self.concurrent_samples.iter())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ComparableSampleReport {
+    #[serde(default)]
+    case: String,
+    #[serde(default)]
+    schema_variant: String,
+    #[serde(default)]
+    tool_choice_variant: String,
+    #[serde(default)]
+    cache_phase: String,
+    #[serde(default)]
+    run_mode: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    classification: String,
+    #[serde(default, flatten)]
+    stream_timing: StreamTimingReport,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+impl ComparableSampleReport {
+    fn matches_agentic_ab_probe(&self) -> bool {
+        self.case == AGENTIC_AB_CASE
+            && self.schema_variant == AGENTIC_AB_SCHEMA_VARIANT
+            && self.tool_choice_variant == AGENTIC_AB_TOOL_CHOICE_VARIANT
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ToolValidationSignature {
+    sample_count: usize,
+    pass_count: usize,
+    fail_count: usize,
+    status_counts: BTreeMap<String, usize>,
+    classification_counts: BTreeMap<String, usize>,
+    finish_reason_counts: BTreeMap<String, usize>,
+}
+
+impl ToolValidationSignature {
+    fn from_samples(samples: &[&ComparableSampleReport]) -> Self {
+        let mut signature = Self {
+            sample_count: samples.len(),
+            ..Self::default()
+        };
+        for sample in samples {
+            if sample.status == "passed" {
+                signature.pass_count += 1;
+            }
+            if sample.status == "failed" {
+                signature.fail_count += 1;
+            }
+            increment_count(&mut signature.status_counts, &sample.status);
+            increment_count(&mut signature.classification_counts, &sample.classification);
+            increment_count(
+                &mut signature.finish_reason_counts,
+                sample.finish_reason.as_deref().unwrap_or("<missing>"),
+            );
+        }
+        signature
+    }
+
+    fn successful_tool_stream(&self) -> bool {
+        self.sample_count > 0
+            && self.pass_count == self.sample_count
+            && self.fail_count == 0
+            && self
+                .finish_reason_counts
+                .get("tool_calls")
+                .is_some_and(|count| *count == self.sample_count)
+    }
+}
+
+fn increment_count(counts: &mut BTreeMap<String, usize>, value: &str) {
+    *counts.entry(value.to_owned()).or_insert(0) += 1;
 }
 
 fn prefill_sweep_report(
@@ -3693,6 +4056,7 @@ struct NormalizedBenchReport {
     hardware: HardwareReport,
     comparison: NormalizedComparisonReport,
     agentic_gate: NormalizedAgenticGateReport,
+    agentic_streaming_fast_path_ab: NormalizedAgenticStreamingFastPathAbReport,
     prefill_sweep: NormalizedPrefillSweepReport,
     stable_prefix: NormalizedStablePrefixReport,
 }
@@ -4089,6 +4453,73 @@ struct NormalizedAgenticGateLaneMetric {
     avg_cached_tokens: Option<f64>,
     avg_prompt_tokens: Option<f64>,
     avg_completion_tokens: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedAgenticStreamingFastPathAbReport {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_path: Option<String>,
+    case: &'static str,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    rows: Vec<NormalizedAgenticStreamingFastPathAbRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failure_reasons: Vec<String>,
+}
+
+impl NormalizedAgenticStreamingFastPathAbReport {
+    fn dry_run(baseline_path: Option<&Path>) -> Self {
+        match baseline_path {
+            Some(path) => Self {
+                status: "dry_run".to_owned(),
+                baseline_path: Some(path.display().to_string()),
+                case: AGENTIC_AB_CASE,
+                schema_variant: AGENTIC_AB_SCHEMA_VARIANT,
+                tool_choice_variant: AGENTIC_AB_TOOL_CHOICE_VARIANT,
+                rows: Vec::new(),
+                failure_reasons: Vec::new(),
+            },
+            None => Self::not_configured(),
+        }
+    }
+
+    fn not_configured() -> Self {
+        Self {
+            status: "not_configured".to_owned(),
+            baseline_path: None,
+            case: AGENTIC_AB_CASE,
+            schema_variant: AGENTIC_AB_SCHEMA_VARIANT,
+            tool_choice_variant: AGENTIC_AB_TOOL_CHOICE_VARIANT,
+            rows: Vec::new(),
+            failure_reasons: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedAgenticStreamingFastPathAbRow {
+    lane: String,
+    kind: String,
+    assertion_role: &'static str,
+    cache_phase: String,
+    run_mode: String,
+    baseline_sample_count: usize,
+    candidate_sample_count: usize,
+    baseline_pass_count: usize,
+    candidate_pass_count: usize,
+    baseline_fail_count: usize,
+    candidate_fail_count: usize,
+    baseline_p50_first_tool_delta_latency_ms: Option<u128>,
+    candidate_p50_first_tool_delta_latency_ms: Option<u128>,
+    first_tool_delta_delta_ms: Option<i64>,
+    first_tool_delta_advanced: Option<bool>,
+    baseline_p50_tool_finish_latency_ms: Option<u128>,
+    candidate_p50_tool_finish_latency_ms: Option<u128>,
+    tool_finish_delta_ms: Option<i64>,
+    final_validation_unchanged: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failure_reasons: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

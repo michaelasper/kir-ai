@@ -365,6 +365,7 @@ stable-agent-prefix` and expands `mlx-stable-prefix` on
 | `--context-tokens <n>` | `135000` | Stable long-context prompt target for all probes. |
 | `--concurrent-requests <n>` | `1` | Requests issued together for the separate concurrent pass. If this is greater than `1` and `--concurrent-samples` is `0`, the concurrent pass uses `--samples` batches. |
 | `--concurrent-samples <n>` | `0` | Concurrent sample batches per lane, case, schema variant, tool-choice variant, and cache phase. Values greater than `0` enable the concurrent pass even when `--concurrent-requests` is `1`. |
+| `--ab-baseline <path>` | none | Loads a previous `qwen-mlx-tool-normalized` JSON trace and emits `agentic_streaming_fast_path_ab`. The command fails when a `kir_ai_proxy` lane does not advance p50 `tool_required_stream` first tool delta versus the baseline, or when final validation signatures change. |
 | `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
 | `--timeout-ms <n>` | `1800000` | Whole request timeout. |
 | `--connect-timeout-ms <n>` | `10000` | HTTP connect timeout. |
@@ -411,6 +412,12 @@ Use `--focused-agentic-gate` to run the smaller Qwen MLX agentic subset; the
 top-level `agentic_gate` report summarizes warm-prefix latency, first-byte and
 first-semantic/tool-delta timing, token throughput, cached-token counts, and
 lane deltas without requiring the full schema/tool-choice matrix.
+Use `--ab-baseline <trace.json>` with the focused agentic gate to produce the
+top-level `agentic_streaming_fast_path_ab` report. It compares matching lanes for
+the canonical required `tool_required_stream` probe, records baseline and
+candidate p50 first tool delta and tool-finish timings, requires `kir_ai_proxy`
+lanes to move first tool delta earlier, and requires candidate pass/fail,
+classification, and `tool_calls` finish signatures to remain unchanged.
 The `prefill_sweep` report ranks lanes by p50 first semantic delta for each
 probe, cache phase, and run mode, while preserving lane kind, prefill step size,
 response headers, first response byte, first parsed SSE chunk, first tool delta,

@@ -5,7 +5,7 @@ use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use llm_server::EngineOptions;
 use llm_tokenizer::HuggingFaceTokenizer;
 pub use llm_util::defaults::DEFAULT_MODEL_ID;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -1582,7 +1582,7 @@ fn cached_tokens_status_rank(status: Option<&'static str>) -> Option<(u8, &'stat
     })
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
 struct StreamTimingReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     first_byte_latency_ms: Option<u128>,

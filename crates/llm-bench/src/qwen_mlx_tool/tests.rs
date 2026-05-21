@@ -1308,6 +1308,108 @@ fn qwen_mlx_tool_normalized_agentic_gate_reports_warm_stream_cache_and_lane_delt
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_agentic_streaming_ab_passes_when_proxy_first_delta_advances() {
+    let direct = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
+    let proxy = lane("name=kir-proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut baseline_direct = NormalizedLaneReport::planned(&direct, 0, 0, None);
+    let mut baseline_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    let mut candidate_direct = NormalizedLaneReport::planned(&direct, 0, 0, None);
+    let mut candidate_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+
+    baseline_direct.samples = vec![ab_tool_stream_sample(100, 130)];
+    candidate_direct.samples = vec![ab_tool_stream_sample(101, 131)];
+    baseline_proxy.samples = vec![ab_tool_stream_sample(120, 150)];
+    candidate_proxy.samples = vec![ab_tool_stream_sample(80, 150)];
+
+    let baseline_lanes = comparable_lanes_from_normalized(&[baseline_direct, baseline_proxy]);
+    let candidate_lanes = comparable_lanes_from_normalized(&[candidate_direct, candidate_proxy]);
+    let report = agentic_streaming_fast_path_ab_report(
+        Some("baseline.json".to_owned()),
+        &baseline_lanes,
+        &candidate_lanes,
+    );
+
+    assert_eq!(report.status, "passed");
+    assert_eq!(report.baseline_path.as_deref(), Some("baseline.json"));
+    let proxy_row = report
+        .rows
+        .iter()
+        .find(|row| row.lane == "kir-proxy")
+        .expect("proxy row");
+    assert_eq!(proxy_row.assertion_role, "fast_path_candidate");
+    assert_eq!(
+        proxy_row.baseline_p50_first_tool_delta_latency_ms,
+        Some(120)
+    );
+    assert_eq!(
+        proxy_row.candidate_p50_first_tool_delta_latency_ms,
+        Some(80)
+    );
+    assert_eq!(proxy_row.first_tool_delta_delta_ms, Some(-40));
+    assert_eq!(proxy_row.first_tool_delta_advanced, Some(true));
+    assert_eq!(proxy_row.candidate_p50_tool_finish_latency_ms, Some(150));
+    assert!(proxy_row.final_validation_unchanged);
+    assert!(proxy_row.failure_reasons.is_empty());
+
+    let direct_row = report
+        .rows
+        .iter()
+        .find(|row| row.lane == "direct")
+        .expect("direct control row");
+    assert_eq!(direct_row.assertion_role, "control");
+    assert_eq!(direct_row.first_tool_delta_advanced, None);
+    assert!(direct_row.final_validation_unchanged);
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_agentic_streaming_ab_fails_when_proxy_first_delta_regresses() {
+    let proxy = lane("name=kir-proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut baseline_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    let mut candidate_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    baseline_proxy.samples = vec![ab_tool_stream_sample(80, 120)];
+    candidate_proxy.samples = vec![ab_tool_stream_sample(90, 120)];
+
+    let baseline_lanes = comparable_lanes_from_normalized(&[baseline_proxy]);
+    let candidate_lanes = comparable_lanes_from_normalized(&[candidate_proxy]);
+    let report = agentic_streaming_fast_path_ab_report(None, &baseline_lanes, &candidate_lanes);
+
+    assert_eq!(report.status, "failed");
+    let row = report.rows.first().expect("comparison row");
+    assert_eq!(row.first_tool_delta_advanced, Some(false));
+    assert!(
+        row.failure_reasons
+            .contains(&"first_tool_delta_not_advanced".to_owned())
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_agentic_streaming_ab_fails_when_validation_changes() {
+    let proxy = lane("name=kir-proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut baseline_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    let mut candidate_proxy = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+    baseline_proxy.samples = vec![ab_tool_stream_sample(120, 150)];
+    let mut failed = ab_tool_stream_sample(80, 150);
+    failed.status = "failed".to_owned();
+    failed.classification = "response_validation_failed".to_owned();
+    failed.finish_reason = Some("stop".to_owned());
+    failed.error = Some("streamed tool arguments were not JSON".to_owned());
+    candidate_proxy.samples = vec![failed];
+
+    let baseline_lanes = comparable_lanes_from_normalized(&[baseline_proxy]);
+    let candidate_lanes = comparable_lanes_from_normalized(&[candidate_proxy]);
+    let report = agentic_streaming_fast_path_ab_report(None, &baseline_lanes, &candidate_lanes);
+
+    assert_eq!(report.status, "failed");
+    let row = report.rows.first().expect("comparison row");
+    assert_eq!(row.first_tool_delta_advanced, Some(true));
+    assert!(!row.final_validation_unchanged);
+    assert!(
+        row.failure_reasons
+            .contains(&"final_validation_changed".to_owned())
+    );
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes() {
     let lane_512 = lane(
         "name=mlx-prefill-512,endpoint=http://127.0.0.1:8081/v1,model=qwen,kind=direct_mlx,mlx_prefill_step_size=512",
@@ -2012,6 +2114,44 @@ fn stable_prefix_sample(
     };
     sample.cached_tokens = cached_tokens;
     sample.request_id = request_id.map(str::to_owned);
+    sample
+}
+
+fn ab_tool_stream_sample(
+    first_tool_delta_ms: u128,
+    tool_finish_ms: u128,
+) -> NormalizedSampleReport {
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::ToolRequiredStream,
+        SchemaVariant::CanonicalCurrent,
+        ToolChoiceVariant::Required,
+    );
+    let mut sample = NormalizedSampleReport::base(
+        probe,
+        CachePhase::WarmSamePrompt,
+        RunMode::Sequential,
+        0,
+        None,
+        true,
+        128,
+    );
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(tool_finish_ms + 5);
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: Some(first_tool_delta_ms.saturating_sub(20)),
+        first_sse_data_latency_ms: Some(first_tool_delta_ms.saturating_sub(10)),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(first_tool_delta_ms),
+        tool_finish_latency_ms: Some(tool_finish_ms),
+        first_semantic_delta_latency_ms: Some(first_tool_delta_ms),
+    };
+    sample.prompt_tokens = Some(1835);
+    sample.completion_tokens = Some(64);
+    sample.total_tokens = Some(1899);
+    sample.cached_tokens_status = "present";
+    sample.cached_tokens = Some(1834);
+    sample.finish_reason = Some("tool_calls".to_owned());
     sample
 }
 
