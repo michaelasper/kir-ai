@@ -102,6 +102,56 @@ async fn tls_serve_answers_https_health_on_loopback() {
     server.abort();
 }
 
+#[cfg(feature = "test-utils")]
+#[tokio::test]
+async fn tls_serve_idle_tcp_client_does_not_block_next_https_health_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cert_path = temp.path().join("localhost-cert.pem");
+    let key_path = temp.path().join("localhost-key.pem");
+    tokio::fs::write(&cert_path, TEST_LOCALHOST_CERT)
+        .await
+        .expect("write cert");
+    tokio::fs::write(&key_path, TEST_LOCALHOST_KEY)
+        .await
+        .expect("write key");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("local addr");
+    let router = llm_server::build_router_with_protocol_test_backend();
+    let server = tokio::spawn(llm_server::serve_tls(
+        listener,
+        router,
+        llm_server::TlsConfig::new(&cert_path, &key_path),
+    ));
+
+    let _idle_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("idle raw TCP client connects");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(TEST_LOCALHOST_CERT.as_bytes())
+                .expect("test certificate parses"),
+        )
+        .build()
+        .expect("HTTPS client builds");
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        client
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send(),
+    )
+    .await
+    .expect("second HTTPS request is not blocked by idle TCP client")
+    .expect("HTTPS request succeeds");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    server.abort();
+}
+
 const TEST_LOCALHOST_CERT: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDSTCCAjGgAwIBAgIUPio/cBD2WRZGNf5BEi5QsbkyGkAwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDUyMTA0NDUzOVoXDTM2MDUx

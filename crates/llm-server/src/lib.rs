@@ -15,6 +15,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::sync::{
+    OwnedSemaphorePermit, Semaphore, TryAcquireError,
+    mpsc::{self, Receiver, Sender},
+};
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
@@ -141,6 +145,87 @@ async fn load_tls_server_config(config: &TlsConfig) -> Result<Arc<ServerConfig>,
 struct TlsListener {
     listener: tokio::net::TcpListener,
     acceptor: TlsAcceptor,
+    accepted_tx: Sender<TlsAccepted>,
+    accepted_rx: Receiver<TlsAccepted>,
+    handshake_permits: Arc<Semaphore>,
+    handshake_timeout: Duration,
+}
+
+type TlsAccepted = (
+    tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    SocketAddr,
+);
+
+const TLS_ACCEPT_QUEUE_CAPACITY: usize = 1024;
+const TLS_MAX_IN_FLIGHT_HANDSHAKES: usize = 1024;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl TlsListener {
+    fn new(listener: tokio::net::TcpListener, acceptor: TlsAcceptor) -> Self {
+        let (accepted_tx, accepted_rx) = mpsc::channel(TLS_ACCEPT_QUEUE_CAPACITY);
+        Self {
+            listener,
+            acceptor,
+            accepted_tx,
+            accepted_rx,
+            handshake_permits: Arc::new(Semaphore::new(TLS_MAX_IN_FLIGHT_HANDSHAKES)),
+            handshake_timeout: TLS_HANDSHAKE_TIMEOUT,
+        }
+    }
+
+    fn spawn_handshake(&self, stream: tokio::net::TcpStream, addr: SocketAddr) {
+        let permit = match self.handshake_permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(TryAcquireError::NoPermits) => {
+                tracing::warn!(
+                    remote_addr = %addr,
+                    max_in_flight = TLS_MAX_IN_FLIGHT_HANDSHAKES,
+                    "TLS handshake limit reached; dropping connection"
+                );
+                return;
+            }
+            Err(TryAcquireError::Closed) => {
+                tracing::warn!(remote_addr = %addr, "TLS handshake limiter is closed");
+                return;
+            }
+        };
+
+        tokio::spawn(run_tls_handshake(
+            self.acceptor.clone(),
+            self.accepted_tx.clone(),
+            self.handshake_timeout,
+            stream,
+            addr,
+            permit,
+        ));
+    }
+}
+
+async fn run_tls_handshake(
+    acceptor: TlsAcceptor,
+    accepted_tx: Sender<TlsAccepted>,
+    handshake_timeout: Duration,
+    stream: tokio::net::TcpStream,
+    addr: SocketAddr,
+    _permit: OwnedSemaphorePermit,
+) {
+    match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+        Ok(Ok(tls_stream)) => {
+            if accepted_tx.send((tls_stream, addr)).await.is_err() {
+                tracing::debug!(remote_addr = %addr, "TLS handshake completed after server shutdown");
+            }
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(remote_addr = %addr, error = %err, "TLS handshake failed");
+        }
+        Err(_) => {
+            tracing::warn!(
+                remote_addr = %addr,
+                timeout_ms = handshake_timeout.as_millis(),
+                "TLS handshake timed out"
+            );
+        }
+    }
 }
 
 impl Listener for TlsListener {
@@ -149,18 +234,18 @@ impl Listener for TlsListener {
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            let (stream, addr) = match self.listener.accept().await {
-                Ok(accepted) => accepted,
-                Err(err) => {
-                    handle_accept_error(err).await;
-                    continue;
-                }
-            };
+            tokio::select! {
+                Some(accepted) = self.accepted_rx.recv() => return accepted,
+                accepted = self.listener.accept() => {
+                    let (stream, addr) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(err) => {
+                            handle_accept_error(err).await;
+                            continue;
+                        }
+                    };
 
-            match self.acceptor.accept(stream).await {
-                Ok(tls_stream) => return (tls_stream, addr),
-                Err(err) => {
-                    tracing::warn!(remote_addr = %addr, error = %err, "TLS handshake failed");
+                    self.spawn_handshake(stream, addr);
                 }
             }
         }
@@ -197,9 +282,6 @@ pub async fn serve_tls(
     let server_config = load_tls_server_config(&tls_config)
         .await
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let tls_listener = TlsListener {
-        listener,
-        acceptor: TlsAcceptor::from(server_config),
-    };
+    let tls_listener = TlsListener::new(listener, TlsAcceptor::from(server_config));
     axum::serve(tls_listener, router).await
 }
