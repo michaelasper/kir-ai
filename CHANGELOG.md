@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.2](https://github.com/michaelasper/kir-ai/compare/v1.25.1...v1.25.2) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-338:** preserve deferred tool-choice stream content ([70e00ee](https://github.com/michaelasper/kir-ai/commit/70e00ee7c8a261107ba10896a034895d3ae40b97))
+
 ## [1.25.1](https://github.com/michaelasper/kir-ai/compare/v1.25.0...v1.25.1) (2026-05-21)
 
 ### Bug Fixes
