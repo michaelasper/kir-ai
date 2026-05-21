@@ -688,7 +688,9 @@ impl ModelBackend for FailingStreamBackend {
                 finish_reason: None,
                 progress: None,
             };
-            Err(BackendError::other("stream failed".to_owned()))?;
+            Err(BackendError::other(
+                "stream failed in mlx parser at /srv/kir-ai/private/model.safetensors".to_owned(),
+            ))?;
         }
         .boxed()
     }

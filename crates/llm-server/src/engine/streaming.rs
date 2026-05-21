@@ -1,3 +1,4 @@
+use super::error::runtime_error_metadata;
 use super::scheduler::SchedulerPermit;
 use super::{
     AppState, EngineErrorBody,
@@ -195,7 +196,20 @@ pub(super) fn engine_sse_keep_alive() -> KeepAlive {
 }
 
 fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallible>> {
-    engine_error_stream_events(EngineErrorBody::from_runtime_error(&err))
+    let metadata = runtime_error_metadata(&err);
+    tracing::warn!(
+        error = %err,
+        code = metadata.code,
+        phase = metadata.phase,
+        retryable = metadata.retryable,
+        "streaming runtime error"
+    );
+    engine_error_stream_events(EngineErrorBody::new(
+        "streaming response failed",
+        metadata.code,
+        metadata.phase,
+        metadata.retryable,
+    ))
 }
 
 fn engine_error_stream_events(body: EngineErrorBody) -> Vec<Result<Event, Infallible>> {
@@ -236,9 +250,13 @@ fn stream_ended_without_completion_events() -> Vec<Result<Event, Infallible>> {
 
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     let data = serde_json::to_string(&value).unwrap_or_else(|err| {
+        tracing::error!(error = %err, "failed to serialize SSE event");
         json!({
             "error": {
-                "message": format!("response serialization failed: {err}"),
+                "message": "response serialization failed",
+                "code": "response_serialization_failed",
+                "phase": "response_serialization",
+                "retryable": true,
                 "type": "llm_engine_error"
             }
         })

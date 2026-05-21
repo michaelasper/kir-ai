@@ -426,19 +426,18 @@ async fn chat_stream_runtime_errors_include_stable_metadata() {
     let frames = sse_json_frames(&body);
     let error_frames: Vec<&Value> = frames
         .iter()
-        .filter(|frame| frame.get("error").is_some())
+        .filter_map(|frame| frame.get("error"))
         .collect();
     assert_eq!(error_frames.len(), 1, "body: {body}");
-    assert_eq!(
-        error_frames[0]["error"],
-        json!({
-            "message": "backend error: backend error: stream failed",
-            "code": "backend_execution_failed",
-            "phase": "decode",
-            "retryable": true,
-            "type": "llm_engine_error"
-        })
-    );
+    let error = error_frames[0];
+    assert_eq!(error["message"], "streaming response failed");
+    assert_eq!(error["code"], "backend_execution_failed");
+    assert_eq!(error["phase"], "decode");
+    assert_eq!(error["retryable"], true);
+    assert_eq!(error["type"], "llm_engine_error");
+    assert!(!body.contains("stream failed"), "body: {body}");
+    assert!(!body.contains("/srv/kir-ai/private"), "body: {body}");
+    assert!(!body.contains("mlx parser"), "body: {body}");
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 
