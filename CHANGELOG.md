@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.4](https://github.com/michaelasper/kir-ai/compare/v1.27.3...v1.27.4) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-330:** report unhealthy backends from health endpoint ([56c94d4](https://github.com/michaelasper/kir-ai/commit/56c94d4f46fc644fa70632046d0eaaddf960b039))
+
 ## [1.27.3](https://github.com/michaelasper/kir-ai/compare/v1.27.2...v1.27.3) (2026-05-21)
 
 ### Bug Fixes
