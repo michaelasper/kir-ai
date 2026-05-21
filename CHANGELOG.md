@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.1](https://github.com/michaelasper/kir-ai/compare/v1.25.0...v1.25.1) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-337:** disarm runtime cancellation guard ([c280b54](https://github.com/michaelasper/kir-ai/commit/c280b543f4f16f190c88e7daac5bf2167fd09be4))
+
 ## [1.25.0](https://github.com/michaelasper/kir-ai/compare/v1.24.2...v1.25.0) (2026-05-21)
 
 ### Features
