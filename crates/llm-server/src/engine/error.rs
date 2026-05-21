@@ -147,7 +147,7 @@ pub(super) struct RuntimeErrorMetadata {
 pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata {
     let (status, code, phase, retryable) = match err {
         RuntimeError::Api(api) => (
-            StatusCode::BAD_REQUEST,
+            api_error_status(api),
             api.code(),
             "request_validation",
             false,
@@ -207,6 +207,13 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
         code,
         phase,
         retryable,
+    }
+}
+
+fn api_error_status(api: &llm_api::ApiError) -> StatusCode {
+    match StatusCode::from_u16(api.http_status()) {
+        Ok(status) => status,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -336,6 +343,7 @@ fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_api::ApiError;
     use llm_backend::{BackendError, TensorLoadError};
     use serde_json::json;
 
@@ -386,6 +394,29 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn runtime_api_errors_use_api_error_http_status() {
+        let cases = [
+            ApiError::invalid_request("messages must not be empty"),
+            ApiError::unsupported_capability("logprobs are not implemented"),
+        ];
+
+        for api in cases {
+            let err = RuntimeError::Api(api.clone());
+            let metadata = runtime_error_metadata(&err);
+
+            assert_eq!(
+                metadata.status.as_u16(),
+                api.http_status(),
+                "server status mapping should come from ApiError for {}",
+                api.code()
+            );
+            assert_eq!(metadata.code, api.code());
+            assert_eq!(metadata.phase, "request_validation");
+            assert!(!metadata.retryable);
+        }
     }
 
     #[test]
