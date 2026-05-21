@@ -4,25 +4,29 @@ use crate::{
     MAX_TOOL_SCHEMA_BYTES, RequestLimits, ToolDefinition,
 };
 use serde_json::{Map, Value};
-use std::io::{self, Write};
+use std::{
+    collections::BTreeSet,
+    io::{self, Write},
+};
 
 pub(super) fn validate_chat_messages(
     messages: &[ChatMessage],
     limits: RequestLimits,
 ) -> Result<(), ApiError> {
+    let mut seen_conversation_message = false;
+    let mut pending_tool_call_ids = BTreeSet::new();
+    let mut pending_tool_call_message = None;
+
     for (index, message) in messages.iter().enumerate() {
         let label = format!("messages[{index}].content");
-        if matches!(message.role, ChatRole::System | ChatRole::User) && message.content.is_none() {
-            return Err(ApiError::invalid_request(format!(
-                "{label} is required for {} messages",
-                message.role.as_str()
-            )));
-        }
-        if message.role == ChatRole::Tool && message.tool_call_id.is_none() {
-            return Err(ApiError::invalid_request(format!(
-                "messages[{index}].tool_call_id is required for tool messages"
-            )));
-        }
+        validate_chat_message_role_fields(index, message, &label)?;
+        validate_chat_message_order(
+            index,
+            message,
+            &mut seen_conversation_message,
+            &mut pending_tool_call_ids,
+            &mut pending_tool_call_message,
+        )?;
         if let Some(content) = &message.content {
             validate_string_bytes(&label, content, limits.message_content_bytes)?;
         }
@@ -69,6 +73,160 @@ pub(super) fn validate_chat_messages(
                 MAX_TOOL_ARGUMENT_BYTES,
             )?;
         }
+    }
+    if let Some(index) = pending_tool_call_message {
+        return Err(ApiError::invalid_request(format!(
+            "messages[{index}].tool_calls must be followed by tool messages for every pending tool call"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_chat_message_role_fields(
+    index: usize,
+    message: &ChatMessage,
+    content_label: &str,
+) -> Result<(), ApiError> {
+    match message.role {
+        ChatRole::System | ChatRole::User => {
+            if message.content.is_none() {
+                return Err(ApiError::invalid_request(format!(
+                    "{content_label} is required for {} messages",
+                    message.role.as_str()
+                )));
+            }
+            reject_tool_call_id_for_non_tool_message(index, message)?;
+            reject_tool_calls_for_non_assistant_message(index, message)?;
+        }
+        ChatRole::Assistant => {
+            if message.content.is_none() && message.tool_calls.is_empty() {
+                return Err(ApiError::invalid_request(format!(
+                    "{content_label} is required for assistant messages without tool_calls"
+                )));
+            }
+            reject_tool_call_id_for_non_tool_message(index, message)?;
+        }
+        ChatRole::Tool => {
+            if message.content.is_none() {
+                return Err(ApiError::invalid_request(format!(
+                    "{content_label} is required for tool messages"
+                )));
+            }
+            if message.tool_call_id.is_none() {
+                return Err(ApiError::invalid_request(format!(
+                    "messages[{index}].tool_call_id is required for tool messages"
+                )));
+            }
+            reject_tool_calls_for_non_assistant_message(index, message)?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_tool_call_id_for_non_tool_message(
+    index: usize,
+    message: &ChatMessage,
+) -> Result<(), ApiError> {
+    if message.tool_call_id.is_some() {
+        return Err(ApiError::invalid_request(format!(
+            "messages[{index}].tool_call_id is only allowed for tool messages"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_tool_calls_for_non_assistant_message(
+    index: usize,
+    message: &ChatMessage,
+) -> Result<(), ApiError> {
+    if !message.tool_calls.is_empty() {
+        return Err(ApiError::invalid_request(format!(
+            "messages[{index}].tool_calls is only allowed for assistant messages"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_chat_message_order<'a>(
+    index: usize,
+    message: &'a ChatMessage,
+    seen_conversation_message: &mut bool,
+    pending_tool_call_ids: &mut BTreeSet<&'a str>,
+    pending_tool_call_message: &mut Option<usize>,
+) -> Result<(), ApiError> {
+    match message.role {
+        ChatRole::System => {
+            if *seen_conversation_message {
+                return Err(ApiError::invalid_request(format!(
+                    "messages[{index}].role system messages must appear before user, assistant, or tool messages"
+                )));
+            }
+        }
+        ChatRole::User => {
+            reject_non_tool_message_while_tool_calls_pending(
+                index,
+                pending_tool_call_ids,
+                *pending_tool_call_message,
+            )?;
+            *seen_conversation_message = true;
+        }
+        ChatRole::Assistant => {
+            reject_non_tool_message_while_tool_calls_pending(
+                index,
+                pending_tool_call_ids,
+                *pending_tool_call_message,
+            )?;
+            *seen_conversation_message = true;
+            pending_tool_call_ids.clear();
+            *pending_tool_call_message = None;
+            for (tool_call_index, tool_call) in message.tool_calls.iter().enumerate() {
+                if !pending_tool_call_ids.insert(tool_call.id.as_str()) {
+                    return Err(ApiError::invalid_request(format!(
+                        "messages[{index}].tool_calls[{tool_call_index}].id duplicates another tool call id in the same assistant message"
+                    )));
+                }
+            }
+            if !pending_tool_call_ids.is_empty() {
+                *pending_tool_call_message = Some(index);
+            }
+        }
+        ChatRole::Tool => {
+            *seen_conversation_message = true;
+            let Some(tool_call_id) = message.tool_call_id.as_deref() else {
+                return Err(ApiError::invalid_request(format!(
+                    "messages[{index}].tool_call_id is required for tool messages"
+                )));
+            };
+            if pending_tool_call_ids.is_empty() {
+                return Err(ApiError::invalid_request(format!(
+                    "messages[{index}].role tool messages must follow an assistant message with tool_calls"
+                )));
+            }
+            if !pending_tool_call_ids.remove(tool_call_id) {
+                return Err(ApiError::invalid_request(format!(
+                    "messages[{index}].tool_call_id `{tool_call_id}` does not match a pending assistant tool call"
+                )));
+            }
+            if pending_tool_call_ids.is_empty() {
+                *pending_tool_call_message = None;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reject_non_tool_message_while_tool_calls_pending(
+    index: usize,
+    pending_tool_call_ids: &BTreeSet<&str>,
+    pending_tool_call_message: Option<usize>,
+) -> Result<(), ApiError> {
+    if !pending_tool_call_ids.is_empty() {
+        let pending = pending_tool_call_message
+            .map(|pending| format!(" from messages[{pending}].tool_calls"))
+            .unwrap_or_default();
+        return Err(ApiError::invalid_request(format!(
+            "messages[{index}].role must be tool while assistant tool calls{pending} are pending"
+        )));
     }
     Ok(())
 }

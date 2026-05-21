@@ -350,25 +350,19 @@ async fn repeated_empty_required_tool_call_counts_schema_validation_tool_results
 }
 
 #[tokio::test]
-async fn repeated_empty_required_tool_call_ignores_successes_and_unmatched_tool_results() {
+async fn repeated_empty_required_tool_call_ignores_successful_tool_results() {
     let messages = vec![
         ChatMessage::user("read missing.txt"),
         ChatMessage::assistant_tool_call("call_0", "read", json!({})),
         ChatMessage::tool("call_0", "ok"),
         ChatMessage::user("try again"),
         ChatMessage::assistant_tool_call("call_1", "read", json!({})),
-        ChatMessage::tool("other_1", "error: missing path argument"),
-        ChatMessage::user("try again"),
-        ChatMessage::assistant_tool_call("call_2", "read", json!({})),
-        ChatMessage::tool("call_2", "read succeeded"),
-        ChatMessage::user("try again"),
-        ChatMessage::assistant_tool_call("call_3", "read", json!({})),
-        ChatMessage::tool("other_3", "error: missing path argument"),
+        ChatMessage::tool("call_1", "read succeeded"),
     ];
     let err = replay_read_tool_error(
         messages,
         json!({}),
-        "successful and unmatched tool results should not count toward threshold",
+        "successful tool results should not count toward threshold",
     )
     .await;
 

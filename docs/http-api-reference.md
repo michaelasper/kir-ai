@@ -260,7 +260,7 @@ Request fields:
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `model` | string | yes | Must match the served model id. |
-| `messages` | array | yes | Must not be empty. |
+| `messages` | array | yes | Must not be empty. System messages must appear first. User/system/tool messages require `content`; assistant messages require either `content` or `tool_calls`. Tool results require `tool_call_id` and must answer pending assistant `tool_calls`. |
 | `tools` | array | no | Function tools only. |
 | `tool_choice` | string or object | no | `auto`, `none`, `required`, or function choice object. |
 | `response_format` | object | no | `{"type":"text"}` or `{"type":"json_object"}`. `json_schema` is rejected. |

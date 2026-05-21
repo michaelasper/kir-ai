@@ -350,6 +350,7 @@ Validation rules:
 
 - `model` must not be blank.
 - Chat `messages` must not be empty.
+- Chat `messages` must use role-consistent fields: system messages appear before conversation turns, user/system/tool messages include `content`, assistant messages include `content` or `tool_calls`, `tool_calls` appear only on assistant messages, and `tool_call_id` appears only on tool result messages that answer pending assistant tool calls.
 - Completion `prompt` must not be empty.
 - `max_tokens` must be greater than `0`.
 - `stop` may be missing, `null`, a string, or an array of strings.

@@ -348,7 +348,18 @@ async fn invalid_chat_request_validates_before_busy_model_permit() {
                 .body(Body::from(
                     json!({
                         "model": llm_engine::DEFAULT_MODEL_ID,
-                        "messages": []
+                        "messages": [{
+                            "role": "user",
+                            "content": "hello",
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": {"query": "rust"}
+                                }
+                            }]
+                        }]
                     })
                     .to_string(),
                 ))
@@ -361,6 +372,13 @@ async fn invalid_chat_request_validates_before_busy_model_permit() {
     let body = body_json(response.into_body()).await;
     assert_eq!(body["error"]["code"], "invalid_request");
     assert_eq!(body["error"]["phase"], "request_validation");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("messages[0].tool_calls"),
+        "role-inconsistent tool calls should fail before model permit acquisition: {body}"
+    );
 
     release.notify_waiters();
     first

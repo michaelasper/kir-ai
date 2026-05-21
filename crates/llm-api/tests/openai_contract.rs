@@ -197,6 +197,147 @@ fn rejects_tool_messages_without_tool_call_id() {
 }
 
 #[test]
+fn rejects_assistant_messages_without_content_or_tool_calls() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "assistant"}]
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("assistant messages need content or tool calls");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].content"));
+    assert!(err.message().contains("tool_calls"));
+}
+
+#[test]
+fn rejects_tool_messages_without_content() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{"role": "tool", "tool_call_id": "call_1"}]
+    }))
+    .expect("request json should parse");
+
+    let err = request.validate().expect_err("tool messages need content");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].content"));
+}
+
+#[test]
+fn rejects_tool_calls_on_non_assistant_messages() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{
+            "role": "user",
+            "content": "hello",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "rust"}
+                }
+            }]
+        }]
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("only assistant messages may include tool_calls");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].tool_calls"));
+    assert!(err.message().contains("assistant"));
+}
+
+#[test]
+fn rejects_tool_call_ids_on_non_tool_messages() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{
+            "role": "assistant",
+            "content": "done",
+            "tool_call_id": "call_1"
+        }]
+    }))
+    .expect("request json should parse");
+
+    let err = request
+        .validate()
+        .expect_err("only tool messages may include tool_call_id");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[0].tool_call_id"));
+    assert!(err.message().contains("tool messages"));
+}
+
+#[test]
+fn rejects_system_messages_after_conversation_messages() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![
+            ChatMessage::user("hello"),
+            ChatMessage::system("late instruction"),
+        ],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("system messages must appear before conversation turns");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[1].role"));
+    assert!(err.message().contains("system"));
+}
+
+#[test]
+fn rejects_tool_messages_not_matching_pending_assistant_tool_calls() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![
+            ChatMessage::user("lookup rust"),
+            ChatMessage::assistant_tool_call("call_1", "lookup", json!({"query": "rust"})),
+            ChatMessage::tool("call_2", "Rust result"),
+        ],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("tool results must match pending assistant tool call ids");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("messages[2].tool_call_id"));
+    assert!(err.message().contains("pending"));
+}
+
+#[test]
+fn validates_tool_result_exchange_with_followup_user_message() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![
+            ChatMessage::system("You answer briefly."),
+            ChatMessage::user("lookup rust"),
+            ChatMessage::assistant_tool_call("call_1", "lookup", json!({"query": "rust"})),
+            ChatMessage::tool("call_1", "Rust is a systems programming language."),
+            ChatMessage::user("summarize that"),
+        ],
+        tools: vec![ToolDefinition::function("lookup", "lookup docs", json!({}))],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("complete assistant tool call and tool result exchange is valid");
+}
+
+#[test]
 fn rejects_empty_declared_tool_function_name() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
