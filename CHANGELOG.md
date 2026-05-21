@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.2](https://github.com/michaelasper/kir-ai/compare/v1.27.1...v1.27.2) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-316:** land poisoned mutex recovery ([a4b4137](https://github.com/michaelasper/kir-ai/commit/a4b41379cf9e43dfa10622aadf8ddf0d47be8b96))
+* **COR-316:** recover poisoned mutex state ([5d6670c](https://github.com/michaelasper/kir-ai/commit/5d6670c4b3d4fefcd43b983b318250fe02457756))
+
 ## [1.27.1](https://github.com/michaelasper/kir-ai/compare/v1.27.0...v1.27.1) (2026-05-21)
 
 ### Bug Fixes
