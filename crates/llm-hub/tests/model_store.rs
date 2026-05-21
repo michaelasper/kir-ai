@@ -480,6 +480,52 @@ async fn verifies_promoted_snapshot_from_manifest() {
 }
 
 #[tokio::test]
+async fn metadata_only_snapshot_passes_integrity_but_fails_runnable_verification() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let full_plan = build_download_plan(
+        HubRepoId::model("mlx-community/Qwen3.6-35B-A3B-4bit").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_mlx_4bit(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let metadata_plan = full_plan.metadata_only();
+    let snapshot_path = store.snapshot_path(&metadata_plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    store
+        .verify_existing_snapshot(&metadata_plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+
+    let verification = ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .expect("metadata-only integrity verifies");
+    let err = ModelStore::verify_runnable_snapshot(&snapshot_path)
+        .await
+        .expect_err("metadata-only snapshot is not runnable");
+
+    assert_eq!(verification.verified_files, 2);
+    assert_eq!(verification.verified_bytes, 4);
+    assert_eq!(err.code(), "model_integrity_failed");
+    assert!(
+        err.to_string().contains("contains no weight files"),
+        "err: {err}"
+    );
+}
+
+#[tokio::test]
 async fn rejects_corrupt_promoted_snapshot_from_manifest() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());

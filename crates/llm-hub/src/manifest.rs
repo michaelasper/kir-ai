@@ -4,9 +4,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
 
 pub const SNAPSHOT_MANIFEST_FILE: &str = "llm-engine-manifest.json";
+#[cfg(test)]
+static SNAPSHOT_FILE_VERIFICATION_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotManifest {
@@ -109,6 +113,32 @@ pub(crate) async fn read_promoted_snapshot(path: PathBuf) -> Result<PromotedSnap
     })
 }
 
+pub(crate) async fn verify_promoted_snapshot(
+    snapshot: PromotedSnapshot,
+) -> Result<SnapshotVerification, HubError> {
+    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path).await?;
+    let mut verified_files = 0_u64;
+    let mut verified_bytes = 0_u64;
+    for file in &snapshot.manifest.files {
+        verify_snapshot_file(
+            &snapshot.path,
+            &canonical_snapshot_root,
+            &file.path,
+            file.size,
+            file.sha256.as_deref(),
+            file.class,
+        )
+        .await?;
+        verified_files += 1;
+        verified_bytes += file.size;
+    }
+    Ok(SnapshotVerification {
+        snapshot,
+        verified_files,
+        verified_bytes,
+    })
+}
+
 pub(crate) fn manifest_matches_plan(
     manifest: &SnapshotManifest,
     plan: &DownloadPlan,
@@ -136,6 +166,8 @@ pub(crate) async fn verify_snapshot_file(
     expected_sha256: Option<&str>,
     artifact_class: ArtifactClass,
 ) -> Result<(), HubError> {
+    #[cfg(test)]
+    SNAPSHOT_FILE_VERIFICATION_COUNT.fetch_add(1, Ordering::Relaxed);
     validate_artifact_path(relative_path)?;
     let path = snapshot_root.join(relative_path);
     let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|err| {
@@ -178,6 +210,16 @@ pub(crate) async fn verify_snapshot_file(
         )));
     }
     verify_file_sha256_for_artifact(&canonical_path, expected_sha256, artifact_class).await
+}
+
+#[cfg(test)]
+pub(crate) fn reset_snapshot_file_verification_count_for_tests() {
+    SNAPSHOT_FILE_VERIFICATION_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_file_verification_count_for_tests() -> u64 {
+    SNAPSHOT_FILE_VERIFICATION_COUNT.load(Ordering::Relaxed)
 }
 
 pub(crate) async fn verify_file_sha256(path: &Path, expected_sha256: &str) -> Result<(), HubError> {

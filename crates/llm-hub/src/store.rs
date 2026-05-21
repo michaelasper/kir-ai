@@ -2,7 +2,7 @@ use crate::client::HubDownloadFileRequest;
 use crate::manifest::{
     PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest, SnapshotVerification,
     canonicalize_snapshot_root, manifest_matches_plan, read_promoted_snapshot,
-    verify_snapshot_file,
+    verify_promoted_snapshot, verify_snapshot_file,
 };
 use crate::plan::{snapshot_dir_name, validate_artifact_path};
 use crate::{DownloadPlan, HubClient, HubError, HubRepoId};
@@ -380,27 +380,7 @@ impl ModelStore {
         snapshot: impl AsRef<Path>,
     ) -> Result<SnapshotVerification, HubError> {
         let snapshot = Self::inspect_snapshot(snapshot).await?;
-        let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path).await?;
-        let mut verified_files = 0_u64;
-        let mut verified_bytes = 0_u64;
-        for file in &snapshot.manifest.files {
-            verify_snapshot_file(
-                &snapshot.path,
-                &canonical_snapshot_root,
-                &file.path,
-                file.size,
-                file.sha256.as_deref(),
-                file.class,
-            )
-            .await?;
-            verified_files += 1;
-            verified_bytes += file.size;
-        }
-        Ok(SnapshotVerification {
-            snapshot,
-            verified_files,
-            verified_bytes,
-        })
+        verify_promoted_snapshot(snapshot).await
     }
 
     pub async fn verify_runnable_snapshot(
@@ -834,7 +814,15 @@ fn alias_file_name(alias: &str) -> String {
 }
 
 async fn snapshot_readiness(snapshot: &PromotedSnapshot) -> SnapshotReadiness {
-    match validate_runnable_snapshot(snapshot).await {
+    let verification = match verify_promoted_snapshot(snapshot.clone()).await {
+        Ok(verification) => verification,
+        Err(err) => {
+            return SnapshotReadiness::Invalid {
+                reason: err.to_string(),
+            };
+        }
+    };
+    match validate_runnable_snapshot(&verification.snapshot).await {
         Ok(()) => SnapshotReadiness::Ready,
         Err(reason) if is_metadata_only_snapshot(snapshot) && missing_weights_reason(&reason) => {
             SnapshotReadiness::MetadataOnly { reason }
@@ -844,29 +832,9 @@ async fn snapshot_readiness(snapshot: &PromotedSnapshot) -> SnapshotReadiness {
 }
 
 async fn validate_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
-    validate_manifest_files(snapshot).await?;
     validate_builtin_profile_metadata(&snapshot.manifest)?;
     validate_manifest_file_classes(&snapshot.manifest, &snapshot.path)?;
     validate_safetensors_index_shards(snapshot).await?;
-    Ok(())
-}
-
-async fn validate_manifest_files(snapshot: &PromotedSnapshot) -> Result<(), String> {
-    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path)
-        .await
-        .map_err(|err| err.to_string())?;
-    for file in &snapshot.manifest.files {
-        verify_snapshot_file(
-            &snapshot.path,
-            &canonical_snapshot_root,
-            &file.path,
-            file.size,
-            file.sha256.as_deref(),
-            file.class,
-        )
-        .await
-        .map_err(|err| err.to_string())?;
-    }
     Ok(())
 }
 
@@ -1002,4 +970,72 @@ fn missing_weights_reason(reason: &str) -> bool {
 #[derive(Debug, Deserialize)]
 struct RawSafetensorsIndex {
     weight_map: std::collections::BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{
+        reset_snapshot_file_verification_count_for_tests,
+        snapshot_file_verification_count_for_tests,
+    };
+    use crate::{HubFile, HubRepoId, ModelProfile, build_download_plan};
+
+    fn runnable_qwen_files() -> Vec<HubFile> {
+        vec![
+            HubFile::new("config.json", 2, Some("\"cfg\"")),
+            HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
+            HubFile::new(
+                "model.safetensors",
+                4,
+                Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+            ),
+        ]
+    }
+
+    async fn write_runnable_qwen_files(snapshot_path: &Path) {
+        tokio::fs::write(snapshot_path.join("config.json"), "{}")
+            .await
+            .expect("config");
+        tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+            .await
+            .expect("tokenizer");
+        tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
+            .await
+            .expect("weights");
+    }
+
+    #[tokio::test]
+    async fn verify_runnable_snapshot_reuses_integrity_verification() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = ModelStore::new(temp.path());
+        let plan = build_download_plan(
+            HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+            "main",
+            "0123456789abcdef0123456789abcdef01234567",
+            ModelProfile::qwen36_safetensors_bf16(),
+            runnable_qwen_files(),
+            &[],
+        )
+        .expect("plan builds");
+        let snapshot_path = store.snapshot_path(&plan);
+        tokio::fs::create_dir_all(&snapshot_path)
+            .await
+            .expect("snapshot dir");
+        write_runnable_qwen_files(&snapshot_path).await;
+        store
+            .verify_existing_snapshot(&plan)
+            .await
+            .expect("snapshot verifies")
+            .expect("snapshot exists");
+
+        reset_snapshot_file_verification_count_for_tests();
+        let verification = ModelStore::verify_runnable_snapshot(&snapshot_path)
+            .await
+            .expect("runnable snapshot verifies");
+
+        assert_eq!(verification.verified_files, 3);
+        assert_eq!(verification.verified_bytes, 8);
+        assert_eq!(snapshot_file_verification_count_for_tests(), 3);
+    }
 }
