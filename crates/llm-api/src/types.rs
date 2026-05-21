@@ -255,7 +255,7 @@ where
                     .get("text")
                     .and_then(Value::as_str)
                     .ok_or_else(|| D::Error::custom("text message content part requires text"))?;
-                text.push_str(part_text);
+                append_message_content_text_part(&mut text, part_text);
             }
             Ok(Some(text))
         }
@@ -263,4 +263,21 @@ where
             "message content must be a string, null, or an array of text parts",
         )),
     }
+}
+
+fn append_message_content_text_part(text: &mut String, part_text: &str) {
+    if !text.is_empty()
+        && !part_text.is_empty()
+        && !text
+            .chars()
+            .next_back()
+            .is_some_and(|last| last.is_whitespace())
+        && !part_text
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_whitespace())
+    {
+        text.push(' ');
+    }
+    text.push_str(part_text);
 }

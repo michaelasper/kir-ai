@@ -1508,6 +1508,23 @@ fn chat_message_content_accepts_text_part_array() {
 }
 
 #[test]
+fn chat_message_content_separates_adjacent_text_parts() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "local-qwen36",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "World"}
+            ]
+        }]
+    }))
+    .expect("adjacent text content parts deserialize");
+
+    assert_eq!(request.messages[0].content.as_deref(), Some("Hello World"));
+}
+
+#[test]
 fn completion_stop_accepts_string_or_array() {
     let single: CompletionRequest = serde_json::from_value(json!({
         "model": "local-qwen36",
