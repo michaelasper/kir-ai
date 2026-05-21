@@ -214,6 +214,27 @@ cargo run -p llm-engine -- serve \
   --max-prefill-tokens 4096
 ```
 
+## Enable HTTPS
+
+Plain HTTP remains the default so existing loopback workflows keep working. To
+serve HTTPS directly from `llm-engine`, provide both a PEM certificate chain and
+a PEM private key at startup:
+
+```sh
+cargo run -p llm-engine -- serve \
+  --addr 0.0.0.0:3000 \
+  --snapshot "$SNAPSHOT" \
+  --admin-token "$LLM_ENGINE_ADMIN_TOKEN" \
+  --tls-cert /etc/kir-ai/tls/fullchain.pem \
+  --tls-key /etc/kir-ai/tls/privkey.pem
+```
+
+The server validates both files before accepting requests. Provide the two
+flags together; `--tls-cert` without `--tls-key`, or the reverse, fails at
+startup. If you bind a non-loopback address without these flags, keep TLS at a
+local reverse proxy such as Caddy or nginx and forward only trusted traffic to
+Kir.
+
 ## Call Chat Completions
 
 ```sh
@@ -289,7 +310,9 @@ curl -X POST http://127.0.0.1:3000/admin/requests/my-request-id/cancel
 
 Use `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN` to require
 `Authorization: Bearer <token>` on admin routes. The server refuses non-loopback
-binds unless an admin token is configured.
+binds unless an admin token is configured. Use HTTPS or reverse-proxy TLS for
+non-loopback binds so bearer tokens, model pulls, prompts, and responses are not
+sent over cleartext HTTP.
 
 ## Stop The Server
 

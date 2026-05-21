@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--max-public-inference-requests-per-second <n>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
+llm-engine serve [--addr <host:port>] [--tls-cert <path> --tls-key <path>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--max-public-inference-requests-per-second <n>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine model <subcommand> ...
@@ -42,6 +42,8 @@ llm-engine serve \
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--addr <host:port>` | `127.0.0.1:3000` | Socket address to bind. |
+| `--tls-cert <path>` | none | PEM certificate chain for built-in HTTPS. Must be provided with `--tls-key`. When omitted, the server keeps the existing plain HTTP behavior. |
+| `--tls-key <path>` | none | PEM private key for built-in HTTPS. Must be provided with `--tls-cert`. The key material is read at startup and is not logged. |
 | `--protocol-test-backend` | absent | Enables protocol test mode without model artifacts. Intended for tests and client integration. Requires the `test-utils` feature and `--i-understand-this-is-not-real-inference`. |
 | `--deterministic-test-backend` | absent | Deprecated compatibility alias for `--protocol-test-backend`; it has the same feature and acknowledgement requirements. |
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native text execution for supported families; `loader: mlx` opens the loopback MLX sidecar backend. |
@@ -65,6 +67,12 @@ llm-engine serve \
 Set `LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1` to enable the same tool-schema
 canonicalization without the flag. Omit the flag/env to preserve existing
 OpenAI-compatible request serialization.
+
+HTTP remains the default transport. To serve HTTPS directly, pass both
+`--tls-cert` and `--tls-key`; the certificate file may contain a PEM chain and
+the key file must contain one PEM private key. For non-loopback deployments that
+omit these flags, terminate TLS at a reverse proxy such as Caddy, nginx, or an
+equivalent local ingress.
 
 Stable-prefix serving for Qwen agent traffic is `--canonical-tool-schemas` plus
 Qwen family metadata. Kir records Qwen chat-template kwargs as

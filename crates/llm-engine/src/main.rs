@@ -80,12 +80,19 @@ async fn main() -> anyhow::Result<()> {
             let request_limits = request_limits_from_args(&serve_args)?;
             let public_inference_rate_limit = public_inference_rate_limit_from_args(&serve_args)?;
             let stream_stall_timeout = serve_stream_stall_timeout_from_args(&serve_args)?;
+            let tls_config = serve_tls_config_from_args(&serve_args)?;
             if admin_token.is_none() && !addr.ip().is_loopback() {
                 anyhow::bail!(
                     "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
                 );
             }
             let allow_unauthenticated_admin = admin_token.is_none() && addr.ip().is_loopback();
+            if tls_config.is_none() && !addr.ip().is_loopback() {
+                tracing::warn!(
+                    %addr,
+                    "serving plain HTTP on a non-loopback address; configure --tls-cert/--tls-key or terminate TLS at a reverse proxy"
+                );
+            }
             let options = EngineOptions {
                 concurrency_limit: max_concurrent_requests,
                 admin_token,
@@ -282,8 +289,17 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("llm-engine serve requires --snapshot <path> for inference serving");
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            tracing::info!(%addr, "llm-engine listening");
-            llm_server::serve(listener, router).await?;
+            if let Some(tls_config) = tls_config {
+                tracing::info!(
+                    %addr,
+                    tls_cert = %tls_config.cert_path().display(),
+                    "llm-engine HTTPS listening"
+                );
+                llm_server::serve_tls(listener, router, tls_config).await?;
+            } else {
+                tracing::info!(%addr, "llm-engine HTTP listening");
+                llm_server::serve(listener, router).await?;
+            }
         }
         #[cfg(feature = "bench")]
         "bench" => llm_bench::run_bench_command(std::env::args().skip(2).collect()).await?,
@@ -304,6 +320,8 @@ Usage: llm-engine serve [OPTIONS]
 
 Options:
   --addr <host:port>                         Listen address [default: 127.0.0.1:3000]
+  --tls-cert <path>                          PEM certificate chain for HTTPS; requires --tls-key
+  --tls-key <path>                           PEM private key for HTTPS; requires --tls-cert
   --snapshot <path>                          Inference snapshot path
   --snapshot-alias <alias>                   Resolve snapshot path from the model store
   --snapshot-readiness <fast|deep>           Startup readiness check [default: fast; deep hashes all manifest files]
@@ -472,6 +490,21 @@ fn mlx_stream_usage_enabled_from_env(
         .unwrap_or(Ok(true))
 }
 
+fn serve_tls_config_from_args(args: &[String]) -> anyhow::Result<Option<llm_server::TlsConfig>> {
+    match (
+        flag_value(args, "--tls-cert"),
+        flag_value(args, "--tls-key"),
+    ) {
+        (None, None) => Ok(None),
+        (Some(cert_path), Some(key_path)) => Ok(Some(llm_server::TlsConfig::new(
+            std::path::PathBuf::from(cert_path),
+            std::path::PathBuf::from(key_path),
+        ))),
+        (Some(_), None) => anyhow::bail!("--tls-cert requires --tls-key"),
+        (None, Some(_)) => anyhow::bail!("--tls-key requires --tls-cert"),
+    }
+}
+
 fn parse_bool_config(name: &str, value: &str) -> anyhow::Result<bool> {
     match value {
         "1" | "true" | "TRUE" | "yes" | "YES" => Ok(true),
@@ -555,6 +588,43 @@ mod serve_arg_tests {
             non_numeric.to_string().contains("--stream-stall-timeout"),
             "error: {non_numeric}"
         );
+    }
+
+    #[test]
+    fn tls_config_is_absent_by_default() {
+        assert!(
+            serve_tls_config_from_args(&args(&[]))
+                .expect("default TLS config parses")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tls_config_requires_certificate_and_key_together() {
+        let missing_key = serve_tls_config_from_args(&args(&["--tls-cert", "cert.pem"]))
+            .expect_err("certificate without key fails");
+        assert!(
+            missing_key.to_string().contains("--tls-key"),
+            "error: {missing_key}"
+        );
+
+        let missing_cert = serve_tls_config_from_args(&args(&["--tls-key", "key.pem"]))
+            .expect_err("key without certificate fails");
+        assert!(
+            missing_cert.to_string().contains("--tls-cert"),
+            "error: {missing_cert}"
+        );
+    }
+
+    #[test]
+    fn tls_config_parses_explicit_certificate_and_key_paths() {
+        let config =
+            serve_tls_config_from_args(&args(&["--tls-cert", "cert.pem", "--tls-key", "key.pem"]))
+                .expect("TLS config parses")
+                .expect("TLS config present");
+
+        assert_eq!(config.cert_path(), std::path::Path::new("cert.pem"));
+        assert_eq!(config.key_path(), std::path::Path::new("key.pem"));
     }
 
     #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]

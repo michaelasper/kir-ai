@@ -1136,6 +1136,14 @@ fn serve_help_prints_without_backend_validation() {
         "stdout should document the usable native generation default: {stdout}"
     );
     assert!(
+        stdout.contains("--tls-cert <path>"),
+        "serve help should document HTTPS certificate configuration: {stdout}"
+    );
+    assert!(
+        stdout.contains("--tls-key <path>"),
+        "serve help should document HTTPS private key configuration: {stdout}"
+    );
+    assert!(
         stdout.contains("--max-prefill-tokens <n>"),
         "stdout should document native prefill chunk sizing: {stdout}"
     );
@@ -1225,6 +1233,28 @@ async fn serve_without_snapshot_requires_explicit_backend() {
     child.kill().expect("kill hanging serve");
     let _ = child.wait();
     panic!("serve bound the protocol test backend instead of failing without --snapshot");
+}
+
+#[tokio::test]
+async fn serve_tls_cert_requires_tls_key_before_backend_validation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--tls-cert",
+            "/tmp/cert.pem",
+        ])
+        .output()
+        .expect("run serve with incomplete TLS config");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--tls-key"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "TLS option validation should happen before backend validation: {stderr}"
+    );
 }
 
 #[test]
