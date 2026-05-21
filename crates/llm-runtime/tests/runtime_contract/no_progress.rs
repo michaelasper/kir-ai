@@ -20,6 +20,7 @@ async fn no_progress_transcript_replay_fixtures_return_stable_codes() {
         include_str!("../fixtures/no_progress/fuzzy_repeated_invalid_tool_call.json"),
         include_str!("../fixtures/no_progress/repeated_assistant_content.json"),
         include_str!("../fixtures/no_progress/stalled_assistant_turn.json"),
+        include_str!("../fixtures/no_progress/stalled_assistant_turn_non_english.json"),
     ] {
         let fixture: Value = serde_json::from_str(fixture_json).expect("fixture json parses");
         let request = serde_json::from_value::<ChatCompletionRequest>(
