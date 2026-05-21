@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.12](https://github.com/michaelasper/kir-ai/compare/v1.25.11...v1.25.12) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-366:** redact arbitrary unix paths in client errors ([2a7147a](https://github.com/michaelasper/kir-ai/commit/2a7147a2bd4a2da8613af53180c4cb56d4eed7fd))
+* **COR-366:** redact filesystem paths in client errors ([0618f6d](https://github.com/michaelasper/kir-ai/commit/0618f6d87b2b750b0bef10bb1298eb01814dce75))
+
 ## [1.25.11](https://github.com/michaelasper/kir-ai/compare/v1.25.10...v1.25.11) (2026-05-21)
 
 ### Bug Fixes
