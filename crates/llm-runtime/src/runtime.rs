@@ -1,7 +1,7 @@
 use crate::adapters::{SelectedChatAdapter, chat_adapter_for_metadata};
 use crate::{RuntimeError, ToolSchemaNormalization};
 use llm_api::{RequestLimits, ValidateRequest, Validated};
-use llm_backend::{BackendModelMetadata, ModelBackend};
+use llm_backend::{BackendHealth, BackendModelMetadata, ModelBackend};
 
 #[derive(Debug, Clone)]
 pub struct Runtime<B> {
@@ -33,6 +33,10 @@ where
 
     pub fn model_metadata(&self) -> BackendModelMetadata {
         self.backend.model_metadata()
+    }
+
+    pub async fn backend_health(&self) -> BackendHealth {
+        self.backend.health().await
     }
 
     pub(crate) fn ensure_runtime_validated<T>(

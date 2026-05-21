@@ -15,8 +15,33 @@ async fn health_endpoint_reports_no_python_runtime() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.headers().get("x-request-id").is_some());
     let body = body_json(response.into_body()).await;
+    assert_eq!(body["status"], "ok");
     assert_eq!(body["runtime"], "rust");
     assert_eq!(body["python_runtime"], false);
+}
+
+#[tokio::test]
+async fn health_endpoint_reports_unavailable_backend() {
+    let response = build_router_with_backend(Box::new(UnhealthyBackend))
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("health response");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get("x-request-id").is_some());
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["status"], "unavailable");
+    assert_eq!(body["runtime"], "rust");
+    assert_eq!(body["python_runtime"], false);
+    assert_eq!(body["backend"]["status"], "unavailable");
+    assert_eq!(body["backend"]["model"], llm_engine::DEFAULT_MODEL_ID);
+    assert_eq!(body["backend"]["backend"], "unhealthy");
+    assert_eq!(body["backend"]["reason"], "backend is offline");
 }
 
 #[tokio::test]

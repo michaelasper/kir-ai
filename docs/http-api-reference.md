@@ -35,13 +35,30 @@ serving refuses to start unless an admin token is configured.
 
 ## `GET /health`
 
-Response:
+Healthy response (`200 OK`):
 
 ```json
 {
   "status": "ok",
   "runtime": "rust",
   "python_runtime": false
+}
+```
+
+If the active backend reports itself unavailable, the endpoint returns
+`503 Service Unavailable` with the same top-level shape and backend details:
+
+```json
+{
+  "status": "unavailable",
+  "runtime": "rust",
+  "python_runtime": false,
+  "backend": {
+    "status": "unavailable",
+    "model": "local-qwen36",
+    "backend": "mlx",
+    "reason": "MLX model list returned HTTP 503 Service Unavailable"
+  }
 }
 ```
 

@@ -11,11 +11,48 @@
     },
     "python_runtime": {
       "type": "boolean"
+    },
+    "backend": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HealthBackendResponse"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
     "status",
     "runtime",
     "python_runtime"
-  ]
+  ],
+  "$defs": {
+    "HealthBackendResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "model",
+        "backend"
+      ]
+    }
+  }
 }

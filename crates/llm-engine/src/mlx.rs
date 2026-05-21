@@ -2,8 +2,8 @@ use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use llm_backend::{
-    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, ModelBackend,
+    BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendStreamChunk, ModelBackend,
 };
 use llm_models::ModelFamily;
 use serde_json::json;
@@ -623,6 +623,23 @@ impl ModelBackend for MlxBackend {
 
     fn model_metadata(&self) -> BackendModelMetadata {
         self.metadata.clone()
+    }
+
+    async fn health(&self) -> BackendHealth {
+        let response = self
+            .client
+            .get(client::mlx_endpoint_url(&self.endpoint, "models"))
+            .timeout(self.timeouts.connect)
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => BackendHealth::ready(),
+            Ok(response) => BackendHealth::unavailable(format!(
+                "MLX model list returned HTTP {}",
+                response.status()
+            )),
+            Err(err) => BackendHealth::unavailable(format!("MLX health request failed: {err}")),
+        }
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {

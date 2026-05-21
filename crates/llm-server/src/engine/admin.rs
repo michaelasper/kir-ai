@@ -11,7 +11,7 @@ use crate::sync_ext::FailPoisonedMutex;
 use axum::{
     Json,
     extract::{Path as AxumPath, State, rejection::JsonRejection},
-    http::{HeaderMap, header},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use llm_api::{ApiError, ModelCard, ModelList};
@@ -33,14 +33,50 @@ pub(super) struct HealthResponse {
     status: String,
     runtime: String,
     python_runtime: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend: Option<HealthBackendResponse>,
 }
 
-pub(super) async fn health() -> impl IntoResponse {
-    Json(HealthResponse {
-        status: "ok".to_owned(),
-        runtime: "rust".to_owned(),
-        python_runtime: false,
-    })
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct HealthBackendResponse {
+    status: String,
+    model: String,
+    backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let backend_health = state.runtime.backend_health().await;
+    let backend = if backend_health.is_ready() {
+        None
+    } else {
+        let metadata = state.runtime.model_metadata();
+        Some(HealthBackendResponse {
+            status: backend_health.status().as_str().to_owned(),
+            model: metadata.id,
+            backend: metadata.backend,
+            reason: backend_health.reason().map(str::to_owned),
+        })
+    };
+    let status_code = if backend_health.is_ready() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status_code,
+        Json(HealthResponse {
+            status: if backend_health.is_ready() {
+                "ok".to_owned()
+            } else {
+                "unavailable".to_owned()
+            },
+            runtime: "rust".to_owned(),
+            python_runtime: false,
+            backend,
+        }),
+    )
 }
 
 pub(super) async fn models(State(state): State<AppState>) -> Json<ModelList> {

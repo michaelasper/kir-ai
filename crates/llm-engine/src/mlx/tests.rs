@@ -2743,6 +2743,34 @@ async fn mlx_slow_backend_request_timeout_detects_delayed_response_headers() {
     assert_eq!(metrics["stall_failures"], 1);
 }
 
+#[tokio::test]
+async fn mlx_backend_health_reports_model_list_http_failure() {
+    let server = FakeMlxServer::start_with_status(503, "Service Unavailable", "{}");
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let health = backend.health().await;
+
+    assert_eq!(health.status().as_str(), "unavailable");
+    assert_eq!(server.received_path(), "/v1/models");
+    assert!(
+        health
+            .reason()
+            .expect("unavailable health reports a reason")
+            .contains("503"),
+        "health reason should include upstream status: {health:?}"
+    );
+}
+
 struct FakeMlxServer {
     endpoint: Url,
     snapshot: TempDir,
@@ -2980,15 +3008,17 @@ impl FakeMlxServer {
                     name.eq_ignore_ascii_case("content-length")
                         .then(|| value.trim().parse::<usize>().expect("content length"))
                 })
-                .expect("content-length header");
+                .unwrap_or(0);
             while bytes.len() < header_end + request_content_length {
                 let read = stream.read(&mut buffer).expect("read body");
                 assert!(read > 0, "client closed before body");
                 bytes.extend_from_slice(&buffer[..read]);
             }
             let body = &bytes[header_end..header_end + request_content_length];
-            *received_for_thread.lock().expect("received lock") =
-                Some(serde_json::from_slice(body).expect("json request body"));
+            if !body.is_empty() {
+                *received_for_thread.lock().expect("received lock") =
+                    Some(serde_json::from_slice(body).expect("json request body"));
+            }
             thread::sleep(response_delay);
             let _ = write!(
                 stream,

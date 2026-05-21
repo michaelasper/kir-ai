@@ -477,6 +477,55 @@ impl BackendModelMetadata {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendHealthStatus {
+    Ready,
+    Unavailable,
+}
+
+impl BackendHealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendHealth {
+    status: BackendHealthStatus,
+    reason: Option<String>,
+}
+
+impl BackendHealth {
+    pub fn ready() -> Self {
+        Self {
+            status: BackendHealthStatus::Ready,
+            reason: None,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            status: BackendHealthStatus::Unavailable,
+            reason: Some(reason.into()),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.status == BackendHealthStatus::Ready
+    }
+
+    pub fn status(&self) -> BackendHealthStatus {
+        self.status
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
 #[async_trait]
 pub trait ModelBackend: Send + Sync + 'static {
     fn model_id(&self) -> &str;
@@ -487,6 +536,10 @@ pub trait ModelBackend: Send + Sync + 'static {
 
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
+    }
+
+    async fn health(&self) -> BackendHealth {
+        BackendHealth::ready()
     }
 
     /// Non-cancellable generation entry point for direct backend callers.
@@ -559,6 +612,10 @@ where
 
     fn capabilities(&self) -> BackendCapabilities {
         (**self).capabilities()
+    }
+
+    async fn health(&self) -> BackendHealth {
+        (**self).health().await
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {

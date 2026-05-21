@@ -6,8 +6,8 @@ use axum::{
 };
 use futures::StreamExt;
 use llm_backend::{
-    BackendCapabilities, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
+    BackendCapabilities, BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata,
+    BackendOutput, BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend, ProtocolTestBackend,
 };
 use llm_engine::{EngineOptions, PublicInferenceRateLimit, build_router, router_builder};
@@ -51,6 +51,7 @@ fn public_router_builder_requires_explicit_backend() {
 }
 
 struct FailingBackend;
+struct UnhealthyBackend;
 struct PathLeakingBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
@@ -121,6 +122,33 @@ impl ModelBackend for FailingBackend {
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::other("execution failed".to_owned()))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for UnhealthyBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "unhealthy")
+    }
+
+    async fn health(&self) -> BackendHealth {
+        BackendHealth::unavailable("backend is offline")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other("backend is offline".to_owned()))
     }
 
     async fn generate_with_cancel(

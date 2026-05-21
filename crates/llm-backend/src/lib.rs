@@ -8,25 +8,25 @@ pub mod protocol_test {
 pub mod traits {
     pub use super::core::{
         BackendCacheKey, BackendCapabilities, BackendChatRequest, BackendCompletionRequest,
-        BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-        BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
-        BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType, ModelBackend,
-        SamplingConfig,
+        BackendFinishReason, BackendHealth, BackendHealthStatus, BackendModelMetadata,
+        BackendOutput, BackendRequest, BackendRequestKind, BackendStreamChunk,
+        BackendStreamProgress, BackendToolCallDelta, BackendToolDefinition,
+        BackendToolFunctionDefinition, BackendToolType, ModelBackend, SamplingConfig,
     };
 }
 
 pub use core::{
     BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
     BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
-    BackendError, BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
-    BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
-    BackendToolCallType, BackendToolChoice, BackendToolDefinition, BackendToolFunctionDefinition,
-    BackendToolType, CpuNativeMatvecBackend, F32TensorCacheWarmup, GemmaLayerCache,
-    GemmaLayerCacheSnapshot, InferenceScratchpad, KvCacheError, LayerKvCache, LayerKvCacheSnapshot,
-    LinearAttentionCache, LinearAttentionCacheSnapshot, MathError, ModelBackend,
-    NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend, NativeTextLayerCaches,
-    NativeTextLayerCachesMut, NativeTextModelSpec, NativeTextModelSpecRef,
+    BackendError, BackendErrorDomain, BackendFinishReason, BackendHealth, BackendHealthStatus,
+    BackendModelMetadata, BackendOutput, BackendRequest, BackendRequestKind, BackendStreamChunk,
+    BackendStreamProgress, BackendToolCall, BackendToolCallDelta, BackendToolCallFunction,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
+    BackendToolFunctionDefinition, BackendToolType, CpuNativeMatvecBackend, F32TensorCacheWarmup,
+    GemmaLayerCache, GemmaLayerCacheSnapshot, InferenceScratchpad, KvCacheError, LayerKvCache,
+    LayerKvCacheSnapshot, LinearAttentionCache, LinearAttentionCacheSnapshot, MathError,
+    ModelBackend, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
+    NativeTextLayerCaches, NativeTextLayerCachesMut, NativeTextModelSpec, NativeTextModelSpecRef,
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
     QwenEmbeddingProbe, QwenLayerCache, QwenLayerCacheSnapshot, QwenLinearAttentionProjectionProbe,
     QwenMoeDims, QwenMoeRouterProbe, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,
