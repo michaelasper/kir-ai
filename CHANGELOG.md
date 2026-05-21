@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.8](https://github.com/michaelasper/kir-ai/compare/v1.25.7...v1.25.8) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-358:** harden response tool validation lookup ([aa20276](https://github.com/michaelasper/kir-ai/commit/aa202761aca92ff529b125d4455011f09aa5d3b6))
+
 ## [1.25.7](https://github.com/michaelasper/kir-ai/compare/v1.25.6...v1.25.7) (2026-05-21)
 
 ### Bug Fixes
