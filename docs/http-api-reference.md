@@ -358,7 +358,9 @@ Tool definitions use OpenAI function-tool shape:
 ```
 
 If a function choice names a tool that was not declared in `tools`, the request
-fails with `unsupported_capability`.
+fails with `invalid_request`. `unsupported_capability` is reserved for supported
+request fields or controls whose requested mode is not implemented by the local
+server.
 
 Generated Qwen tool calls are parsed from either:
 
