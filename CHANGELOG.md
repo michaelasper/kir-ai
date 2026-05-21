@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.7](https://github.com/michaelasper/kir-ai/compare/v1.25.6...v1.25.7) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-357:** classify undeclared tool choice as invalid request ([765c19f](https://github.com/michaelasper/kir-ai/commit/765c19fab700a6ce07ca4452c8bda04b7e34ae55))
+
 ## [1.25.6](https://github.com/michaelasper/kir-ai/compare/v1.25.5...v1.25.6) (2026-05-21)
 
 ### Bug Fixes
