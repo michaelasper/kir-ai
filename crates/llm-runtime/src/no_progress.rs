@@ -203,6 +203,7 @@ fn tool_result_indicates_failure(content: &str) -> bool {
         "timeout",
         "exception",
         "panic",
+        "missing required argument",
     ]
     .iter()
     .any(|marker| lower.contains(marker))

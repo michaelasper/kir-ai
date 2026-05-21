@@ -321,6 +321,35 @@ async fn repeated_empty_required_tool_call_counts_failed_attempts_across_turns()
 }
 
 #[tokio::test]
+async fn repeated_empty_required_tool_call_counts_schema_validation_tool_results() {
+    let messages = vec![
+        ChatMessage::user("read missing.txt"),
+        ChatMessage::assistant_tool_call("call_0", "read", json!({})),
+        ChatMessage::tool("call_0", "missing required argument `path`"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_1", "read", json!({})),
+        ChatMessage::tool("call_1", "missing required argument `path`"),
+        ChatMessage::user("try again"),
+        ChatMessage::assistant_tool_call("call_2", "read", json!({})),
+        ChatMessage::tool("call_2", "missing required argument `path`"),
+        ChatMessage::user("one more time"),
+        ChatMessage::assistant_tool_call("call_3", "read", json!({})),
+        ChatMessage::tool("call_3", "missing required argument `path`"),
+    ];
+    let err = replay_read_tool_error(
+        messages,
+        json!({}),
+        "schema validation tool results should count toward repeated empty call threshold",
+    )
+    .await;
+
+    assert!(matches!(
+        err,
+        RuntimeError::NoProgress(NoProgressClass::RepeatedInvalidToolCall)
+    ));
+}
+
+#[tokio::test]
 async fn repeated_empty_required_tool_call_ignores_successes_and_unmatched_tool_results() {
     let messages = vec![
         ChatMessage::user("read missing.txt"),
