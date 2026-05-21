@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.6](https://github.com/michaelasper/kir-ai/compare/v1.25.5...v1.25.6) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-356:** preserve multi-part text boundaries ([355363e](https://github.com/michaelasper/kir-ai/commit/355363ec02a136ed27dbae63de8659215d83fd7d))
+
 ## [1.25.5](https://github.com/michaelasper/kir-ai/compare/v1.25.4...v1.25.5) (2026-05-21)
 
 ### Bug Fixes
