@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.0](https://github.com/michaelasper/kir-ai/compare/v1.26.1...v1.27.0) (2026-05-21)
+
+### Features
+
+* **COR-363:** advertise backend capabilities ([6fb8d5a](https://github.com/michaelasper/kir-ai/commit/6fb8d5ab8e0593b07f4d64610a856f8ae7a753de))
+
 ## [1.26.1](https://github.com/michaelasper/kir-ai/compare/v1.26.0...v1.26.1) (2026-05-21)
 
 ### Bug Fixes
