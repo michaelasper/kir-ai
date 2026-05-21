@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.24.2](https://github.com/michaelasper/kir-ai/compare/v1.24.1...v1.24.2) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-335:** sanitize streaming SSE errors ([8e5be73](https://github.com/michaelasper/kir-ai/commit/8e5be73d71feb1faa4564d17eb234fcdf2c5d57f))
+
 ## [1.24.1](https://github.com/michaelasper/kir-ai/compare/v1.24.0...v1.24.1) (2026-05-21)
 
 ### Bug Fixes
