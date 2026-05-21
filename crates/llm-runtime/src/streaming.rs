@@ -601,26 +601,32 @@ pub(crate) fn streaming_chat_stream<'a>(
                         Err(RuntimeError::NoProgress(class))?;
                     }
                     validate_tool_calls_against_request(&parsed_prefix, &request)?;
-                    for (index, tool_call) in parsed_prefix
-                        .tool_calls
-                        .iter()
-                        .enumerate()
-                        .skip(emitted_tool_calls)
-                    {
-                        let delta = tool_call_delta(index, tool_call)?;
-                        emitted_public_chunk = true;
-                        yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
-                            &completion,
-                            ChatCompletionDelta {
-                                tool_calls: vec![delta],
-                                ..ChatCompletionDelta::default()
-                            },
-                            None,
-                            None,
-                        ));
+                    let defer_prefix_tool_calls = matches!(
+                        deferred,
+                        DeferredEmission::ToolChoiceRequired
+                    ) && !parsed_prefix.content.is_empty();
+                    if !defer_prefix_tool_calls {
+                        for (index, tool_call) in parsed_prefix
+                            .tool_calls
+                            .iter()
+                            .enumerate()
+                            .skip(emitted_tool_calls)
+                        {
+                            let delta = tool_call_delta(index, tool_call)?;
+                            emitted_public_chunk = true;
+                            yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
+                                &completion,
+                                ChatCompletionDelta {
+                                    tool_calls: vec![delta],
+                                    ..ChatCompletionDelta::default()
+                                },
+                                None,
+                                None,
+                            ));
+                        }
+                        emitted_tool_calls = parsed_prefix.tool_calls.len();
+                        emitted_len = emitted_len.max(tool_prefix_len);
                     }
-                    emitted_tool_calls = parsed_prefix.tool_calls.len();
-                    emitted_len = emitted_len.max(tool_prefix_len);
                 }
                 if matches!(deferred, DeferredEmission::UnmarkedToolBuffer)
                     && unmarked_tool_buffer_can_stream_text(&raw_text, tool_markup_policy)
@@ -721,7 +727,9 @@ pub(crate) fn streaming_chat_stream<'a>(
         };
         let usage = usage_from_tokens(prompt_tokens, completion_tokens, prompt_cached_tokens);
         match deferred {
-            DeferredEmission::JsonObjectMode if !parsed.content.is_empty() => {
+            DeferredEmission::JsonObjectMode | DeferredEmission::ToolChoiceRequired
+                if !parsed.content.is_empty() =>
+            {
                 yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                     &completion,
                     ChatCompletionDelta {

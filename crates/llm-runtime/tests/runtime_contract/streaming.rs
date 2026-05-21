@@ -1192,6 +1192,89 @@ async fn protocol_backend_streams_required_tool_call_delta() {
 }
 
 #[tokio::test]
+async fn streaming_required_tool_choice_preserves_deferred_content_before_tool_call() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"I will look that up.
+<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming tool call with content assembles");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let emitted_content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    assert_eq!(emitted_content, "I will look that up.\n");
+
+    let first_content_chunk = chunks
+        .iter()
+        .position(|chunk| {
+            chunk
+                .choices
+                .iter()
+                .any(|choice| choice.delta.content.is_some())
+        })
+        .expect("content chunk is emitted");
+    let first_tool_chunk = chunks
+        .iter()
+        .position(|chunk| {
+            chunk
+                .choices
+                .iter()
+                .any(|choice| !choice.delta.tool_calls.is_empty())
+        })
+        .expect("tool call chunk is emitted");
+    assert!(
+        first_content_chunk < first_tool_chunk,
+        "deferred content must be emitted before final tool-call deltas"
+    );
+
+    let delta = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .flat_map(|choice| &choice.delta.tool_calls)
+        .next()
+        .expect("tool call delta is emitted");
+    assert_eq!(delta.index, 0);
+    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref()),
+        Some("lookup")
+    );
+    assert_eq!(
+        delta
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref()),
+        Some(r#"{"query":"rust"}"#)
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .next_back()
+            .and_then(|choice| choice.finish_reason.as_ref()),
+        Some(&FinishReason::ToolCalls)
+    );
+}
+
+#[tokio::test]
 async fn runtime_streams_tool_call_delta_before_backend_finish() {
     let first = Arc::new(Semaphore::new(0));
     let finish = Arc::new(Semaphore::new(0));
