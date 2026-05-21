@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.29.0](https://github.com/michaelasper/kir-ai/compare/v1.28.0...v1.29.0) (2026-05-21)
+
+### Features
+
+* **COR-326:** reconcile latest benchmark comparison report ([d79c599](https://github.com/michaelasper/kir-ai/commit/d79c599c8c505f5ad7881e133ddc6389993fb898))
+
 ## [1.28.0](https://github.com/michaelasper/kir-ai/compare/v1.27.5...v1.28.0) (2026-05-21)
 
 ### Features
