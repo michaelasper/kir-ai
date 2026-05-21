@@ -7,18 +7,19 @@ pub mod protocol_test {
 
 pub mod traits {
     pub use super::core::{
-        BackendCacheKey, BackendChatRequest, BackendCompletionRequest, BackendFinishReason,
-        BackendModelMetadata, BackendOutput, BackendRequest, BackendRequestKind,
-        BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta, BackendToolDefinition,
-        BackendToolFunctionDefinition, BackendToolType, ModelBackend, SamplingConfig,
+        BackendCacheKey, BackendCapabilities, BackendChatRequest, BackendCompletionRequest,
+        BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+        BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
+        BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType, ModelBackend,
+        SamplingConfig,
     };
 }
 
 pub use core::{
-    BackendCacheContext, BackendCacheKey, BackendChatContext, BackendChatMessage,
-    BackendChatRequest, BackendChatRole, BackendCompletionRequest, BackendError,
-    BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
+    BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
+    BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
+    BackendError, BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
     BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
     BackendToolCallType, BackendToolChoice, BackendToolDefinition, BackendToolFunctionDefinition,
     BackendToolType, CpuNativeMatvecBackend, F32TensorCacheWarmup, GemmaLayerCache,

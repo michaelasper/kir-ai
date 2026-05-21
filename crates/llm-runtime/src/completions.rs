@@ -50,6 +50,7 @@ where
             )
             .into());
         }
+        self.validate_completion_request_capabilities(request.as_ref(), false)?;
         let completion = self.complete_text(request, cancellation).await?;
         Ok(CompletionResponse {
             id: completion.id,
@@ -91,6 +92,7 @@ where
     ) -> Result<CompletionStream<'_>, RuntimeError> {
         let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
+        self.validate_completion_request_capabilities(request_ref, true)?;
         let include_usage = request_ref.stream_options.include_usage;
         let stop = request_ref.stop.clone();
         let completion = RuntimeCompletionSeed {

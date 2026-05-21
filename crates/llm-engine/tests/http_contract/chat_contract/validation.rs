@@ -445,6 +445,65 @@ async fn invalid_chat_request_validates_before_busy_model_permit() {
 }
 
 #[tokio::test]
+async fn unsupported_backend_capability_validates_before_busy_model_permit() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut capabilities = BackendCapabilities::all();
+    capabilities.tool_calls = false;
+    let app = build_router_with_backend(Box::new(CapabilityBlockingBackend {
+        capabilities,
+        entered: entered.clone(),
+        release: release.clone(),
+    }));
+    let first = tokio::spawn(app.clone().oneshot(chat_request_body("first")));
+    entered.notified().await;
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "description": "lookup",
+                                "parameters": {}
+                            }
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        ),
+    )
+    .await
+    .expect("capability rejection should not wait for model permit")
+    .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "unsupported_capability");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert_eq!(
+        body["error"]["message"],
+        "unsupported_capability: backend does not advertise tool-call support"
+    );
+
+    release.notify_waiters();
+    first
+        .await
+        .expect("first request task")
+        .expect("first response");
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_unsupported_penalties() {
     let response = build_router_with_protocol_test_backend()
         .oneshot(

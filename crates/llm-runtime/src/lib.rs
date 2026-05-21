@@ -1,5 +1,6 @@
 mod adapters;
 mod backend_request;
+mod capabilities;
 mod chat;
 mod completions;
 mod error;

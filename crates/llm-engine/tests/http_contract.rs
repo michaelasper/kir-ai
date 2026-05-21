@@ -6,9 +6,9 @@ use axum::{
 };
 use futures::StreamExt;
 use llm_backend::{
-    BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta, BackendToolCallFunctionDelta,
-    BackendToolCallType, ModelBackend, ProtocolTestBackend,
+    BackendCapabilities, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
+    BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend, ProtocolTestBackend,
 };
 use llm_engine::{EngineOptions, PublicInferenceRateLimit, build_router, router_builder};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};
@@ -183,6 +183,12 @@ struct FamilyStaticBackend {
     text: &'static str,
 }
 
+struct CapabilityBlockingBackend {
+    capabilities: BackendCapabilities,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
 #[async_trait]
 impl ModelBackend for StaticBackend {
     fn model_id(&self) -> &str {
@@ -254,6 +260,41 @@ impl ModelBackend for FamilyStaticBackend {
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Ok(BackendOutput {
             text: self.text.to_owned(),
+            prompt_tokens: 1,
+            prompt_cached_tokens: None,
+            completion_tokens: 1,
+            finish_reason: BackendFinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for CapabilityBlockingBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "capability-blocking")
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        self.entered.notify_waiters();
+        self.release.notified().await;
+        Ok(BackendOutput {
+            text: "released".to_owned(),
             prompt_tokens: 1,
             prompt_cached_tokens: None,
             completion_tokens: 1,

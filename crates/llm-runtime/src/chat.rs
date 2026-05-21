@@ -58,6 +58,7 @@ where
             )
             .into());
         }
+        self.validate_chat_request_capabilities(request.as_ref(), false)?;
         let completion = self.complete_chat(request, cancellation).await?;
         let message = ChatMessage {
             role: ChatRole::Assistant,
@@ -106,6 +107,7 @@ where
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
         let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
+        self.validate_chat_request_capabilities(request_ref, true)?;
         let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
         let backend_request = self.chat_backend_request(adapter, request_ref)?;

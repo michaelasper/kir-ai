@@ -21,6 +21,7 @@ pub(super) async fn chat_completions(
     let request = parse_json_request(request, &state)?;
     let request = validate_api_request(request, &state)?;
     let streamed = request.as_ref().stream;
+    validate_chat_capabilities(request.as_ref(), streamed, &state)?;
     if streamed {
         let model = request.as_ref().model.clone();
         let run = lifecycle::start_chat_generation(&state, &headers, request.as_ref()).await?;
@@ -91,6 +92,7 @@ pub(super) async fn completions(
     let request = parse_json_request(request, &state)?;
     let request = validate_api_request(request, &state)?;
     let streamed = request.as_ref().stream;
+    validate_completion_capabilities(request.as_ref(), streamed, &state)?;
     if streamed {
         let model = request.as_ref().model.clone();
         let run =
@@ -163,5 +165,33 @@ fn validate_api_request<T: ValidateRequest>(
         .map_err(|err| {
             record_failure_metrics(state);
             RuntimeError::Api(err).into()
+        })
+}
+
+fn validate_chat_capabilities(
+    request: &ChatCompletionRequest,
+    streamed: bool,
+    state: &AppState,
+) -> Result<(), EngineError> {
+    state
+        .runtime
+        .validate_chat_request_capabilities(request, streamed)
+        .map_err(|err| {
+            record_failure_metrics(state);
+            err.into()
+        })
+}
+
+fn validate_completion_capabilities(
+    request: &CompletionRequest,
+    streamed: bool,
+    state: &AppState,
+) -> Result<(), EngineError> {
+    state
+        .runtime
+        .validate_completion_request_capabilities(request, streamed)
+        .map_err(|err| {
+            record_failure_metrics(state);
+            err.into()
         })
 }

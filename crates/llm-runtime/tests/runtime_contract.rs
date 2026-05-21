@@ -4,8 +4,8 @@ use llm_api::{
     ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
 };
 use llm_backend::{
-    BackendCacheContext, BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata,
-    BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
+    BackendCacheContext, BackendCapabilities, BackendChatRole, BackendError, BackendFinishReason,
+    BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
     BackendToolFunctionDefinition, BackendToolType, ModelBackend, ProtocolTestBackend,
     SamplingConfig,
@@ -21,6 +21,8 @@ use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+#[path = "runtime_contract/capabilities.rs"]
+mod capabilities;
 #[path = "runtime_contract/chat.rs"]
 mod chat;
 #[path = "runtime_contract/completion.rs"]
@@ -42,6 +44,11 @@ struct RecordingBackend {
 
 struct RecordingSamplingBackend {
     observed_sampling: Arc<Mutex<Option<SamplingConfig>>>,
+}
+
+struct CapabilityLimitedBackend {
+    capabilities: BackendCapabilities,
+    generated: Arc<Mutex<bool>>,
 }
 
 struct ReplayBackend {
@@ -152,6 +159,49 @@ impl ModelBackend for RecordingSamplingBackend {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
         generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelBackend for CapabilityLimitedBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "capability-limited")
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        *self.generated.lock().expect("generated flag lock") = true;
+        Ok(BackendOutput {
+            text: "should not generate".to_owned(),
+            prompt_tokens: 1,
+            prompt_cached_tokens: None,
+            completion_tokens: 1,
+            finish_reason: BackendFinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        _request: BackendRequest,
+        _cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        *self.generated.lock().expect("generated flag lock") = true;
+        futures::stream::empty().boxed()
     }
 }
 

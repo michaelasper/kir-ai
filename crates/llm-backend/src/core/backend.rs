@@ -318,6 +318,44 @@ pub enum BackendFinishReason {
     Error,
 }
 
+/// Runtime-visible feature support advertised by a backend.
+///
+/// The default set preserves the legacy backend contract: existing backends
+/// are treated as supporting every request shape the runtime could already
+/// send. Backends with narrower support should override
+/// [`ModelBackend::capabilities`] so callers can reject incompatible requests
+/// before generation begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendCapabilities {
+    pub raw_completions: bool,
+    pub chat_completions: bool,
+    pub streaming: bool,
+    pub tool_calls: bool,
+    pub json_object_mode: bool,
+    pub sampling_greedy: bool,
+    pub sampling_top_p: bool,
+}
+
+impl BackendCapabilities {
+    pub const fn all() -> Self {
+        Self {
+            raw_completions: true,
+            chat_completions: true,
+            streaming: true,
+            tool_calls: true,
+            json_object_mode: true,
+            sampling_greedy: true,
+            sampling_top_p: true,
+        }
+    }
+}
+
+impl Default for BackendCapabilities {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SamplingConfig {
     #[default]
@@ -447,6 +485,10 @@ pub trait ModelBackend: Send + Sync + 'static {
         BackendModelMetadata::new(self.model_id(), "unknown")
     }
 
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::all()
+    }
+
     /// Non-cancellable generation entry point for direct backend callers.
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError>;
 
@@ -513,6 +555,10 @@ where
 
     fn model_metadata(&self) -> BackendModelMetadata {
         (**self).model_metadata()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        (**self).capabilities()
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
@@ -688,6 +734,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     struct CancelAwareBackend;
+    struct StreamingDisabledBackend;
 
     #[async_trait]
     impl ModelBackend for CancelAwareBackend {
@@ -715,6 +762,57 @@ mod tests {
             }
             self.generate(request).await
         }
+    }
+
+    #[async_trait]
+    impl ModelBackend for StreamingDisabledBackend {
+        fn model_id(&self) -> &str {
+            "local-qwen36"
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            let mut capabilities = BackendCapabilities::all();
+            capabilities.streaming = false;
+            capabilities
+        }
+
+        async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+            Ok(BackendOutput {
+                text: "ok".to_owned(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: BackendFinishReason::Stop,
+            })
+        }
+
+        async fn generate_with_cancel(
+            &self,
+            request: BackendRequest,
+            cancellation: CancellationToken,
+        ) -> Result<BackendOutput, BackendError> {
+            if cancellation.is_cancelled() {
+                return Err(BackendError::cancelled());
+            }
+            self.generate(request).await
+        }
+    }
+
+    #[test]
+    fn model_backend_default_capabilities_preserve_legacy_request_support() {
+        let backend = CancelAwareBackend;
+
+        assert_eq!(backend.capabilities(), BackendCapabilities::all());
+        assert_eq!(BackendCapabilities::default(), BackendCapabilities::all());
+    }
+
+    #[test]
+    fn boxed_model_backend_forwards_capabilities() {
+        let backend: Box<dyn ModelBackend> = Box::new(StreamingDisabledBackend);
+        let mut expected = BackendCapabilities::all();
+        expected.streaming = false;
+
+        assert_eq!(backend.capabilities(), expected);
     }
 
     #[test]

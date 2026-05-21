@@ -16,10 +16,10 @@ mod qwen;
 mod safetensors;
 
 pub use backend::{
-    BackendCacheContext, BackendCacheKey, BackendChatContext, BackendChatMessage,
-    BackendChatRequest, BackendChatRole, BackendCompletionRequest, BackendError,
-    BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
+    BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
+    BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
+    BackendError, BackendErrorDomain, BackendFinishReason, BackendModelMetadata, BackendOutput,
+    BackendRequest, BackendRequestKind, BackendStreamChunk, BackendStreamProgress, BackendToolCall,
     BackendToolCallDelta, BackendToolCallFunction, BackendToolCallFunctionDelta,
     BackendToolCallType, BackendToolChoice, BackendToolDefinition, BackendToolFunctionDefinition,
     BackendToolType, ModelBackend, SamplingConfig,
