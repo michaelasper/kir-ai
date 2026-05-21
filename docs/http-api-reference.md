@@ -27,9 +27,11 @@ http://127.0.0.1:3000
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions. |
 | `POST` | `/v1/completions` | OpenAI-compatible legacy text completions. |
 
-Admin routes are local operational controls. Use `--admin-token` or
-`LLM_ENGINE_ADMIN_TOKEN` to require `Authorization: Bearer <token>`; non-loopback
-serving refuses to start unless an admin token is configured.
+Admin routes are local operational controls and require `Authorization: Bearer <token>`.
+Use `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN` to set a stable token. If neither
+is set on a loopback bind, `serve` generates a temporary token for that process
+and prints the required header at startup. Non-loopback serving refuses to start
+unless an admin token is configured.
 
 > [!TIP]
 > JSON schemas for all admin API responses are available in [`docs/schemas/admin/`](./schemas/admin/).

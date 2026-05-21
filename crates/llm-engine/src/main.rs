@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
                 .map(str::parse::<usize>)
                 .transpose()?
                 .unwrap_or(1);
-            let admin_token = flag_value(&serve_args, "--admin-token")
+            let configured_admin_token = flag_value(&serve_args, "--admin-token")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_ENGINE_ADMIN_TOKEN").ok());
             let model_home = flag_value(&serve_args, "--model-home")
@@ -81,12 +81,10 @@ async fn main() -> anyhow::Result<()> {
             let public_inference_rate_limit = public_inference_rate_limit_from_args(&serve_args)?;
             let stream_stall_timeout = serve_stream_stall_timeout_from_args(&serve_args)?;
             let tls_config = serve_tls_config_from_args(&serve_args)?;
-            if admin_token.is_none() && !addr.ip().is_loopback() {
-                anyhow::bail!(
-                    "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
-                );
+            let admin_auth = admin_auth_config(configured_admin_token, addr)?;
+            if admin_auth.generated {
+                emit_generated_admin_token_warning(addr, &admin_auth.token);
             }
-            let allow_unauthenticated_admin = admin_token.is_none() && addr.ip().is_loopback();
             if tls_config.is_none() && !addr.ip().is_loopback() {
                 tracing::warn!(
                     %addr,
@@ -95,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let options = EngineOptions {
                 concurrency_limit: max_concurrent_requests,
-                admin_token,
+                admin_token: Some(admin_auth.token),
                 model_home,
                 hub_endpoint,
                 hf_token: std::env::var("HF_TOKEN").ok(),
@@ -253,11 +251,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!(error = %err, alias = model_id, snapshot = %snapshot_path.display(), "failed to record model alias");
                 }
                 let builder = router_builder(backend).with_options(options);
-                if allow_unauthenticated_admin {
-                    builder.allow_unauthenticated_admin().build()?
-                } else {
-                    builder.build()?
-                }
+                builder.build()?
             } else if protocol_test_backend_flag(&serve_args).is_some() {
                 #[cfg(feature = "test-utils")]
                 {
@@ -272,11 +266,7 @@ async fn main() -> anyhow::Result<()> {
                         .with_json_object_protocol(),
                     );
                     let builder = router_builder(backend).with_options(options);
-                    if allow_unauthenticated_admin {
-                        builder.allow_unauthenticated_admin().build()?
-                    } else {
-                        builder.build()?
-                    }
+                    builder.build()?
                 }
                 #[cfg(not(feature = "test-utils"))]
                 {
@@ -340,7 +330,7 @@ Options:
   --max-public-inference-requests-per-second <n>
                                              Public chat/completion requests per second [default: 60]
   --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
-  --admin-token <token>                      Bearer token for admin endpoints
+  --admin-token <token>                      Bearer token for admin endpoints; loopback without one generates a temporary token
   --model-home <path>                        Model store root
   --hub-endpoint <url>                       Hugging Face compatible Hub endpoint
   --mlx-endpoint <url>                       Loopback mlx_lm.server or mlx_vlm.server /v1 endpoint [default: http://127.0.0.1:8080/v1]
@@ -357,6 +347,65 @@ Options:
   -h, --help                                 Print help",
         DEFAULT_MODEL_ID
     );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdminAuthConfig {
+    token: String,
+    generated: bool,
+}
+
+fn admin_auth_config(
+    configured_admin_token: Option<String>,
+    addr: SocketAddr,
+) -> anyhow::Result<AdminAuthConfig> {
+    if let Some(token) = configured_admin_token {
+        return Ok(AdminAuthConfig {
+            token,
+            generated: false,
+        });
+    }
+
+    if !addr.ip().is_loopback() {
+        anyhow::bail!(
+            "serving admin endpoints on a non-loopback address requires --admin-token or LLM_ENGINE_ADMIN_TOKEN"
+        );
+    }
+
+    Ok(AdminAuthConfig {
+        token: generate_admin_token()?,
+        generated: true,
+    })
+}
+
+fn generate_admin_token() -> anyhow::Result<String> {
+    let mut token_bytes = [0_u8; 32];
+    getrandom::fill(&mut token_bytes)
+        .map_err(|err| anyhow::anyhow!("failed to generate admin token: {err}"))?;
+    Ok(hex_token(&token_bytes))
+}
+
+fn hex_token(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let byte = *byte;
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    token
+}
+
+fn emit_generated_admin_token_warning(addr: SocketAddr, token: &str) {
+    tracing::warn!(
+        %addr,
+        "no admin token configured; generated a temporary bearer token for loopback admin endpoints"
+    );
+    eprintln!(
+        "WARNING: no --admin-token or LLM_ENGINE_ADMIN_TOKEN configured; generated a temporary admin token for this process."
+    );
+    eprintln!("Admin requests must include: Authorization: Bearer {token}");
 }
 
 fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
@@ -520,6 +569,46 @@ mod serve_arg_tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn admin_auth_config_preserves_explicit_token() {
+        let config = admin_auth_config(
+            Some("secret-admin-token".to_owned()),
+            "127.0.0.1:3000".parse().expect("socket addr parses"),
+        )
+        .expect("explicit admin token config is valid");
+
+        assert_eq!(
+            config,
+            AdminAuthConfig {
+                token: "secret-admin-token".to_owned(),
+                generated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn admin_auth_config_generates_loopback_token_when_unset() {
+        let config = admin_auth_config(None, "127.0.0.1:3000".parse().expect("socket addr parses"))
+            .expect("loopback without explicit token generates a token");
+
+        assert!(config.generated);
+        assert_eq!(config.token.len(), 64);
+        assert!(config.token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(config.token.bytes().all(|byte| !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn admin_auth_config_rejects_non_loopback_without_token() {
+        let err = admin_auth_config(None, "0.0.0.0:3000".parse().expect("socket addr parses"))
+            .expect_err("non-loopback without admin token fails");
+
+        assert!(
+            err.to_string()
+                .contains("non-loopback address requires --admin-token"),
+            "error: {err}"
+        );
     }
 
     #[test]

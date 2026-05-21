@@ -21,7 +21,6 @@ mlx = ["dep:reqwest", "dep:sha2", "dep:url"]
 native-gemma = ["native-text"]
 native-qwen = ["native-text"]
 native-text = [
-  "dep:getrandom",
   "metal",
   "dep:llm-tokenizer",
   "dep:llm-sampler",
@@ -37,7 +36,7 @@ async-stream.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true
-getrandom = { workspace = true, optional = true }
+getrandom.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-bench = { path = "../llm-bench", optional = true }

@@ -298,8 +298,9 @@ OpenAI-compatible response shape, but it is not token-by-token decode streaming.
 ## Inspect Admin Status
 
 ```sh
-curl -s http://127.0.0.1:3000/admin/models | jq
-curl -s http://127.0.0.1:3000/admin/models/local-qwen36 | jq
+ADMIN_TOKEN=... # token from --admin-token, LLM_ENGINE_ADMIN_TOKEN, or startup output
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:3000/admin/models | jq
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:3000/admin/models/local-qwen36 | jq
 ```
 
 `GET /admin/models` and `GET /admin/models/{alias}` are read-only status
@@ -311,14 +312,18 @@ To make a request cancellable by a known ID, send `x-request-id` on the
 inference call, then cancel it through the admin surface:
 
 ```sh
-curl -X POST http://127.0.0.1:3000/admin/requests/my-request-id/cancel
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:3000/admin/requests/my-request-id/cancel
 ```
 
-Use `--admin-token` or `LLM_ENGINE_ADMIN_TOKEN` to require
-`Authorization: Bearer <token>` on admin routes. The server refuses non-loopback
-binds unless an admin token is configured. Use HTTPS or reverse-proxy TLS for
-non-loopback binds so bearer tokens, model pulls, prompts, and responses are not
-sent over cleartext HTTP.
+Admin routes require `Authorization: Bearer <token>`. Use `--admin-token` or
+`LLM_ENGINE_ADMIN_TOKEN` to set a stable token. If neither is set on a loopback
+bind, `serve` generates a temporary token for that process and prints the
+required header at startup. The server refuses non-loopback binds unless an admin
+token is configured. Use HTTPS or reverse-proxy TLS for non-loopback binds so
+bearer tokens, model pulls, prompts, and responses are not sent over cleartext
+HTTP.
 
 ## Stop The Server
 

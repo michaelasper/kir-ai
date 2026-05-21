@@ -1427,6 +1427,10 @@ fn serve_help_prints_without_backend_validation() {
         "serve help should document configurable stream stall timeout: {stdout}"
     );
     assert!(
+        stdout.contains("loopback without one generates a temporary token"),
+        "serve help should document generated loopback admin token behavior: {stdout}"
+    );
+    assert!(
         stdout.contains("--canonical-tool-schemas"),
         "serve help should document production opt-in tool schema canonicalization: {stdout}"
     );
@@ -1498,6 +1502,127 @@ async fn serve_tls_cert_requires_tls_key_before_backend_validation() {
         !stderr.contains("requires --snapshot"),
         "TLS option validation should happen before backend validation: {stderr}"
     );
+}
+
+#[test]
+#[cfg(feature = "test-utils")]
+fn serve_loopback_without_admin_token_rejects_unauthenticated_admin_requests() {
+    let addr = reserve_loopback_addr();
+    let mut server = spawn_protocol_test_server(&addr, None);
+    wait_for_server(&mut server.child, &addr);
+
+    let response = http_get(&addr, "/admin/metrics", None).expect("admin metrics response");
+
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "unauthenticated admin request should fail closed: {response}"
+    );
+}
+
+#[test]
+#[cfg(feature = "test-utils")]
+fn serve_loopback_with_explicit_admin_token_accepts_bearer_token() {
+    let addr = reserve_loopback_addr();
+    let mut server = spawn_protocol_test_server(&addr, Some("secret-admin-token"));
+    wait_for_server(&mut server.child, &addr);
+
+    let missing_token =
+        http_get(&addr, "/admin/metrics", None).expect("admin metrics response without token");
+    assert!(
+        missing_token.starts_with("HTTP/1.1 401"),
+        "admin request without bearer token should fail: {missing_token}"
+    );
+
+    let authorized = http_get(
+        &addr,
+        "/admin/metrics",
+        Some("Authorization: Bearer secret-admin-token\r\n"),
+    )
+    .expect("authorized admin metrics response");
+    assert!(
+        authorized.starts_with("HTTP/1.1 200"),
+        "admin request with explicit bearer token should pass: {authorized}"
+    );
+}
+
+#[cfg(feature = "test-utils")]
+struct ServerProcess {
+    child: std::process::Child,
+}
+
+#[cfg(feature = "test-utils")]
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn reserve_loopback_addr() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
+    listener
+        .local_addr()
+        .expect("reserved loopback addr")
+        .to_string()
+}
+
+#[cfg(feature = "test-utils")]
+fn spawn_protocol_test_server(addr: &str, admin_token: Option<&str>) -> ServerProcess {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_llm-engine"));
+    command
+        .args([
+            "serve",
+            "--addr",
+            addr,
+            "--protocol-test-backend",
+            "--i-understand-this-is-not-real-inference",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(token) = admin_token {
+        command.args(["--admin-token", token]);
+    }
+
+    ServerProcess {
+        child: command.spawn().expect("spawn protocol test server"),
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn wait_for_server(child: &mut std::process::Child, addr: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("poll protocol test server") {
+            panic!("protocol test server exited before accepting requests: {status}");
+        }
+        if http_get(addr, "/health", None)
+            .map(|response| response.starts_with("HTTP/1.1 200"))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    panic!("protocol test server did not accept requests at {addr}");
+}
+
+#[cfg(feature = "test-utils")]
+fn http_get(addr: &str, path: &str, extra_headers: Option<&str>) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let extra_headers = extra_headers.unwrap_or("");
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{extra_headers}Connection: close\r\n\r\n");
+    stream.write_all(request.as_bytes())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
 }
 
 #[test]
