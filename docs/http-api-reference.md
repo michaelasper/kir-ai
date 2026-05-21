@@ -502,6 +502,9 @@ All engine errors use this body shape:
 }
 ```
 
+Client-visible error messages are sanitized so absolute filesystem paths are
+reported as `[redacted path]`; detailed path context remains server-side.
+
 When an error happens after an SSE stream has started, the HTTP status remains
 `200` because response headers have already been sent. Clients should read the
 structured `data:` error object and use `code`, `phase`, and `retryable` for

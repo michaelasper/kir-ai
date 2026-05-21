@@ -113,6 +113,14 @@ async fn admin_metrics_report_artifact_verification_failures() {
     let body = body_json(response.into_body()).await;
     assert_eq!(body["error"]["code"], "model_integrity_failed");
     assert_eq!(body["error"]["phase"], "model_artifact_verification");
+    let message = body["error"]["message"]
+        .as_str()
+        .expect("error message is string");
+    let model_home = temp.path().to_string_lossy();
+    assert!(
+        !message.contains(model_home.as_ref()),
+        "client error message leaked model home path: {message}"
+    );
 
     let response = app
         .oneshot(

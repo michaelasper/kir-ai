@@ -15,9 +15,10 @@ impl EngineErrorBody {
         phase: &'static str,
         retryable: bool,
     ) -> Self {
+        let message = sanitize_client_error_message(message.into());
         Self {
             error: EngineErrorPayload {
-                message: message.into(),
+                message,
                 code,
                 phase,
                 retryable,
@@ -35,6 +36,89 @@ impl EngineErrorBody {
             metadata.retryable,
         )
     }
+}
+
+const REDACTED_PATH: &str = "[redacted path]";
+const UNIX_ABSOLUTE_PATH_PREFIXES: &[&str] = &[
+    "/Users/",
+    "/home/",
+    "/root/",
+    "/var/",
+    "/private/",
+    "/tmp/",
+    "/srv/",
+    "/opt/",
+    "/usr/",
+    "/etc/",
+    "/mnt/",
+    "/Volumes/",
+    "/app/",
+    "/workspace/",
+];
+
+fn sanitize_client_error_message(message: String) -> String {
+    let mut sanitized = String::with_capacity(message.len());
+    let mut cursor = 0;
+    let mut redacted = false;
+
+    while cursor < message.len() {
+        let Some((relative_start, path_len)) = next_absolute_path(&message[cursor..]) else {
+            sanitized.push_str(&message[cursor..]);
+            break;
+        };
+        let start = cursor + relative_start;
+        let end = start + path_len;
+        sanitized.push_str(&message[cursor..start]);
+        sanitized.push_str(REDACTED_PATH);
+        cursor = end;
+        redacted = true;
+    }
+
+    if redacted { sanitized } else { message }
+}
+
+fn next_absolute_path(message: &str) -> Option<(usize, usize)> {
+    message
+        .char_indices()
+        .find_map(|(index, _)| absolute_path_len(&message[index..]).map(|len| (index, len)))
+}
+
+fn absolute_path_len(candidate: &str) -> Option<usize> {
+    if starts_with_unix_absolute_path(candidate) || starts_with_windows_absolute_path(candidate) {
+        Some(path_token_len(candidate))
+    } else {
+        None
+    }
+}
+
+fn starts_with_unix_absolute_path(candidate: &str) -> bool {
+    UNIX_ABSOLUTE_PATH_PREFIXES
+        .iter()
+        .any(|prefix| candidate.starts_with(prefix))
+}
+
+fn starts_with_windows_absolute_path(candidate: &str) -> bool {
+    let bytes = candidate.as_bytes();
+    matches!(
+        bytes,
+        [drive, b':', slash, ..]
+            if drive.is_ascii_alphabetic() && (*slash == b'\\' || *slash == b'/')
+    ) || candidate.starts_with("\\\\")
+}
+
+fn path_token_len(candidate: &str) -> usize {
+    candidate
+        .char_indices()
+        .find_map(|(index, ch)| is_path_terminator(ch).then_some(index))
+        .unwrap_or(candidate.len())
+}
+
+fn is_path_terminator(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            '`' | '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -148,21 +232,33 @@ impl IntoResponse for EngineError {
         let (status, body) = match self {
             Self::Runtime(err) => {
                 let metadata = runtime_error_metadata(&err);
+                log_runtime_error_response(&err, metadata);
                 (metadata.status, EngineErrorBody::from_runtime_error(&err))
             }
-            Self::ModelStore(err) => (
-                if err.code() == "model_not_found" {
+            Self::ModelStore(err) => {
+                let status = if err.code() == "model_not_found" {
                     StatusCode::NOT_FOUND
                 } else {
                     StatusCode::UNPROCESSABLE_ENTITY
-                },
-                EngineErrorBody::new(
-                    err.to_string(),
-                    err.code(),
-                    "model_artifact_verification",
-                    false,
-                ),
-            ),
+                };
+                tracing::warn!(
+                    error = %err,
+                    code = err.code(),
+                    phase = "model_artifact_verification",
+                    retryable = false,
+                    status = status.as_u16(),
+                    "model-store error response"
+                );
+                (
+                    status,
+                    EngineErrorBody::new(
+                        err.to_string(),
+                        err.code(),
+                        "model_artifact_verification",
+                        false,
+                    ),
+                )
+            }
             Self::Overloaded(message) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 EngineErrorBody::new(message, "model_overloaded", "scheduler", true),
@@ -214,6 +310,20 @@ impl IntoResponse for EngineError {
         };
         (status, Json(body)).into_response()
     }
+}
+
+fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata) {
+    if !matches!(err, RuntimeError::BackendFailed { .. }) {
+        return;
+    }
+    tracing::warn!(
+        error = %err,
+        code = metadata.code,
+        phase = metadata.phase,
+        retryable = metadata.retryable,
+        status = metadata.status.as_u16(),
+        "runtime error response"
+    );
 }
 
 #[cfg(test)]
@@ -268,6 +378,40 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn engine_error_body_redacts_absolute_unix_paths() {
+        let body = EngineErrorBody::new(
+            "failed to open `/Users/michaelasper/source/kir-ai/private/model.safetensors`",
+            "backend_execution_failed",
+            "decode",
+            true,
+        );
+
+        let value = serde_json::to_value(&body).expect("engine error body serializes");
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("error message is string");
+
+        assert_eq!(message, "failed to open `[redacted path]`");
+    }
+
+    #[test]
+    fn engine_error_body_redacts_windows_absolute_paths() {
+        let body = EngineErrorBody::new(
+            "failed to read C:\\Users\\michaelasper\\kir-ai\\model.safetensors",
+            "backend_execution_failed",
+            "decode",
+            true,
+        );
+
+        let value = serde_json::to_value(&body).expect("engine error body serializes");
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("error message is string");
+
+        assert_eq!(message, "failed to read [redacted path]");
     }
 
     #[test]

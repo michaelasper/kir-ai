@@ -321,3 +321,28 @@ async fn backend_execution_errors_are_not_reported_as_missing_model() {
     assert_eq!(body["error"]["phase"], "decode");
     assert_eq!(body["error"]["retryable"], true);
 }
+
+#[tokio::test]
+async fn backend_execution_errors_do_not_expose_internal_paths() {
+    let response = build_router_with_backend(Box::new(PathLeakingBackend))
+        .oneshot(chat_request_body("hello"))
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "backend_execution_failed");
+    assert_eq!(body["error"]["phase"], "decode");
+    assert_eq!(body["error"]["retryable"], true);
+    let message = body["error"]["message"]
+        .as_str()
+        .expect("error message is string");
+    assert!(
+        !message.contains("/Users/michaelasper/source/kir-ai"),
+        "client error message leaked internal root: {message}"
+    );
+    assert!(
+        !message.contains("model.safetensors"),
+        "client error message leaked internal file name: {message}"
+    );
+}

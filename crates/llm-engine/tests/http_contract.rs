@@ -51,6 +51,7 @@ fn public_router_builder_requires_explicit_backend() {
 }
 
 struct FailingBackend;
+struct PathLeakingBackend;
 
 fn qwen_test_metadata(model_id: &str, backend: &str) -> BackendModelMetadata {
     BackendModelMetadata::new(model_id, backend).with_family("qwen")
@@ -120,6 +121,31 @@ impl ModelBackend for FailingBackend {
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::other("execution failed".to_owned()))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for PathLeakingBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "path-leaking")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "failed to open /Users/michaelasper/source/kir-ai/private/model.safetensors".to_owned(),
+        ))
     }
 
     async fn generate_with_cancel(
