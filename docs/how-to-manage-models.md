@@ -140,9 +140,20 @@ cargo run -p llm-engine -- model list --model-home "$LLM_MODEL_HOME"
 
 The command prints runnable snapshots with repo identity, requested revision,
 resolved commit, profile, family, loader, quantisation, manifest digest, file
-count, aliases, and readiness status. Metadata-only snapshots are printed under
-`metadata_only_snapshots`; stale or corrupt promoted snapshots are moved to
+count, aliases, and readiness status. By default, readiness uses the fast mode:
+it parses the manifest, checks required config/tokenizer/weight classes, checks
+manifest file presence and sizes, and validates safetensors index coverage
+without hashing model weights. Metadata-only snapshots are printed under
+`metadata_only_snapshots`; incomplete or stale promoted snapshots are moved to
 quarantine and printed with the quarantine reason and original path.
+
+Use deep readiness when you want `model list` to hash every manifest file:
+
+```sh
+cargo run -p llm-engine -- model list \
+  --model-home "$LLM_MODEL_HOME" \
+  --snapshot-readiness deep
+```
 
 ## Inspect A Snapshot
 
@@ -170,6 +181,9 @@ Verification checks every manifest file for:
 - config, tokenizer, and weight artifact presence
 - built-in profile metadata consistency
 - safetensors index shard coverage
+
+`model verify` is always a deep check. It is the command to use before release
+or after moving snapshots between disks.
 
 Treat `model_integrity_failed` as a signal to pull or restore the snapshot
 again.
@@ -285,3 +299,8 @@ cargo run -p llm-engine -- serve \
   --max-new-tokens 256 \
   --max-prefill-tokens 2048
 ```
+
+Serve startup checks promoted `llm-engine-manifest.json` snapshots with fast
+readiness by default, so startup does not hash large weight files unless you ask
+for it. Use `--snapshot-readiness deep` when startup must re-run SHA-256
+verification before opening the backend.

@@ -62,6 +62,31 @@ pub struct QuarantinedSnapshot {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotReadinessMode {
+    Fast,
+    Deep,
+}
+
+impl SnapshotReadinessMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "fast" => Ok(Self::Fast),
+            "deep" => Ok(Self::Deep),
+            _ => Err(format!(
+                "unsupported snapshot readiness mode `{value}`; expected fast or deep"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Deep => "deep",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotReadiness {
     Ready,
@@ -335,10 +360,18 @@ impl ModelStore {
     }
 
     pub async fn snapshot_inventory(&self) -> Result<SnapshotInventory, HubError> {
+        self.snapshot_inventory_with_mode(SnapshotReadinessMode::Fast)
+            .await
+    }
+
+    pub async fn snapshot_inventory_with_mode(
+        &self,
+        mode: SnapshotReadinessMode,
+    ) -> Result<SnapshotInventory, HubError> {
         let mut ready_snapshots = Vec::new();
         let mut metadata_only_snapshots = Vec::new();
         for snapshot in self.list_snapshots().await? {
-            let readiness = snapshot_readiness(&snapshot).await;
+            let readiness = snapshot_readiness(&snapshot, mode).await;
             match readiness {
                 SnapshotReadiness::Ready => ready_snapshots.push(snapshot),
                 SnapshotReadiness::MetadataOnly { .. } => {
@@ -368,8 +401,15 @@ impl ModelStore {
     pub async fn inspect_snapshot_readiness(
         snapshot: impl AsRef<Path>,
     ) -> Result<SnapshotRecord, HubError> {
+        Self::inspect_snapshot_readiness_with_mode(snapshot, SnapshotReadinessMode::Fast).await
+    }
+
+    pub async fn inspect_snapshot_readiness_with_mode(
+        snapshot: impl AsRef<Path>,
+        mode: SnapshotReadinessMode,
+    ) -> Result<SnapshotRecord, HubError> {
         let snapshot = Self::inspect_snapshot(snapshot).await?;
-        let readiness = snapshot_readiness(&snapshot).await;
+        let readiness = snapshot_readiness(&snapshot, mode).await;
         Ok(SnapshotRecord {
             snapshot,
             readiness,
@@ -813,22 +853,36 @@ fn alias_file_name(alias: &str) -> String {
     format!("{sanitized}.{}.json", &digest[..16])
 }
 
-async fn snapshot_readiness(snapshot: &PromotedSnapshot) -> SnapshotReadiness {
-    let verification = match verify_promoted_snapshot(snapshot.clone()).await {
-        Ok(verification) => verification,
-        Err(err) => {
-            return SnapshotReadiness::Invalid {
-                reason: err.to_string(),
-            };
-        }
+async fn snapshot_readiness(
+    snapshot: &PromotedSnapshot,
+    mode: SnapshotReadinessMode,
+) -> SnapshotReadiness {
+    let result = match mode {
+        SnapshotReadinessMode::Fast => validate_fast_runnable_snapshot(snapshot).await,
+        SnapshotReadinessMode::Deep => validate_deep_runnable_snapshot(snapshot).await,
     };
-    match validate_runnable_snapshot(&verification.snapshot).await {
+    match result {
         Ok(()) => SnapshotReadiness::Ready,
         Err(reason) if is_metadata_only_snapshot(snapshot) && missing_weights_reason(&reason) => {
             SnapshotReadiness::MetadataOnly { reason }
         }
         Err(reason) => SnapshotReadiness::Invalid { reason },
     }
+}
+
+async fn validate_fast_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    validate_builtin_profile_metadata(&snapshot.manifest)?;
+    validate_manifest_file_classes(&snapshot.manifest, &snapshot.path)?;
+    validate_snapshot_file_metadata(snapshot).await?;
+    validate_safetensors_index_shards(snapshot).await?;
+    Ok(())
+}
+
+async fn validate_deep_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    let verification = verify_promoted_snapshot(snapshot.clone())
+        .await
+        .map_err(|err| err.to_string())?;
+    validate_runnable_snapshot(&verification.snapshot).await
 }
 
 async fn validate_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
@@ -906,7 +960,52 @@ fn validate_manifest_file_classes(manifest: &SnapshotManifest, path: &Path) -> R
     Ok(())
 }
 
+async fn validate_snapshot_file_metadata(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path)
+        .await
+        .map_err(|err| err.to_string())?;
+    for file in &snapshot.manifest.files {
+        validate_artifact_path(&file.path).map_err(|err| err.to_string())?;
+        let path = snapshot.path.join(&file.path);
+        let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|err| {
+            format!(
+                "snapshot file `{}` is missing or unreadable: {err}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("snapshot path `{}` is a symlink", path.display()));
+        }
+        let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|err| {
+            format!(
+                "snapshot file `{}` is missing or unreadable: {err}",
+                path.display()
+            )
+        })?;
+        if !canonical_path.starts_with(&canonical_snapshot_root) {
+            return Err(format!(
+                "snapshot file `{}` resolves outside snapshot root `{}`",
+                path.display(),
+                snapshot.path.display()
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(format!("snapshot path `{}` is not a file", path.display()));
+        }
+        if metadata.len() != file.size {
+            return Err(format!(
+                "snapshot file `{}` has size {}, expected {}",
+                path.display(),
+                metadata.len(),
+                file.size
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn validate_safetensors_index_shards(snapshot: &PromotedSnapshot) -> Result<(), String> {
+    let mut indexed_shards = BTreeSet::new();
     for index in snapshot
         .manifest
         .files
@@ -948,6 +1047,19 @@ async fn validate_safetensors_index_shards(snapshot: &PromotedSnapshot) -> Resul
                 return Err(format!(
                     "safetensors index references shard `{shard}` recorded as {:?}, expected weights",
                     file.class
+                ));
+            }
+            indexed_shards.insert(shard.to_owned());
+        }
+    }
+    if !indexed_shards.is_empty() {
+        for file in snapshot.manifest.files.iter().filter(|file| {
+            file.class == crate::ArtifactClass::Weights && file.path.ends_with(".safetensors")
+        }) {
+            if !indexed_shards.contains(&file.path) {
+                return Err(format!(
+                    "snapshot weight file `{}` is not covered by a safetensors index",
+                    file.path
                 ));
             }
         }

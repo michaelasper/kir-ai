@@ -22,7 +22,7 @@ use llm_engine::{
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
-use llm_hub::{HubClient, ModelStore};
+use llm_hub::{HubClient, ModelStore, SnapshotReadiness};
 #[cfg(feature = "diagnostics")]
 use llm_models::QwenModelSpec;
 #[cfg(feature = "diagnostics")]
@@ -113,6 +113,8 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
             let router = if let Some(snapshot_path) = snapshot_path {
+                let snapshot_readiness_mode =
+                    model_cli::snapshot_readiness_mode_from_args(&serve_args)?;
                 let model_id = flag_value(&serve_args, "--model-id")
                     .or(snapshot_alias)
                     .unwrap_or(DEFAULT_MODEL_ID);
@@ -175,7 +177,25 @@ async fn main() -> anyhow::Result<()> {
                     .map(parse_snapshot_model_family)
                     .transpose()?;
                 if tokio::fs::try_exists(snapshot_path.join("llm-engine-manifest.json")).await? {
-                    ModelStore::verify_runnable_snapshot(&snapshot_path).await?;
+                    let record = ModelStore::inspect_snapshot_readiness_with_mode(
+                        &snapshot_path,
+                        snapshot_readiness_mode,
+                    )
+                    .await?;
+                    if !matches!(record.readiness, SnapshotReadiness::Ready) {
+                        let status = record.readiness.status();
+                        let reason = record.readiness.reason().unwrap_or("unknown reason");
+                        anyhow::bail!(
+                            "snapshot readiness {status} ({}) failed for `{}`: {reason}",
+                            snapshot_readiness_mode.as_str(),
+                            snapshot_path.display()
+                        );
+                    }
+                    tracing::info!(
+                        snapshot = %snapshot_path.display(),
+                        readiness_mode = snapshot_readiness_mode.as_str(),
+                        "snapshot readiness validated"
+                    );
                 }
                 let backend = open_snapshot_backend(
                     model_id,
@@ -283,6 +303,7 @@ Options:
   --addr <host:port>                         Listen address [default: 127.0.0.1:3000]
   --snapshot <path>                          Inference snapshot path
   --snapshot-alias <alias>                   Resolve snapshot path from the model store
+  --snapshot-readiness <fast|deep>           Startup readiness check [default: fast; deep hashes all manifest files]
   --model-alias <alias>                      Alias for --snapshot-alias
   --model-id <id>                            Served model id [default: {}]
   --loader <native-metal|mlx>                Override snapshot loader when no manifest is present
@@ -568,7 +589,8 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
     match subcommand.as_str() {
         "list" => {
             let root = model_home_from_args(&args);
-            let value = model_cli::model_list_json(&root).await?;
+            let readiness_mode = model_cli::snapshot_readiness_mode_from_args(&args)?;
+            let value = model_cli::model_list_json_with_mode(&root, readiness_mode).await?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         #[cfg(feature = "diagnostics")]

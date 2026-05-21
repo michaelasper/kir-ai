@@ -1,6 +1,6 @@
 use llm_hub::{
     HubFile, HubRepoId, ModelProfile, ModelStore, PrunePolicy, SnapshotManifest,
-    build_download_plan,
+    SnapshotReadinessMode, build_download_plan,
 };
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Barrier;
@@ -27,6 +27,27 @@ async fn write_runnable_qwen_files(snapshot_path: &Path) {
     tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
         .await
         .expect("weights");
+}
+
+fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn safetensors_index_bytes(shards: &[&str]) -> Vec<u8> {
+    let weight_map = shards
+        .iter()
+        .enumerate()
+        .map(|(index, shard)| {
+            (
+                format!("model.layers.{index}.weight"),
+                serde_json::Value::String((*shard).to_owned()),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::to_vec(&serde_json::json!({ "weight_map": weight_map }))
+        .expect("safetensors index serializes")
 }
 
 #[tokio::test]
@@ -408,6 +429,177 @@ async fn snapshot_inventory_reports_metadata_only_snapshots_without_quarantine()
     );
     assert!(inventory.quarantined_snapshots.is_empty());
     assert!(snapshot_path.exists());
+}
+
+#[tokio::test]
+async fn snapshot_inventory_uses_fast_readiness_without_hashing_weight_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    write_runnable_qwen_files(&snapshot_path).await;
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+    tokio::fs::write(snapshot_path.join("model.safetensors"), b"xxxx")
+        .await
+        .expect("same-size weight corruption");
+
+    let inventory = store.snapshot_inventory().await.expect("inventory");
+    let deep = ModelStore::inspect_snapshot_readiness_with_mode(
+        &snapshot_path,
+        SnapshotReadinessMode::Deep,
+    )
+    .await
+    .expect("deep readiness inspects");
+
+    assert_eq!(inventory.ready_snapshots.len(), 1);
+    assert_eq!(inventory.ready_snapshots[0].path, snapshot_path);
+    assert!(inventory.metadata_only_snapshots.is_empty());
+    assert!(inventory.quarantined_snapshots.is_empty());
+    assert_eq!(deep.readiness.status(), "invalid");
+    assert!(
+        deep.readiness
+            .reason()
+            .expect("deep reason")
+            .contains("sha256"),
+        "reason: {:?}",
+        deep.readiness.reason()
+    );
+}
+
+#[tokio::test]
+async fn snapshot_inventory_quarantines_missing_manifest_files_during_fast_readiness() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    write_runnable_qwen_files(&snapshot_path).await;
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+    tokio::fs::remove_file(snapshot_path.join("model.safetensors"))
+        .await
+        .expect("remove weights");
+
+    let inventory = store.snapshot_inventory().await.expect("inventory");
+
+    assert!(inventory.ready_snapshots.is_empty());
+    assert!(inventory.metadata_only_snapshots.is_empty());
+    assert_eq!(inventory.quarantined_snapshots.len(), 1);
+    assert!(
+        inventory.quarantined_snapshots[0]
+            .metadata
+            .reason
+            .contains("missing or unreadable"),
+        "reason: {}",
+        inventory.quarantined_snapshots[0].metadata.reason
+    );
+    assert!(!snapshot_path.exists());
+}
+
+#[tokio::test]
+async fn snapshot_inventory_rejects_safetensors_index_that_omits_manifest_shard() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let index = safetensors_index_bytes(&["model-00001-of-00002.safetensors"]);
+    let index_digest = digest(&index);
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![
+            HubFile::new("config.json", 2, Some("\"cfg\"")),
+            HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
+            HubFile::new(
+                "model.safetensors.index.json",
+                index.len() as u64,
+                Some(&index_digest),
+            ),
+            HubFile::new(
+                "model-00001-of-00002.safetensors",
+                4,
+                Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+            ),
+            HubFile::new(
+                "model-00002-of-00002.safetensors",
+                4,
+                Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+            ),
+        ],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    tokio::fs::write(snapshot_path.join("model.safetensors.index.json"), &index)
+        .await
+        .expect("index");
+    tokio::fs::write(
+        snapshot_path.join("model-00001-of-00002.safetensors"),
+        b"data",
+    )
+    .await
+    .expect("first shard");
+    tokio::fs::write(
+        snapshot_path.join("model-00002-of-00002.safetensors"),
+        b"data",
+    )
+    .await
+    .expect("second shard");
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+
+    let inventory = store.snapshot_inventory().await.expect("inventory");
+
+    assert!(inventory.ready_snapshots.is_empty());
+    assert_eq!(inventory.quarantined_snapshots.len(), 1);
+    assert!(
+        inventory.quarantined_snapshots[0]
+            .metadata
+            .reason
+            .contains("not covered by a safetensors index"),
+        "reason: {}",
+        inventory.quarantined_snapshots[0].metadata.reason
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 use llm_hub::{
     DeletedSnapshot, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot, ProtectedSnapshot,
-    PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot, SnapshotRecord,
+    PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
+    SnapshotReadinessMode, SnapshotRecord,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -77,7 +78,22 @@ pub fn prune_policy_from_args(args: &[String]) -> anyhow::Result<PrunePolicy> {
     Ok(policy)
 }
 
+pub fn snapshot_readiness_mode_from_args(args: &[String]) -> anyhow::Result<SnapshotReadinessMode> {
+    flag_value(args, "--snapshot-readiness")
+        .map(SnapshotReadinessMode::parse)
+        .transpose()
+        .map_err(anyhow::Error::msg)
+        .map(|mode| mode.unwrap_or(SnapshotReadinessMode::Fast))
+}
+
 pub async fn model_list_json(root: impl AsRef<Path>) -> anyhow::Result<Value> {
+    model_list_json_with_mode(root, SnapshotReadinessMode::Fast).await
+}
+
+pub async fn model_list_json_with_mode(
+    root: impl AsRef<Path>,
+    readiness_mode: SnapshotReadinessMode,
+) -> anyhow::Result<Value> {
     let store = ModelStore::new(root);
     let aliases = store.list_aliases().await?;
     let mut aliases_by_path: HashMap<std::path::PathBuf, Vec<String>> = HashMap::new();
@@ -87,7 +103,7 @@ pub async fn model_list_json(root: impl AsRef<Path>) -> anyhow::Result<Value> {
             .or_default()
             .push(alias.alias);
     }
-    let inventory = store.snapshot_inventory().await?;
+    let inventory = store.snapshot_inventory_with_mode(readiness_mode).await?;
     let snapshots = inventory
         .ready_snapshots
         .into_iter()
@@ -426,6 +442,24 @@ mod tests {
         assert_eq!(options.revision, "refs/pr/1");
         assert_eq!(options.profile.name, "qwen36-mlx-4bit");
         assert!(options.metadata_only);
+    }
+
+    #[test]
+    fn snapshot_readiness_mode_parses_default_and_overrides() {
+        assert_eq!(
+            snapshot_readiness_mode_from_args(&args(&["list"]))
+                .expect("default readiness mode parses"),
+            SnapshotReadinessMode::Fast
+        );
+        assert_eq!(
+            snapshot_readiness_mode_from_args(&args(&["list", "--snapshot-readiness", "deep"]))
+                .expect("deep readiness mode parses"),
+            SnapshotReadinessMode::Deep
+        );
+        let err =
+            snapshot_readiness_mode_from_args(&args(&["list", "--snapshot-readiness", "full"]))
+                .expect_err("invalid readiness mode fails");
+        assert!(err.to_string().contains("fast or deep"));
     }
 
     #[tokio::test]

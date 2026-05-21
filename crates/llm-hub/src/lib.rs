@@ -20,5 +20,5 @@ pub use prune::{
 pub use repo::{HubFile, HubRepoId, RepoType};
 pub use store::{
     ModelAlias, ModelStore, QuarantineMetadata, QuarantinedSnapshot, SnapshotInventory,
-    SnapshotReadiness, SnapshotRecord, SnapshotUsage,
+    SnapshotReadiness, SnapshotReadinessMode, SnapshotRecord, SnapshotUsage,
 };
