@@ -7,7 +7,7 @@ parsing is manual. Flags use `--flag value`; boolean flags are present or absent
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
+llm-engine serve [--addr <host:port>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine model <subcommand> ...
@@ -46,6 +46,7 @@ llm-engine serve \
 | `--deterministic-test-backend` | absent | Deprecated compatibility alias for `--protocol-test-backend`; it has the same feature and acknowledgement requirements. |
 | `--snapshot <path>` | none | Enables manifest-selected serving from a local snapshot directory. `loader: native-metal` opens native text execution for supported families; `loader: mlx` opens the loopback MLX sidecar backend. |
 | `--snapshot-alias <alias>` / `--model-alias <alias>` | none | Resolves a snapshot path from the model store alias records and verifies the recorded manifest digest before serving. |
+| `--snapshot-readiness <fast\|deep>` | `fast` | Selects the startup readiness check for promoted manifest snapshots. Fast parses the manifest and checks required file classes, file presence/sizes, and safetensors index coverage without hashing weights. Deep hashes every manifest file and performs the same runnable readiness checks before opening the backend. |
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
 | `--family <qwen\|deep_seek\|gemma\|llama>` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
@@ -427,14 +428,26 @@ benchmark command above remains a focused externally managed harness.
 
 ## `model list`
 
-Lists runnable snapshots from a model home. The command reconciles promoted
-snapshots before reporting them: stale or corrupt promoted snapshots are moved
-to quarantine, while intentional metadata-only snapshots are reported
-separately and are not advertised as ready for serving.
+Lists snapshots from a model home. The command reconciles promoted snapshots
+before reporting them with fast readiness by default: it parses manifests,
+checks required config/tokenizer/weight classes, verifies manifest file presence
+and sizes, and validates safetensors index coverage without hashing weights.
+Promoted snapshots that fail the selected readiness check are moved to
+quarantine, while intentional metadata-only snapshots are reported separately
+and are not advertised as ready for serving. Default fast readiness does not
+detect same-size SHA corruption; use `--snapshot-readiness deep` or
+`model verify` when checksum verification is required.
 
 ```sh
-llm-engine model list [--model-home <path>]
+llm-engine model list [--model-home <path>] [--snapshot-readiness <fast|deep>]
 ```
+
+Readiness modes:
+
+- `fast` (default): parses the manifest and checks required file classes, file
+  presence/sizes, and safetensors index coverage without hashing model weights.
+- `deep`: hashes every manifest file and performs the same runnable readiness
+  checks before reporting or quarantining snapshots.
 
 Model home resolution:
 
