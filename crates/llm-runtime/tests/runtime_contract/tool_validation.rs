@@ -414,6 +414,66 @@ async fn fills_missing_required_omp_intent_argument() {
 }
 
 #[tokio::test]
+async fn missing_required_omp_intent_uses_generic_default_for_app_tool_names() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read","arguments":{"path":"calculator.py"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("read calculator.py")],
+            tools: vec![read_tool_definition()],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("missing OMP intent metadata is repaired");
+
+    let arguments = &response.choices[0].message.tool_calls[0].function.arguments;
+    assert_eq!(arguments["path"], "calculator.py");
+    assert_eq!(arguments["_i"], "Calling requested tool");
+}
+
+#[tokio::test]
+async fn missing_required_omp_intent_uses_schema_default_when_declared() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"inspect_manifest","arguments":{"path":"Cargo.toml"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("inspect Cargo.toml")],
+            tools: vec![ToolDefinition::function(
+                "inspect_manifest",
+                "inspect manifest",
+                json!({
+                    "type": "object",
+                    "required": ["path", "_i"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "_i": {
+                            "type": "string",
+                            "default": "Inspecting requested manifest"
+                        }
+                    }
+                }),
+            )],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("missing OMP intent metadata is repaired from schema default");
+
+    let arguments = &response.choices[0].message.tool_calls[0].function.arguments;
+    assert_eq!(arguments["path"], "Cargo.toml");
+    assert_eq!(arguments["_i"], "Inspecting requested manifest");
+}
+
+#[tokio::test]
 async fn rejects_generated_tool_call_for_undeclared_tool() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",

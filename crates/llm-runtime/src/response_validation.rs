@@ -28,15 +28,16 @@ pub(crate) fn schema_requires_string_intent_argument(schema: &serde_json::Value)
         .is_some_and(schema_type_accepts_string)
 }
 
-pub(crate) fn default_tool_intent(tool_name: &str) -> &'static str {
-    match tool_name {
-        "read" => "Reading requested path",
-        "bash" => "Running requested command",
-        "edit" => "Editing requested file",
-        "find" => "Finding requested files",
-        name if name.contains("search") || name.contains("grep") => "Searching requested context",
-        _ => "Calling requested tool",
-    }
+pub(crate) const GENERIC_TOOL_INTENT: &str = "Calling requested tool";
+
+pub(crate) fn tool_intent_default(schema: &serde_json::Value) -> &str {
+    schema
+        .get("properties")
+        .and_then(|properties| properties.get("_i"))
+        .and_then(|intent_schema| intent_schema.get("default"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|intent| !intent.trim().is_empty())
+        .unwrap_or(GENERIC_TOOL_INTENT)
 }
 
 pub(crate) fn validate_tool_call_arguments(parsed: &ParsedAssistant) -> Result<(), RuntimeError> {

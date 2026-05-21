@@ -1,5 +1,5 @@
 use crate::RuntimeError;
-use crate::response_validation::{default_tool_intent, schema_requires_string_intent_argument};
+use crate::response_validation::{schema_requires_string_intent_argument, tool_intent_default};
 use llm_api::{
     ApiError, ChatCompletionRequest, ToolCall, ToolCallDelta, ToolCallFunction,
     ToolCallFunctionDelta, ToolCallType, ToolChoice,
@@ -192,7 +192,9 @@ pub(crate) fn fill_missing_tool_intent_arguments(
         if schema_requires_string_intent_argument(&tool.function.parameters) {
             arguments.insert(
                 "_i".to_owned(),
-                serde_json::Value::String(default_tool_intent(&tool_call.function.name).to_owned()),
+                serde_json::Value::String(
+                    tool_intent_default(&tool.function.parameters).to_owned(),
+                ),
             );
         }
     }
