@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.27.1](https://github.com/michaelasper/kir-ai/compare/v1.27.0...v1.27.1) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-354:** centralize tool instruction prompts ([c5a7ae3](https://github.com/michaelasper/kir-ai/commit/c5a7ae329d80693bf303d801742203daa30182c4))
+
 ## [1.27.0](https://github.com/michaelasper/kir-ai/compare/v1.26.1...v1.27.0) (2026-05-21)
 
 ### Features
