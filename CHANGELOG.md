@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.0](https://github.com/michaelasper/kir-ai/compare/v1.24.2...v1.25.0) (2026-05-21)
+
+### Features
+
+* **COR-336:** rate limit public inference endpoints ([9d88555](https://github.com/michaelasper/kir-ai/commit/9d88555b71bbd3c6391243493891cc8ba9aee87e))
+
 ## [1.24.2](https://github.com/michaelasper/kir-ai/compare/v1.24.1...v1.24.2) (2026-05-21)
 
 ### Bug Fixes
