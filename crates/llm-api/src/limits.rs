@@ -10,6 +10,8 @@ pub const MAX_TOOL_CALLS_PER_MESSAGE: usize = 128;
 pub const MAX_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
 pub const MAX_STOP_SEQUENCES: usize = 4;
 pub const MAX_STOP_SEQUENCE_BYTES: usize = 1024;
+pub const NO_PROGRESS_EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 5;
+pub const NO_PROGRESS_FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestLimits {

@@ -1,13 +1,14 @@
-use llm_api::{ChatCompletionRequest, ChatMessage, ChatRole, ToolCall};
+use llm_api::{
+    ChatCompletionRequest, ChatMessage, ChatRole,
+    NO_PROGRESS_EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD,
+    NO_PROGRESS_FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD, ToolCall,
+};
 use llm_tool_parser::ParsedAssistant;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::adapters::ToolMarkupPolicy;
 use crate::response_validation::schema_requires_string_intent_argument;
-
-const EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 5;
-const FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
@@ -137,10 +138,10 @@ pub(crate) fn classify_repeated_invalid_tool_call_no_progress(
             }
         }
 
-        if exact_count >= EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
+        if exact_count >= NO_PROGRESS_EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
             return Some(NoProgressClass::RepeatedInvalidToolCall);
         }
-        if fuzzy_count >= FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
+        if fuzzy_count >= NO_PROGRESS_FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD {
             return Some(NoProgressClass::FuzzyRepeatedInvalidToolCall);
         }
     }

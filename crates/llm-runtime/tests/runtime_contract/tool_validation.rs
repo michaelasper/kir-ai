@@ -236,6 +236,39 @@ async fn repeated_empty_required_tool_call_fifth_attempt_returns_no_progress() {
 }
 
 #[tokio::test]
+async fn fuzzy_repeated_invalid_tool_call_second_attempt_is_progress() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"read","arguments":{"path":"missing-b.txt"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![
+                ChatMessage::user("read the first missing file"),
+                ChatMessage::assistant_tool_call(
+                    "call_0",
+                    "read",
+                    json!({"path": "missing-a.txt"}),
+                ),
+                ChatMessage::tool("call_0", "error: file not found: missing-a.txt"),
+                ChatMessage::user("try the second missing file"),
+            ],
+            tools: vec![read_tool_definition()],
+            tool_choice: Some(ToolChoice::Required),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("second same-shape failed read attempt remains under fuzzy threshold");
+
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(FinishReason::ToolCalls)
+    );
+}
+
+#[tokio::test]
 async fn fuzzy_repeated_invalid_tool_call_third_attempt_returns_no_progress() {
     let err = replay_read_tool_error(
         vec![

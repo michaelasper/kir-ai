@@ -4,8 +4,10 @@ use llm_api::{
     CompletionStreamResponse, FinishReason, MAX_CHAT_MESSAGES, MAX_COMPLETION_PROMPT_BYTES,
     MAX_MESSAGE_CONTENT_BYTES, MAX_STOP_SEQUENCE_BYTES, MAX_STOP_SEQUENCES,
     MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_SCHEMA_BYTES, MAX_TOOLS,
-    RequestLimits, ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
-    canonical_tool_schema_json, canonicalize_tool_schemas,
+    NO_PROGRESS_EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD,
+    NO_PROGRESS_FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD, RequestLimits, ResponseFormat,
+    ToolChoice, ToolDefinition, ValidateRequest, canonical_tool_schema_json,
+    canonicalize_tool_schemas,
 };
 use serde_json::json;
 
@@ -125,6 +127,12 @@ fn canonical_tool_schema_keeps_semantic_differences_distinct() {
         canonical_tool_schema_json(&alpha_then_beta).expect("canonical alpha/beta"),
         canonical_tool_schema_json(&different_description).expect("canonical description")
     );
+}
+
+#[test]
+fn no_progress_threshold_defaults_match_north_star_spec() {
+    assert_eq!(NO_PROGRESS_EXACT_REPEATED_INVALID_TOOL_CALL_THRESHOLD, 5);
+    assert_eq!(NO_PROGRESS_FUZZY_REPEATED_INVALID_TOOL_CALL_THRESHOLD, 3);
 }
 
 #[test]
