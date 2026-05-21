@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.11](https://github.com/michaelasper/kir-ai/compare/v1.25.10...v1.25.11) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-367:** fall back on malformed wrapped tool JSON ([9b62a14](https://github.com/michaelasper/kir-ai/commit/9b62a1435a7ae7e7767f78ce5bc34d0520bfa712))
+
 ## [1.25.10](https://github.com/michaelasper/kir-ai/compare/v1.25.9...v1.25.10) (2026-05-21)
 
 ### Bug Fixes
