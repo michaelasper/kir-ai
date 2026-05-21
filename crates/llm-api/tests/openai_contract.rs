@@ -1386,6 +1386,34 @@ fn usage_serializes_cached_prompt_token_details_when_present() {
 }
 
 #[test]
+fn usage_serialization_derives_total_tokens_from_components() {
+    let usage = llm_api::Usage {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 99,
+        prompt_tokens_details: None,
+    };
+
+    let value = serde_json::to_value(usage).expect("usage serializes");
+
+    assert_eq!(value["prompt_tokens"], 10);
+    assert_eq!(value["completion_tokens"], 2);
+    assert_eq!(value["total_tokens"], 12);
+}
+
+#[test]
+fn usage_deserialization_rejects_inconsistent_total_tokens() {
+    let err = serde_json::from_value::<llm_api::Usage>(json!({
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 99
+    }))
+    .expect_err("usage total must match prompt plus completion tokens");
+
+    assert!(err.to_string().contains("total_tokens"));
+}
+
+#[test]
 fn usage_omits_cached_prompt_token_details_when_missing_and_deserializes_openai_shape() {
     let compact = llm_api::Usage {
         prompt_tokens: 10,
@@ -1404,6 +1432,7 @@ fn usage_omits_cached_prompt_token_details_when_missing_and_deserializes_openai_
     }))
     .expect("OpenAI usage shape deserializes");
 
+    assert_eq!(parsed.total_tokens, 12);
     assert_eq!(
         parsed
             .prompt_tokens_details
