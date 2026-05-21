@@ -21,12 +21,18 @@ use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
     StreamProgressMetadata,
 };
-use serde_json::json;
 use std::{
     convert::Infallible,
     time::{Duration, Instant},
 };
 use tokio::time::Instant as TokioInstant;
+
+const SSE_SERIALIZATION_FALLBACK_DATA: &str = concat!(
+    r#"{"error":{"message":"response serialization failed","#,
+    r#""code":"response_serialization_failed","#,
+    r#""phase":"response_serialization","#,
+    r#""retryable":true,"type":"llm_engine_error"}}"#
+);
 
 pub(super) fn stream_runtime_events<'a, E, S>(
     lifecycle: StreamRunLifecycle,
@@ -251,16 +257,7 @@ fn stream_ended_without_completion_events() -> Vec<Result<Event, Infallible>> {
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     let data = serde_json::to_string(&value).unwrap_or_else(|err| {
         tracing::error!(error = %err, "failed to serialize SSE event");
-        json!({
-            "error": {
-                "message": "response serialization failed",
-                "code": "response_serialization_failed",
-                "phase": "response_serialization",
-                "retryable": true,
-                "type": "llm_engine_error"
-            }
-        })
-        .to_string()
+        SSE_SERIALIZATION_FALLBACK_DATA.to_owned()
     });
     Ok(Event::default().data(data))
 }
@@ -619,5 +616,48 @@ impl EngineStreamEvent for CompletionStreamEvent {
             Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::to_bytes,
+        response::{IntoResponse, sse::Sse},
+    };
+    use serde::{Serialize, Serializer, ser::Error as _};
+    use serde_json::Value;
+
+    struct FailingSerialize;
+
+    impl Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(S::Error::custom("forced serialization failure"))
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_json_event_serialization_fallback_preserves_error_metadata() {
+        let response =
+            Sse::new(futures::stream::iter([sse_json_event(FailingSerialize)])).into_response();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE response body");
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE body is utf8");
+        let data = body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("SSE data line");
+        let value: Value = serde_json::from_str(data).expect("fallback event is JSON");
+
+        assert_eq!(value["error"]["message"], "response serialization failed");
+        assert_eq!(value["error"]["code"], "response_serialization_failed");
+        assert_eq!(value["error"]["phase"], "response_serialization");
+        assert_eq!(value["error"]["retryable"], true);
+        assert_eq!(value["error"]["type"], "llm_engine_error");
     }
 }

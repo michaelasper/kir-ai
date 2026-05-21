@@ -502,6 +502,11 @@ All engine errors use this body shape:
 }
 ```
 
+When an error happens after an SSE stream has started, the HTTP status remains
+`200` because response headers have already been sent. Clients should read the
+structured `data:` error object and use `code`, `phase`, and `retryable` for
+programmatic handling.
+
 Known codes:
 
 | Code | Typical status | Phase | Retryable |
@@ -510,12 +515,25 @@ Known codes:
 | `unsupported_capability` | `400` | `request_validation` | `false` |
 | `model_not_found` | `404` | `model_resolution` | `false` |
 | `rate_limited` | `429` | `rate_limit` | `true` |
+| `model_overloaded` | `429` | `scheduler` | `true` |
 | `backend_execution_failed` | `500` | `decode` | `true` |
 | `cancelled` | `408` | `decode` | `false` |
 | `request_not_found` | `404` | `cancellation` | `false` |
 | `request_id_conflict` | `409` | `request_validation` | `false` |
+| `admin_auth_required` | `401` | `admin_auth` | `false` |
 | `chat_template_failed` | `422` | `prompt_rendering` | `false` |
 | `malformed_tool_call` | `422` | `response_parsing` | `false` |
+| `unsupported_multimodal_output` | `422` | `response_parsing` | `false` |
 | `json_validation_failed` | `422` | `response_validation` | `false` |
-| `no_progress` | `422` | `response_validation` | `false` |
-| `response_serialization_failed` | `500` | `response_serialization` | `true` |
+| `tool_call_validation_failed` | `422` | `response_validation` | `false` |
+| `no_progress_empty_completion` | `422` | `response_validation` | `false` |
+| `no_progress_empty_high_output_completion` | `422` | `response_validation` | `false` |
+| `no_progress_hidden_only_output` | `422` | `response_validation` | `false` |
+| `no_progress_missing_required_tool_call` | `422` | `response_validation` | `false` |
+| `no_progress_repeated_invalid_tool_call` | `422` | `response_validation` | `false` |
+| `no_progress_fuzzy_repeated_invalid_tool_call` | `422` | `response_validation` | `false` |
+| `no_progress_repeated_assistant_content` | `422` | `response_validation` | `false` |
+| `no_progress_stalled_assistant_turn` | `422` | `response_validation` | `false` |
+| `stream_stalled` | `200` (SSE) | `streaming` | `true` |
+| `stream_incomplete` | `200` (SSE) | `streaming` | `true` |
+| `response_serialization_failed` | `200` (SSE) | `response_serialization` | `true` |

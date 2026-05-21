@@ -249,7 +249,23 @@ async fn chat_stream_stall_cancels_backend_work() {
     let body = tokio::time::timeout(Duration::from_millis(300), body_text(response.into_body()))
         .await
         .expect("stall response completes");
-    assert!(body.contains("\"code\":\"stream_stalled\""));
+    assert!(body.contains("\"content\":\"first\""));
+    let frames = sse_json_frames(&body);
+    let error_frames: Vec<&Value> = frames
+        .iter()
+        .filter_map(|frame| frame.get("error"))
+        .collect();
+    assert_eq!(error_frames.len(), 1, "body: {body}");
+    let error = error_frames[0];
+    assert_eq!(
+        error["message"],
+        "stream stalled for 50 ms without meaningful backend output"
+    );
+    assert_eq!(error["code"], "stream_stalled");
+    assert_eq!(error["phase"], "streaming");
+    assert_eq!(error["retryable"], true);
+    assert_eq!(error["type"], "llm_engine_error");
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
     tokio::time::timeout(Duration::from_millis(300), cancelled.notified())
         .await
         .expect("stream stall cancels backend token");

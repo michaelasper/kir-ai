@@ -221,6 +221,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const DOCUMENTED_ENGINE_ERROR_CODES: &[&str] = &[
+        "invalid_request",
+        "unsupported_capability",
+        "model_not_found",
+        "rate_limited",
+        "model_overloaded",
+        "backend_execution_failed",
+        "cancelled",
+        "request_not_found",
+        "request_id_conflict",
+        "admin_auth_required",
+        "chat_template_failed",
+        "malformed_tool_call",
+        "unsupported_multimodal_output",
+        "json_validation_failed",
+        "tool_call_validation_failed",
+        "no_progress_empty_completion",
+        "no_progress_empty_high_output_completion",
+        "no_progress_hidden_only_output",
+        "no_progress_missing_required_tool_call",
+        "no_progress_repeated_invalid_tool_call",
+        "no_progress_fuzzy_repeated_invalid_tool_call",
+        "no_progress_repeated_assistant_content",
+        "no_progress_stalled_assistant_turn",
+        "stream_stalled",
+        "stream_incomplete",
+        "response_serialization_failed",
+    ];
+
     #[test]
     fn engine_error_body_serializes_stable_shape() {
         let body = EngineErrorBody::new("stable message", "stable_code", "stable_phase", true);
@@ -239,5 +268,18 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn http_api_reference_documents_current_engine_error_codes() {
+        let docs = include_str!("../../../../docs/http-api-reference.md");
+
+        for code in DOCUMENTED_ENGINE_ERROR_CODES {
+            let row_prefix = format!("| `{code}` |");
+            assert!(
+                docs.contains(&row_prefix),
+                "docs/http-api-reference.md is missing known error code `{code}`"
+            );
+        }
     }
 }
