@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.28.0](https://github.com/michaelasper/kir-ai/compare/v1.27.5...v1.28.0) (2026-05-21)
+
+### Features
+
+* **COR-327:** add agentic streaming A/B benchmark gate ([f9e9a18](https://github.com/michaelasper/kir-ai/commit/f9e9a18f10ef82419f83141d0f389b60c33257f5))
+
 ## [1.27.5](https://github.com/michaelasper/kir-ai/compare/v1.27.4...v1.27.5) (2026-05-21)
 
 ### Bug Fixes
