@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.24.1](https://github.com/michaelasper/kir-ai/compare/v1.24.0...v1.24.1) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-290:** count schema validation tool failures ([3eb1682](https://github.com/michaelasper/kir-ai/commit/3eb168253000c7c592f7bcf2cd3316bc8df62d5e))
+
 ## [1.24.0](https://github.com/michaelasper/kir-ai/compare/v1.23.0...v1.24.0) (2026-05-21)
 
 ### Features
