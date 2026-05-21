@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.5](https://github.com/michaelasper/kir-ai/compare/v1.25.4...v1.25.5) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-349:** derive usage totals at serde boundary ([3a0b46c](https://github.com/michaelasper/kir-ai/commit/3a0b46cf4b5d68dbf3758769f2981ad2adf4f7ee))
+
 ## [1.25.4](https://github.com/michaelasper/kir-ai/compare/v1.25.3...v1.25.4) (2026-05-21)
 
 ### Bug Fixes
