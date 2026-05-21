@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.25.3](https://github.com/michaelasper/kir-ai/compare/v1.25.2...v1.25.3) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-339:** remove app-specific tool intent defaults ([57ec9c1](https://github.com/michaelasper/kir-ai/commit/57ec9c118bc78b03cbe4b58626a5c4fe479db680))
+
 ## [1.25.2](https://github.com/michaelasper/kir-ai/compare/v1.25.1...v1.25.2) (2026-05-21)
 
 ### Bug Fixes
