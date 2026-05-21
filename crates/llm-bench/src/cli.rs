@@ -38,7 +38,8 @@ qwen-mlx-tool-normalized:
   --concurrent-requests <n>           Requests issued together during the concurrent pass [default: 1]
   --concurrent-samples <n>            Concurrent sample batches per case and phase [default: 0]
   --focused-agentic-gate              Compatibility alias for --probe-suite focused-agentic-gate
-  --ab-baseline <path>                Compare against a prior qwen-mlx-tool-normalized trace and fail if Kir proxy first tool delta does not advance or final validation changes",
+  --ab-baseline <path>                Compare against a prior qwen-mlx-tool-normalized trace and fail if Kir proxy first tool delta does not advance or final validation changes
+  --engine-db-baselines <path>        JSON export of benchmark DB baseline rows for latest comparison",
         crate::DEFAULT_MODEL_ID
     );
 }

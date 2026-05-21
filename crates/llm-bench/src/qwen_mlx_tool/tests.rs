@@ -1643,6 +1643,144 @@ fn qwen_mlx_tool_normalized_stable_prefix_report_tracks_warm_reuse_and_admin_obs
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_latest_performance_comparison_reports_required_sources() {
+    let direct =
+        lane("name=mlx-latest,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
+    let proxy = lane("name=kir-latest,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy");
+    let mut direct_report = NormalizedLaneReport::planned(&direct, 0, 0, None);
+    let mut proxy_report = NormalizedLaneReport::planned(&proxy, 0, 0, None);
+
+    direct_report.samples = vec![
+        latest_plain_stream_sample(164, 5_384, 35.7),
+        latest_tool_stream_sample(1_940, 1_969, 36.0),
+        latest_cache_sample(CachePhase::Cold, 10_000, 170, 35.0, Some(0)),
+        latest_cache_sample(CachePhase::WarmSamePrompt, 250, 174, 41.2, Some(1_000)),
+    ];
+    proxy_report.samples = vec![
+        latest_plain_stream_sample(166, 5_383, 32.5),
+        latest_tool_stream_sample(1_960, 1_989, 32.0),
+        latest_cache_sample(CachePhase::Cold, 10_500, 175, 32.0, None),
+        latest_cache_sample(CachePhase::WarmSamePrompt, 230, 172, 41.0, None),
+    ];
+
+    let baselines = EngineDbBaselineExport {
+        source: Some("reports/benchmarks/benchmarks.sqlite".to_owned()),
+        rows: vec![EngineDbBaselineRow {
+            engine: "Rapid-MLX".to_owned(),
+            profile: "rapid-0615-qwen35-kv4-135k".to_owned(),
+            model: Some("Qwen3.6 35B A3B 4bit".to_owned()),
+            probe: "chat_stream".to_owned(),
+            ttfi_ms: Some(80.6),
+            first_tool_delta_ms: None,
+            validated_tool_call_ms: None,
+            total_latency_ms: None,
+            tokens_per_second: Some(26.3),
+            cache_cold_latency_ms: None,
+            cache_warm_latency_ms: None,
+            cache_speedup: None,
+            cached_tokens: None,
+            notes: Some("DB row 2026-05-07".to_owned()),
+        }],
+    };
+
+    let report =
+        latest_performance_comparison_report(&[direct_report, proxy_report], Some(&baselines));
+    let value = serde_json::to_value(&report).expect("comparison serializes");
+    let rows = value["rows"].as_array().expect("comparison rows");
+
+    assert_eq!(report.status, "reported");
+    assert_eq!(
+        value["engine_db_baseline_source"],
+        "reports/benchmarks/benchmarks.sqlite"
+    );
+    assert_eq!(value["evidence"]["has_kir_latest"], true);
+    assert_eq!(value["evidence"]["has_direct_mlx_latest"], true);
+    assert_eq!(value["evidence"]["has_engine_db_baselines"], true);
+    assert_eq!(value["evidence"]["has_ttfi_ms"], true);
+    assert_eq!(value["evidence"]["has_cache_metrics"], true);
+    assert_eq!(value["evidence"]["has_tokens_per_second"], true);
+
+    let kir_plain = rows
+        .iter()
+        .find(|row| row["source_kind"] == "latest_kir" && row["probe"] == "plain_stream")
+        .expect("Kir plain-stream row");
+    assert_eq!(kir_plain["ttfi_ms"], 166.0);
+    assert_eq!(kir_plain["tokens_per_second"], 32.5);
+
+    let direct_cache = rows
+        .iter()
+        .find(|row| row["source_kind"] == "direct_mlx" && row["probe"] == "prefix_cache")
+        .expect("direct MLX prefix-cache row");
+    assert_eq!(direct_cache["cache_cold_latency_ms"], 10_000.0);
+    assert_eq!(direct_cache["cache_warm_latency_ms"], 250.0);
+    assert_eq!(direct_cache["cache_speedup"], 40.0);
+    assert_eq!(direct_cache["cached_tokens"], 1_000);
+
+    assert!(rows.iter().any(|row| {
+        row["source_kind"] == "engine_db_baseline"
+            && row["engine"] == "Rapid-MLX"
+            && row["ttfi_ms"] == 80.6
+            && row["tokens_per_second"] == 26.3
+    }));
+}
+
+#[tokio::test]
+async fn qwen_mlx_tool_normalized_dry_run_loads_engine_db_baseline_export() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let baseline = temp.path().join("engine-db-baselines.json");
+    let output = temp.path().join("trace.json");
+    tokio::fs::write(
+        &baseline,
+        serde_json::json!({
+            "source": "reports/benchmarks/benchmarks.sqlite",
+            "rows": [{
+                "engine": "oMLX",
+                "profile": "omlx-qwen-a3b-ssd-cache-ctx-135k",
+                "model": "Qwen3.6 35B A3B UD Q4",
+                "probe": "chat_stream",
+                "ttft_ms": 10.8,
+                "tok_s": 23.4,
+                "notes": "DB row 2026-05-04"
+            }]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("write baseline fixture");
+
+    run_qwen_mlx_tool_normalized_bench(&args(&[
+        "--dry-run",
+        "--engine-db-baselines",
+        baseline.to_str().expect("utf8 baseline path"),
+        "--output",
+        output.to_str().expect("utf8 output path"),
+        "--probe-suite",
+        "stable-agent-prefix",
+        "--lane",
+        "name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx",
+        "--lane",
+        "name=proxy,endpoint=http://127.0.0.1:3000,model=qwen,kind=kir_ai_proxy",
+    ]))
+    .await
+    .expect("dry-run benchmark with engine DB baseline export");
+
+    let value: Value =
+        serde_json::from_slice(&tokio::fs::read(&output).await.expect("read dry-run output"))
+            .expect("dry-run JSON");
+    let comparison = &value["latest_performance_comparison"];
+
+    assert_eq!(
+        comparison["engine_db_baseline_source"],
+        "reports/benchmarks/benchmarks.sqlite"
+    );
+    assert_eq!(comparison["status"], "partial");
+    assert_eq!(comparison["evidence"]["has_engine_db_baselines"], true);
+    assert_eq!(comparison["rows"][0]["source_kind"], "engine_db_baseline");
+    assert_eq!(comparison["rows"][0]["ttfi_ms"], 10.8);
+    assert_eq!(comparison["rows"][0]["tokens_per_second"], 23.4);
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_cached_tokens_usage_parses_present_null_and_missing_shapes() {
     let present = usage_from_value(Some(&json!({
         "prompt_tokens": 10,
@@ -2081,6 +2219,118 @@ fn prefill_sweep_sample(
     sample.total_tokens = Some(135_008);
     sample.cached_tokens_status = "present";
     sample.cached_tokens = Some(120_000);
+    sample
+}
+
+fn latest_plain_stream_sample(
+    ttfi_ms: u128,
+    latency_ms: u128,
+    tokens_per_second: f64,
+) -> NormalizedSampleReport {
+    let mut sample = NormalizedSampleReport::base(
+        NormalizedProbePlan::new(
+            NormalizedCaseKind::ChatStream,
+            SchemaVariant::None,
+            ToolChoiceVariant::None,
+        ),
+        CachePhase::Cold,
+        RunMode::Sequential,
+        0,
+        None,
+        false,
+        512,
+    );
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(latency_ms);
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: ttfi_ms.checked_sub(20),
+        first_sse_data_latency_ms: ttfi_ms.checked_sub(10),
+        first_content_delta_latency_ms: Some(ttfi_ms),
+        first_tool_delta_latency_ms: None,
+        tool_finish_latency_ms: None,
+        first_semantic_delta_latency_ms: Some(ttfi_ms),
+    };
+    sample.tokens_per_second = Some(tokens_per_second);
+    sample.prompt_tokens = Some(512);
+    sample.completion_tokens = Some(192);
+    sample.total_tokens = Some(704);
+    sample.cached_tokens_status = "missing";
+    sample
+}
+
+fn latest_tool_stream_sample(
+    first_tool_delta_ms: u128,
+    latency_ms: u128,
+    tokens_per_second: f64,
+) -> NormalizedSampleReport {
+    let mut sample = NormalizedSampleReport::base(
+        NormalizedProbePlan::new(
+            NormalizedCaseKind::ToolRequiredStream,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        ),
+        CachePhase::Cold,
+        RunMode::Sequential,
+        0,
+        None,
+        false,
+        512,
+    );
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(latency_ms);
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: first_tool_delta_ms.checked_sub(80),
+        first_sse_data_latency_ms: first_tool_delta_ms.checked_sub(70),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(first_tool_delta_ms),
+        tool_finish_latency_ms: Some(latency_ms),
+        first_semantic_delta_latency_ms: Some(first_tool_delta_ms),
+    };
+    sample.tokens_per_second = Some(tokens_per_second);
+    sample.prompt_tokens = Some(512);
+    sample.completion_tokens = Some(64);
+    sample.total_tokens = Some(576);
+    sample.cached_tokens_status = "missing";
+    sample
+}
+
+fn latest_cache_sample(
+    phase: CachePhase,
+    latency_ms: u128,
+    ttfi_ms: u128,
+    tokens_per_second: f64,
+    cached_tokens: Option<u64>,
+) -> NormalizedSampleReport {
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+        SchemaVariant::CanonicalCurrent,
+        ToolChoiceVariant::Required,
+    );
+    let mut sample =
+        NormalizedSampleReport::base(probe, phase, RunMode::Sequential, 0, None, false, 1_000);
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(latency_ms);
+    sample.stream_timing = StreamTimingReport {
+        first_byte_latency_ms: ttfi_ms.checked_sub(20),
+        first_sse_data_latency_ms: ttfi_ms.checked_sub(10),
+        first_content_delta_latency_ms: None,
+        first_tool_delta_latency_ms: Some(ttfi_ms),
+        tool_finish_latency_ms: Some(latency_ms),
+        first_semantic_delta_latency_ms: Some(ttfi_ms),
+    };
+    sample.tokens_per_second = Some(tokens_per_second);
+    sample.prompt_tokens = Some(1_000);
+    sample.completion_tokens = Some(10);
+    sample.total_tokens = Some(1_010);
+    sample.cached_tokens_status = if cached_tokens.is_some() {
+        "present"
+    } else {
+        "missing"
+    };
+    sample.cached_tokens = cached_tokens;
     sample
 }
 

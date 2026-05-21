@@ -338,6 +338,7 @@ llm-engine bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-stable-prefix \
   --snapshot "$SNAPSHOT" \
   --samples 3 \
+  --engine-db-baselines reports/benchmarks/engine-db-baselines.json \
   --output qwen-mlx-stable-prefix.json
 ```
 
@@ -367,6 +368,7 @@ stable-agent-prefix` and expands `mlx-stable-prefix` on
 | `--concurrent-samples <n>` | `0` | Concurrent sample batches per lane, case, schema variant, tool-choice variant, and cache phase. Values greater than `0` enable the concurrent pass even when `--concurrent-requests` is `1`. |
 | `--ab-baseline <path>` | none | Loads a previous `qwen-mlx-tool-normalized` JSON trace and emits `agentic_streaming_fast_path_ab`. The command fails when a `kir_ai_proxy` lane does not advance p50 `tool_required_stream` first tool delta versus the baseline, or when final validation signatures change. |
 | `--output <path>` | none | Writes the full JSON trace to disk as well as stdout. |
+| `--engine-db-baselines <path>` | none | Reads a JSON export of benchmark DB baseline rows and includes them in `latest_performance_comparison` beside latest direct MLX and Kir proxy lane metrics. |
 | `--timeout-ms <n>` | `1800000` | Whole request timeout. |
 | `--connect-timeout-ms <n>` | `10000` | HTTP connect timeout. |
 | `--dry-run` | absent | Emits the planned cases, phases, lanes, model/template assumptions, and sample grid without HTTP requests. |
@@ -431,6 +433,37 @@ prompt/cached/uncached tokens, cache status counts (`unknown`, `miss`,
 `partial`, `hit`), lane latency deltas, and matching
 `/admin/metrics.request_cache` observations for Kir proxy samples when
 `x-request-id` and admin access are available.
+The `latest_performance_comparison` report condenses the latest live lane
+samples into plain stream, required-tool stream, and prefix-cache rows for
+`kind=direct_mlx` and `kind=kir_ai_proxy`, then appends rows from
+`--engine-db-baselines`. Each row carries stable `ttfi_ms`,
+`tokens_per_second`, `cache_cold_latency_ms`, `cache_warm_latency_ms`,
+`cache_speedup`, and tool-stream timing fields, using `null` when a metric does
+not apply. The top-level `evidence` object records whether Kir, direct MLX,
+engine DB baselines, TTFI, cache, and tok/s metrics are all present.
+
+The engine baseline file is a JSON export from
+`reports/benchmarks/benchmarks.sqlite` or another benchmark DB source. The CLI
+consumes JSON so dry-run and CI report-shaping tests do not require SQLite or
+live engines. Common DB export names such as `ttft_ms`, `latency_ms`, and
+`tok_s` are accepted as aliases for the stable output fields:
+
+```json
+{
+  "source": "reports/benchmarks/benchmarks.sqlite",
+  "rows": [
+    {
+      "engine": "Rapid-MLX",
+      "profile": "rapid-0615-qwen35-kv4-135k",
+      "model": "Qwen3.6 35B A3B 4bit",
+      "probe": "chat_stream",
+      "ttfi_ms": 80.6,
+      "tokens_per_second": 26.3,
+      "notes": "DB row 2026-05-07"
+    }
+  ]
+}
+```
 The top-level `summary` groups rows by lane, case, schema variant, tool-choice
 variant, cache phase, and run mode with pass/fail counts, p50/p95 latency,
 average cached/token usage, and the fastest lane for that group.
