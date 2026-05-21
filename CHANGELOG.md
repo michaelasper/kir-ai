@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.22.2](https://github.com/michaelasper/kir-ai/compare/v1.22.1...v1.22.2) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-236:** avoid double snapshot verification ([62530cd](https://github.com/michaelasper/kir-ai/commit/62530cd7332bbd3629273dd316b19f891e0967a8))
+
 ## [1.22.1](https://github.com/michaelasper/kir-ai/compare/v1.22.0...v1.22.1) (2026-05-20)
 
 ### Bug Fixes
