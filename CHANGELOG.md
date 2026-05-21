@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.26.1](https://github.com/michaelasper/kir-ai/compare/v1.26.0...v1.26.1) (2026-05-21)
+
+### Bug Fixes
+
+* **COR-361:** preserve backend failure context ([8a67fc0](https://github.com/michaelasper/kir-ai/commit/8a67fc0e0cfbef2ac9fc0f98b3a9371ac7b1e4c5))
+
 ## [1.26.0](https://github.com/michaelasper/kir-ai/compare/v1.25.12...v1.26.0) (2026-05-21)
 
 ### Features
