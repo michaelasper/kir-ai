@@ -571,3 +571,29 @@ async fn runtime_keeps_llama_tool_shaped_json_as_content_without_declared_tools(
     );
     assert!(response.choices[0].message.tool_calls.is_empty());
 }
+
+#[tokio::test]
+async fn runtime_keeps_malformed_llama_wrapped_tool_json_as_content_with_optional_tools() {
+    let text = r#"{"tool_calls":[{"function":{"name":42,"arguments":"{\"query\":\"rust\"}"}}]}"#;
+    let backend = FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text,
+        finish_reason: BackendFinishReason::Stop,
+    };
+    let runtime = Runtime::new(backend);
+    let response = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Auto),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("malformed wrapped JSON is ordinary content for optional tools");
+
+    assert_eq!(response.choices[0].message.content.as_deref(), Some(text));
+    assert!(response.choices[0].message.tool_calls.is_empty());
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}

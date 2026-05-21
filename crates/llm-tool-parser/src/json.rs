@@ -65,7 +65,13 @@ pub(crate) fn parse_json_tool_output_if_tool_like(
             tool_calls: Vec::new(),
         });
     }
-    let tool_calls = parse_json_tool_value(&value)?;
+    let Ok(tool_calls) = parse_json_tool_value(&value) else {
+        return Ok(ParsedAssistant {
+            reasoning,
+            content: rest.to_owned(),
+            tool_calls: Vec::new(),
+        });
+    };
     Ok(ParsedAssistant {
         reasoning,
         content,

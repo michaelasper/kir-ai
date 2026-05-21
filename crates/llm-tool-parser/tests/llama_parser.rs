@@ -42,6 +42,22 @@ fn parses_llama_openai_structured_tool_call_wrapper() {
 }
 
 #[test]
+fn malformed_wrapped_json_tool_calls_fall_back_to_content() {
+    for text in [
+        r#"{"tool_calls":[{"function":{"name":42,"arguments":"{\"query\":\"rust\"}"}}]}"#,
+        r#"{"calls":[{"function":{"name":42,"arguments":"{\"query\":\"rust\"}"}}]}"#,
+        r#"{"tools":[{"function":{"name":42,"arguments":"{\"query\":\"rust\"}"}}]}"#,
+    ] {
+        let parsed = LlamaParser
+            .parse_complete(text)
+            .expect("malformed wrapped JSON falls back to content");
+
+        assert_eq!(parsed.content, text);
+        assert!(parsed.tool_calls.is_empty());
+    }
+}
+
+#[test]
 fn parses_llama_internal_tool_call_markup_from_mlx_structured_deltas() {
     let parsed = LlamaParser
         .parse_complete(r#"<tool_call>{"name":"lookup","arguments":{"query":"mlx"}}</tool_call>"#)

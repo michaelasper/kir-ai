@@ -896,6 +896,54 @@ async fn runtime_streams_llama_raw_json_tool_call_with_stop_without_content_leak
 }
 
 #[tokio::test]
+async fn runtime_streams_malformed_llama_wrapped_tool_json_as_content_with_optional_tools() {
+    let text = r#"{"tool_calls":[{"function":{"name":42,"arguments":"{\"query\":\"rust\"}"}}]}"#;
+    let backend = FamilyStreamBackend {
+        model_id: "local-llama",
+        family: "llama",
+        text,
+        finish_reason: BackendFinishReason::Stop,
+    };
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-llama".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::Auto),
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming starts");
+    let (chunks, _usage) = stream
+        .collect_chunks()
+        .await
+        .expect("malformed wrapped JSON streams as content");
+
+    let emitted_content = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .filter_map(|choice| choice.delta.content.as_deref())
+        .collect::<String>();
+    let emitted_tool_calls = chunks
+        .iter()
+        .flat_map(|chunk| &chunk.choices)
+        .map(|choice| choice.delta.tool_calls.len())
+        .sum::<usize>();
+    assert_eq!(emitted_content, text);
+    assert_eq!(emitted_tool_calls, 0);
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .next_back()
+            .and_then(|choice| choice.finish_reason.as_ref()),
+        Some(&FinishReason::Stop)
+    );
+}
+
+#[tokio::test]
 async fn runtime_streams_llama_text_after_buffering_unmarked_tool_candidate() {
     let backend = FamilyStreamBackend {
         model_id: "local-llama",
