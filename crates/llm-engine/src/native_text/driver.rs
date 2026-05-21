@@ -549,7 +549,7 @@ where
                 ))
             })?;
             output_ids.push(output_id);
-            unreported_completion_tokens += 1;
+            unreported_completion_tokens = unreported_completion_tokens.saturating_add(1);
             let token_decoded = self.adapter.decode_output(&self.tokenizer, &[output_id])?;
             let delta = text_deltas.observe_incremental(token_decoded);
             if cancellation.is_cancelled() {
@@ -724,7 +724,7 @@ where
                 }
                 prefill_hidden = hidden_states.last().cloned();
                 completed_prefill_chunks += 1;
-                completed_prefill_tokens += chunk.len();
+                completed_prefill_tokens = completed_prefill_tokens.saturating_add(chunk.len());
                 self.adapter
                     .prefix_cache_metrics()
                     .record_prefill_chunk(chunk.len() as u64);

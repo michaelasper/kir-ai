@@ -224,6 +224,30 @@ async fn runtime_appends_text_completion_stream_usage_when_requested() {
 }
 
 #[tokio::test]
+async fn runtime_completion_stream_saturates_overflowed_completion_usage_tokens() {
+    let runtime = Runtime::new(OverflowCompletionTokenStreamBackend);
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            stream: true,
+            stream_options: llm_api::StreamOptions {
+                include_usage: true,
+            },
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("completion stream succeeds");
+    let (chunks, final_usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let usage_chunk = chunks.last().expect("usage chunk");
+    let usage = usage_chunk.usage.as_ref().expect("usage");
+    assert_eq!(usage.completion_tokens, u64::MAX);
+    assert_eq!(usage.total_tokens, u64::MAX);
+    assert_eq!(final_usage.completion_tokens, u64::MAX);
+}
+
+#[tokio::test]
 async fn streaming_json_object_response_format_rejects_text_content() {
     let backend = ProtocolTestBackend::new("local-qwen36", "not json");
     let runtime = Runtime::new(backend);
@@ -663,6 +687,30 @@ async fn runtime_appends_chat_stream_usage_when_requested() {
 }
 
 #[tokio::test]
+async fn runtime_chat_stream_saturates_overflowed_completion_usage_tokens() {
+    let runtime = Runtime::new(OverflowCompletionTokenStreamBackend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            stream_options: llm_api::StreamOptions {
+                include_usage: true,
+            },
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming text succeeds");
+    let (chunks, final_usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let usage_chunk = chunks.last().expect("usage chunk");
+    let usage = usage_chunk.usage.as_ref().expect("usage");
+    assert_eq!(usage.completion_tokens, u64::MAX);
+    assert_eq!(usage.total_tokens, u64::MAX);
+    assert_eq!(final_usage.completion_tokens, u64::MAX);
+}
+
+#[tokio::test]
 async fn runtime_chat_stream_usage_includes_backend_cached_prompt_tokens() {
     let runtime = Runtime::new(CachedPromptTokenStreamBackend);
     let stream = runtime
@@ -770,6 +818,71 @@ impl ModelBackend for CachedPromptTokenStreamBackend {
                 prompt_tokens: 10,
                 prompt_cached_tokens: Some(6),
                 completion_tokens: 1,
+                finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
+            };
+        }
+        .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        self.generate_stream(request)
+    }
+}
+
+struct OverflowCompletionTokenStreamBackend;
+
+#[async_trait::async_trait]
+impl ModelBackend for OverflowCompletionTokenStreamBackend {
+    fn model_id(&self) -> &str {
+        "local-qwen36"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "overflow-completion-token-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "overflow completion token stream test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        async_stream::try_stream! {
+            yield BackendStreamChunk {
+                text: "overflow".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: u64::MAX - 1,
+                finish_reason: None,
+                progress: None,
+            };
+            yield BackendStreamChunk {
+                text: " tokens".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 2,
                 finish_reason: Some(BackendFinishReason::Stop),
                 progress: None,
             };

@@ -34,20 +34,24 @@ impl TokenCounters {
     }
 
     pub fn total_tokens(&self) -> u64 {
-        self.prompt_tokens + self.completion_tokens
+        self.prompt_tokens.saturating_add(self.completion_tokens)
     }
 
     pub fn record_prompt_tokens(&mut self, tokens: u64) {
-        self.prompt_tokens += tokens;
+        self.prompt_tokens = self.prompt_tokens.saturating_add(tokens);
     }
 
     pub fn record_completion_tokens(&mut self, tokens: u64) {
-        self.completion_tokens += tokens;
+        self.completion_tokens = self.completion_tokens.saturating_add(tokens);
     }
 
     pub fn record_prompt_cached_tokens(&mut self, tokens: Option<u64>) {
         if let Some(tokens) = tokens {
-            self.prompt_cached_tokens = Some(self.prompt_cached_tokens.unwrap_or(0) + tokens);
+            self.prompt_cached_tokens = Some(
+                self.prompt_cached_tokens
+                    .unwrap_or(0)
+                    .saturating_add(tokens),
+            );
         }
     }
 }
@@ -397,6 +401,21 @@ mod tests {
         assert_eq!(counters.completion_tokens(), 10);
         assert_eq!(counters.total_tokens(), 17);
         assert_eq!(counters.prompt_cached_tokens(), Some(5));
+    }
+
+    #[test]
+    fn token_counters_saturate_when_token_totals_overflow() {
+        let mut counters = TokenCounters::new(u64::MAX - 1, u64::MAX - 2)
+            .with_prompt_cached_tokens(Some(u64::MAX - 3));
+
+        counters.record_prompt_tokens(2);
+        counters.record_completion_tokens(3);
+        counters.record_prompt_cached_tokens(Some(4));
+
+        assert_eq!(counters.prompt_tokens(), u64::MAX);
+        assert_eq!(counters.completion_tokens(), u64::MAX);
+        assert_eq!(counters.total_tokens(), u64::MAX);
+        assert_eq!(counters.prompt_cached_tokens(), Some(u64::MAX));
     }
 
     #[test]

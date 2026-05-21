@@ -350,14 +350,14 @@ pub(crate) fn streaming_completion_stream<'a>(
         let mut emitted_len = 0;
         let mut prompt_tokens = 0;
         let mut prompt_cached_tokens = None;
-        let mut completion_tokens = 0;
+        let mut completion_tokens = 0_u64;
         let mut finish_reason = llm_api::FinishReason::Length;
         let max_stop_len = max_stop_sequence_len(&stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
-            completion_tokens += chunk.completion_tokens;
+            completion_tokens = completion_tokens.saturating_add(chunk.completion_tokens);
             if let Some(progress) = chunk.progress.clone() {
                 yield CompletionStreamEvent::Progress(progress);
             }
@@ -498,7 +498,7 @@ pub(crate) fn streaming_chat_stream<'a>(
         let mut emitted_len = 0;
         let mut prompt_tokens = 0;
         let mut prompt_cached_tokens = None;
-        let mut completion_tokens = 0;
+        let mut completion_tokens = 0_u64;
         let mut finish_reason = llm_api::FinishReason::Length;
         let mut stopped_by_sequence = false;
         let mut stop_at_len = None;
@@ -517,7 +517,7 @@ pub(crate) fn streaming_chat_stream<'a>(
             let mut emitted_public_chunk = false;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
-            completion_tokens += chunk.completion_tokens;
+            completion_tokens = completion_tokens.saturating_add(chunk.completion_tokens);
             if let Some(progress) = chunk.progress.clone() {
                 yield ChatCompletionStreamEvent::Progress(progress);
             }

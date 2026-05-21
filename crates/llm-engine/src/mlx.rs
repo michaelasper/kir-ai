@@ -519,7 +519,9 @@ impl MlxOutputObservation {
         self.saw_text |= !chunk.text.is_empty();
         self.saw_tool_delta |= !chunk.tool_call_deltas.is_empty();
         self.prompt_tokens = self.prompt_tokens.max(chunk.prompt_tokens);
-        self.completion_tokens += chunk.completion_tokens;
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(chunk.completion_tokens);
         if let Some(finish_reason) = chunk.finish_reason {
             self.finish_reason = Some(finish_reason);
         }

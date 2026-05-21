@@ -354,12 +354,16 @@ impl MlxSseParser {
             let emissions = qwen_xml.push_str(text)?;
             return Ok(self.qwen_xml_emissions_to_chunks(emissions));
         }
-        self.estimated_completion_tokens += count_visible_tokens(text);
+        self.estimated_completion_tokens = self
+            .estimated_completion_tokens
+            .saturating_add(count_visible_tokens(text));
         Ok(vec![self.chunk(text.to_owned(), Vec::new())])
     }
 
     fn push_rendered_tool_call_text(&mut self, text: &str) -> Vec<BackendStreamChunk> {
-        self.estimated_completion_tokens += count_visible_tokens(text);
+        self.estimated_completion_tokens = self
+            .estimated_completion_tokens
+            .saturating_add(count_visible_tokens(text));
         vec![self.chunk(text.to_owned(), Vec::new())]
     }
 
@@ -372,7 +376,9 @@ impl MlxSseParser {
             .map(|emission| self.chunk(emission.text, emission.tool_call_deltas))
             .collect::<Vec<_>>();
         for chunk in &chunks {
-            self.estimated_completion_tokens += count_visible_tokens(&chunk.text);
+            self.estimated_completion_tokens = self
+                .estimated_completion_tokens
+                .saturating_add(count_visible_tokens(&chunk.text));
         }
         chunks
     }
@@ -403,7 +409,7 @@ impl MlxSseParser {
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, is_final_chunk);
         if let Some(last) = chunks.last_mut() {
-            last.completion_tokens += completion_tokens;
+            last.completion_tokens = last.completion_tokens.saturating_add(completion_tokens);
             last.finish_reason = finish_reason;
         } else if finish_reason.is_some() || completion_tokens > 0 {
             chunks.push(BackendStreamChunk {
@@ -1395,12 +1401,12 @@ pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> 
     let mut text = String::new();
     let mut prompt_tokens = 0;
     let mut prompt_cached_tokens = None;
-    let mut completion_tokens = 0;
+    let mut completion_tokens = 0_u64;
     let mut finish_reason = BackendFinishReason::Stop;
     for chunk in chunks {
         prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
         prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
-        completion_tokens += chunk.completion_tokens;
+        completion_tokens = completion_tokens.saturating_add(chunk.completion_tokens);
         text.push_str(&chunk.text);
         if let Some(reason) = chunk.finish_reason {
             finish_reason = reason;

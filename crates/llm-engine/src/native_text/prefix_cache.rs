@@ -323,9 +323,10 @@ impl NativeTextPrefixCacheMetrics {
     pub(crate) fn record_hit(&self, tokens: u64) {
         self.update(|counters| {
             counters.hits += 1;
-            counters.reused_tokens += tokens;
-            counters.hit_tokens += tokens;
-            counters.avoided_prefill_tokens += tokens;
+            counters.reused_tokens = counters.reused_tokens.saturating_add(tokens);
+            counters.hit_tokens = counters.hit_tokens.saturating_add(tokens);
+            counters.avoided_prefill_tokens =
+                counters.avoided_prefill_tokens.saturating_add(tokens);
         });
     }
 
@@ -334,13 +335,15 @@ impl NativeTextPrefixCacheMetrics {
     }
 
     pub(crate) fn record_miss_tokens(&self, tokens: u64) {
-        self.update(|counters| counters.miss_tokens += tokens);
+        self.update(|counters| {
+            counters.miss_tokens = counters.miss_tokens.saturating_add(tokens);
+        });
     }
 
     pub(crate) fn record_prefill_chunk(&self, tokens: u64) {
         self.update(|counters| {
             counters.prefill_chunks += 1;
-            counters.prefill_tokens += tokens;
+            counters.prefill_tokens = counters.prefill_tokens.saturating_add(tokens);
         });
     }
 
@@ -415,5 +418,27 @@ impl NativeTextPrefixCacheMetrics {
             .counters
             .lock_or_panic("native text prefix cache metrics");
         update(&mut counters);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_text_prefix_cache_metrics_saturate_token_counters() {
+        let metrics = super::NativeTextPrefixCacheMetrics::default();
+
+        metrics.record_hit(u64::MAX - 1);
+        metrics.record_hit(2);
+        metrics.record_miss_tokens(u64::MAX - 2);
+        metrics.record_miss_tokens(3);
+        metrics.record_prefill_chunk(u64::MAX - 3);
+        metrics.record_prefill_chunk(4);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["reused_tokens"], u64::MAX);
+        assert_eq!(snapshot["hit_tokens"], u64::MAX);
+        assert_eq!(snapshot["avoided_prefill_tokens"], u64::MAX);
+        assert_eq!(snapshot["miss_tokens"], u64::MAX);
+        assert_eq!(snapshot["prefill_tokens"], u64::MAX);
     }
 }

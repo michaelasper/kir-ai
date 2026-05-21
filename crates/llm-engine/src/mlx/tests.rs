@@ -2,7 +2,7 @@ use super::protocol::{
     MLX_DEEPSEEK_CONTROL_STOP_TOKENS, MLX_QWEN_CONTROL_STOP_TOKENS, MlxToolMarkup,
     MlxUpstreamProtocol,
 };
-use super::sse::parse_mlx_completion_body;
+use super::sse::{fold_mlx_chunks, parse_mlx_completion_body};
 use super::*;
 use llm_api::ChatMessage;
 use llm_backend::{
@@ -140,6 +140,55 @@ fn mlx_text_sse_frame(text: &str, finish_reason: Option<&str>) -> String {
             }]
         })
     )
+}
+
+#[test]
+fn mlx_output_observation_saturates_completion_tokens() {
+    let mut observation = MlxOutputObservation {
+        completion_tokens: u64::MAX - 1,
+        ..MlxOutputObservation::default()
+    };
+
+    observation.observe_chunk(&BackendStreamChunk {
+        text: String::new(),
+        tool_call_deltas: Vec::new(),
+        prompt_tokens: 0,
+        prompt_cached_tokens: None,
+        completion_tokens: 2,
+        finish_reason: None,
+        progress: None,
+    });
+
+    assert_eq!(observation.completion_tokens, u64::MAX);
+}
+
+#[test]
+fn mlx_chunk_folding_saturates_completion_tokens() {
+    let output = fold_mlx_chunks(
+        vec![
+            BackendStreamChunk {
+                text: "hello".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: u64::MAX - 1,
+                finish_reason: None,
+                progress: None,
+            },
+            BackendStreamChunk {
+                text: " world".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 2,
+                finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
+            },
+        ],
+        "prompt",
+    );
+
+    assert_eq!(output.completion_tokens, u64::MAX);
 }
 
 fn qwen_xml_test_tool_schema() -> String {
