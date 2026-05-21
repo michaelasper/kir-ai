@@ -1,4 +1,4 @@
-use llm_tool_parser::{ParsedAssistant, QwenParser};
+use llm_tool_parser::QwenParser;
 
 #[test]
 fn parses_reasoning_content_and_hermes_tool_call() {
@@ -42,9 +42,19 @@ fn parses_qwen_coder_xml_tool_call() {
         )
         .expect("xml tool call parses");
 
+    assert_eq!(parsed.reasoning, None);
+    assert_eq!(parsed.content, "");
+    assert_eq!(parsed.tool_calls.len(), 1);
+    assert!(parsed.tool_calls[0].id.starts_with("call_"));
+    assert!(
+        !parsed.tool_calls[0].id["call_".len()..]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    );
+    assert_eq!(parsed.tool_calls[0].function.name, "bash");
     assert_eq!(
-        parsed,
-        ParsedAssistant::single_tool("bash", serde_json::json!({"cmd": "cargo test --workspace"}))
+        parsed.tool_calls[0].function.arguments,
+        serde_json::json!({"cmd": "cargo test --workspace"})
     );
 }
 

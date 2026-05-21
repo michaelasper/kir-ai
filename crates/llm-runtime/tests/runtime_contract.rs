@@ -21,6 +21,23 @@ use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+fn assert_generated_tool_call_id_is_opaque(id: &str) {
+    assert!(
+        id.starts_with("call_"),
+        "tool call id must use call_ prefix: {id}"
+    );
+    assert!(
+        id.len() > "call_".len(),
+        "tool call id must include an opaque suffix: {id}"
+    );
+    assert!(
+        !id["call_".len()..]
+            .chars()
+            .all(|character| character.is_ascii_digit()),
+        "generated tool call id must not be a predictable numeric sequence: {id}"
+    );
+}
+
 #[path = "runtime_contract/capabilities.rs"]
 mod capabilities;
 #[path = "runtime_contract/chat.rs"]

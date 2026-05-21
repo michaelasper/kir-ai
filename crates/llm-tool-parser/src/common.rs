@@ -1,5 +1,5 @@
 use crate::{ParsedAssistant, ParserError};
-use llm_api::{ToolCall, ToolCallFunction, ToolCallType};
+use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
 pub(crate) fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {
@@ -55,13 +55,19 @@ pub(crate) fn parse_tool_calls(
     })
 }
 
-fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_json_call(inner: &str, _index: usize) -> Result<ToolCall, ParserError> {
     let value: Value = serde_json::from_str(inner)
         .map_err(|err| ParserError::malformed_tool(format!("invalid qwen tool JSON: {err}")))?;
     let name = value
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| ParserError::malformed_tool("qwen tool JSON missing name"))?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(generated_tool_call_id);
     let arguments = value
         .get("arguments")
         .or_else(|| value.get("parameters"))
@@ -70,7 +76,7 @@ fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
         .transpose()?
         .unwrap_or_else(|| serde_json::json!({}));
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id,
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),
@@ -79,7 +85,7 @@ fn parse_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
     })
 }
 
-fn parse_xml_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_xml_call(inner: &str, _index: usize) -> Result<ToolCall, ParserError> {
     let Some(name_start) = inner.find("<function=") else {
         return Err(ParserError::malformed_tool("missing qwen function tag"));
     };
@@ -122,7 +128,7 @@ fn parse_xml_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
         rest = &rest[value_end + "</parameter>".len()..];
     }
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id: generated_tool_call_id(),
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),

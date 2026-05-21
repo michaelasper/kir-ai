@@ -1283,7 +1283,7 @@ async fn assert_streams_tool_call_delta_with_choice_without_marker_content<B>(
     assert_eq!(tool_chunks.len(), 1);
     let delta = &tool_chunks[0].delta.tool_calls[0];
     assert_eq!(delta.index, 0);
-    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_generated_tool_call_id_is_opaque(delta.id.as_deref().expect("generated tool call id"));
     assert_eq!(
         delta
             .function
@@ -1331,7 +1331,7 @@ async fn protocol_backend_streams_required_tool_call_delta() {
     assert_eq!(chunks.len(), 3);
     let delta = &chunks[1].choices[0].delta.tool_calls[0];
     assert_eq!(delta.index, 0);
-    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_generated_tool_call_id_is_opaque(delta.id.as_deref().expect("generated tool call id"));
     assert_eq!(
         delta
             .function
@@ -1410,7 +1410,7 @@ async fn streaming_required_tool_choice_preserves_deferred_content_before_tool_c
         .next()
         .expect("tool call delta is emitted");
     assert_eq!(delta.index, 0);
-    assert_eq!(delta.id.as_deref(), Some("call_0"));
+    assert_generated_tool_call_id_is_opaque(delta.id.as_deref().expect("generated tool call id"));
     assert_eq!(
         delta
             .function

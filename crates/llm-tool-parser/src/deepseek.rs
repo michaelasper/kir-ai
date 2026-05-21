@@ -2,7 +2,7 @@ use crate::{
     ParsedAssistant, ParserError,
     common::{parse_tool_calls, split_reasoning},
 };
-use llm_api::{ToolCall, ToolCallFunction, ToolCallType};
+use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
 #[derive(Debug, Default, Clone)]
@@ -104,7 +104,7 @@ fn parse_deepseek_native_tool_calls(
     })
 }
 
-fn parse_deepseek_native_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_deepseek_native_call(inner: &str, _index: usize) -> Result<ToolCall, ParserError> {
     let Some((call_type, rest)) = inner.split_once("<｜tool▁sep｜>") else {
         return Err(ParserError::malformed_tool(
             "DeepSeek native tool call missing separator",
@@ -129,7 +129,7 @@ fn parse_deepseek_native_call(inner: &str, index: usize) -> Result<ToolCall, Par
     }
     let arguments = parse_deepseek_markdown_json(arguments_block.trim())?;
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id: generated_tool_call_id(),
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),
@@ -155,19 +155,25 @@ fn parse_deepseek_markdown_json(arguments_block: &str) -> Result<Value, ParserEr
     })
 }
 
-fn parse_deepseek_json_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_deepseek_json_call(inner: &str, _index: usize) -> Result<ToolCall, ParserError> {
     let value: Value = serde_json::from_str(inner)
         .map_err(|err| ParserError::malformed_tool(format!("invalid DeepSeek tool JSON: {err}")))?;
     let name = value
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| ParserError::malformed_tool("DeepSeek tool JSON missing name"))?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(generated_tool_call_id);
     let arguments = value
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id,
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),

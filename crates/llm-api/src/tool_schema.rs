@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -7,6 +8,10 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub call_type: ToolCallType,
     pub function: ToolCallFunction,
+}
+
+pub fn generated_tool_call_id() -> String {
+    format!("call_{}", Uuid::new_v4().simple())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

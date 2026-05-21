@@ -1,5 +1,5 @@
 use crate::{ParsedAssistant, ParserError};
-use llm_api::{ToolCall, ToolCallFunction, ToolCallType};
+use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
 #[derive(Debug, Default, Clone)]
@@ -85,7 +85,7 @@ fn parse_gemma_tool_calls(rest: &str) -> Result<(String, Vec<ToolCall>), ParserE
     Ok((content, calls))
 }
 
-fn parse_gemma_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_gemma_call(inner: &str, _index: usize) -> Result<ToolCall, ParserError> {
     let Some(body) = inner.strip_prefix("call:") else {
         return Err(ParserError::malformed_tool("missing Gemma call prefix"));
     };
@@ -100,7 +100,7 @@ fn parse_gemma_call(inner: &str, index: usize) -> Result<ToolCall, ParserError> 
     }
     let arguments = GemmaArgumentParser::new(&body[args_start..]).parse_complete()?;
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id: generated_tool_call_id(),
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),

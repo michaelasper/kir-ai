@@ -163,6 +163,7 @@ async fn parses_generated_tool_calls_into_openai_message() {
 
     let choice = &response.choices[0];
     assert_eq!(choice.finish_reason, Some(FinishReason::ToolCalls));
+    assert_generated_tool_call_id_is_opaque(&choice.message.tool_calls[0].id);
     assert_eq!(choice.message.tool_calls[0].function.name, "lookup");
     assert_eq!(
         choice.message.tool_calls[0].function.arguments,
@@ -565,6 +566,11 @@ async fn accepts_multiple_generated_tool_calls_when_all_are_declared() {
         .expect("declared tool calls are accepted");
 
     assert_eq!(response.choices[0].message.tool_calls.len(), 2);
+    let first_id = &response.choices[0].message.tool_calls[0].id;
+    let second_id = &response.choices[0].message.tool_calls[1].id;
+    assert_generated_tool_call_id_is_opaque(first_id);
+    assert_generated_tool_call_id_is_opaque(second_id);
+    assert_ne!(first_id, second_id);
     assert_eq!(
         response.choices[0].message.tool_calls[0].function.name,
         "lookup"

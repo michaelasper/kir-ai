@@ -1,4 +1,5 @@
 use super::protocol::MlxToolMarkup;
+use llm_api::generated_tool_call_id;
 use llm_backend::{
     BackendError, BackendFinishReason, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, BackendToolDefinition,
@@ -429,6 +430,9 @@ impl MlxSseParser {
                     .resize_with(index + 1, MlxToolCallAccumulator::default);
             }
             let accumulator = &mut self.tool_calls[index];
+            if let Some(id) = &call.id {
+                accumulator.id = Some(id.clone());
+            }
             let mut function_delta = None;
             if let Some(function) = &call.function {
                 if let Some(name) = &function.name {
@@ -483,6 +487,7 @@ impl MlxSseParser {
 
 #[derive(Debug, Default, Clone)]
 struct MlxToolCallAccumulator {
+    id: Option<String>,
     name: String,
     arguments: String,
 }
@@ -855,7 +860,7 @@ impl QwenXmlToolParser {
         if self.structured_deltas {
             emissions.push(QwenXmlEmission::delta(BackendToolCallDelta {
                 index,
-                id: Some(format!("call_{index}")),
+                id: Some(generated_tool_call_id()),
                 call_type: Some(BackendToolCallType::Function),
                 function: Some(BackendToolCallFunctionDelta {
                     name: Some(name),
@@ -1244,13 +1249,16 @@ fn render_mlx_tool_call(
     }
     let arguments = parse_mlx_tool_arguments(&call.arguments)?;
     match markup {
-        MlxToolMarkup::Json | MlxToolMarkup::QwenXml => Ok(format!(
-            "<tool_call>{}</tool_call>",
-            serde_json::json!({
+        MlxToolMarkup::Json | MlxToolMarkup::QwenXml => {
+            let mut payload = serde_json::json!({
                 "name": call.name.as_str(),
                 "arguments": arguments,
-            })
-        )),
+            });
+            if let Some(id) = &call.id {
+                payload["id"] = Value::String(id.clone());
+            }
+            Ok(format!("<tool_call>{payload}</tool_call>"))
+        }
         MlxToolMarkup::DeepSeek => Ok(format!(
             "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{}\n```json\n{}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
             call.name,

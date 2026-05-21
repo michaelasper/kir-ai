@@ -30,6 +30,23 @@ type ParsedMlxChunkForTest = (
     Option<BackendFinishReason>,
 );
 
+fn assert_generated_tool_call_id_is_opaque(id: &str) {
+    assert!(
+        id.starts_with("call_"),
+        "tool call id must use call_ prefix: {id}"
+    );
+    assert!(
+        id.len() > "call_".len(),
+        "tool call id must include an opaque suffix: {id}"
+    );
+    assert!(
+        !id["call_".len()..]
+            .chars()
+            .all(|character| character.is_ascii_digit()),
+        "generated tool call id must not be a predictable numeric sequence: {id}"
+    );
+}
+
 fn backend_messages(messages: Vec<ChatMessage>) -> Vec<BackendChatMessage> {
     messages.into_iter().map(backend_message).collect()
 }
@@ -242,8 +259,9 @@ fn mlx_sse_parser_streams_split_qwen_xml_as_schema_aware_tool_deltas() {
     );
     let header = deltas
         .iter()
-        .find(|delta| delta.id.as_deref() == Some("call_0"))
+        .find(|delta| delta.id.is_some())
         .expect("tool header delta");
+    assert_generated_tool_call_id_is_opaque(header.id.as_deref().expect("tool header id"));
     assert_eq!(header.call_type, Some(BackendToolCallType::Function));
     assert_eq!(
         header
@@ -364,7 +382,7 @@ fn mlx_sse_parser_handles_adjacent_qwen_xml_tool_calls() {
         .collect::<Vec<_>>();
     assert_eq!(names, ["first", "second"]);
     assert_eq!(deltas[0].index, 0);
-    assert_eq!(deltas[0].id.as_deref(), Some("call_0"));
+    assert_generated_tool_call_id_is_opaque(deltas[0].id.as_deref().expect("generated id"));
     assert!(deltas.iter().any(|delta| delta.index == 1));
 
     let first_arguments = deltas
@@ -932,6 +950,7 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
         serde_json::json!({"type":"function","function":{"name":"read_file"}})
     );
     assert!(output.text.starts_with("<tool_call>"));
+    assert!(output.text.contains(r#""id":"call_read_1""#));
     assert!(output.text.contains(r#""name":"read_file""#));
     assert!(output.text.contains(r#""path":"Cargo.toml""#));
     assert_eq!(output.prompt_tokens, 4);
@@ -2446,7 +2465,7 @@ async fn mlx_backend_streams_qwen_xml_tool_deltas_and_records_first_tool_delta()
         .iter()
         .flat_map(|chunk| &chunk.tool_call_deltas)
         .collect::<Vec<_>>();
-    assert_eq!(deltas[0].id.as_deref(), Some("call_0"));
+    assert_generated_tool_call_id_is_opaque(deltas[0].id.as_deref().expect("generated id"));
     assert_eq!(
         deltas[0]
             .function

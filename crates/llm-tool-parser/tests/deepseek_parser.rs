@@ -102,5 +102,20 @@ fn qwen_parser_selection_still_routes_to_qwen_parser() {
     let selected = parse_assistant_for_family(ModelFamily::Qwen, text).expect("selected parser");
     let direct = QwenParser.parse_complete(text).expect("direct parser");
 
-    assert_eq!(selected, direct);
+    assert_eq!(selected.reasoning, direct.reasoning);
+    assert_eq!(selected.content, direct.content);
+    assert_eq!(selected.tool_calls.len(), direct.tool_calls.len());
+    assert_eq!(
+        selected.tool_calls[0].function,
+        direct.tool_calls[0].function
+    );
+    for parsed in [&selected, &direct] {
+        let id = &parsed.tool_calls[0].id;
+        assert!(id.starts_with("call_"));
+        assert!(
+            !id["call_".len()..]
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        );
+    }
 }

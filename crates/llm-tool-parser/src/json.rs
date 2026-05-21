@@ -2,7 +2,7 @@ use crate::{
     ParsedAssistant, ParserError,
     common::{parse_json_tool_arguments, parse_tool_calls, split_reasoning},
 };
-use llm_api::{ToolCall, ToolCallFunction, ToolCallType};
+use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
 pub(crate) fn parse_json_tool_output(text: &str) -> Result<ParsedAssistant, ParserError> {
@@ -187,7 +187,7 @@ fn json_object_has_direct_tool_shape(object: &serde_json::Map<String, Value>) ->
     has_name && has_arguments
 }
 
-fn parse_json_tool_value_as_call(value: &Value, index: usize) -> Result<ToolCall, ParserError> {
+fn parse_json_tool_value_as_call(value: &Value, _index: usize) -> Result<ToolCall, ParserError> {
     let Value::Object(object) = value else {
         return Err(ParserError::malformed_tool(
             "JSON tool-call entry must be an object",
@@ -201,6 +201,12 @@ fn parse_json_tool_value_as_call(value: &Value, index: usize) -> Result<ToolCall
         .or_else(|| object.get("function"))
         .and_then(Value::as_str)
         .ok_or_else(|| ParserError::malformed_tool("JSON tool-call entry missing name"))?;
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(generated_tool_call_id);
     let arguments = function
         .and_then(|function| function.get("arguments"))
         .or_else(|| object.get("arguments"))
@@ -210,7 +216,7 @@ fn parse_json_tool_value_as_call(value: &Value, index: usize) -> Result<ToolCall
         .transpose()?
         .unwrap_or_else(|| serde_json::json!({}));
     Ok(ToolCall {
-        id: format!("call_{index}"),
+        id,
         call_type: ToolCallType::Function,
         function: ToolCallFunction {
             name: name.to_owned(),

@@ -2,7 +2,7 @@ use crate::RuntimeError;
 use crate::response_validation::{schema_requires_string_intent_argument, tool_intent_default};
 use llm_api::{
     ApiError, ChatCompletionRequest, ToolCall, ToolCallDelta, ToolCallFunction,
-    ToolCallFunctionDelta, ToolCallType, ToolChoice,
+    ToolCallFunctionDelta, ToolCallType, ToolChoice, generated_tool_call_id,
 };
 use llm_backend::BackendToolChoice;
 use llm_tool_parser::{ParsedAssistant, split_reasoning};
@@ -71,7 +71,7 @@ impl StructuredToolDeltaAssembler {
             }
             let arguments = parse_structured_tool_arguments(index, &call.arguments)?;
             tool_calls.push(ToolCall {
-                id: call.id.unwrap_or_else(|| format!("call_{index}")),
+                id: call.id.unwrap_or_else(generated_tool_call_id),
                 call_type: call.call_type.unwrap_or(ToolCallType::Function),
                 function: ToolCallFunction {
                     name: call.name,
