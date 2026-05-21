@@ -46,6 +46,8 @@ fn renders_deepseek_history_tool_calls_and_tool_outputs() {
     .expect("DeepSeek template renders");
 
     assert!(rendered.starts_with("<｜begin▁of▁sentence｜>You are Kir.\n\n"));
+    assert!(!rendered.contains("You may call tools by emitting DeepSeek tool call blocks"));
+    assert!(rendered.contains("\"name\":\"read_file\""));
     assert!(rendered.contains("<｜User｜>read Cargo.toml"));
     assert!(rendered.contains("<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n```json\n{\"path\":\"Cargo.toml\"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜><｜end▁of▁sentence｜>"));
     assert!(rendered.contains("<｜tool▁outputs▁begin｜><｜tool▁output▁begin｜>workspace manifest<｜tool▁output▁end｜><｜tool▁outputs▁end｜>"));

@@ -96,19 +96,47 @@ pub fn render_qwen_chatml(
     tools: &[ToolDefinition],
     options: &QwenPromptOptions,
 ) -> Result<String, TemplateError> {
+    render_qwen_chatml_with_tool_instruction(messages, tools, options, None)
+}
+
+fn render_qwen_chatml_with_tool_instruction(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &QwenPromptOptions,
+    tool_instruction: Option<&str>,
+) -> Result<String, TemplateError> {
     let mut out = String::new();
+    let mut message_index = 0;
+
     if !tools.is_empty() {
         let tools_json = serde_json::to_string(tools)?;
         reject_reserved_prompt_controls(&tools_json)?;
         out.push_str("<|im_start|>system\n");
-        out.push_str(
-            "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n",
-        );
+
+        let mut wrote_system_content = false;
+        if let Some(message) = messages
+            .first()
+            .filter(|message| message.role == ChatRole::System)
+        {
+            if let Some(content) = &message.content {
+                reject_reserved_prompt_controls(content)?;
+                out.push_str(content);
+                wrote_system_content = true;
+            }
+            message_index = 1;
+        }
+
+        if wrote_system_content {
+            out.push_str("\n\n");
+        }
+        if let Some(instruction) = tool_instruction {
+            out.push_str(instruction);
+        }
         out.push_str(&tools_json);
         out.push_str("<|im_end|>\n");
     }
 
-    for message in messages {
+    for message in &messages[message_index..] {
         match message.role {
             ChatRole::System => render_plain(&mut out, "system", message)?,
             ChatRole::User => render_plain(&mut out, "user", message)?,
@@ -134,6 +162,15 @@ pub fn render_gemma4_chat_template(
     tools: &[ToolDefinition],
     options: &GemmaPromptOptions,
 ) -> Result<String, TemplateError> {
+    render_gemma4_chat_template_with_tool_instruction(messages, tools, options, None)
+}
+
+fn render_gemma4_chat_template_with_tool_instruction(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &GemmaPromptOptions,
+    tool_instruction: Option<&str>,
+) -> Result<String, TemplateError> {
     let mut out = String::from("<bos>");
     let mut tool_names_by_id = std::collections::BTreeMap::new();
     for message in messages {
@@ -153,6 +190,9 @@ pub fn render_gemma4_chat_template(
         out.push_str("<|turn>system\n");
         if options.enable_thinking {
             out.push_str("<|think|>\n");
+        }
+        if let Some(instruction) = tool_instruction {
+            out.push_str(instruction);
         }
         if let Some(message) = messages
             .first()
@@ -198,6 +238,15 @@ pub fn render_deepseek_chat_template(
     tools: &[ToolDefinition],
     options: &DeepSeekPromptOptions,
 ) -> Result<String, TemplateError> {
+    render_deepseek_chat_template_with_tool_instruction(messages, tools, options, None)
+}
+
+fn render_deepseek_chat_template_with_tool_instruction(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &DeepSeekPromptOptions,
+    tool_instruction: Option<&str>,
+) -> Result<String, TemplateError> {
     let mut out = String::from("<｜begin▁of▁sentence｜>");
     let mut tool_output_open = false;
 
@@ -214,9 +263,9 @@ pub fn render_deepseek_chat_template(
     if !tools.is_empty() {
         let tools_json = serde_json::to_string(tools)?;
         reject_deepseek_prompt_controls(&tools_json)?;
-        out.push_str(
-            "You may call tools by emitting DeepSeek tool call blocks with exact tool names.\n",
-        );
+        if let Some(instruction) = tool_instruction {
+            out.push_str(instruction);
+        }
         out.push_str(&tools_json);
         out.push_str("\n\n");
     }
@@ -261,6 +310,15 @@ pub fn render_llama3_chat_template(
     tools: &[ToolDefinition],
     options: &LlamaPromptOptions,
 ) -> Result<String, TemplateError> {
+    render_llama3_chat_template_with_tool_instruction(messages, tools, options, None)
+}
+
+fn render_llama3_chat_template_with_tool_instruction(
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    options: &LlamaPromptOptions,
+    tool_instruction: Option<&str>,
+) -> Result<String, TemplateError> {
     let mut out = String::from("<|begin_of_text|>");
     let mut message_index = 0;
 
@@ -286,9 +344,9 @@ pub fn render_llama3_chat_template(
             }
             let tools_json = serde_json::to_string(tools)?;
             reject_llama3_prompt_controls(&tools_json)?;
-            out.push_str("Tools are available. To call a function, respond with JSON in the form ");
-            out.push_str(r#"{"name":"function_name","arguments":{"argument":"value"}}"#);
-            out.push_str(". Do not use variables.\n");
+            if let Some(instruction) = tool_instruction {
+                out.push_str(instruction);
+            }
             out.push_str(&tools_json);
         }
         out.push_str("<|eot_id|>");
@@ -315,37 +373,50 @@ pub fn render_family_chat_template(
     messages: &[ChatMessage],
     tools: &[ToolDefinition],
 ) -> Result<String, TemplateError> {
+    render_family_chat_template_with_tool_instruction(family, messages, tools, None)
+}
+
+pub fn render_family_chat_template_with_tool_instruction(
+    family: ModelFamily,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    tool_instruction: Option<&str>,
+) -> Result<String, TemplateError> {
     match family {
-        ModelFamily::Qwen => render_qwen_chatml(
+        ModelFamily::Qwen => render_qwen_chatml_with_tool_instruction(
             messages,
             tools,
             &QwenPromptOptions {
                 enable_thinking: false,
                 add_generation_prompt: true,
             },
+            tool_instruction,
         ),
-        ModelFamily::DeepSeek => render_deepseek_chat_template(
+        ModelFamily::DeepSeek => render_deepseek_chat_template_with_tool_instruction(
             messages,
             tools,
             &DeepSeekPromptOptions {
                 enable_thinking: false,
                 add_generation_prompt: true,
             },
+            tool_instruction,
         ),
-        ModelFamily::Gemma => render_gemma4_chat_template(
+        ModelFamily::Gemma => render_gemma4_chat_template_with_tool_instruction(
             messages,
             tools,
             &GemmaPromptOptions {
                 enable_thinking: false,
                 add_generation_prompt: true,
             },
+            tool_instruction,
         ),
-        ModelFamily::Llama => render_llama3_chat_template(
+        ModelFamily::Llama => render_llama3_chat_template_with_tool_instruction(
             messages,
             tools,
             &LlamaPromptOptions {
                 add_generation_prompt: true,
             },
+            tool_instruction,
         ),
     }
 }

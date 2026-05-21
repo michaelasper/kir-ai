@@ -3,7 +3,7 @@ use llm_tokenizer::{QwenPromptOptions, render_qwen_chatml};
 use serde_json::json;
 
 #[test]
-fn renders_qwen_no_thinking_chatml_with_tools() {
+fn renders_qwen_tools_without_hardcoded_instruction_prompt() {
     let tools = vec![ToolDefinition::function(
         "read_file",
         "read a UTF-8 file",
@@ -28,9 +28,19 @@ fn renders_qwen_no_thinking_chatml_with_tools() {
     )
     .expect("template renders");
 
-    assert!(rendered.contains("<|im_start|>system\nYou are a coding agent.<|im_end|>"));
+    assert!(rendered.starts_with("<|im_start|>system\nYou are a coding agent.\n\n"));
+    assert_eq!(
+        rendered.matches("<|im_start|>system").count(),
+        1,
+        "qwen should merge tool schema into the existing system turn: {rendered}"
+    );
+    assert!(
+        rendered.find("You are a coding agent.") < rendered.find("\"name\":\"read_file\""),
+        "user system content should precede qwen tool schema: {rendered}"
+    );
     assert!(rendered.contains("\"name\":\"read_file\""));
-    assert!(rendered.contains("<tool_call>"));
+    assert!(!rendered.contains("Tools are available."));
+    assert!(!rendered.contains("<tool_call> JSON blocks"));
     assert!(rendered.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
 }
 

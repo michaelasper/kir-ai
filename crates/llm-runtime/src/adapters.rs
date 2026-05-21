@@ -4,7 +4,7 @@ use llm_backend::{
     BackendModelMetadata, BackendToolCall, BackendToolCallFunction, BackendToolCallType,
 };
 use llm_models::ModelFamily;
-use llm_tokenizer::render_family_chat_template;
+use llm_tokenizer::render_family_chat_template_with_tool_instruction;
 use llm_tool_parser::{ParsedAssistant, parse_assistant_for_family};
 
 use crate::RuntimeError;
@@ -44,6 +44,15 @@ pub(crate) const GEMMA_TOOL_MARKERS: [ToolMarkupMarkers; 1] =
     [ToolMarkupMarkers::new("<|tool_call>", "<tool_call|>")];
 const LLAMA_UNMARKED_JSON_TRUNCATION_TOKENS: [&str; 3] =
     ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"];
+const QWEN_TOOL_INSTRUCTION: &str =
+    "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n";
+const DEEPSEEK_TOOL_INSTRUCTION: &str =
+    "You may call tools by emitting DeepSeek tool call blocks with exact tool names.\n";
+const LLAMA_TOOL_INSTRUCTION: &str = concat!(
+    "Tools are available. To call a function, respond with JSON in the form ",
+    r#"{"name":"function_name","arguments":{"argument":"value"}}"#,
+    ". Do not use variables.\n"
+);
 
 impl ToolMarkupPolicy {
     pub(crate) const fn new(markers: &'static [ToolMarkupMarkers]) -> Self {
@@ -134,7 +143,12 @@ impl ChatAdapter for SelectedChatAdapter {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> Result<String, RuntimeError> {
-        Ok(render_family_chat_template(self.family, messages, tools)?)
+        Ok(render_family_chat_template_with_tool_instruction(
+            self.family,
+            messages,
+            tools,
+            self.tool_instruction(tools),
+        )?)
     }
 
     fn parse_complete(self, text: &str) -> Result<ParsedAssistant, RuntimeError> {
@@ -158,6 +172,18 @@ impl ChatAdapter for SelectedChatAdapter {
 }
 
 impl SelectedChatAdapter {
+    fn tool_instruction(self, tools: &[ToolDefinition]) -> Option<&'static str> {
+        if tools.is_empty() {
+            return None;
+        }
+        match self.family {
+            ModelFamily::Qwen => Some(QWEN_TOOL_INSTRUCTION),
+            ModelFamily::DeepSeek => Some(DEEPSEEK_TOOL_INSTRUCTION),
+            ModelFamily::Llama => Some(LLAMA_TOOL_INSTRUCTION),
+            ModelFamily::Gemma => None,
+        }
+    }
+
     pub(crate) fn parses_unmarked_tool_calls(self) -> bool {
         matches!(self.family, ModelFamily::Llama)
     }

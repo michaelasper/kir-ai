@@ -355,6 +355,126 @@ async fn runtime_adapts_tool_schema_to_backend_contract_by_default() {
 }
 
 #[tokio::test]
+async fn runtime_injects_qwen_tool_instructions_without_mutating_chat_context() {
+    let observed = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new(RecordingChatContextBackend {
+        observed: observed.clone(),
+        family: "qwen",
+    });
+    let tools = vec![ToolDefinition::function(
+        "lookup",
+        "Lookup docs.",
+        json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+        }),
+    )];
+
+    runtime
+        .chat(ChatCompletionRequest {
+            model: "local-gemma4".to_owned(),
+            messages: vec![
+                ChatMessage::system("You are Kir."),
+                ChatMessage::user("lookup rust"),
+            ],
+            tools: tools.clone(),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("runtime chat succeeds");
+
+    let observed = observed
+        .lock()
+        .expect("observed request lock")
+        .clone()
+        .expect("backend request captured");
+    let prompt = observed.prompt();
+    assert!(prompt.contains(
+        "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n"
+    ));
+    assert!(prompt.contains("\"name\":\"lookup\""));
+    assert!(
+        prompt.find("You are Kir.") < prompt.find("Tools are available."),
+        "user system content should precede runtime-planned qwen tool guidance: {prompt}"
+    );
+    assert_eq!(
+        prompt.matches("<|im_start|>system").count(),
+        1,
+        "runtime should merge qwen tool guidance into the existing system turn: {prompt}"
+    );
+
+    let chat = observed.as_chat().expect("chat request kind");
+    assert_eq!(chat.chat_context.messages.len(), 2);
+    assert_eq!(chat.chat_context.messages[0].role, BackendChatRole::System);
+    assert_eq!(
+        chat.chat_context.messages[0].content.as_deref(),
+        Some("You are Kir.")
+    );
+    assert_eq!(chat.chat_context.tools, backend_tool_definitions(&tools));
+}
+
+#[tokio::test]
+async fn runtime_injects_family_tool_instructions_from_prompt_planning() {
+    for (family, expected) in [
+        (
+            "deep_seek",
+            "You may call tools by emitting DeepSeek tool call blocks with exact tool names.\n",
+        ),
+        (
+            "llama",
+            concat!(
+                "Tools are available. To call a function, respond with JSON in the form ",
+                r#"{"name":"function_name","arguments":{"argument":"value"}}"#,
+                ". Do not use variables.\n"
+            ),
+        ),
+    ] {
+        let observed = Arc::new(Mutex::new(None));
+        let runtime = Runtime::new(RecordingChatContextBackend {
+            observed: observed.clone(),
+            family,
+        });
+        let tools = vec![ToolDefinition::function(
+            "lookup",
+            "Lookup docs.",
+            json!({}),
+        )];
+
+        runtime
+            .chat(ChatCompletionRequest {
+                model: "local-gemma4".to_owned(),
+                messages: vec![ChatMessage::user("lookup rust")],
+                tools,
+                ..ChatCompletionRequest::default()
+            })
+            .await
+            .expect("runtime chat succeeds");
+
+        let observed = observed
+            .lock()
+            .expect("observed request lock")
+            .clone()
+            .expect("backend request captured");
+        assert!(
+            observed.prompt().contains(expected),
+            "{family} prompt should contain runtime-planned tool instruction: {}",
+            observed.prompt()
+        );
+        assert!(
+            observed
+                .as_chat()
+                .expect("chat request kind")
+                .chat_context
+                .messages
+                .iter()
+                .all(|message| message.content.as_deref() != Some(expected)),
+            "{family} structured chat messages should remain user supplied"
+        );
+    }
+}
+
+#[tokio::test]
 async fn runtime_qwen_cache_context_includes_no_thinking_template_kwargs() {
     let observed = Arc::new(Mutex::new(None));
     let runtime = Runtime::new(RecordingChatContextBackend {

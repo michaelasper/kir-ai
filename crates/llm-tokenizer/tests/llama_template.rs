@@ -4,7 +4,7 @@ use llm_tokenizer::{LlamaPromptOptions, render_family_chat_template, render_llam
 use serde_json::json;
 
 #[test]
-fn renders_llama3_chat_with_tools() {
+fn renders_llama3_chat_tools_without_hardcoded_instruction_prompt() {
     let tools = vec![ToolDefinition::function(
         "lookup",
         "look up a value",
@@ -31,7 +31,8 @@ fn renders_llama3_chat_with_tools() {
     assert!(rendered.starts_with("<|begin_of_text|><|start_header_id|>system"));
     assert!(rendered.contains("You are Kir."));
     assert!(rendered.contains("\"name\":\"lookup\""));
-    assert!(rendered.contains(r#"{"name":"function_name","arguments":{"argument":"value"}}"#));
+    assert!(!rendered.contains("Tools are available."));
+    assert!(!rendered.contains(r#"{"name":"function_name","arguments":{"argument":"value"}}"#));
     assert!(rendered.contains("<|start_header_id|>user<|end_header_id|>\n\nlookup rust<|eot_id|>"));
     assert!(rendered.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
 }
