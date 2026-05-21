@@ -490,6 +490,30 @@ async fn rejects_generated_tool_call_for_undeclared_tool() {
 }
 
 #[tokio::test]
+async fn rejects_generated_tool_call_when_tool_choice_is_none() {
+    let backend = ProtocolTestBackend::new(
+        "local-qwen36",
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"rust"}}</tool_call>"#,
+    );
+    let runtime = Runtime::new(backend);
+    let err = runtime
+        .chat(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("lookup rust")],
+            tools: vec![ToolDefinition::function("lookup", "lookup", json!({}))],
+            tool_choice: Some(ToolChoice::None),
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect_err("tool_choice none rejects generated tool calls");
+
+    let RuntimeError::ToolCallValidation(message) = err else {
+        panic!("expected tool-call validation for tool_choice none, got {err:?}");
+    };
+    assert!(message.contains("tool_choice none"));
+}
+
+#[tokio::test]
 async fn rejects_generated_tool_call_that_mismatches_explicit_choice() {
     let backend = ProtocolTestBackend::new(
         "local-qwen36",

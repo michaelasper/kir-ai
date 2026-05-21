@@ -1,7 +1,6 @@
 use crate::RuntimeError;
 use llm_api::{ChatCompletionRequest, ResponseFormat, ToolCall, ToolChoice};
 use llm_tool_parser::ParsedAssistant;
-use std::collections::BTreeSet;
 
 pub(crate) fn schema_requires_string_intent_argument(schema: &serde_json::Value) -> bool {
     let Some(schema_object) = schema.as_object() else {
@@ -64,18 +63,17 @@ pub(crate) fn validate_tool_calls_against_request(
             "tool_choice none does not allow generated tool calls".to_owned(),
         ));
     }
-    let declared_tools = request
-        .tools
-        .iter()
-        .map(|tool| tool.function.name.as_str())
-        .collect::<BTreeSet<_>>();
     for tool_call in &parsed.tool_calls {
         let name = tool_call.function.name.as_str();
-        if !declared_tools.contains(name) {
+        let Some(tool) = request
+            .tools
+            .iter()
+            .find(|tool| tool.function.name.as_str() == name)
+        else {
             return Err(RuntimeError::ToolCallValidation(format!(
                 "generated tool call `{name}` was not declared in request tools"
             )));
-        }
+        };
         if let Some(ToolChoice::Function { name: required }) = &request.tool_choice
             && name != required
         {
@@ -83,11 +81,6 @@ pub(crate) fn validate_tool_calls_against_request(
                 "generated tool call `{name}` did not match required tool `{required}`"
             )));
         }
-        let Some(tool) = request.tools.iter().find(|tool| tool.function.name == name) else {
-            return Err(RuntimeError::ToolCallValidation(format!(
-                "generated tool call `{name}` was not declared in request tools"
-            )));
-        };
         validate_tool_call_arguments_against_schema(tool_call, &tool.function.parameters)?;
     }
     Ok(())
