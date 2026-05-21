@@ -144,7 +144,7 @@ impl ModelBackend for PathLeakingBackend {
 
     async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
         Err(BackendError::other(
-            "failed to open /Users/michaelasper/source/kir-ai/private/model.safetensors".to_owned(),
+            "failed to open /data/kir-ai/private/model.safetensors".to_owned(),
         ))
     }
 

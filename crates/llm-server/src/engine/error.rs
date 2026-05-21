@@ -39,22 +39,6 @@ impl EngineErrorBody {
 }
 
 const REDACTED_PATH: &str = "[redacted path]";
-const UNIX_ABSOLUTE_PATH_PREFIXES: &[&str] = &[
-    "/Users/",
-    "/home/",
-    "/root/",
-    "/var/",
-    "/private/",
-    "/tmp/",
-    "/srv/",
-    "/opt/",
-    "/usr/",
-    "/etc/",
-    "/mnt/",
-    "/Volumes/",
-    "/app/",
-    "/workspace/",
-];
 
 fn sanitize_client_error_message(message: String) -> String {
     let mut sanitized = String::with_capacity(message.len());
@@ -78,23 +62,44 @@ fn sanitize_client_error_message(message: String) -> String {
 }
 
 fn next_absolute_path(message: &str) -> Option<(usize, usize)> {
-    message
-        .char_indices()
-        .find_map(|(index, _)| absolute_path_len(&message[index..]).map(|len| (index, len)))
+    let mut previous = None;
+    for (index, ch) in message.char_indices() {
+        if let Some(len) = absolute_path_len(&message[index..], previous) {
+            return Some((index, len));
+        }
+        previous = Some(ch);
+    }
+    None
 }
 
-fn absolute_path_len(candidate: &str) -> Option<usize> {
-    if starts_with_unix_absolute_path(candidate) || starts_with_windows_absolute_path(candidate) {
+fn absolute_path_len(candidate: &str, previous: Option<char>) -> Option<usize> {
+    if starts_with_unix_absolute_path(candidate, previous)
+        || starts_with_windows_absolute_path(candidate)
+    {
         Some(path_token_len(candidate))
     } else {
         None
     }
 }
 
-fn starts_with_unix_absolute_path(candidate: &str) -> bool {
-    UNIX_ABSOLUTE_PATH_PREFIXES
-        .iter()
-        .any(|prefix| candidate.starts_with(prefix))
+fn starts_with_unix_absolute_path(candidate: &str, previous: Option<char>) -> bool {
+    if !has_path_token_boundary(previous) {
+        return false;
+    }
+
+    let mut chars = candidate.chars();
+    matches!(chars.next(), Some('/'))
+        && matches!(chars.next(), Some(ch) if is_unix_path_segment_char(ch))
+}
+
+fn has_path_token_boundary(previous: Option<char>) -> bool {
+    previous.is_none_or(|ch| {
+        ch.is_whitespace() || matches!(ch, '`' | '"' | '\'' | '<' | '(' | '[' | '{' | '=' | ':')
+    })
+}
+
+fn is_unix_path_segment_char(ch: char) -> bool {
+    !is_path_terminator(ch) && ch != '/' && ch != '\\'
 }
 
 fn starts_with_windows_absolute_path(candidate: &str) -> bool {
@@ -395,6 +400,32 @@ mod tests {
             .expect("error message is string");
 
         assert_eq!(message, "failed to open `[redacted path]`");
+    }
+
+    #[test]
+    fn engine_error_body_redacts_non_allowlisted_unix_paths() {
+        let cases = [
+            "/data/kir-ai/private/model.safetensors",
+            "/models/qwen/private/model.safetensors",
+            "/cache/kir-ai/private/model.bin",
+            "/nix/store/abc123-kir-ai-model/model.safetensors",
+        ];
+
+        for leaked_path in cases {
+            let body = EngineErrorBody::new(
+                format!("failed to open `{leaked_path}`"),
+                "backend_execution_failed",
+                "decode",
+                true,
+            );
+
+            let value = serde_json::to_value(&body).expect("engine error body serializes");
+            let message = value["error"]["message"]
+                .as_str()
+                .expect("error message is string");
+
+            assert_eq!(message, "failed to open `[redacted path]`");
+        }
     }
 
     #[test]

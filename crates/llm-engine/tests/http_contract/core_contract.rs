@@ -338,7 +338,7 @@ async fn backend_execution_errors_do_not_expose_internal_paths() {
         .as_str()
         .expect("error message is string");
     assert!(
-        !message.contains("/Users/michaelasper/source/kir-ai"),
+        !message.contains("/data/kir-ai"),
         "client error message leaked internal root: {message}"
     );
     assert!(
