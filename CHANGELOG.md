@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.41.0](https://github.com/michaelasper/kir-ai/compare/v1.40.0...v1.41.0) (2026-05-22)
+
+### Features
+
+* **COR-302:** add session block copy-on-write ([974d300](https://github.com/michaelasper/kir-ai/commit/974d3002e595ac8b4627deb859f155f676c3ac68))
+
 ## [1.40.0](https://github.com/michaelasper/kir-ai/compare/v1.39.0...v1.40.0) (2026-05-22)
 
 ### Features
