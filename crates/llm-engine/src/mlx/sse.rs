@@ -59,7 +59,9 @@ struct MlxPromptTokensDetails {
 #[derive(Debug)]
 pub(super) struct MlxSseParser {
     prompt_tokens: u64,
+    prompt_token_fallback: u64,
     prompt_cached_tokens: Option<u64>,
+    has_upstream_prompt_tokens: bool,
     estimated_completion_tokens: u64,
     emitted_completion_tokens: u64,
     uses_upstream_usage: bool,
@@ -131,8 +133,10 @@ impl MlxSseParser {
             .then(|| QwenXmlToolParser::new(emit_structured_tool_deltas, tool_schema))
             .transpose()?;
         Ok(Self {
-            prompt_tokens: count_whitespace_tokens(prompt),
+            prompt_tokens: 0,
+            prompt_token_fallback: count_whitespace_tokens(prompt),
             prompt_cached_tokens: None,
+            has_upstream_prompt_tokens: false,
             estimated_completion_tokens: 0,
             emitted_completion_tokens: 0,
             uses_upstream_usage: false,
@@ -175,6 +179,10 @@ impl MlxSseParser {
             true,
             QwenXmlToolSchema::parse(tool_schema)?,
         )
+    }
+
+    fn has_upstream_prompt_tokens(&self) -> bool {
+        self.has_upstream_prompt_tokens
     }
 
     pub(super) fn new_streaming_with_tools(
@@ -269,7 +277,8 @@ impl MlxSseParser {
             .as_ref()
             .and_then(|usage| usage.prompt_tokens)
         {
-            self.prompt_tokens = self.prompt_tokens.max(prompt_tokens);
+            self.has_upstream_prompt_tokens = true;
+            self.prompt_tokens = prompt_tokens;
         }
         if let Some(cached_tokens) = completion
             .usage
@@ -406,9 +415,12 @@ impl MlxSseParser {
         finish_reason: Option<BackendFinishReason>,
         is_final_chunk: bool,
     ) {
+        self.apply_prompt_token_fallback_if_needed(is_final_chunk);
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, is_final_chunk);
         if let Some(last) = chunks.last_mut() {
+            last.prompt_tokens = self.prompt_tokens;
+            last.prompt_cached_tokens = self.prompt_cached_tokens;
             last.completion_tokens = last.completion_tokens.saturating_add(completion_tokens);
             last.finish_reason = finish_reason;
         } else if finish_reason.is_some() || completion_tokens > 0 {
@@ -421,6 +433,12 @@ impl MlxSseParser {
                 finish_reason,
                 progress: None,
             });
+        }
+    }
+
+    fn apply_prompt_token_fallback_if_needed(&mut self, is_final_chunk: bool) {
+        if is_final_chunk && !self.has_upstream_prompt_tokens && self.prompt_tokens == 0 {
+            self.prompt_tokens = self.prompt_token_fallback;
         }
     }
 
@@ -1370,7 +1388,10 @@ pub(super) fn parse_mlx_completion_body(
         chunks
     };
     let chunk_count = chunks.len();
-    Ok((fold_mlx_chunks(chunks, prompt), chunk_count))
+    Ok((
+        fold_mlx_chunks(chunks, prompt, parser.has_upstream_prompt_tokens()),
+        chunk_count,
+    ))
 }
 
 pub(super) fn parse_mlx_completion_body_with_tools(
@@ -1394,10 +1415,17 @@ pub(super) fn parse_mlx_completion_body_with_tools(
         chunks
     };
     let chunk_count = chunks.len();
-    Ok((fold_mlx_chunks(chunks, prompt), chunk_count))
+    Ok((
+        fold_mlx_chunks(chunks, prompt, parser.has_upstream_prompt_tokens()),
+        chunk_count,
+    ))
 }
 
-pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> BackendOutput {
+pub(super) fn fold_mlx_chunks(
+    chunks: Vec<BackendStreamChunk>,
+    prompt: &str,
+    has_upstream_prompt_tokens: bool,
+) -> BackendOutput {
     let mut text = String::new();
     let mut prompt_tokens = 0;
     let mut prompt_cached_tokens = None;
@@ -1412,7 +1440,7 @@ pub(super) fn fold_mlx_chunks(chunks: Vec<BackendStreamChunk>, prompt: &str) -> 
             finish_reason = reason;
         }
     }
-    if prompt_tokens == 0 {
+    if !has_upstream_prompt_tokens && prompt_tokens == 0 {
         prompt_tokens = count_whitespace_tokens(prompt);
     }
     if completion_tokens == 0 && !text.is_empty() {

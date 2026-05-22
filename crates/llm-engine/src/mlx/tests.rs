@@ -186,6 +186,7 @@ fn mlx_chunk_folding_saturates_completion_tokens() {
             },
         ],
         "prompt",
+        true,
     );
 
     assert_eq!(output.completion_tokens, u64::MAX);
@@ -692,6 +693,62 @@ fn mlx_sse_parser_accepts_usage_only_empty_choices_chunk() {
         chunks.last().and_then(|chunk| chunk.4),
         Some(BackendFinishReason::Stop)
     );
+}
+
+#[test]
+fn mlx_sse_parser_uses_upstream_prompt_tokens_below_whitespace_estimate() {
+    let mut parser = MlxSseParser::new_streaming(
+        "one two three four five six",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::Json,
+    );
+    let chunks = parser
+        .push_str(
+            "data:{\"choices\":[{\"text\":\"hello\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\ndata:[DONE]\n\n",
+        )
+        .expect("parse upstream usage chunk");
+    let final_chunks = parser.finish().expect("finish parser");
+    let chunks = chunks.into_iter().chain(final_chunks).collect::<Vec<_>>();
+
+    assert_eq!(
+        chunks.last().expect("final chunk is emitted").prompt_tokens,
+        2
+    );
+}
+
+#[test]
+fn mlx_sse_parser_applies_prompt_fallback_without_upstream_usage() {
+    let mut parser = MlxSseParser::new_streaming(
+        "one two three four",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::Json,
+    );
+    let chunks = parser
+        .push_str(
+            "data:{\"choices\":[{\"text\":\"hello\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":1}}\n\ndata:[DONE]\n\n",
+        )
+        .expect("parse chunk without prompt usage");
+    let final_chunks = parser.finish().expect("finish parser");
+    let chunks = chunks.into_iter().chain(final_chunks).collect::<Vec<_>>();
+
+    assert_eq!(
+        chunks.last().expect("final chunk is emitted").prompt_tokens,
+        4
+    );
+}
+
+#[test]
+fn mlx_completion_body_preserves_upstream_zero_prompt_tokens() {
+    let (output, _) = parse_mlx_completion_body(
+        "{\"choices\":[{\"text\":\"hello\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":1}}",
+        "one two three four",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::Json,
+        None,
+    )
+    .expect("completion body parses");
+
+    assert_eq!(output.prompt_tokens, 0);
 }
 
 #[tokio::test]
