@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.2](https://github.com/michaelasper/kir-ai/compare/v1.36.1...v1.36.2) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-287:** stop estimating missing mlx usage ([2be6739](https://github.com/michaelasper/kir-ai/commit/2be673950c98fe07405bf00dff05aece6fbee44a))
+
 ## [1.36.1](https://github.com/michaelasper/kir-ai/compare/v1.36.0...v1.36.1) (2026-05-22)
 
 ### Bug Fixes
