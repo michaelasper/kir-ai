@@ -487,8 +487,10 @@ flagged invalid when samples fail, TTFT or required stream/tool deltas are
 missing, or Kir admin metrics report stalled/no-progress deltas.
 The top-level `tool_required_stream` report separates client-observed first
 byte, first SSE data, first tool delta, tool finish, and first semantic delta
-from Kir admin timing. For Kir proxy lanes with `x-request-id` and admin access,
-it also includes matching `/admin/metrics.tool_stream` observations so
+from Kir admin timing, including `first_tool_delta_after_ttft_ms` to separate
+decode/tool assembly latency from request-start prefill latency. For Kir proxy
+lanes with `x-request-id` and admin access, it also includes matching
+`/admin/metrics.tool_stream` observations so
 `client_visible_first_tool_delta_ms`, `mlx_first_tool_delta_ms`,
 `kir_first_tool_delta_ms`, and `validated_tool_call_ms` can be compared per
 request.
@@ -502,9 +504,9 @@ The `tool_required_stream.attribution` report puts client-observed
 `first_byte`, `first_sse_data`, `first_tool_delta`, and `tool_finish` timings
 beside Kir `/admin/metrics` deltas for `mlx.stream_first_upstream_byte_ms`,
 `mlx.stream_first_parsed_chunk_ms`, `mlx.stream_first_tool_delta_ms`,
-`first_tool_delta_ms`, and `validated_tool_call_ms` when admin access is
-available. Missing admin metrics are reported as unavailable rather than making
-the benchmark fail.
+`first_tool_delta_ms`, `first_tool_delta_after_ttft_ms`, and
+`validated_tool_call_ms` when admin access is available. Missing admin metrics
+are reported as unavailable rather than making the benchmark fail.
 The `latest_performance_comparison` report condenses the latest live lane
 samples into plain stream, required-tool stream, and prefix-cache rows for
 `kind=direct_mlx` and `kind=kir_ai_proxy`, then appends rows from

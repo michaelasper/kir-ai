@@ -2340,6 +2340,7 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
     lane_report.admin_metrics = NormalizedAdminMetricsCapture {
         before: Some(json!({
             "first_tool_delta_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
+            "first_tool_delta_after_ttft_ms": {"count": 2, "min": 1.0, "max": 2.0, "avg": 1.5},
             "tool_argument_assembly_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
             "tool_intent_fill_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
             "tool_schema_validation_ms": {"count": 2, "min": 1.0, "max": 3.0, "avg": 2.0},
@@ -2355,6 +2356,7 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
         })),
         after: Some(json!({
             "first_tool_delta_ms": {"count": 3, "min": 1.0, "max": 30.0, "avg": 11.0},
+            "first_tool_delta_after_ttft_ms": {"count": 3, "min": 1.0, "max": 20.0, "avg": 8.0},
             "tool_argument_assembly_ms": {"count": 3, "min": 1.0, "max": 40.0, "avg": 14.0},
             "tool_intent_fill_ms": {"count": 3, "min": 1.0, "max": 50.0, "avg": 17.0},
             "tool_schema_validation_ms": {"count": 3, "min": 1.0, "max": 60.0, "avg": 20.0},
@@ -2383,6 +2385,7 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
                         "model": "qwen",
                         "streamed": true,
                         "kir_first_tool_delta_ms": 30,
+                        "kir_first_tool_delta_after_ttft_ms": 20,
                         "tool_argument_assembly_ms": 40,
                         "tool_intent_fill_ms": 50,
                         "tool_schema_validation_ms": 60,
@@ -2411,8 +2414,15 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
         .expect("admin metrics");
     assert_eq!(admin.tool_argument_assembly_ms.count_delta, Some(1));
     assert_eq!(admin.tool_finish_ms.count_delta, Some(1));
-    assert_eq!(admin.mlx_stream_first_upstream_byte_ms.count_delta, Some(1));
     let report_json = serde_json::to_value(&report).expect("report serializes");
+    assert_eq!(
+        report_json
+            .pointer("/lanes/0/admin_metrics/first_tool_delta_after_ttft_ms/count_delta")
+            .and_then(serde_json::Value::as_i64),
+        Some(1),
+        "bench report should expose the server's after-TTFT tool delta metric"
+    );
+    assert_eq!(admin.mlx_stream_first_upstream_byte_ms.count_delta, Some(1));
     let observations = report_json
         .pointer("/lanes/0/tool_stream_observations")
         .and_then(serde_json::Value::as_array)
@@ -2423,6 +2433,7 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
     assert_eq!(observations[0]["client_first_sse_data_ms"], 13);
     assert_eq!(observations[0]["client_visible_first_tool_delta_ms"], 30);
     assert_eq!(observations[0]["kir_first_tool_delta_ms"], 30);
+    assert_eq!(observations[0]["kir_first_tool_delta_after_ttft_ms"], 20);
     assert_eq!(observations[0]["mlx_first_tool_delta_ms"], 25);
     assert_eq!(observations[0]["validated_tool_call_ms"], 70);
 }

@@ -4,7 +4,8 @@ use super::{
     AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
     metrics::{
-        PendingToolStreamObservation, record_failure_metrics, record_first_tool_delta_metrics,
+        PendingToolStreamObservation, record_failure_metrics,
+        record_first_tool_delta_after_ttft_metrics, record_first_tool_delta_metrics,
         record_runtime_error_metrics, record_stream_client_disconnect_metrics,
         record_stream_stall_metrics, record_success_metrics, record_time_to_first_token_metrics,
         record_tool_argument_assembly_metrics, record_tool_finish_metrics,
@@ -49,6 +50,7 @@ where
         let mut events = events;
         let mut ttft_recorded = false;
         let mut first_tool_delta_recorded = false;
+        let mut first_decode_at = None;
         let mut validated_tool_call_recorded = false;
         let mut stall_deadline = StreamStallDeadline::new(lifecycle.stream_stall_timeout());
         loop {
@@ -70,21 +72,30 @@ where
                             }
                             return;
                         }
+                        let now = Instant::now();
                         if !ttft_recorded && progress.has_real_delta() {
                             lifecycle.transition_to_decode();
+                            first_decode_at = Some(now);
                             record_time_to_first_token_metrics(
                                 &lifecycle.state,
-                                lifecycle.request_started.elapsed(),
+                                now.duration_since(lifecycle.request_started),
                             );
                             ttft_recorded = true;
                         }
                         if !first_tool_delta_recorded && progress.has_tool_delta() {
-                            let latency = lifecycle.request_started.elapsed();
-                            record_first_tool_delta_metrics(
-                                &lifecycle.state,
-                                latency,
-                            );
+                            let latency = now.duration_since(lifecycle.request_started);
+                            record_first_tool_delta_metrics(&lifecycle.state, latency);
                             lifecycle.tool_stream.record_kir_first_tool_delta(latency);
+                            if let Some(first_decode_at) = first_decode_at {
+                                let after_ttft_latency = now.duration_since(first_decode_at);
+                                record_first_tool_delta_after_ttft_metrics(
+                                    &lifecycle.state,
+                                    after_ttft_latency,
+                                );
+                                lifecycle
+                                    .tool_stream
+                                    .record_kir_first_tool_delta_after_ttft(after_ttft_latency);
+                            }
                             first_tool_delta_recorded = true;
                         }
                         if !validated_tool_call_recorded && progress.has_tool_call_finish() {

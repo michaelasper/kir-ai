@@ -727,6 +727,86 @@ impl ModelBackend for TwoStageStreamBackend {
     }
 }
 
+struct TwoStageToolStreamBackend {
+    first: Arc<Notify>,
+    tool: Arc<Notify>,
+}
+
+#[async_trait]
+impl ModelBackend for TwoStageToolStreamBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "two-stage-tool-stream")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "two-stage tool stream test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream<'a>(
+        &'a self,
+        _request: BackendRequest,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        let first = self.first.clone();
+        let tool = self.tool.clone();
+        async_stream::try_stream! {
+            first.notified().await;
+            yield BackendStreamChunk {
+                text: "decode-start".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: None,
+                progress: None,
+            };
+            tool.notified().await;
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: vec![BackendToolCallDelta {
+                    index: 0,
+                    id: Some("call_0".to_owned()),
+                    call_type: Some(BackendToolCallType::Function),
+                    function: Some(BackendToolCallFunctionDelta {
+                        name: Some("lookup".to_owned()),
+                        arguments: Some(r#"{"query":"rust"}"#.to_owned()),
+                    }),
+                }],
+                prompt_tokens: 1,
+                prompt_cached_tokens: None,
+                completion_tokens: 1,
+                finish_reason: Some(BackendFinishReason::ToolCalls),
+                progress: None,
+            };
+        }
+        .boxed()
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        self.generate_stream(request)
+    }
+}
+
 struct CancellableStreamBackend {
     cancelled: Arc<Notify>,
 }

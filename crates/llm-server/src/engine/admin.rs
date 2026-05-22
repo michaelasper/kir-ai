@@ -362,6 +362,8 @@ pub(super) async fn admin_metrics(
     #[cfg(feature = "tool-calls")]
     let first_tool_delta = metrics.first_tool_delta();
     #[cfg(feature = "tool-calls")]
+    let first_tool_delta_after_ttft = metrics.first_tool_delta_after_ttft();
+    #[cfg(feature = "tool-calls")]
     let tool_argument_assembly = metrics.tool_argument_assembly();
     #[cfg(feature = "tool-calls")]
     let tool_intent_fill = metrics.tool_intent_fill();
@@ -425,6 +427,8 @@ pub(super) async fn admin_metrics(
         time_to_first_token_ms: LatencySummary::from_metrics(time_to_first_token),
         #[cfg(feature = "tool-calls")]
         first_tool_delta_ms: LatencySummary::from_metrics(first_tool_delta),
+        #[cfg(feature = "tool-calls")]
+        first_tool_delta_after_ttft_ms: LatencySummary::from_metrics(first_tool_delta_after_ttft),
         #[cfg(feature = "tool-calls")]
         tool_argument_assembly_ms: LatencySummary::from_metrics(tool_argument_assembly),
         #[cfg(feature = "tool-calls")]
@@ -519,6 +523,8 @@ pub(super) struct AdminMetricsResponse {
     time_to_first_token_ms: LatencySummary,
     #[cfg(feature = "tool-calls")]
     first_tool_delta_ms: LatencySummary,
+    #[cfg(feature = "tool-calls")]
+    first_tool_delta_after_ttft_ms: LatencySummary,
     #[cfg(feature = "tool-calls")]
     tool_argument_assembly_ms: LatencySummary,
     #[cfg(feature = "tool-calls")]

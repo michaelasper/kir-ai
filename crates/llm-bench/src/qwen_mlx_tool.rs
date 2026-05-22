@@ -3652,6 +3652,11 @@ fn aggregate_tool_stream_admin_metrics(
         first_tool_delta_ms: aggregate_admin_latency_metric(
             metrics.iter().map(|metric| metric.first_tool_delta_ms),
         ),
+        first_tool_delta_after_ttft_ms: aggregate_admin_latency_metric(
+            metrics
+                .iter()
+                .map(|metric| metric.first_tool_delta_after_ttft_ms),
+        ),
         tool_argument_assembly_ms: aggregate_admin_latency_metric(
             metrics
                 .iter()
@@ -3837,6 +3842,9 @@ fn tool_stream_observation(
         client_visible_first_tool_delta_ms: sample.stream_timing.first_tool_delta_latency_ms,
         client_tool_finish_ms: sample.stream_timing.tool_finish_latency_ms,
         kir_first_tool_delta_ms: value.get("kir_first_tool_delta_ms").and_then(Value::as_u64),
+        kir_first_tool_delta_after_ttft_ms: value
+            .get("kir_first_tool_delta_after_ttft_ms")
+            .and_then(Value::as_u64),
         tool_argument_assembly_ms: value
             .get("tool_argument_assembly_ms")
             .and_then(Value::as_u64),
@@ -3870,6 +3878,11 @@ fn normalized_tool_stream_admin_metrics(
             capture.before.as_ref(),
             after,
             &["first_tool_delta_ms"],
+        ),
+        first_tool_delta_after_ttft_ms: admin_latency_metric(
+            capture.before.as_ref(),
+            after,
+            &["first_tool_delta_after_ttft_ms"],
         ),
         tool_argument_assembly_ms: admin_latency_metric(
             capture.before.as_ref(),
@@ -6356,6 +6369,7 @@ struct NormalizedToolStreamObservation {
     client_visible_first_tool_delta_ms: Option<u128>,
     client_tool_finish_ms: Option<u128>,
     kir_first_tool_delta_ms: Option<u64>,
+    kir_first_tool_delta_after_ttft_ms: Option<u64>,
     tool_argument_assembly_ms: Option<u64>,
     tool_intent_fill_ms: Option<u64>,
     tool_schema_validation_ms: Option<u64>,
@@ -6372,6 +6386,7 @@ struct NormalizedToolStreamObservation {
 #[derive(Clone, Debug, Serialize)]
 struct NormalizedToolRequiredStreamAdminMetrics {
     first_tool_delta_ms: NormalizedAdminLatencyMetricReport,
+    first_tool_delta_after_ttft_ms: NormalizedAdminLatencyMetricReport,
     tool_argument_assembly_ms: NormalizedAdminLatencyMetricReport,
     tool_intent_fill_ms: NormalizedAdminLatencyMetricReport,
     tool_schema_validation_ms: NormalizedAdminLatencyMetricReport,

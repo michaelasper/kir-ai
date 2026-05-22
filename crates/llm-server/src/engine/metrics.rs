@@ -141,6 +141,8 @@ pub(super) struct ToolStreamObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) kir_first_tool_delta_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) kir_first_tool_delta_after_ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_argument_assembly_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_intent_fill_ms: Option<u64>,
@@ -213,6 +215,7 @@ pub(super) struct PendingToolStreamObservation {
     model: String,
     streamed: bool,
     kir_first_tool_delta_ms: Option<u64>,
+    kir_first_tool_delta_after_ttft_ms: Option<u64>,
     tool_argument_assembly_ms: Option<u64>,
     tool_intent_fill_ms: Option<u64>,
     tool_schema_validation_ms: Option<u64>,
@@ -232,6 +235,7 @@ impl PendingToolStreamObservation {
             model,
             streamed,
             kir_first_tool_delta_ms: None,
+            kir_first_tool_delta_after_ttft_ms: None,
             tool_argument_assembly_ms: None,
             tool_intent_fill_ms: None,
             tool_schema_validation_ms: None,
@@ -247,6 +251,10 @@ impl PendingToolStreamObservation {
 
     pub(super) fn record_kir_first_tool_delta(&mut self, latency: Duration) {
         set_once_ms(&mut self.kir_first_tool_delta_ms, latency);
+    }
+
+    pub(super) fn record_kir_first_tool_delta_after_ttft(&mut self, latency: Duration) {
+        set_once_ms(&mut self.kir_first_tool_delta_after_ttft_ms, latency);
     }
 
     pub(super) fn record_tool_argument_assembly(&mut self, latency: Duration) {
@@ -306,6 +314,7 @@ impl PendingToolStreamObservation {
             model: self.model.clone(),
             streamed: self.streamed,
             kir_first_tool_delta_ms: self.kir_first_tool_delta_ms,
+            kir_first_tool_delta_after_ttft_ms: self.kir_first_tool_delta_after_ttft_ms,
             tool_argument_assembly_ms: self.tool_argument_assembly_ms,
             tool_intent_fill_ms: self.tool_intent_fill_ms,
             tool_schema_validation_ms: self.tool_schema_validation_ms,
@@ -322,6 +331,7 @@ impl PendingToolStreamObservation {
 
     fn observed_tool_stream(&self) -> bool {
         self.kir_first_tool_delta_ms.is_some()
+            || self.kir_first_tool_delta_after_ttft_ms.is_some()
             || self.tool_argument_assembly_ms.is_some()
             || self.tool_intent_fill_ms.is_some()
             || self.tool_schema_validation_ms.is_some()
@@ -449,6 +459,17 @@ pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duratio
 
 #[cfg(not(feature = "tool-calls"))]
 pub(super) fn record_first_tool_delta_metrics(_state: &AppState, _latency: Duration) {}
+
+#[cfg(feature = "tool-calls")]
+pub(super) fn record_first_tool_delta_after_ttft_metrics(state: &AppState, latency: Duration) {
+    state
+        .metrics
+        .lock_or_panic("metrics")
+        .record_first_tool_delta_after_ttft(latency);
+}
+
+#[cfg(not(feature = "tool-calls"))]
+pub(super) fn record_first_tool_delta_after_ttft_metrics(_state: &AppState, _latency: Duration) {}
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_argument_assembly_metrics(state: &AppState, latency: Duration) {
@@ -601,6 +622,7 @@ mod tests {
                 model: "model".to_owned(),
                 streamed: true,
                 kir_first_tool_delta_ms: Some(index),
+                kir_first_tool_delta_after_ttft_ms: Some(index.saturating_sub(1)),
                 tool_argument_assembly_ms: None,
                 tool_intent_fill_ms: None,
                 tool_schema_validation_ms: None,

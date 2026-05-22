@@ -198,7 +198,8 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `tool_stream`: Bounded per-request streamed tool-call timing observations.
   `capacity` is fixed at `128`; `recent` contains successful streamed tool
   requests keyed by `request_id` with scalar timing fields only. Kir-visible
-  milestones use `kir_first_tool_delta_ms`, `tool_argument_assembly_ms`,
+  milestones use `kir_first_tool_delta_ms`,
+  `kir_first_tool_delta_after_ttft_ms`, `tool_argument_assembly_ms`,
   `tool_intent_fill_ms`, `tool_schema_validation_ms`, `tool_finish_ms`, and
   `validated_tool_call_ms`. MLX upstream milestones use
   `mlx_response_headers_ms`, `mlx_first_upstream_byte_ms`,
@@ -212,6 +213,16 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `streamed_request_latency_ms`: Summary of outer kir-ai request duration for
   streaming responses.
 - `time_to_first_token_ms`: Summary of latency to the first token generated.
+- `first_tool_delta_ms`: Summary of end-to-end latency from request start to
+  the first streamed tool-call delta.
+- `first_tool_delta_after_ttft_ms`: Summary of latency from the first real
+  streamed decode delta, the same point recorded by `time_to_first_token_ms`, to
+  the first streamed tool-call delta. This excludes scheduler wait and prompt
+  prefill time so long-context runs can separate prefill cost from tool assembly
+  latency.
+- `tool_argument_assembly_ms`, `tool_intent_fill_ms`,
+  `tool_schema_validation_ms`, `tool_finish_ms`, and
+  `validated_tool_call_ms`: Summaries of tool-call validation lifecycle stages.
 - `tokens`: Token usage summary (`prompt_tokens`, `completion_tokens`, `total_tokens`).
 
 ### Sample Response

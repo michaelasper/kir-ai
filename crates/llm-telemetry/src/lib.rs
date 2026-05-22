@@ -155,6 +155,8 @@ pub struct ServerMetrics {
     #[cfg(feature = "tool-calls")]
     first_tool_delta: LatencyMetrics,
     #[cfg(feature = "tool-calls")]
+    first_tool_delta_after_ttft: LatencyMetrics,
+    #[cfg(feature = "tool-calls")]
     tool_argument_assembly: LatencyMetrics,
     #[cfg(feature = "tool-calls")]
     tool_intent_fill: LatencyMetrics,
@@ -232,6 +234,11 @@ impl ServerMetrics {
     #[cfg(feature = "tool-calls")]
     pub fn record_first_tool_delta(&mut self, latency: Duration) {
         self.first_tool_delta.record(latency);
+    }
+
+    #[cfg(feature = "tool-calls")]
+    pub fn record_first_tool_delta_after_ttft(&mut self, latency: Duration) {
+        self.first_tool_delta_after_ttft.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
@@ -330,6 +337,11 @@ impl ServerMetrics {
     #[cfg(feature = "tool-calls")]
     pub fn first_tool_delta(&self) -> LatencyMetrics {
         self.first_tool_delta
+    }
+
+    #[cfg(feature = "tool-calls")]
+    pub fn first_tool_delta_after_ttft(&self) -> LatencyMetrics {
+        self.first_tool_delta_after_ttft
     }
 
     #[cfg(feature = "tool-calls")]
@@ -477,11 +489,17 @@ mod tests {
         assert_eq!(metrics.time_to_first_token().avg_ms(), 7.0);
         #[cfg(feature = "tool-calls")]
         {
+            metrics.record_first_tool_delta(Duration::from_millis(27));
+            metrics.record_first_tool_delta_after_ttft(Duration::from_millis(4));
             metrics.record_tool_argument_assembly(Duration::from_millis(8));
             metrics.record_tool_intent_fill(Duration::from_millis(9));
             metrics.record_tool_schema_validation(Duration::from_millis(10));
             metrics.record_tool_finish(Duration::from_millis(11));
             metrics.record_validated_tool_call(Duration::from_millis(11));
+            assert_eq!(metrics.first_tool_delta().count(), 1);
+            assert_eq!(metrics.first_tool_delta().avg_ms(), 27.0);
+            assert_eq!(metrics.first_tool_delta_after_ttft().count(), 1);
+            assert_eq!(metrics.first_tool_delta_after_ttft().avg_ms(), 4.0);
             assert_eq!(metrics.tool_argument_assembly().count(), 1);
             assert_eq!(metrics.tool_intent_fill().count(), 1);
             assert_eq!(metrics.tool_schema_validation().count(), 1);

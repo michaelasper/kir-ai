@@ -40,6 +40,14 @@
           "format": "uint64",
           "minimum": 0
         },
+        "kir_first_tool_delta_after_ttft_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "tool_argument_assembly_ms": {
           "type": [
             "integer",
