@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.31.0](https://github.com/michaelasper/kir-ai/compare/v1.30.0...v1.31.0) (2026-05-22)
+
+### Features
+
+* **COR-324:** attribute tool stream TTFT ([8d26581](https://github.com/michaelasper/kir-ai/commit/8d26581c0123fbd43cdf73fb49e050bc69e224a3))
+
 ## [1.30.0](https://github.com/michaelasper/kir-ai/compare/v1.29.0...v1.30.0) (2026-05-21)
 
 ### Features
