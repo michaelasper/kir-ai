@@ -80,7 +80,7 @@ impl EngineConfigError {
     fn insecure_hub_token_endpoint(endpoint: &url::Url) -> Self {
         Self {
             message: format!(
-                "refusing to send HF_TOKEN to non-HTTPS hub endpoint `{endpoint}`; use HTTPS or a loopback endpoint for local development"
+                "refusing to send HF_TOKEN to non-HTTPS hub endpoint `{endpoint}`; use HTTPS or omit HF_TOKEN for local development"
             ),
         }
     }
@@ -100,7 +100,7 @@ pub(super) fn parse_hub_client(
 ) -> Result<HubClient, EngineConfigError> {
     let endpoint = url::Url::parse(endpoint)
         .map_err(|err| EngineConfigError::invalid_hub_endpoint(endpoint, err))?;
-    if hf_token.is_some() && endpoint.scheme() != "https" && !is_loopback_endpoint(&endpoint) {
+    if hf_token.is_some() && endpoint.scheme() != "https" {
         return Err(EngineConfigError::insecure_hub_token_endpoint(&endpoint));
     }
     Ok(HubClient::new(endpoint))
@@ -110,13 +110,4 @@ pub(super) fn default_model_home() -> PathBuf {
     std::env::var_os("LLM_MODEL_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".llm-models"))
-}
-
-fn is_loopback_endpoint(endpoint: &url::Url) -> bool {
-    match endpoint.host() {
-        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
-        None => false,
-    }
 }

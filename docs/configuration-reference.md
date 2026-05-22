@@ -9,7 +9,8 @@ generation options.
 
 | Variable | Used By | Description |
 | --- | --- | --- |
-| `HF_TOKEN` | `model plan`, `model pull` | Hugging Face bearer token for gated or private repositories. Anonymous access is used when unset. |
+| `HF_TOKEN` | `serve`, `model plan`, `model pull` | Hugging Face bearer token for gated or private repositories. Anonymous access is used when unset. When `serve` uses a configured hub endpoint with this token, the endpoint must be HTTPS. |
+| `LLM_HUB_ENDPOINT` | `serve` | Hugging Face-compatible Hub endpoint for admin model plan/pull routes when `--hub-endpoint` is not passed. Tokenless local HTTP mirrors are allowed; endpoints used with `HF_TOKEN` must be HTTPS. |
 | `LLM_MODEL_HOME` | `model list`, `model pull` | Model store root when `--model-home` is not passed. Defaults to `.llm-models`. |
 | `LLM_ENGINE_SNAPSHOT` | `mise run run-inference` | Raw snapshot path to serve. Mutually exclusive with `LLM_ENGINE_SNAPSHOT_ALIAS`. |
 | `LLM_ENGINE_SNAPSHOT_ALIAS` | `mise run run-inference` | Model-store alias to resolve and serve. |
@@ -55,6 +56,7 @@ Mise tasks:
 | `--loader` / `--backend` | `native-metal` or `mlx` | manifest or `native-metal` | Selects the snapshot loader for raw snapshots without a Kir manifest. Conflicting manifest metadata is rejected. |
 | `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
+| `--hub-endpoint` | URL | `https://huggingface.co` | Hugging Face-compatible Hub endpoint for admin model plan/pull routes. `LLM_HUB_ENDPOINT` is used when omitted. If `HF_TOKEN` is set, this endpoint must be HTTPS; omit `HF_TOKEN` for tokenless local HTTP mirrors. |
 | `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
 | `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
 | `--max-public-inference-requests-per-second` | `usize` | `60` | Global fixed-window rate limit for `/v1/chat/completions` and `/v1/completions`. Values below `1` are rejected. |

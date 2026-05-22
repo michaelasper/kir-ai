@@ -99,7 +99,7 @@ fn engine_options_reject_remote_http_hub_endpoint_with_token() {
 }
 
 #[test]
-fn engine_options_allow_loopback_http_hub_endpoint_with_token() {
+fn engine_options_reject_loopback_http_hub_endpoint_with_token() {
     let result = build_router_with_backend_and_options(
         Box::new(llm_backend::ProtocolTestBackend::new(
             llm_engine::DEFAULT_MODEL_ID,
@@ -108,6 +108,48 @@ fn engine_options_allow_loopback_http_hub_endpoint_with_token() {
         EngineOptions {
             hub_endpoint: Some("http://127.0.0.1:8080".to_owned()),
             hf_token: Some("hf_secret".to_owned()),
+            ..EngineOptions::default()
+        },
+    );
+
+    let err = match result {
+        Ok(_) => panic!("loopback HTTP endpoint with HF_TOKEN should fail"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains("refusing to send HF_TOKEN to non-HTTPS hub endpoint"),
+        "error: {err}"
+    );
+}
+
+#[test]
+fn engine_options_allow_https_hub_endpoint_with_token() {
+    let result = build_router_with_backend_and_options(
+        Box::new(llm_backend::ProtocolTestBackend::new(
+            llm_engine::DEFAULT_MODEL_ID,
+            "ok",
+        )),
+        EngineOptions {
+            hub_endpoint: Some("https://example.com".to_owned()),
+            hf_token: Some("hf_secret".to_owned()),
+            ..EngineOptions::default()
+        },
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn engine_options_allow_loopback_http_hub_endpoint_without_token() {
+    let result = build_router_with_backend_and_options(
+        Box::new(llm_backend::ProtocolTestBackend::new(
+            llm_engine::DEFAULT_MODEL_ID,
+            "ok",
+        )),
+        EngineOptions {
+            hub_endpoint: Some("http://127.0.0.1:8080".to_owned()),
+            hf_token: None,
             ..EngineOptions::default()
         },
     );
