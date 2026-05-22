@@ -70,8 +70,7 @@ fn validates_official_qwen36_safetensors_index_against_spec() {
     assert!(index.contains("model.language_model.layers.3.self_attn.q_proj.weight"));
     assert!(!index.contains("model.language_model.layers.3.linear_attn.in_proj_qkv.weight"));
 
-    index
-        .validate_qwen_text_weights(&spec)
+    spec.validate_text_weights(&index)
         .expect("official qwen index satisfies text loader requirements");
 }
 

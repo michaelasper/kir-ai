@@ -74,8 +74,7 @@ fn qwen3_dense_index_accepts_model_namespace_and_tied_embeddings() {
     )
     .expect("index parses");
 
-    index
-        .validate_qwen_text_weights(&spec)
+    spec.validate_text_weights(&index)
         .expect("Qwen3 dense tied embedding weights validate without lm_head");
     NativeTextModelSpec::Qwen(spec)
         .validate_text_weights(&index)

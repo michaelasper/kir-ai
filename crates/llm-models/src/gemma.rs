@@ -274,6 +274,55 @@ impl GemmaModelSpec {
             GemmaAttentionKind::FullAttention
         ) || !self.attention_k_eq_v
     }
+
+    pub fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
+        index.require(self.embed_tokens_weight())?;
+        index.require(self.final_norm_weight())?;
+        if !self.tie_word_embeddings {
+            index.require(self.lm_head_weight())?;
+        }
+        if self.uses_per_layer_input() {
+            index.require(self.embed_tokens_per_layer_weight())?;
+            index.require(self.per_layer_model_projection_weight())?;
+            index.require(self.per_layer_projection_norm_weight())?;
+        }
+        for layer in 0..self.num_hidden_layers as usize {
+            index.require(self.layer_tensor(layer, "input_layernorm.weight"))?;
+            index.require(self.layer_tensor(layer, "layer_scalar"))?;
+            index.require(self.layer_tensor(layer, "post_attention_layernorm.weight"))?;
+            index.require(self.layer_tensor(layer, "pre_feedforward_layernorm.weight"))?;
+            index.require(self.layer_tensor(layer, "post_feedforward_layernorm.weight"))?;
+            index.require(self.self_attn_tensor(layer, "q_proj.weight"))?;
+            index.require(self.self_attn_tensor(layer, "o_proj.weight"))?;
+            index.require(self.self_attn_tensor(layer, "q_norm.weight"))?;
+            if self.requires_key_value_projection(layer) {
+                index.require(self.self_attn_tensor(layer, "k_proj.weight"))?;
+                index.require(self.self_attn_tensor(layer, "k_norm.weight"))?;
+            }
+            if self.requires_value_projection(layer) {
+                index.require(self.self_attn_tensor(layer, "v_proj.weight"))?;
+            }
+            index.require(self.mlp_tensor(layer, "gate_proj.weight"))?;
+            index.require(self.mlp_tensor(layer, "up_proj.weight"))?;
+            index.require(self.mlp_tensor(layer, "down_proj.weight"))?;
+            if self.uses_per_layer_input() {
+                index.require(self.layer_tensor(layer, "per_layer_input_gate.weight"))?;
+                index.require(self.layer_tensor(layer, "per_layer_projection.weight"))?;
+                index.require(self.layer_tensor(layer, "post_per_layer_input_norm.weight"))?;
+            }
+            if self.uses_moe() {
+                index.require(self.layer_tensor(layer, "experts.down_proj"))?;
+                index.require(self.layer_tensor(layer, "experts.gate_up_proj"))?;
+                index.require(self.layer_tensor(layer, "router.per_expert_scale"))?;
+                index.require(self.layer_tensor(layer, "router.proj.weight"))?;
+                index.require(self.layer_tensor(layer, "router.scale"))?;
+                index.require(self.layer_tensor(layer, "pre_feedforward_layernorm_2.weight"))?;
+                index.require(self.layer_tensor(layer, "post_feedforward_layernorm_1.weight"))?;
+                index.require(self.layer_tensor(layer, "post_feedforward_layernorm_2.weight"))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ModelSpec for GemmaModelSpec {
@@ -310,61 +359,7 @@ impl ModelSpec for GemmaModelSpec {
     }
 
     fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
-        index.validate_gemma4_text_weights(self)
-    }
-}
-
-impl SafetensorsIndex {
-    pub fn validate_gemma4_text_weights(
-        &self,
-        spec: &GemmaModelSpec,
-    ) -> Result<(), ModelSpecError> {
-        self.require(spec.embed_tokens_weight())?;
-        self.require(spec.final_norm_weight())?;
-        if !spec.tie_word_embeddings {
-            self.require(spec.lm_head_weight())?;
-        }
-        if spec.uses_per_layer_input() {
-            self.require(spec.embed_tokens_per_layer_weight())?;
-            self.require(spec.per_layer_model_projection_weight())?;
-            self.require(spec.per_layer_projection_norm_weight())?;
-        }
-        for layer in 0..spec.num_hidden_layers as usize {
-            self.require(spec.layer_tensor(layer, "input_layernorm.weight"))?;
-            self.require(spec.layer_tensor(layer, "layer_scalar"))?;
-            self.require(spec.layer_tensor(layer, "post_attention_layernorm.weight"))?;
-            self.require(spec.layer_tensor(layer, "pre_feedforward_layernorm.weight"))?;
-            self.require(spec.layer_tensor(layer, "post_feedforward_layernorm.weight"))?;
-            self.require(spec.self_attn_tensor(layer, "q_proj.weight"))?;
-            self.require(spec.self_attn_tensor(layer, "o_proj.weight"))?;
-            self.require(spec.self_attn_tensor(layer, "q_norm.weight"))?;
-            if spec.requires_key_value_projection(layer) {
-                self.require(spec.self_attn_tensor(layer, "k_proj.weight"))?;
-                self.require(spec.self_attn_tensor(layer, "k_norm.weight"))?;
-            }
-            if spec.requires_value_projection(layer) {
-                self.require(spec.self_attn_tensor(layer, "v_proj.weight"))?;
-            }
-            self.require(spec.mlp_tensor(layer, "gate_proj.weight"))?;
-            self.require(spec.mlp_tensor(layer, "up_proj.weight"))?;
-            self.require(spec.mlp_tensor(layer, "down_proj.weight"))?;
-            if spec.uses_per_layer_input() {
-                self.require(spec.layer_tensor(layer, "per_layer_input_gate.weight"))?;
-                self.require(spec.layer_tensor(layer, "per_layer_projection.weight"))?;
-                self.require(spec.layer_tensor(layer, "post_per_layer_input_norm.weight"))?;
-            }
-            if spec.uses_moe() {
-                self.require(spec.layer_tensor(layer, "experts.down_proj"))?;
-                self.require(spec.layer_tensor(layer, "experts.gate_up_proj"))?;
-                self.require(spec.layer_tensor(layer, "router.per_expert_scale"))?;
-                self.require(spec.layer_tensor(layer, "router.proj.weight"))?;
-                self.require(spec.layer_tensor(layer, "router.scale"))?;
-                self.require(spec.layer_tensor(layer, "pre_feedforward_layernorm_2.weight"))?;
-                self.require(spec.layer_tensor(layer, "post_feedforward_layernorm_1.weight"))?;
-                self.require(spec.layer_tensor(layer, "post_feedforward_layernorm_2.weight"))?;
-            }
-        }
-        Ok(())
+        GemmaModelSpec::validate_text_weights(self, index)
     }
 }
 

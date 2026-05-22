@@ -69,8 +69,7 @@ fn validates_gemma4_text_only_index_with_model_root_tensors() {
     )
     .expect("index parses");
 
-    index
-        .validate_gemma4_text_weights(&spec)
+    spec.validate_text_weights(&index)
         .expect("Gemma 4 text-only tensors validate");
 }
 
@@ -89,8 +88,7 @@ fn validates_gemma4_dense_text_index_without_requiring_multimodal_tensors() {
 
     assert!(index.contains("model.embed_vision.embedding_projection.weight"));
     assert!(!index.contains("model.vision_tower.patch_embedder.input_proj.weight"));
-    index
-        .validate_gemma4_text_weights(&spec)
+    spec.validate_text_weights(&index)
         .expect("Gemma 4 text tensors validate without requiring vision tensors");
     NativeTextModelSpec::Gemma(spec)
         .validate_text_weights(&index)
@@ -111,8 +109,7 @@ fn validates_gemma4_moe_text_index() {
     .expect("index parses");
 
     assert!(spec.uses_moe());
-    index
-        .validate_gemma4_text_weights(&spec)
+    spec.validate_text_weights(&index)
         .expect("Gemma 4 MoE text tensors validate");
 }
 
@@ -134,8 +131,8 @@ fn rejects_gemma4_index_missing_required_text_tensor() {
     )
     .expect("index parses");
 
-    let err = index
-        .validate_gemma4_text_weights(&spec)
+    let err = spec
+        .validate_text_weights(&index)
         .expect_err("missing Gemma text tensor fails validation");
 
     assert_eq!(err.code(), "invalid_request");

@@ -130,7 +130,7 @@ impl NativeGemmaBackend {
         let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
         let spec = GemmaModelSpec::from_config_json(&config_json)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
-        store.index().validate_gemma4_text_weights(&spec)?;
+        spec.validate_text_weights(store.index())?;
         if options.eager_materialize_shards {
             store.materialize_all_shards().map_err(|err| {
                 anyhow::anyhow!("native Gemma safetensors materialization failed: {err}")

@@ -38,55 +38,6 @@ pub struct QwenModelSpec {
     pub layer_kinds: Vec<AttentionKind>,
 }
 
-impl SafetensorsIndex {
-    pub fn validate_qwen_text_weights(&self, spec: &QwenModelSpec) -> Result<(), ModelSpecError> {
-        self.require(spec.embed_tokens_weight())?;
-        self.require(spec.final_norm_weight())?;
-        if !spec.tie_word_embeddings {
-            self.require(spec.lm_head_weight())?;
-        }
-        for (layer, kind) in spec.layer_kinds.iter().enumerate() {
-            self.require(spec.layer_tensor(layer, "input_layernorm.weight"))?;
-            self.require(spec.layer_tensor(layer, "post_attention_layernorm.weight"))?;
-            if spec.is_qwen3_dense() {
-                self.require(spec.mlp_tensor(layer, "gate_proj.weight"))?;
-                self.require(spec.mlp_tensor(layer, "up_proj.weight"))?;
-                self.require(spec.mlp_tensor(layer, "down_proj.weight"))?;
-            } else {
-                self.require(spec.mlp_tensor(layer, "gate.weight"))?;
-                self.require(spec.mlp_tensor(layer, "experts.down_proj"))?;
-                self.require(spec.mlp_tensor(layer, "experts.gate_up_proj"))?;
-                self.require(spec.mlp_tensor(layer, "shared_expert.down_proj.weight"))?;
-                self.require(spec.mlp_tensor(layer, "shared_expert.gate_proj.weight"))?;
-                self.require(spec.mlp_tensor(layer, "shared_expert.up_proj.weight"))?;
-                self.require(spec.mlp_tensor(layer, "shared_expert_gate.weight"))?;
-            }
-            match kind {
-                AttentionKind::LinearAttention => {
-                    self.require(spec.layer_tensor(layer, "linear_attn.in_proj_qkv.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.in_proj_z.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.out_proj.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.in_proj_a.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.in_proj_b.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.dt_bias"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.A_log"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.conv1d.weight"))?;
-                    self.require(spec.layer_tensor(layer, "linear_attn.norm.weight"))?;
-                }
-                AttentionKind::FullAttention => {
-                    self.require(spec.self_attn_tensor(layer, "q_proj.weight"))?;
-                    self.require(spec.self_attn_tensor(layer, "k_proj.weight"))?;
-                    self.require(spec.self_attn_tensor(layer, "v_proj.weight"))?;
-                    self.require(spec.self_attn_tensor(layer, "o_proj.weight"))?;
-                    self.require(spec.self_attn_tensor(layer, "q_norm.weight"))?;
-                    self.require(spec.self_attn_tensor(layer, "k_norm.weight"))?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 impl QwenModelSpec {
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let config: RawQwenConfig = serde_json::from_str(json)
@@ -224,6 +175,53 @@ impl QwenModelSpec {
         })
     }
 
+    pub fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
+        index.require(self.embed_tokens_weight())?;
+        index.require(self.final_norm_weight())?;
+        if !self.tie_word_embeddings {
+            index.require(self.lm_head_weight())?;
+        }
+        for (layer, kind) in self.layer_kinds.iter().enumerate() {
+            index.require(self.layer_tensor(layer, "input_layernorm.weight"))?;
+            index.require(self.layer_tensor(layer, "post_attention_layernorm.weight"))?;
+            if self.is_qwen3_dense() {
+                index.require(self.mlp_tensor(layer, "gate_proj.weight"))?;
+                index.require(self.mlp_tensor(layer, "up_proj.weight"))?;
+                index.require(self.mlp_tensor(layer, "down_proj.weight"))?;
+            } else {
+                index.require(self.mlp_tensor(layer, "gate.weight"))?;
+                index.require(self.mlp_tensor(layer, "experts.down_proj"))?;
+                index.require(self.mlp_tensor(layer, "experts.gate_up_proj"))?;
+                index.require(self.mlp_tensor(layer, "shared_expert.down_proj.weight"))?;
+                index.require(self.mlp_tensor(layer, "shared_expert.gate_proj.weight"))?;
+                index.require(self.mlp_tensor(layer, "shared_expert.up_proj.weight"))?;
+                index.require(self.mlp_tensor(layer, "shared_expert_gate.weight"))?;
+            }
+            match kind {
+                AttentionKind::LinearAttention => {
+                    index.require(self.layer_tensor(layer, "linear_attn.in_proj_qkv.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.in_proj_z.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.out_proj.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.in_proj_a.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.in_proj_b.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.dt_bias"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.A_log"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.conv1d.weight"))?;
+                    index.require(self.layer_tensor(layer, "linear_attn.norm.weight"))?;
+                }
+                AttentionKind::FullAttention => {
+                    index.require(self.self_attn_tensor(layer, "q_proj.weight"))?;
+                    index.require(self.self_attn_tensor(layer, "k_proj.weight"))?;
+                    index.require(self.self_attn_tensor(layer, "v_proj.weight"))?;
+                    index.require(self.self_attn_tensor(layer, "o_proj.weight"))?;
+                    index.require(self.self_attn_tensor(layer, "q_norm.weight"))?;
+                    index.require(self.self_attn_tensor(layer, "k_norm.weight"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_qwen3_dense(&self) -> bool {
         self.architecture == "Qwen3ForCausalLM" && self.model_type == "qwen3"
     }
@@ -299,7 +297,7 @@ impl ModelSpec for QwenModelSpec {
     }
 
     fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
-        index.validate_qwen_text_weights(self)
+        QwenModelSpec::validate_text_weights(self, index)
     }
 }
 

@@ -130,7 +130,7 @@ impl NativeQwenBackend {
         let metadata = native_qwen_metadata(&model_id, &identity)?;
         let store = SafeTensorShardStore::open(snapshot_path)?;
         let spec = QwenModelSpec::from_config_json(&config_json)?;
-        store.index().validate_qwen_text_weights(&spec)?;
+        spec.validate_text_weights(store.index())?;
         if options.eager_materialize_shards {
             let materialized_bytes = store.materialize_all_shards()?;
             tracing::info!(
