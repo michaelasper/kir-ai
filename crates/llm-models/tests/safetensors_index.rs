@@ -44,6 +44,17 @@ fn rejects_fractional_total_size() {
 }
 
 #[test]
+fn rejects_fractional_total_size_near_f64_precision_boundary() {
+    for total_size in ["9007199254740992.1", "9007199254740991.5"] {
+        let err = SafetensorsIndex::from_json(&index_json(total_size))
+            .expect_err("fractional total_size must fail closed before f64 rounding");
+
+        assert_eq!(err.code(), "invalid_request");
+        assert!(err.to_string().contains("total_size"));
+    }
+}
+
+#[test]
 fn rejects_total_size_larger_than_u64() {
     let err = SafetensorsIndex::from_json(&index_json("18446744073709551616"))
         .expect_err("out-of-range total_size must fail closed");

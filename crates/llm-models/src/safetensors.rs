@@ -1,12 +1,7 @@
 use crate::ModelSpecError;
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, Visitor},
-};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetensorsIndex {
@@ -18,11 +13,12 @@ impl SafetensorsIndex {
     pub fn from_json(json: &str) -> Result<Self, ModelSpecError> {
         let raw: RawSafetensorsIndex = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid index JSON: {err}")))?;
+        let total_size_bytes = parse_total_size_bytes(raw.metadata.total_size.get())?;
         for shard_path in raw.weight_map.values() {
             validate_safetensors_shard_path(shard_path)?;
         }
         Ok(Self {
-            total_size_bytes: raw.metadata.total_size,
+            total_size_bytes,
             weight_map: raw.weight_map,
         })
     }
@@ -107,82 +103,63 @@ fn validate_safetensors_shard_path(path: &str) -> Result<(), ModelSpecError> {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawSafetensorsIndex {
-    metadata: RawSafetensorsMetadata,
+struct RawSafetensorsIndex<'a> {
+    #[serde(borrow)]
+    metadata: RawSafetensorsMetadata<'a>,
     weight_map: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawSafetensorsMetadata {
-    #[serde(deserialize_with = "deserialize_total_size")]
-    total_size: u64,
+struct RawSafetensorsMetadata<'a> {
+    #[serde(borrow)]
+    total_size: &'a RawValue,
 }
 
-fn deserialize_total_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct TotalSizeVisitor;
+fn parse_total_size_bytes(raw: &str) -> Result<u64, ModelSpecError> {
+    const MAX_EXACT_FLOAT_ENCODED_INTEGER: u64 = 9_007_199_254_740_992;
 
-    impl<'de> Visitor<'de> for TotalSizeVisitor {
-        type Value = u64;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a non-negative integer total_size byte count")
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            u64::try_from(value).map_err(|_| total_size_error())
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            u64::try_from(value).map_err(|_| total_size_error())
-        }
-
-        fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            u64::try_from(value).map_err(|_| total_size_error())
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            const MAX_EXACT_F64_INTEGER: f64 = 9_007_199_254_740_992.0;
-
-            if value.is_finite()
-                && value >= 0.0
-                && value.fract() == 0.0
-                && value <= MAX_EXACT_F64_INTEGER
-            {
-                Ok(value as u64)
-            } else {
-                Err(total_size_error())
-            }
-        }
+    if raw.starts_with('-') {
+        return Err(total_size_error());
     }
 
-    deserializer.deserialize_any(TotalSizeVisitor)
+    if raw.contains('.') {
+        let value = parse_zero_fraction_total_size(raw)?;
+        if value <= MAX_EXACT_FLOAT_ENCODED_INTEGER {
+            Ok(value)
+        } else {
+            Err(total_size_error())
+        }
+    } else if raw.contains('e') || raw.contains('E') {
+        Err(total_size_error())
+    } else {
+        parse_total_size_digits(raw)
+    }
 }
 
-fn total_size_error<E>() -> E
-where
-    E: de::Error,
-{
-    E::custom("metadata.total_size must be a non-negative integer byte count")
+fn parse_zero_fraction_total_size(raw: &str) -> Result<u64, ModelSpecError> {
+    let Some((integer, fraction)) = raw.split_once('.') else {
+        return Err(total_size_error());
+    };
+
+    if fraction.is_empty()
+        || fraction.contains('e')
+        || fraction.contains('E')
+        || !fraction.bytes().all(|byte| byte == b'0')
+    {
+        return Err(total_size_error());
+    }
+
+    parse_total_size_digits(integer)
+}
+
+fn parse_total_size_digits(digits: &str) -> Result<u64, ModelSpecError> {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(total_size_error());
+    }
+
+    digits.parse::<u64>().map_err(|_| total_size_error())
+}
+
+fn total_size_error() -> ModelSpecError {
+    ModelSpecError::invalid_request("metadata.total_size must be a non-negative integer byte count")
 }
