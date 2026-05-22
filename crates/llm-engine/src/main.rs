@@ -23,7 +23,7 @@ use llm_engine::{
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
-use llm_hub::{ModelStore, SnapshotReadiness};
+use llm_hub::{ModelLifecycleService, ModelStore, SnapshotReadiness};
 #[cfg(feature = "diagnostics")]
 use llm_models::QwenModelSpec;
 #[cfg(feature = "diagnostics")]
@@ -1121,29 +1121,20 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         #[cfg(not(feature = "diagnostics"))]
         "inspect-qwen-input" => diagnostics_feature_required("inspect-qwen-input")?,
         "plan" | "pull" => {
-            let options = model_cli::model_plan_options_from_args(subcommand, &args)?;
+            let request = model_cli::model_lifecycle_request_from_args(subcommand, &args)?;
             let token = std::env::var("HF_TOKEN").ok();
             let hub_endpoint = flag_value(&args, "--hub-endpoint")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
             let client = configured_hub_client(hub_endpoint.as_deref(), token.as_deref())?;
-            let mut plan = client
-                .plan_model(
-                    options.repo_id,
-                    &options.revision,
-                    options.profile,
-                    token.as_deref(),
-                )
-                .await?;
-            if options.metadata_only {
-                plan = plan.metadata_only();
-            }
+            let lifecycle = ModelLifecycleService::new(&client, token.as_deref());
             if subcommand == "plan" {
+                let plan = lifecycle.plan(&request).await?;
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             } else {
                 let root = model_home_from_args(&args);
                 let store = ModelStore::new(root);
-                let snapshot = store.pull_plan(&client, &plan, token.as_deref()).await?;
+                let snapshot = lifecycle.pull(&store, &request).await?;
                 ModelStore::mark_snapshot_used(&snapshot.path).await?;
                 if let Some(alias) = flag_value(&args, "--alias") {
                     store.record_snapshot_alias(alias, &snapshot.path).await?;

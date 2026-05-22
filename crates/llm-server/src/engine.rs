@@ -37,7 +37,6 @@ use state::AppState;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::sync_ext::FailPoisonedMutex;
     use std::sync::Mutex;
 
@@ -56,12 +55,15 @@ mod tests {
     }
 
     #[test]
-    fn admin_model_profile_accepts_built_in_profiles() {
+    fn model_lifecycle_request_accepts_built_in_profiles() {
         for name in llm_hub::ModelProfile::builtin_names() {
-            let profile =
-                admin::model_profile(name).expect("admin profile matcher accepts profile");
+            let request =
+                llm_hub::ModelLifecycleRequest::new("Qwen/Qwen3.6-35B-A3B").with_profile(name);
+            let options = request
+                .resolve()
+                .expect("shared lifecycle matcher accepts profile");
 
-            assert_eq!(profile.name, name);
+            assert_eq!(options.profile.name, name);
         }
     }
 }

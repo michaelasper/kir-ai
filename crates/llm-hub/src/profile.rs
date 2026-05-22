@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_MODEL_PROFILE_NAME: &str = "qwen36-safetensors-bf16";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelProfile {
     pub name: String,
@@ -124,7 +126,7 @@ impl ModelProfile {
     }
 
     pub fn qwen36_safetensors_bf16() -> Self {
-        Self::builtin("qwen36-safetensors-bf16").expect("built-in qwen36 safetensors BF16 profile")
+        Self::builtin(DEFAULT_MODEL_PROFILE_NAME).expect("built-in qwen36 safetensors BF16 profile")
     }
 
     pub fn qwen3_dense_safetensors_bf16() -> Self {

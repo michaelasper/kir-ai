@@ -16,10 +16,12 @@ use axum::{
 };
 use llm_api::{ApiError, ModelCard, ModelList};
 use llm_backend::BackendModelMetadata;
-use llm_hub::{DownloadPlan, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot};
+use llm_hub::{
+    DownloadPlan, ModelLifecycleRequest, ModelLifecycleService, ModelStore, PromotedSnapshot,
+};
 use llm_runtime::RuntimeError;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -172,27 +174,19 @@ pub(super) async fn admin_model_verify(
     }))
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct AdminModelPlanRequest {
-    repo_id: String,
-    #[serde(default)]
-    revision: Option<String>,
-    #[serde(default)]
-    profile: Option<String>,
-    #[serde(default)]
-    metadata_only: bool,
-}
-
 pub(super) async fn admin_model_plan(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
+    request: Result<Json<ModelLifecycleRequest>, JsonRejection>,
 ) -> Result<Json<DownloadPlan>, EngineError> {
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
     let request = super::parse_json_request(request, &state)?;
-    let plan = build_admin_download_plan(&state, request).await?;
+    let plan = ModelLifecycleService::new(&state.hub_client, state.hf_token.as_deref())
+        .plan(&request)
+        .await
+        .map_err(EngineError::ModelStore)?;
     Ok(Json(plan))
 }
 
@@ -210,7 +204,7 @@ pub(super) async fn admin_model_pull(
     AxumPath(alias): AxumPath<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Result<Json<AdminModelPlanRequest>, JsonRejection>,
+    request: Result<Json<ModelLifecycleRequest>, JsonRejection>,
 ) -> Result<Json<AdminModelPullResponse>, EngineError> {
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
@@ -221,15 +215,9 @@ pub(super) async fn admin_model_pull(
         .acquire_owned()
         .await
         .map_err(|_| EngineError::Overloaded("model pull gate is closed".to_owned()))?;
-    let plan = match build_admin_download_plan(&state, request).await {
-        Ok(plan) => plan,
-        Err(err) => {
-            record_model_pull_failure_metrics(&state);
-            return Err(err);
-        }
-    };
-    let snapshot = match ModelStore::new(&state.model_home)
-        .pull_plan(&state.hub_client, &plan, state.hf_token.as_deref())
+    let store = ModelStore::new(&state.model_home);
+    let snapshot = match ModelLifecycleService::new(&state.hub_client, state.hf_token.as_deref())
+        .pull(&store, &request)
         .await
     {
         Ok(snapshot) => snapshot,
@@ -242,7 +230,7 @@ pub(super) async fn admin_model_pull(
     ModelStore::mark_snapshot_used(&snapshot.path)
         .await
         .map_err(EngineError::ModelStore)?;
-    ModelStore::new(&state.model_home)
+    store
         .record_snapshot_alias(&alias, &snapshot.path)
         .await
         .map_err(EngineError::ModelStore)?;
@@ -256,36 +244,6 @@ pub(super) async fn admin_model_pull(
         profile: snapshot.manifest.profile,
         files: snapshot.manifest.files.len(),
     }))
-}
-
-async fn build_admin_download_plan(
-    state: &AppState,
-    request: AdminModelPlanRequest,
-) -> Result<DownloadPlan, EngineError> {
-    let repo_id = HubRepoId::model(request.repo_id).map_err(EngineError::ModelStore)?;
-    let revision = request.revision.unwrap_or_else(|| "main".to_owned());
-    let profile_name = request
-        .profile
-        .unwrap_or_else(|| "qwen36-safetensors-bf16".to_owned());
-    let profile = model_profile(&profile_name)?;
-    let mut plan = state
-        .hub_client
-        .plan_model(repo_id, &revision, profile, state.hf_token.as_deref())
-        .await
-        .map_err(EngineError::ModelStore)?;
-    if request.metadata_only {
-        plan = plan.metadata_only();
-    }
-    Ok(plan)
-}
-
-pub(super) fn model_profile(name: &str) -> Result<ModelProfile, EngineError> {
-    ModelProfile::builtin(name).ok_or_else(|| {
-        RuntimeError::Api(ApiError::invalid_request(format!(
-            "unknown model profile `{name}`"
-        )))
-        .into()
-    })
 }
 
 fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError> {

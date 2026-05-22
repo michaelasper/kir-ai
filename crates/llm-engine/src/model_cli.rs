@@ -1,19 +1,13 @@
 use llm_hub::{
-    DeletedSnapshot, HubRepoId, ModelProfile, ModelStore, PromotedSnapshot, ProtectedSnapshot,
-    PruneCandidate, PrunePlan, PrunePolicy, PruneReport, QuarantinedSnapshot,
-    SnapshotReadinessMode, SnapshotRecord,
+    DeletedSnapshot, ModelLifecyclePlanOptions, ModelLifecycleRequest, ModelStore,
+    PromotedSnapshot, ProtectedSnapshot, PruneCandidate, PrunePlan, PrunePolicy, PruneReport,
+    QuarantinedSnapshot, SnapshotReadinessMode, SnapshotRecord,
 };
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelPlanOptions {
-    pub repo_id: HubRepoId,
-    pub revision: String,
-    pub profile: ModelProfile,
-    pub metadata_only: bool,
-}
+pub type ModelPlanOptions = ModelLifecyclePlanOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PruneMode {
@@ -21,25 +15,29 @@ pub enum PruneMode {
     ConfirmDelete,
 }
 
+pub fn model_lifecycle_request_from_args(
+    subcommand: &str,
+    args: &[String],
+) -> anyhow::Result<ModelLifecycleRequest> {
+    let repo = args
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model {subcommand} <repo>"))?;
+    let mut request = ModelLifecycleRequest::new(repo.to_owned())
+        .with_metadata_only(has_flag(args, "--metadata-only"));
+    if let Some(revision) = flag_value(args, "--revision") {
+        request = request.with_revision(revision);
+    }
+    if let Some(profile) = flag_value(args, "--profile") {
+        request = request.with_profile(profile);
+    }
+    Ok(request)
+}
+
 pub fn model_plan_options_from_args(
     subcommand: &str,
     args: &[String],
 ) -> anyhow::Result<ModelPlanOptions> {
-    let repo = args
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: llm-engine model {subcommand} <repo>"))?;
-    let revision = flag_value(args, "--revision").unwrap_or("main").to_owned();
-    let profile_name = flag_value(args, "--profile").unwrap_or("qwen36-safetensors-bf16");
-    let profile = ModelProfile::builtin(profile_name)
-        .ok_or_else(|| anyhow::anyhow!("unknown model profile `{profile_name}`"))?;
-    let repo_id = HubRepoId::model(repo)?;
-    let metadata_only = has_flag(args, "--metadata-only");
-    Ok(ModelPlanOptions {
-        repo_id,
-        revision,
-        profile,
-        metadata_only,
-    })
+    Ok(model_lifecycle_request_from_args(subcommand, args)?.resolve()?)
 }
 
 pub fn prune_mode_from_args(args: &[String]) -> anyhow::Result<PruneMode> {
@@ -335,7 +333,7 @@ fn path_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm_hub::{HubFile, build_download_plan};
+    use llm_hub::{HubFile, HubRepoId, ModelProfile, build_download_plan};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -442,6 +440,24 @@ mod tests {
         assert_eq!(options.revision, "refs/pr/1");
         assert_eq!(options.profile.name, "qwen36-mlx-4bit");
         assert!(options.metadata_only);
+    }
+
+    #[test]
+    fn model_lifecycle_request_from_args_matches_admin_json_defaults() {
+        let cli_request =
+            model_lifecycle_request_from_args("plan", &args(&["plan", "Qwen/Qwen3.6-35B-A3B"]))
+                .expect("CLI lifecycle request parses");
+        let admin_request: llm_hub::ModelLifecycleRequest =
+            serde_json::from_value(serde_json::json!({ "repo_id": "Qwen/Qwen3.6-35B-A3B" }))
+                .expect("admin lifecycle request deserializes");
+
+        assert_eq!(cli_request, admin_request);
+        let options = cli_request
+            .resolve()
+            .expect("shared lifecycle defaults resolve");
+        assert_eq!(options.revision, llm_hub::DEFAULT_MODEL_REVISION);
+        assert_eq!(options.profile.name, llm_hub::DEFAULT_MODEL_PROFILE_NAME);
+        assert!(!options.metadata_only);
     }
 
     #[test]
