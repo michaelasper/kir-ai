@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.37.1](https://github.com/michaelasper/kir-ai/compare/v1.37.0...v1.37.1) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-345:** return hub client construction errors ([0b24d9c](https://github.com/michaelasper/kir-ai/commit/0b24d9cd393ec67801cc8853485c4a11f5c7afa9))
+
 ## [1.37.0](https://github.com/michaelasper/kir-ai/compare/v1.36.8...v1.37.0) (2026-05-22)
 
 ### Features
