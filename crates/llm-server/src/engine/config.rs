@@ -1,5 +1,5 @@
 use llm_api::RequestLimits;
-use llm_hub::HubClient;
+use llm_hub::{HubClient, HubError};
 use std::{path::PathBuf, time::Duration};
 
 pub(super) const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -84,6 +84,12 @@ impl EngineConfigError {
             ),
         }
     }
+
+    fn hub_client(source: HubError) -> Self {
+        Self {
+            message: format!("failed to configure hub HTTP client: {source}"),
+        }
+    }
 }
 
 impl std::fmt::Display for EngineConfigError {
@@ -98,10 +104,10 @@ pub fn configured_hub_client(
     endpoint: Option<&str>,
     hf_token: Option<&str>,
 ) -> Result<HubClient, EngineConfigError> {
-    endpoint
-        .map(|endpoint| parse_hub_client(endpoint, hf_token))
-        .transpose()
-        .map(|client| client.unwrap_or_default())
+    match endpoint {
+        Some(endpoint) => parse_hub_client(endpoint, hf_token),
+        None => HubClient::default_client().map_err(EngineConfigError::hub_client),
+    }
 }
 
 pub(super) fn parse_hub_client(
@@ -113,7 +119,7 @@ pub(super) fn parse_hub_client(
     if hf_token.is_some() && endpoint.scheme() != "https" {
         return Err(EngineConfigError::insecure_hub_token_endpoint(&endpoint));
     }
-    Ok(HubClient::new(endpoint))
+    HubClient::new(endpoint).map_err(EngineConfigError::hub_client)
 }
 
 pub(super) fn default_model_home() -> PathBuf {

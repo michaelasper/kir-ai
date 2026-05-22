@@ -109,23 +109,28 @@ impl Default for HubTimeouts {
     }
 }
 
-impl Default for HubClient {
-    fn default() -> Self {
-        Self::new(Url::parse("https://huggingface.co").expect("static Hugging Face URL"))
-    }
-}
+const DEFAULT_HUB_ENDPOINT: &str = "https://huggingface.co";
 
 impl HubClient {
-    pub fn new(endpoint: Url) -> Self {
+    pub fn default_client() -> Result<Self, HubError> {
+        let endpoint = Url::parse(DEFAULT_HUB_ENDPOINT).map_err(|err| {
+            HubError::invalid_request(format!(
+                "default hub endpoint `{DEFAULT_HUB_ENDPOINT}` is invalid: {err}"
+            ))
+        })?;
+        Self::new(endpoint)
+    }
+
+    pub fn new(endpoint: Url) -> Result<Self, HubError> {
         Self::with_timeouts(endpoint, HubTimeouts::default())
     }
 
-    pub fn with_timeouts(endpoint: Url, timeouts: HubTimeouts) -> Self {
-        Self {
+    pub fn with_timeouts(endpoint: Url, timeouts: HubTimeouts) -> Result<Self, HubError> {
+        Ok(Self {
             endpoint,
-            client: build_http_client(timeouts),
+            client: build_http_client(timeouts)?,
             timeouts,
-        }
+        })
     }
 
     pub async fn model_info(
@@ -380,12 +385,21 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
     (start <= end).then_some((start, end, total))
 }
 
-fn build_http_client(timeouts: HubTimeouts) -> reqwest::Client {
-    reqwest::Client::builder()
+fn build_http_client(timeouts: HubTimeouts) -> Result<reqwest::Client, HubError> {
+    let result = reqwest::Client::builder()
         .connect_timeout(timeouts.connect)
         .timeout(timeouts.request)
-        .build()
-        .expect("hub HTTP client builds")
+        .build();
+    map_http_client_build_result(result)
+}
+
+fn map_http_client_build_result(
+    result: Result<reqwest::Client, impl ToString>,
+) -> Result<reqwest::Client, HubError> {
+    result.map_err(|err| {
+        let message = err.to_string();
+        HubError::network(format!("failed to build hub HTTP client: {message}"))
+    })
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -416,6 +430,17 @@ mod tests {
         thread,
     };
 
+    #[test]
+    fn http_client_build_failure_maps_to_hub_error() {
+        let result: Result<reqwest::Client, &str> = Err("TLS backend unavailable");
+
+        let err = map_http_client_build_result(result).expect_err("build failure maps to HubError");
+
+        assert_eq!(err.code(), "model_download_interrupted");
+        assert!(err.to_string().contains("failed to build hub HTTP client"));
+        assert!(err.to_string().contains("TLS backend unavailable"));
+    }
+
     #[tokio::test]
     async fn resumed_download_rejects_missing_content_range_even_when_size_matches() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -436,7 +461,8 @@ mod tests {
             .expect("write response");
             stream.flush().expect("flush response");
         });
-        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let client =
+            HubClient::with_timeouts(endpoint, test_timeouts()).expect("hub client builds");
         let repo_id = test_repo_id();
 
         let err = client
@@ -469,7 +495,8 @@ mod tests {
             .expect("write response");
             stream.flush().expect("flush response");
         });
-        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let client =
+            HubClient::with_timeouts(endpoint, test_timeouts()).expect("hub client builds");
         let repo_id = test_repo_id();
 
         let err = client
@@ -502,7 +529,8 @@ mod tests {
             .expect("write response");
             stream.flush().expect("flush response");
         });
-        let client = HubClient::with_timeouts(endpoint, test_timeouts());
+        let client =
+            HubClient::with_timeouts(endpoint, test_timeouts()).expect("hub client builds");
         let repo_id = test_repo_id();
 
         client
@@ -527,7 +555,8 @@ mod tests {
         let client = HubClient::with_timeouts(
             Url::parse("http://127.0.0.1:9").expect("test endpoint"),
             test_timeouts(),
-        );
+        )
+        .expect("hub client builds");
         let repo_id = test_repo_id();
 
         let err = client

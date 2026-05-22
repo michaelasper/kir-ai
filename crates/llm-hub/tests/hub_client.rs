@@ -7,12 +7,30 @@ use std::{
 };
 use url::Url;
 
+#[test]
+fn hub_client_new_returns_result_without_panicking() {
+    let endpoint = Url::parse("https://huggingface.co").expect("test endpoint");
+
+    let client = HubClient::new(endpoint).expect("hub client builds");
+
+    drop(client);
+}
+
+#[test]
+fn hub_client_with_timeouts_returns_result_without_panicking() {
+    let endpoint = Url::parse("http://127.0.0.1:9").expect("test endpoint");
+
+    let client = HubClient::with_timeouts(endpoint, short_timeouts()).expect("hub client builds");
+
+    drop(client);
+}
+
 #[tokio::test]
 async fn model_info_returns_network_error_when_request_times_out() {
     let (endpoint, server) = spawn_stalling_http_server(|_stream| {
         thread::sleep(Duration::from_millis(45));
     });
-    let client = HubClient::with_timeouts(endpoint, short_timeouts());
+    let client = HubClient::with_timeouts(endpoint, short_timeouts()).expect("hub client builds");
 
     let started = Instant::now();
     let err = client
@@ -47,7 +65,7 @@ async fn model_info_encodes_revision_as_path_segment() {
             write_http_response(&mut stream, "400 Bad Request", r#"{"error":"bad path"}"#);
         }
     });
-    let client = HubClient::with_timeouts(endpoint, short_timeouts());
+    let client = HubClient::with_timeouts(endpoint, short_timeouts()).expect("hub client builds");
 
     let info = client
         .model_info(
@@ -82,7 +100,8 @@ async fn pull_plan_returns_network_error_when_download_body_stalls() {
             request: Duration::from_secs(10),
             ..short_timeouts()
         },
-    );
+    )
+    .expect("hub client builds");
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
     let plan = llm_hub::build_download_plan(
