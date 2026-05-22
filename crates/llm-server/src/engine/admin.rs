@@ -17,7 +17,8 @@ use axum::{
 use llm_api::{ApiError, ModelCard, ModelList};
 use llm_backend::BackendModelMetadata;
 use llm_hub::{
-    DownloadPlan, ModelLifecycleRequest, ModelLifecycleService, ModelStore, PromotedSnapshot,
+    DownloadPlan, HubError, ModelLifecyclePlanOptions, ModelLifecycleRequest,
+    ModelLifecycleService, ModelStore, PromotedSnapshot,
 };
 use llm_runtime::RuntimeError;
 use schemars::JsonSchema;
@@ -183,8 +184,9 @@ pub(super) async fn admin_model_plan(
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
     let request = super::parse_json_request(request, &state)?;
+    let options = resolve_admin_lifecycle_request(&request)?;
     let plan = ModelLifecycleService::new(&state.hub_client, state.hf_token.as_deref())
-        .plan(&request)
+        .plan_resolved(options)
         .await
         .map_err(EngineError::ModelStore)?;
     Ok(Json(plan))
@@ -209,6 +211,7 @@ pub(super) async fn admin_model_pull(
     require_admin(&state, &headers)?;
     require_model_alias(&state, &alias)?;
     let request = super::parse_json_request(request, &state)?;
+    let options = resolve_admin_lifecycle_request(&request)?;
     let _pull_permit = state
         .model_pull_gate
         .clone()
@@ -216,10 +219,15 @@ pub(super) async fn admin_model_pull(
         .await
         .map_err(|_| EngineError::Overloaded("model pull gate is closed".to_owned()))?;
     let store = ModelStore::new(&state.model_home);
-    let snapshot = match ModelLifecycleService::new(&state.hub_client, state.hf_token.as_deref())
-        .pull(&store, &request)
-        .await
-    {
+    let lifecycle = ModelLifecycleService::new(&state.hub_client, state.hf_token.as_deref());
+    let plan = match lifecycle.plan_resolved(options).await {
+        Ok(plan) => plan,
+        Err(err) => {
+            record_model_pull_failure_metrics(&state);
+            return Err(EngineError::ModelStore(err));
+        }
+    };
+    let snapshot = match lifecycle.pull_plan(&store, &plan).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
             record_model_pull_failure_metrics(&state);
@@ -244,6 +252,20 @@ pub(super) async fn admin_model_pull(
         profile: snapshot.manifest.profile,
         files: snapshot.manifest.files.len(),
     }))
+}
+
+fn resolve_admin_lifecycle_request(
+    request: &ModelLifecycleRequest,
+) -> Result<ModelLifecyclePlanOptions, EngineError> {
+    request.resolve().map_err(admin_lifecycle_request_error)
+}
+
+fn admin_lifecycle_request_error(err: HubError) -> EngineError {
+    if err.code() == "invalid_request" {
+        EngineError::RequestValidation(err.to_string())
+    } else {
+        EngineError::ModelStore(err)
+    }
 }
 
 fn require_model_alias(state: &AppState, alias: &str) -> Result<(), EngineError> {

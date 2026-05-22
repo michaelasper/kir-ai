@@ -229,6 +229,36 @@ async fn admin_model_plan_endpoint_returns_download_plan() {
 }
 
 #[tokio::test]
+async fn admin_model_plan_endpoint_preserves_request_validation_error_for_unknown_profile() {
+    let response = build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/admin/models/{}/plan",
+                    llm_engine::DEFAULT_MODEL_ID
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "repo_id": "Qwen/Qwen3.6-35B-A3B",
+                        "profile": "unknown-profile"
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin plan response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["phase"], "request_validation");
+    assert_eq!(body["error"]["retryable"], false);
+}
+
+#[tokio::test]
 async fn admin_model_pull_endpoint_promotes_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (endpoint, server) = spawn_fake_hub_server(2);

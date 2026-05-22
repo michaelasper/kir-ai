@@ -222,6 +222,7 @@ pub(super) enum EngineError {
     },
     RequestNotFound(String),
     RequestConflict(String),
+    RequestValidation(String),
     InvalidRequestId(String),
     UnauthorizedAdmin,
 }
@@ -299,7 +300,7 @@ impl IntoResponse for EngineError {
                     false,
                 ),
             ),
-            Self::InvalidRequestId(message) => (
+            Self::RequestValidation(message) | Self::InvalidRequestId(message) => (
                 StatusCode::BAD_REQUEST,
                 EngineErrorBody::new(message, "invalid_request", "request_validation", false),
             ),
