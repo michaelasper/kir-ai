@@ -10,7 +10,7 @@ use futures::future::join_all;
 use llm_api::canonicalize_json_value;
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ const DEFAULT_CONTEXT_TOKENS: usize = 135_000;
 const DEFAULT_CONCURRENT_REQUESTS: usize = 1;
 const DEFAULT_CONCURRENT_SAMPLES: usize = 0;
 const DEFAULT_MAX_TOKENS: u32 = 512;
+const REQUIRED_TOOL_TTFT_MAX_TOKENS: [u32; 3] = [24, 48, 96];
 const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
 const QWEN_MLX_PREFILL_135K_PROFILE: &str = "qwen-mlx-prefill-135k";
 const QWEN_MLX_STABLE_PREFIX_PROFILE: &str = "qwen-mlx-stable-prefix";
@@ -52,22 +53,34 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     }
 
     let dry_run = has_flag(args, "--dry-run");
-    let warmups = parse_count_flag(args, "--warmups", DEFAULT_WARMUPS, true)?;
-    let samples = parse_count_flag(args, "--samples", DEFAULT_SAMPLES, false)?;
-    let context_tokens = parse_count_flag(args, "--context-tokens", DEFAULT_CONTEXT_TOKENS, false)?;
+    let sweep_profile = parse_sweep_profile_flag(args)?;
+    let probe_suite = parse_probe_suite_flag(args, sweep_profile)?;
+    let default_run_config = default_run_config_for_probe_suite(probe_suite);
+    let warmups = parse_count_flag(args, "--warmups", default_run_config.warmups, true)?;
+    let samples = parse_count_flag(args, "--samples", default_run_config.samples, false)?;
+    let context_tokens = parse_count_flag(
+        args,
+        "--context-tokens",
+        default_run_config.context_tokens,
+        false,
+    )?;
     let concurrent_requests = parse_count_flag(
         args,
         "--concurrent-requests",
-        DEFAULT_CONCURRENT_REQUESTS,
+        default_run_config.concurrent_requests,
         false,
     )?;
     let concurrent_samples = parse_count_flag(
         args,
         "--concurrent-samples",
-        DEFAULT_CONCURRENT_SAMPLES,
+        default_run_config.concurrent_samples,
         true,
     )?;
-    let cache_phases = parse_cache_phases_flag(args)?;
+    let cache_phases = if flag_values(args, "--cache-phases").is_empty() {
+        default_run_config.cache_phases
+    } else {
+        parse_cache_phases_flag(args)?
+    };
     let run_config = NormalizedRunConfig::new(
         warmups,
         samples,
@@ -87,8 +100,6 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     let admin_token = flag_value(args, "--admin-token").map(str::to_owned);
     let max_requests = parse_optional_count_flag(args, "--max-requests")?;
     let max_planned_prompt_tokens = parse_optional_count_flag(args, "--max-planned-prompt-tokens")?;
-    let sweep_profile = parse_sweep_profile_flag(args)?;
-    let probe_suite = parse_probe_suite_flag(args, sweep_profile)?;
     let probes = probe_suite.probes();
     let lanes = parse_lane_specs(args)?;
     let plan_summary = normalized_plan_summary(&lanes, &probes, &run_config);
@@ -143,6 +154,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
             &run_config.cache_phases,
         ),
         tool_required_stream: NormalizedToolRequiredStreamTimingReport::dry_run(&lane_reports),
+        required_tool_ttft_matrix: NormalizedRequiredToolTtftMatrixReport::dry_run(),
         lanes: lane_reports,
         hardware: HardwareReport::detect(),
         comparison: NormalizedComparisonReport::dry_run(),
@@ -196,6 +208,8 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     report.summary =
         aggregate_normalized_summary_for_phases(&report.lanes, &probes, &run_config.cache_phases);
     report.tool_required_stream = tool_required_stream_timing_report(&report.lanes);
+    report.required_tool_ttft_matrix =
+        required_tool_ttft_matrix_report(&report.lanes, &probes, &run_config.cache_phases);
     report.comparison =
         compare_normalized_lanes_for_phases(&report.lanes, &probes, &run_config.cache_phases);
     report.agentic_gate = agentic_gate_report_for_phases(&report.lanes, &run_config.cache_phases);
@@ -231,7 +245,7 @@ Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
   --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
-  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
+  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
   --cache-phases <csv>          Cache phases to run: cold, warm_same_prompt, warm_same_tool_schema [default: all]
   --only-lanes <csv>            Keep only the named lanes after built-in profile expansion
@@ -307,6 +321,24 @@ fn parse_probe_suite_flag(
             .map(NormalizedSweepProfile::default_probe_suite)
             .unwrap_or(NormalizedProbeSuite::FullMatrix)
     }))
+}
+
+fn default_run_config_for_probe_suite(suite: NormalizedProbeSuite) -> NormalizedRunConfig {
+    let mut config = NormalizedRunConfig::new(
+        if suite == NormalizedProbeSuite::RequiredToolTtftMatrix {
+            0
+        } else {
+            DEFAULT_WARMUPS
+        },
+        DEFAULT_SAMPLES,
+        DEFAULT_CONTEXT_TOKENS,
+        DEFAULT_CONCURRENT_REQUESTS,
+        DEFAULT_CONCURRENT_SAMPLES,
+    );
+    if suite == NormalizedProbeSuite::RequiredToolTtftMatrix {
+        config = config.with_cache_phases(vec![CachePhase::Cold]);
+    }
+    config
 }
 
 fn filter_lanes_by_flag(
@@ -769,12 +801,13 @@ impl NormalizedProgress {
             Duration::ZERO
         };
         eprintln!(
-            "qwen-mlx-tool-normalized progress: request {started}/{} lane={} case={} schema_variant={} tool_choice_variant={} cache_phase={} request_kind={} run_mode={} eta_seconds={:.1}",
+            "qwen-mlx-tool-normalized progress: request {started}/{} lane={} case={} schema_variant={} tool_choice_variant={} max_tokens={} cache_phase={} request_kind={} run_mode={} eta_seconds={:.1}",
             self.total_requests,
             lane.name,
             probe.case.name(),
             probe.schema_variant.name(),
             probe.tool_choice_variant.name(),
+            probe.max_tokens,
             planned.phase.name(),
             planned.kind.name(),
             planned.run_mode.name(),
@@ -964,6 +997,7 @@ async fn run_lane(
                             case: probe.case.name(),
                             schema_variant: probe.schema_variant.name(),
                             tool_choice_variant: probe.tool_choice_variant.name(),
+                            max_tokens: probe.max_tokens,
                             cache_phase: planned.phase.name(),
                             warmup_index: planned.warmup_index.unwrap_or_default(),
                             classification: result.classification,
@@ -1384,7 +1418,7 @@ fn probe_request_body(
     prompt: ProbePrompt,
 ) -> Value {
     let mut body = json!({
-        "max_tokens": DEFAULT_MAX_TOKENS,
+        "max_tokens": probe.max_tokens,
         "temperature": 0,
         "top_p": 1,
         "messages": probe_messages(probe.case, prompt)
@@ -1464,6 +1498,20 @@ fn probe_tool_schema(probe: NormalizedProbePlan) -> Value {
 }
 
 fn qwen_probe_tool_schema(variant: SchemaVariant) -> Value {
+    let minimal = json!({
+        "type": "function",
+        "function": {
+            "name": "record_qwen_tool_probe",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "probe_id": {"type": "string"},
+                    "case": {"type": "string"}
+                },
+                "required": ["probe_id", "case"]
+            }
+        }
+    });
     let current = json!({
         "type": "function",
         "function": {
@@ -1496,13 +1544,96 @@ fn qwen_probe_tool_schema(variant: SchemaVariant) -> Value {
         },
         "type": "function"
     });
+    let omp_style_i = json!({
+        "type": "function",
+        "function": {
+            "name": "record_qwen_tool_probe",
+            "description": "Record an OpenManus-style Qwen tool probe with a call index field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "_i": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional tool-call index emitted by OMP-style agents."
+                    },
+                    "probe_id": {"type": "string"},
+                    "case": {"type": "string"}
+                },
+                "required": ["probe_id", "case"],
+                "additionalProperties": false
+            }
+        }
+    });
     match variant {
+        SchemaVariant::MinimalShallow => minimal,
         SchemaVariant::BaselineCurrent => current,
         SchemaVariant::CanonicalCurrent => canonicalize_json_value(&current),
         SchemaVariant::BaselinePermutedEquivalent => permuted,
         SchemaVariant::CanonicalPermutedEquivalent => canonicalize_json_value(&permuted),
+        SchemaVariant::OmpStyleI => omp_style_i,
+        SchemaVariant::LargeStress => large_stress_qwen_probe_tool_schema(),
         SchemaVariant::None => Value::Null,
     }
+}
+
+fn large_stress_qwen_probe_tool_schema() -> Value {
+    let mut properties = Map::new();
+    properties.insert("probe_id".to_owned(), json!({"type": "string"}));
+    properties.insert("case".to_owned(), json!({"type": "string"}));
+    properties.insert(
+        "agent_context".to_owned(),
+        json!({
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "step": {"type": "integer"},
+                "source": {"type": "string"}
+            },
+            "additionalProperties": false
+        }),
+    );
+    properties.insert(
+        "evidence".to_owned(),
+        json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                    "score": {"type": "number"}
+                },
+                "required": ["key", "value"],
+                "additionalProperties": false
+            },
+            "maxItems": 8
+        }),
+    );
+    for index in 0..32 {
+        properties.insert(
+            format!("stress_field_{index:02}"),
+            json!({
+                "type": ["string", "null"],
+                "description": format!("Optional distractor schema field {index:02} for required-tool TTFT stress.")
+            }),
+        );
+    }
+
+    let mut parameters = Map::new();
+    parameters.insert("type".to_owned(), json!("object"));
+    parameters.insert("properties".to_owned(), Value::Object(properties));
+    parameters.insert("required".to_owned(), json!(["probe_id", "case"]));
+    parameters.insert("additionalProperties".to_owned(), Value::Bool(false));
+
+    json!({
+        "type": "function",
+        "function": {
+            "name": "record_qwen_tool_probe",
+            "description": "Record the normalized Qwen tool benchmark probe with a deliberately large schema.",
+            "parameters": Value::Object(parameters)
+        }
+    })
 }
 
 fn recall_probe_tool_schema(variant: SchemaVariant) -> Value {
@@ -1541,6 +1672,9 @@ fn recall_probe_tool_schema(variant: SchemaVariant) -> Value {
         "type": "function"
     });
     match variant {
+        SchemaVariant::MinimalShallow | SchemaVariant::OmpStyleI | SchemaVariant::LargeStress => {
+            current
+        }
         SchemaVariant::BaselineCurrent => current,
         SchemaVariant::CanonicalCurrent => canonicalize_json_value(&current),
         SchemaVariant::BaselinePermutedEquivalent => permuted,
@@ -1894,6 +2028,7 @@ fn normalized_plan_summary(
                 case: probe.case.name(),
                 schema_variant: probe.schema_variant.name(),
                 tool_choice_variant: probe.tool_choice_variant.name(),
+                max_tokens: probe.max_tokens,
             })
             .collect(),
         lanes: lanes.iter().map(|lane| lane.name.clone()).collect(),
@@ -1974,9 +2109,7 @@ fn compare_normalized_lanes_for_phases(
                     .samples
                     .iter()
                     .filter(|sample| {
-                        sample.case == probe.case.name()
-                            && sample.schema_variant == probe.schema_variant.name()
-                            && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                        sample_matches_probe(sample, probe)
                             && sample.cache_phase == phase.name()
                             && sample.status == "passed"
                     })
@@ -1998,6 +2131,7 @@ fn compare_normalized_lanes_for_phases(
                 case: probe.case.name(),
                 schema_variant: probe.schema_variant.name(),
                 tool_choice_variant: probe.tool_choice_variant.name(),
+                max_tokens: probe.max_tokens,
                 cache_phase: phase.name(),
                 fastest_lane,
                 fastest_latency_ms,
@@ -2036,9 +2170,7 @@ fn aggregate_normalized_summary_for_phases(
                 for run_mode in [RunMode::Sequential, RunMode::Concurrent] {
                     let samples = lane_samples(lane)
                         .filter(|sample| {
-                            sample.case == probe.case.name()
-                                && sample.schema_variant == probe.schema_variant.name()
-                                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                            sample_matches_probe(sample, probe)
                                 && sample.cache_phase == phase.name()
                                 && sample.run_mode == run_mode.name()
                         })
@@ -2065,6 +2197,7 @@ fn aggregate_normalized_summary_for_phases(
                         case: probe.case.name(),
                         schema_variant: probe.schema_variant.name(),
                         tool_choice_variant: probe.tool_choice_variant.name(),
+                        max_tokens: probe.max_tokens,
                         cache_phase: phase.name(),
                         run_mode: run_mode.name(),
                         pass_count,
@@ -2111,9 +2244,7 @@ fn agentic_gate_report_for_phases(
                 for lane in lanes {
                     let samples = lane_samples(lane)
                         .filter(|sample| {
-                            sample.case == probe.case.name()
-                                && sample.schema_variant == probe.schema_variant.name()
-                                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                            sample_matches_probe(sample, probe)
                                 && sample.cache_phase == phase.name()
                                 && sample.run_mode == run_mode.name()
                                 && sample.status == "passed"
@@ -2174,6 +2305,7 @@ fn agentic_gate_report_for_phases(
                     case: probe.case.name(),
                     schema_variant: probe.schema_variant.name(),
                     tool_choice_variant: probe.tool_choice_variant.name(),
+                    max_tokens: probe.max_tokens,
                     cache_phase: phase.name(),
                     run_mode: run_mode.name(),
                     fastest_lane: fastest_lane.clone(),
@@ -2594,6 +2726,7 @@ fn prefill_sweep_report_for_phases(
                     case: probe.case.name(),
                     schema_variant: probe.schema_variant.name(),
                     tool_choice_variant: probe.tool_choice_variant.name(),
+                    max_tokens: probe.max_tokens,
                     cache_phase: phase.name(),
                     run_mode: run_mode.name(),
                     fastest_lane,
@@ -2621,9 +2754,7 @@ fn prefill_sweep_lane_metric(
 ) -> Option<NormalizedPrefillSweepLaneMetric> {
     let samples = lane_samples(lane)
         .filter(|sample| {
-            sample.case == probe.case.name()
-                && sample.schema_variant == probe.schema_variant.name()
-                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+            sample_matches_probe(sample, probe)
                 && sample.cache_phase == phase.name()
                 && sample.run_mode == run_mode.name()
         })
@@ -2768,6 +2899,7 @@ fn stable_prefix_report_for_phases(
                     case: probe.case.name(),
                     schema_variant: probe.schema_variant.name(),
                     tool_choice_variant: probe.tool_choice_variant.name(),
+                    max_tokens: probe.max_tokens,
                     cache_phase: phase.name(),
                     run_mode: run_mode.name(),
                     fastest_lane,
@@ -2795,9 +2927,7 @@ fn stable_prefix_lane_metric(
 ) -> Option<NormalizedStablePrefixLaneMetric> {
     let samples = lane_samples(lane)
         .filter(|sample| {
-            sample.case == probe.case.name()
-                && sample.schema_variant == probe.schema_variant.name()
-                && sample.tool_choice_variant == probe.tool_choice_variant.name()
+            sample_matches_probe(sample, probe)
                 && sample.cache_phase == phase.name()
                 && sample.run_mode == run_mode.name()
         })
@@ -3222,6 +3352,125 @@ fn value_i64(value: &Value) -> Option<i64> {
     value
         .as_i64()
         .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+fn required_tool_ttft_matrix_report(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
+) -> NormalizedRequiredToolTtftMatrixReport {
+    let rows = lanes
+        .iter()
+        .flat_map(|lane| {
+            lane_samples(lane)
+                .filter(|sample| required_tool_ttft_sample_selected(sample, probes, phases))
+                .map(|sample| required_tool_ttft_matrix_row(lane, sample, lanes))
+        })
+        .collect::<Vec<_>>();
+    let has_samples = !rows.is_empty();
+    let has_admin = rows.iter().any(|row| row.validated_tool_call_ms.is_some());
+    let status = match (has_samples, has_admin) {
+        (false, _) => "no_samples",
+        (true, true) => "reported",
+        (true, false) => "client_only",
+    };
+    NormalizedRequiredToolTtftMatrixReport {
+        status: status.to_owned(),
+        rows,
+    }
+}
+
+fn required_tool_ttft_sample_selected(
+    sample: &NormalizedSampleReport,
+    probes: &[NormalizedProbePlan],
+    phases: &[CachePhase],
+) -> bool {
+    sample.case == NormalizedCaseKind::ToolRequiredStream.name()
+        && phases
+            .iter()
+            .any(|phase| sample.cache_phase == phase.name())
+        && probes
+            .iter()
+            .any(|&probe| sample_matches_probe(sample, probe))
+}
+
+fn required_tool_ttft_matrix_row(
+    lane: &NormalizedLaneReport,
+    sample: &NormalizedSampleReport,
+    lanes: &[NormalizedLaneReport],
+) -> NormalizedRequiredToolTtftMatrixRow {
+    let fastest_tool_delta_ms = fastest_required_tool_ttft_delta(lanes, sample);
+    let latency_delta_vs_fastest_lane_ms = sample
+        .stream_timing
+        .first_tool_delta_latency_ms
+        .zip(fastest_tool_delta_ms)
+        .map(|(latency, fastest)| latency.saturating_sub(fastest));
+    let admin_metrics = sample
+        .tool_required_stream_admin_metrics
+        .as_ref()
+        .and_then(normalized_tool_stream_admin_metrics);
+    let stream_stalled_requests_delta = sample
+        .tool_required_stream_admin_metrics
+        .as_ref()
+        .and_then(|capture| admin_counter_delta(capture, &["stream_stalled_requests"]));
+    let no_progress_failures_delta = sample
+        .tool_required_stream_admin_metrics
+        .as_ref()
+        .and_then(|capture| admin_counter_delta(capture, &["no_progress_failures"]));
+
+    NormalizedRequiredToolTtftMatrixRow {
+        lane: lane.name.clone(),
+        kind: lane.kind,
+        tool_parser: lane.tool_parser,
+        schema_variant: sample.schema_variant,
+        tool_choice_variant: sample.tool_choice_variant,
+        max_tokens: sample.max_tokens,
+        cache_phase: sample.cache_phase,
+        run_mode: sample.run_mode,
+        sample_index: sample.sample_index,
+        request_index: sample.request_index,
+        status: sample.status.clone(),
+        classification: sample.classification.clone(),
+        first_response_byte_ms: sample.stream_timing.first_byte_latency_ms,
+        first_parsed_sse_chunk_ms: sample.stream_timing.first_sse_data_latency_ms,
+        first_tool_delta_ms: sample.stream_timing.first_tool_delta_latency_ms,
+        tool_finish_ms: sample.stream_timing.tool_finish_latency_ms,
+        validated_tool_call_ms: admin_metrics.and_then(|metrics| {
+            metrics
+                .validated_tool_call_ms
+                .window_avg_ms
+                .or(metrics.validated_tool_call_ms.avg_ms_after)
+        }),
+        latency_delta_vs_fastest_lane_ms,
+        finish_reason: sample.finish_reason.clone(),
+        stream_stalled_requests_delta,
+        no_progress_failures_delta,
+        error: sample.error.clone(),
+    }
+}
+
+fn fastest_required_tool_ttft_delta(
+    lanes: &[NormalizedLaneReport],
+    target: &NormalizedSampleReport,
+) -> Option<u128> {
+    lane_samples_for_all_lanes(lanes)
+        .filter(|sample| {
+            sample.case == target.case
+                && sample.schema_variant == target.schema_variant
+                && sample.tool_choice_variant == target.tool_choice_variant
+                && sample.max_tokens == target.max_tokens
+                && sample.cache_phase == target.cache_phase
+                && sample.run_mode == target.run_mode
+                && sample.status == "passed"
+        })
+        .filter_map(|sample| sample.stream_timing.first_tool_delta_latency_ms)
+        .min()
+}
+
+fn lane_samples_for_all_lanes(
+    lanes: &[NormalizedLaneReport],
+) -> impl Iterator<Item = &NormalizedSampleReport> {
+    lanes.iter().flat_map(lane_samples)
 }
 
 fn tool_required_stream_timing_report(
@@ -3757,6 +4006,13 @@ fn lane_samples(lane: &NormalizedLaneReport) -> impl Iterator<Item = &Normalized
     lane.samples.iter().chain(lane.concurrent_samples.iter())
 }
 
+fn sample_matches_probe(sample: &NormalizedSampleReport, probe: NormalizedProbePlan) -> bool {
+    sample.case == probe.case.name()
+        && sample.schema_variant == probe.schema_variant.name()
+        && sample.tool_choice_variant == probe.tool_choice_variant.name()
+        && sample.max_tokens == probe.max_tokens
+}
+
 fn fastest_lane_for(
     lanes: &[NormalizedLaneReport],
     probe: NormalizedProbePlan,
@@ -3768,9 +4024,7 @@ fn fastest_lane_for(
     for lane in lanes {
         let mut latencies = lane_samples(lane)
             .filter(|sample| {
-                sample.case == probe.case.name()
-                    && sample.schema_variant == probe.schema_variant.name()
-                    && sample.tool_choice_variant == probe.tool_choice_variant.name()
+                sample_matches_probe(sample, probe)
                     && sample.cache_phase == phase.name()
                     && sample.run_mode == run_mode.name()
                     && sample.status == "passed"
@@ -3827,6 +4081,17 @@ fn probe_schema_variant_names(probes: &[NormalizedProbePlan]) -> Vec<&'static st
 
 fn probe_tool_choice_variant_names(probes: &[NormalizedProbePlan]) -> Vec<&'static str> {
     unique_probe_names(probes.iter().map(|probe| probe.tool_choice_variant.name()))
+}
+
+#[cfg(test)]
+fn unique_probe_max_tokens(probes: &[NormalizedProbePlan]) -> Vec<u32> {
+    let mut unique = Vec::new();
+    for max_tokens in probes.iter().map(|probe| probe.max_tokens) {
+        if !unique.contains(&max_tokens) {
+            unique.push(max_tokens);
+        }
+    }
+    unique
 }
 
 fn unique_probe_names(names: impl Iterator<Item = &'static str>) -> Vec<&'static str> {
@@ -4454,10 +4719,13 @@ impl NormalizedCaseKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchemaVariant {
     None,
+    MinimalShallow,
     BaselineCurrent,
     CanonicalCurrent,
     BaselinePermutedEquivalent,
     CanonicalPermutedEquivalent,
+    OmpStyleI,
+    LargeStress,
 }
 
 impl SchemaVariant {
@@ -4470,13 +4738,25 @@ impl SchemaVariant {
         ]
     }
 
+    fn required_tool_ttft_matrix() -> [Self; 4] {
+        [
+            Self::MinimalShallow,
+            Self::CanonicalCurrent,
+            Self::OmpStyleI,
+            Self::LargeStress,
+        ]
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::MinimalShallow => "minimal_shallow",
             Self::BaselineCurrent => "baseline_current",
             Self::CanonicalCurrent => "canonical_current",
             Self::BaselinePermutedEquivalent => "baseline_permuted_equivalent",
             Self::CanonicalPermutedEquivalent => "canonical_permuted_equivalent",
+            Self::OmpStyleI => "omp_style_i",
+            Self::LargeStress => "large_stress",
         }
     }
 
@@ -4530,6 +4810,7 @@ impl ToolChoiceVariant {
 enum NormalizedProbeSuite {
     FullMatrix,
     FocusedAgenticGate,
+    RequiredToolTtftMatrix,
     PrefillSweep135k,
     StableAgentPrefix,
     StablePrefixSmoke,
@@ -4540,11 +4821,14 @@ impl NormalizedProbeSuite {
         match value {
             "full-matrix" | "full_matrix" => Ok(Self::FullMatrix),
             "focused-agentic-gate" | "focused_agentic_gate" => Ok(Self::FocusedAgenticGate),
+            "required-tool-ttft-matrix" | "required_tool_ttft_matrix" => {
+                Ok(Self::RequiredToolTtftMatrix)
+            }
             "prefill-sweep-135k" | "prefill_sweep_135k" => Ok(Self::PrefillSweep135k),
             "stable-agent-prefix" | "stable_agent_prefix" => Ok(Self::StableAgentPrefix),
             "stable-prefix-smoke" | "stable_prefix_smoke" => Ok(Self::StablePrefixSmoke),
             other => anyhow::bail!(
-                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke"
+                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke"
             ),
         }
     }
@@ -4553,6 +4837,7 @@ impl NormalizedProbeSuite {
         match self {
             Self::FullMatrix => "full_matrix",
             Self::FocusedAgenticGate => "focused_agentic_gate",
+            Self::RequiredToolTtftMatrix => "required_tool_ttft_matrix",
             Self::PrefillSweep135k => "prefill_sweep_135k",
             Self::StableAgentPrefix => "stable_agent_prefix",
             Self::StablePrefixSmoke => "stable_prefix_smoke",
@@ -4563,6 +4848,7 @@ impl NormalizedProbeSuite {
         match self {
             Self::FullMatrix => NormalizedProbePlan::all(),
             Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
+            Self::RequiredToolTtftMatrix => NormalizedProbePlan::required_tool_ttft_matrix(),
             Self::PrefillSweep135k => NormalizedProbePlan::prefill_sweep_135k(),
             Self::StableAgentPrefix => NormalizedProbePlan::stable_agent_prefix(),
             Self::StablePrefixSmoke => NormalizedProbePlan::stable_prefix_smoke(),
@@ -4576,6 +4862,7 @@ impl NormalizedProbeSuite {
                 .map(|case| case.name())
                 .collect(),
             Self::FocusedAgenticGate
+            | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_case_names(probes),
@@ -4589,6 +4876,7 @@ impl NormalizedProbeSuite {
                 .map(|variant| variant.name())
                 .collect(),
             Self::FocusedAgenticGate
+            | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_schema_variant_names(probes),
@@ -4602,6 +4890,7 @@ impl NormalizedProbeSuite {
                 .map(|variant| variant.name())
                 .collect(),
             Self::FocusedAgenticGate
+            | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_tool_choice_variant_names(probes),
@@ -4614,6 +4903,7 @@ struct NormalizedProbePlan {
     case: NormalizedCaseKind,
     schema_variant: SchemaVariant,
     tool_choice_variant: ToolChoiceVariant,
+    max_tokens: u32,
 }
 
 impl NormalizedProbePlan {
@@ -4626,7 +4916,13 @@ impl NormalizedProbePlan {
             case,
             schema_variant,
             tool_choice_variant,
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
+    }
+
+    fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
     }
 
     fn all() -> Vec<Self> {
@@ -4667,6 +4963,25 @@ impl NormalizedProbePlan {
                 ToolChoiceVariant::Required,
             ),
         ]
+    }
+
+    fn required_tool_ttft_matrix() -> Vec<Self> {
+        let mut probes = Vec::new();
+        for schema_variant in SchemaVariant::required_tool_ttft_matrix() {
+            for tool_choice_variant in ToolChoiceVariant::all() {
+                for max_tokens in REQUIRED_TOOL_TTFT_MAX_TOKENS {
+                    probes.push(
+                        Self::new(
+                            NormalizedCaseKind::ToolRequiredStream,
+                            schema_variant,
+                            tool_choice_variant,
+                        )
+                        .with_max_tokens(max_tokens),
+                    );
+                }
+            }
+        }
+        probes
     }
 
     fn prefill_sweep_135k() -> Vec<Self> {
@@ -5099,6 +5414,7 @@ struct NormalizedPlanProbeReport {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -5126,6 +5442,7 @@ struct NormalizedBenchReport {
     plan_summary: NormalizedPlanSummaryReport,
     summary: Vec<NormalizedAggregateSummaryRow>,
     tool_required_stream: NormalizedToolRequiredStreamTimingReport,
+    required_tool_ttft_matrix: NormalizedRequiredToolTtftMatrixReport,
     lanes: Vec<NormalizedLaneReport>,
     hardware: HardwareReport,
     comparison: NormalizedComparisonReport,
@@ -5384,6 +5701,7 @@ struct NormalizedWarmupFailure {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     warmup_index: usize,
     classification: String,
@@ -5398,6 +5716,7 @@ struct NormalizedPlannedRequestReport {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     run_mode: &'static str,
     request_kind: &'static str,
@@ -5421,6 +5740,7 @@ impl NormalizedPlannedRequestReport {
             case: probe.case.name(),
             schema_variant: probe.schema_variant.name(),
             tool_choice_variant: probe.tool_choice_variant.name(),
+            max_tokens: probe.max_tokens,
             cache_phase: planned.phase.name(),
             run_mode: planned.run_mode.name(),
             request_kind: planned.kind.name(),
@@ -5438,6 +5758,7 @@ struct NormalizedSampleReport {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     schema_canonicalized: bool,
     schema_permuted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5497,6 +5818,7 @@ impl NormalizedSampleReport {
             case: probe.case.name(),
             schema_variant: probe.schema_variant.name(),
             tool_choice_variant: probe.tool_choice_variant.name(),
+            max_tokens: probe.max_tokens,
             schema_canonicalized: probe.schema_variant.canonicalized(),
             schema_permuted: probe.schema_variant.permuted(),
             tool_schema_sha256: tool_schema.sha256,
@@ -5547,6 +5869,7 @@ struct NormalizedFastestLaneReport {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     fastest_lane: Option<String>,
     fastest_latency_ms: Option<u128>,
@@ -5580,6 +5903,7 @@ struct NormalizedAgenticGateRow {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     run_mode: &'static str,
     fastest_lane: Option<String>,
@@ -5688,6 +6012,7 @@ struct NormalizedPrefillSweepRow {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     run_mode: &'static str,
     fastest_lane: Option<String>,
@@ -5749,6 +6074,7 @@ struct NormalizedStablePrefixRow {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     run_mode: &'static str,
     fastest_lane: Option<String>,
@@ -5881,6 +6207,51 @@ struct NormalizedLatestPerformanceComparisonRow {
     cache_speedup: Option<f64>,
     cached_tokens: Option<u64>,
     notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedRequiredToolTtftMatrixReport {
+    status: String,
+    rows: Vec<NormalizedRequiredToolTtftMatrixRow>,
+}
+
+impl NormalizedRequiredToolTtftMatrixReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedRequiredToolTtftMatrixRow {
+    lane: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_parser: Option<&'static str>,
+    schema_variant: &'static str,
+    tool_choice_variant: &'static str,
+    max_tokens: u32,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    sample_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_index: Option<usize>,
+    status: String,
+    classification: String,
+    first_response_byte_ms: Option<u128>,
+    first_parsed_sse_chunk_ms: Option<u128>,
+    first_tool_delta_ms: Option<u128>,
+    tool_finish_ms: Option<u128>,
+    validated_tool_call_ms: Option<f64>,
+    latency_delta_vs_fastest_lane_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+    stream_stalled_requests_delta: Option<i64>,
+    no_progress_failures_delta: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -6027,6 +6398,7 @@ struct NormalizedAggregateSummaryRow {
     case: &'static str,
     schema_variant: &'static str,
     tool_choice_variant: &'static str,
+    max_tokens: u32,
     cache_phase: &'static str,
     run_mode: &'static str,
     pass_count: usize,

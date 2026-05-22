@@ -29,7 +29,7 @@ Options:
 
 qwen-mlx-tool-normalized:
   --sweep-profile <name>              Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
-  --probe-suite <name>                full-matrix, focused-agentic-gate, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
+  --probe-suite <name>                full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
   --snapshot <path>                   Raw Hugging Face snapshot path for built-in sweep profiles
   --cache-phases <csv>                cold, warm_same_prompt, warm_same_tool_schema [default: all]
   --only-lanes <csv>                  Keep only named lanes after built-in profile expansion

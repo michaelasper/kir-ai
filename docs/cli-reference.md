@@ -364,6 +364,30 @@ Use `--only-lanes mlx-stable-prefix` or `--only-lanes kir-stable-prefix` to
 reduce it to one lane, or `--profile-lanes <csv>` as the same post-profile lane
 filter under a name that emphasizes built-in profile selection.
 
+For required-tool TTFT parser experiments, run the bounded matrix against
+separate Kir proxy lanes configured with the MLX tool parser modes under test:
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --probe-suite required-tool-ttft-matrix \
+  --lane name=kir-auto,endpoint=http://127.0.0.1:3000,model=local-qwen36-mlx,kind=kir_ai_proxy,tool_parser=auto \
+  --lane name=kir-json,endpoint=http://127.0.0.1:3001,model=local-qwen36-mlx,kind=kir_ai_proxy,tool_parser=json \
+  --lane name=kir-qwen-xml,endpoint=http://127.0.0.1:3002,model=local-qwen36-mlx,kind=kir_ai_proxy,tool_parser=qwen-xml \
+  --admin-token "$KIR_ADMIN_TOKEN" \
+  --max-requests 72 \
+  --output qwen-required-tool-ttft-matrix.json
+```
+
+The suite defaults to `--warmups 0`, `--cache-phases cold`, and one sample. It
+plans 24 requests per lane: `tool_required_stream` across `minimal_shallow`,
+`canonical_current`, `omp_style_i`, and `large_stress` schemas; required and
+function-specific `tool_choice`; and `max_tokens` values `24`, `48`, and `96`.
+The `required_tool_ttft_matrix` report keeps one row per measured sample with
+first response byte, first parsed SSE chunk, first tool delta, tool finish,
+validated tool-call timing when Kir admin metrics are available, delta against
+the fastest matching lane, finish reason, validation classification, and
+no-progress/stall counter deltas.
+
 The `qwen-mlx-prefill-135k` profile defaults to `--probe-suite
 prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
 `mlx-prefill-512`, `kir-prefill-512`, `mlx-prefill-1024`,
@@ -380,7 +404,7 @@ stable-agent-prefix` and expands `mlx-stable-prefix` on
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill`, `qwen-mlx-prefill-135k`, and `qwen-mlx-stable-prefix` require `--snapshot` and use the default MLX/Kir proxy ports above. |
-| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `prefill-sweep-135k`, `stable-agent-prefix`, or `stable-prefix-smoke`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
+| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `required-tool-ttft-matrix`, `prefill-sweep-135k`, `stable-agent-prefix`, or `stable-prefix-smoke`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
 | `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
 | `--cache-phases <csv>` | `cold,warm_same_prompt,warm_same_tool_schema` | Selects cache phases after probe-suite expansion. For example, `warm_same_prompt` runs one warmup pass for that phase before measured samples when `--warmups` is greater than `0`. |
 | `--only-lanes <csv>` | all lanes | Filters lanes by name after built-in profile expansion or explicit lane parsing. Unknown lane names fail before execution. |
@@ -419,6 +443,7 @@ have been launched with equivalent chat-template args and does not inject
 request kwargs.
 
 Each measured sample reports `schema_variant`, `tool_choice_variant`,
+`max_tokens`,
 `schema_canonicalized`, `schema_permuted`, `tool_schema_sha256`,
 `tool_schema_bytes`, `cache_phase`, `prewarmed`, latency, HTTP status, finish
 reason, prompt/completion/total tokens, cached-token status/count when provided
