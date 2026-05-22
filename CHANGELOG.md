@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.3](https://github.com/michaelasper/kir-ai/compare/v1.36.2...v1.36.3) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-353:** parse safetensors total size as integer ([80b5f04](https://github.com/michaelasper/kir-ai/commit/80b5f040811cdac7280965c2f2fe392eb4a5f411))
+* **COR-353:** reject rounded safetensors total sizes ([82dd3f4](https://github.com/michaelasper/kir-ai/commit/82dd3f484a64db320f3474aef286af24b047210f))
+
 ## [1.36.2](https://github.com/michaelasper/kir-ai/compare/v1.36.1...v1.36.2) (2026-05-22)
 
 ### Bug Fixes
