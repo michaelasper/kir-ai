@@ -1,6 +1,12 @@
 use crate::ModelSpecError;
-use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, Visitor},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetensorsIndex {
@@ -15,9 +21,8 @@ impl SafetensorsIndex {
         for shard_path in raw.weight_map.values() {
             validate_safetensors_shard_path(shard_path)?;
         }
-        let total_size_bytes = raw.metadata.total_size.round() as u64;
         Ok(Self {
-            total_size_bytes,
+            total_size_bytes: raw.metadata.total_size,
             weight_map: raw.weight_map,
         })
     }
@@ -109,5 +114,75 @@ struct RawSafetensorsIndex {
 
 #[derive(Debug, Deserialize)]
 struct RawSafetensorsMetadata {
-    total_size: f64,
+    #[serde(deserialize_with = "deserialize_total_size")]
+    total_size: u64,
+}
+
+fn deserialize_total_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TotalSizeVisitor;
+
+    impl<'de> Visitor<'de> for TotalSizeVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a non-negative integer total_size byte count")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u64::try_from(value).map_err(|_| total_size_error())
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u64::try_from(value).map_err(|_| total_size_error())
+        }
+
+        fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u64::try_from(value).map_err(|_| total_size_error())
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            const MAX_EXACT_F64_INTEGER: f64 = 9_007_199_254_740_992.0;
+
+            if value.is_finite()
+                && value >= 0.0
+                && value.fract() == 0.0
+                && value <= MAX_EXACT_F64_INTEGER
+            {
+                Ok(value as u64)
+            } else {
+                Err(total_size_error())
+            }
+        }
+    }
+
+    deserializer.deserialize_any(TotalSizeVisitor)
+}
+
+fn total_size_error<E>() -> E
+where
+    E: de::Error,
+{
+    E::custom("metadata.total_size must be a non-negative integer byte count")
 }
