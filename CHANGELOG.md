@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.42.2](https://github.com/michaelasper/kir-ai/compare/v1.42.1...v1.42.2) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-313:** require admin token on loopback serve ([a4ea15e](https://github.com/michaelasper/kir-ai/commit/a4ea15efe17fc451a779351fc90a2d817a5c9011))
+
 ## [1.42.1](https://github.com/michaelasper/kir-ai/compare/v1.42.0...v1.42.1) (2026-05-22)
 
 ### Bug Fixes
