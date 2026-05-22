@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.43.1](https://github.com/michaelasper/kir-ai/compare/v1.43.0...v1.43.1) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-299:** mirror Metal KV cache blocks ([c043c50](https://github.com/michaelasper/kir-ai/commit/c043c501a7fbc0fa603817fed97d8d9eeb9a51ae))
+
 ## [1.43.0](https://github.com/michaelasper/kir-ai/compare/v1.42.3...v1.43.0) (2026-05-22)
 
 ### Features
