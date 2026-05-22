@@ -2,6 +2,7 @@ use llm_hub::{
     ArtifactClass, HubFile, HubModelInfo, HubRepoId, ModelProfile, SnapshotManifest,
     build_download_plan,
 };
+use llm_models::{BackendKind, ModelFamily};
 use serde_json::json;
 
 #[test]
@@ -283,6 +284,106 @@ fn builtin_profile_names_match_lookup_table() {
 
         assert_eq!(profile.name, name);
     }
+}
+
+#[test]
+fn builtin_profiles_are_compatible_with_model_family_backend_support() {
+    for name in ModelProfile::builtin_names() {
+        let profile = ModelProfile::builtin(name)
+            .unwrap_or_else(|| panic!("profile `{name}` must exist in the built-in lookup table"));
+
+        assert_eq!(
+            profile.name, name,
+            "profile `{name}` lookup returned mismatched profile name `{}`",
+            profile.name
+        );
+        assert_profile_field_is_known(name, "quantization", &profile.quantization);
+        assert!(
+            profile
+                .allow_patterns
+                .iter()
+                .any(|pattern| pattern == "*.safetensors"),
+            "profile `{name}` must allow safetensors weights for planning; allow patterns: {:?}",
+            profile.allow_patterns
+        );
+
+        let family = ModelFamily::parse_slug(&profile.family).unwrap_or_else(|err| {
+            panic!(
+                "profile `{name}` declares unsupported family `{}`: {err}",
+                profile.family
+            )
+        });
+        let backend = BackendKind::parse_slug(&profile.loader).unwrap_or_else(|err| {
+            panic!(
+                "profile `{name}` declares unsupported backend loader `{}`: {err}",
+                profile.loader
+            )
+        });
+        let supported_backends = family.adapter().production_backends();
+
+        assert!(
+            supported_backends.contains(&backend),
+            "profile `{name}` declares loader `{backend}` for family `{family}`, but supported loaders are: {}",
+            backend_list(supported_backends)
+        );
+
+        let plan = build_download_plan(
+            HubRepoId::model(format!("tests/{name}")).unwrap_or_else(|err| {
+                panic!("profile `{name}` test repo id should be safe: {err}")
+            }),
+            "main",
+            "0123456789abcdef0123456789abcdef01234567",
+            profile,
+            representative_profile_files(),
+            &[],
+        )
+        .unwrap_or_else(|err| panic!("profile `{name}` should build a representative plan: {err}"));
+
+        assert_eq!(
+            plan.profile.name, name,
+            "profile `{name}` plan recorded mismatched profile name `{}`",
+            plan.profile.name
+        );
+        assert!(
+            plan.files_to_download
+                .iter()
+                .any(|file| file.class == ArtifactClass::Weights),
+            "profile `{name}` representative plan must include weights; files: {:?}",
+            plan.files_to_download
+        );
+    }
+}
+
+fn assert_profile_field_is_known(profile: &str, field: &str, value: &str) {
+    const KNOWN_QUANTIZATIONS: &[&str] = &["4bit", "8bit", "optiq-4bit", "bf16"];
+
+    let known_values = match field {
+        "quantization" => KNOWN_QUANTIZATIONS,
+        _ => unreachable!("test only validates explicit profile fields"),
+    };
+
+    assert!(
+        known_values.contains(&value),
+        "profile `{profile}` declares unknown {field} `{value}`; known values: {}",
+        known_values.join(", ")
+    );
+}
+
+fn backend_list(backends: &[BackendKind]) -> String {
+    backends
+        .iter()
+        .map(|backend| backend.canonical_slug())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn representative_profile_files() -> Vec<HubFile> {
+    vec![
+        HubFile::new("config.json", 100, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 200, Some("\"tok\"")),
+        HubFile::new("model.safetensors", 1_000, Some("\"weights\"")),
+        HubFile::new("processor_config.json", 400, Some("\"processor\"")),
+    ]
 }
 
 #[test]

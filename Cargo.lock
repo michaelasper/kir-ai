@@ -1127,6 +1127,7 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
+ "llm-models",
  "reqwest",
  "schemars",
  "serde",
