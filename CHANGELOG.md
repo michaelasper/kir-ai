@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.38.0](https://github.com/michaelasper/kir-ai/compare/v1.37.1...v1.38.0) (2026-05-22)
+
+### Features
+
+* **COR-305:** add paged KV block primitives ([4e04842](https://github.com/michaelasper/kir-ai/commit/4e04842a99994b5d3b6ad721c29cfe546178deba))
+
 ## [1.37.1](https://github.com/michaelasper/kir-ai/compare/v1.37.0...v1.37.1) (2026-05-22)
 
 ### Bug Fixes
