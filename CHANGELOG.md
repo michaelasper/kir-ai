@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.39.0](https://github.com/michaelasper/kir-ai/compare/v1.38.0...v1.39.0) (2026-05-22)
+
+### Features
+
+* **COR-304:** back layer kv cache with blocks ([1b25a7b](https://github.com/michaelasper/kir-ai/commit/1b25a7b9581709819538984c7088f7bb0d1d90a6))
+
+### Bug Fixes
+
+* **COR-304:** account block storage in layer kv cache bytes ([286eb58](https://github.com/michaelasper/kir-ai/commit/286eb58adf95ca964d937b38cf85030c1c7982ad))
+
 ## [1.38.0](https://github.com/michaelasper/kir-ai/compare/v1.37.1...v1.38.0) (2026-05-22)
 
 ### Features
