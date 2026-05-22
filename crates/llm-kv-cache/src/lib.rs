@@ -83,8 +83,11 @@ pub struct LayerKvCache {
     head_dim: usize,
     token_count: usize,
     tokens_seen: usize,
+    // Physical slot of the oldest logical token in the circular window.
+    window_start: usize,
     block_table: BlockTable,
     blocks: Vec<CacheBlock>,
+    // Primary ring storage followed by mirrored slots for contiguous logical views.
     key_stage: Vec<f32>,
     value_stage: Vec<f32>,
 }
@@ -115,6 +118,7 @@ impl Clone for LayerKvCache {
             head_dim: self.head_dim,
             token_count: self.token_count,
             tokens_seen: self.tokens_seen,
+            window_start: self.window_start,
             block_table: self.block_table.clone(),
             blocks: self.blocks.clone(),
             key_stage: self.key_stage.clone(),
@@ -138,6 +142,9 @@ impl LayerKvCache {
         let storage_len = max_tokens
             .checked_mul(vector_len)
             .ok_or(KvCacheError::InvalidShape)?;
+        let stage_len = storage_len
+            .checked_mul(2)
+            .ok_or(KvCacheError::InvalidShape)?;
         let block_count = max_tokens.div_ceil(LAYER_KV_BLOCK_TOKENS);
         let mut block_table = BlockTable::with_capacity(block_count);
         let mut blocks = Vec::with_capacity(block_count);
@@ -157,10 +164,11 @@ impl LayerKvCache {
             head_dim,
             token_count: 0,
             tokens_seen: 0,
+            window_start: 0,
             block_table,
             blocks,
-            key_stage: vec![0.0; storage_len],
-            value_stage: vec![0.0; storage_len],
+            key_stage: vec![0.0; stage_len],
+            value_stage: vec![0.0; stage_len],
         })
     }
 
@@ -297,19 +305,11 @@ impl LayerKvCache {
             .tokens_seen
             .checked_add(1)
             .ok_or(KvCacheError::InvalidShape)?;
-        let vector_len = self.vector_len();
-        let used_len = self.used_len();
-        self.key_stage.copy_within(vector_len..used_len, 0);
-        self.value_stage.copy_within(vector_len..used_len, 0);
+        let physical_token_index = self.window_start;
         let token_index = self.max_tokens - 1;
-        self.write_stage_token(token_index, key, value);
-        Self::rebuild_blocks_from_stage(
-            &mut self.blocks,
-            self.token_count,
-            vector_len,
-            &self.key_stage,
-            &self.value_stage,
-        )?;
+        self.write_block_token(physical_token_index, key, value)?;
+        self.write_stage_token(physical_token_index, key, value);
+        self.window_start = (self.window_start + 1) % self.max_tokens;
         self.tokens_seen = tokens_seen;
         self.revision = self.revision.saturating_add(1);
         Ok(token_index)
@@ -336,32 +336,44 @@ impl LayerKvCache {
     }
 
     pub fn keys(&self) -> &[f32] {
-        &self.key_stage[..self.used_len()]
+        let start = self.window_start * self.vector_len();
+        &self.key_stage[start..start + self.used_len()]
     }
 
     pub fn values(&self) -> &[f32] {
-        &self.value_stage[..self.used_len()]
+        let start = self.window_start * self.vector_len();
+        &self.value_stage[start..start + self.used_len()]
     }
 
     pub fn key_storage(&self) -> &[f32] {
-        &self.key_stage
+        &self.key_stage[..self.stage_storage_len()]
     }
 
     pub fn value_storage(&self) -> &[f32] {
-        &self.value_stage
+        &self.value_stage[..self.stage_storage_len()]
     }
 
     pub fn clear(&mut self) {
         self.token_count = 0;
         self.tokens_seen = 0;
+        self.window_start = 0;
         for block in &mut self.blocks {
             block.clear();
         }
+        self.key_stage.fill(0.0);
+        self.value_stage.fill(0.0);
         self.revision = self.revision.saturating_add(1);
     }
 
     fn block_position(&self, token_index: usize) -> Option<(usize, usize)> {
         if token_index >= self.token_count {
+            return None;
+        }
+        self.physical_block_position((self.window_start + token_index) % self.max_tokens)
+    }
+
+    fn physical_block_position(&self, token_index: usize) -> Option<(usize, usize)> {
+        if token_index >= self.max_tokens {
             return None;
         }
         Some((
@@ -376,8 +388,9 @@ impl LayerKvCache {
         key: &[f32],
         value: &[f32],
     ) -> Result<(), KvCacheError> {
-        let block_index = token_index / LAYER_KV_BLOCK_TOKENS;
-        let expected_block_token_index = token_index % LAYER_KV_BLOCK_TOKENS;
+        let (block_index, expected_block_token_index) = self
+            .physical_block_position(token_index)
+            .ok_or(KvCacheError::InvalidShape)?;
         let block_id = self
             .block_table
             .get(block_index)
@@ -396,39 +409,39 @@ impl LayerKvCache {
         Ok(())
     }
 
+    fn write_block_token(
+        &mut self,
+        token_index: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvCacheError> {
+        let (block_index, block_token_index) = self
+            .physical_block_position(token_index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let block_id = self
+            .block_table
+            .get(block_index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let block = self
+            .blocks
+            .get_mut(block_index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        if block.id() != block_id {
+            return Err(KvCacheError::InvalidShape);
+        }
+        block.write_at(block_token_index, key, value)
+    }
+
     fn write_stage_token(&mut self, token_index: usize, key: &[f32], value: &[f32]) {
         let vector_len = self.vector_len();
         let start = token_index * vector_len;
         let end = start + vector_len;
         self.key_stage[start..end].copy_from_slice(key);
         self.value_stage[start..end].copy_from_slice(value);
-    }
-
-    fn rebuild_blocks_from_stage(
-        blocks: &mut [CacheBlock],
-        token_count: usize,
-        vector_len: usize,
-        key_stage: &[f32],
-        value_stage: &[f32],
-    ) -> Result<(), KvCacheError> {
-        for block in blocks.iter_mut() {
-            block.clear();
-        }
-        for token_index in 0..token_count {
-            let block_index = token_index / LAYER_KV_BLOCK_TOKENS;
-            let expected_block_token_index = token_index % LAYER_KV_BLOCK_TOKENS;
-            let start = token_index * vector_len;
-            let end = start + vector_len;
-            let block = blocks
-                .get_mut(block_index)
-                .ok_or(KvCacheError::InvalidShape)?;
-            let block_token_index =
-                block.append(&key_stage[start..end], &value_stage[start..end])?;
-            if block_token_index != expected_block_token_index {
-                return Err(KvCacheError::InvalidShape);
-            }
-        }
-        Ok(())
+        let mirror_start = (token_index + self.max_tokens) * vector_len;
+        let mirror_end = mirror_start + vector_len;
+        self.key_stage[mirror_start..mirror_end].copy_from_slice(key);
+        self.value_stage[mirror_start..mirror_end].copy_from_slice(value);
     }
 
     fn validate_token_shape(&self, key: &[f32], value: &[f32]) -> Result<(), KvCacheError> {
@@ -450,6 +463,10 @@ impl LayerKvCache {
 
     fn used_len(&self) -> usize {
         self.token_count * self.vector_len()
+    }
+
+    fn stage_storage_len(&self) -> usize {
+        self.max_tokens * self.vector_len()
     }
 }
 
@@ -938,6 +955,50 @@ mod tests {
     }
 
     #[test]
+    fn layer_kv_cache_sliding_append_reuses_ring_slot_without_shifting_storage() {
+        let mut cache = LayerKvCache::new(3, 1, 1).expect("cache shape is valid");
+
+        cache.append_sliding(&[1.0], &[10.0]).expect("token fits");
+        cache.append_sliding(&[2.0], &[20.0]).expect("token fits");
+        cache.append_sliding(&[3.0], &[30.0]).expect("token fits");
+        cache
+            .append_sliding(&[4.0], &[40.0])
+            .expect("full cache recycles oldest slot");
+
+        assert_eq!(cache.keys(), &[2.0, 3.0, 4.0]);
+        assert_eq!(cache.values(), &[20.0, 30.0, 40.0]);
+        assert_eq!(cache.key(0), Some(&[2.0][..]));
+        assert_eq!(cache.value(2), Some(&[40.0][..]));
+        assert_eq!(cache.key_storage(), &[4.0, 2.0, 3.0]);
+        assert_eq!(cache.value_storage(), &[40.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn layer_kv_cache_sliding_append_keeps_block_storage_bounded_across_cycles() {
+        let mut cache = LayerKvCache::new(3, 1, 1).expect("cache shape is valid");
+        let initial_resident_bytes = cache.resident_bytes();
+        let block_ids = cache.blocks.iter().map(CacheBlock::id).collect::<Vec<_>>();
+
+        for token in 1..=12 {
+            let key = [token as f32];
+            let value = [(token as f32) * 10.0];
+            cache
+                .append_sliding(&key, &value)
+                .expect("sliding append succeeds");
+        }
+
+        assert_eq!(cache.keys(), &[10.0, 11.0, 12.0]);
+        assert_eq!(cache.values(), &[100.0, 110.0, 120.0]);
+        assert_eq!(cache.token_count(), 3);
+        assert_eq!(cache.next_position(), 12);
+        assert_eq!(cache.resident_bytes(), initial_resident_bytes);
+        assert_eq!(
+            cache.blocks.iter().map(CacheBlock::id).collect::<Vec<_>>(),
+            block_ids
+        );
+    }
+
+    #[test]
     fn layer_kv_cache_stores_rows_in_blocks_while_preserving_contiguous_views() {
         let max_tokens = LAYER_KV_BLOCK_TOKENS + 1;
         let mut cache = LayerKvCache::new(max_tokens, 1, 1).expect("cache shape is valid");
@@ -976,25 +1037,31 @@ mod tests {
 
         assert_eq!(cache.keys()[0], 1.0);
         assert_eq!(cache.keys()[max_tokens - 1], 999.0);
-        assert_eq!(cache.blocks[0].key(0), Some(&[1.0][..]));
+        assert_eq!(cache.key(0), Some(&[1.0][..]));
+        assert_eq!(cache.key(max_tokens - 1), Some(&[999.0][..]));
+        assert_eq!(cache.key_storage()[0], 999.0);
+        assert_eq!(cache.blocks[0].key(0), Some(&[999.0][..]));
         assert_eq!(
             cache.blocks[0].key(LAYER_KV_BLOCK_TOKENS - 1),
+            Some(&[(LAYER_KV_BLOCK_TOKENS - 1) as f32][..])
+        );
+        assert_eq!(
+            cache.blocks[1].key(0),
             Some(&[LAYER_KV_BLOCK_TOKENS as f32][..])
         );
-        assert_eq!(cache.blocks[1].key(0), Some(&[999.0][..]));
     }
 
     #[test]
     fn layer_kv_cache_resident_bytes_count_stage_and_block_storage() {
         let mut cache = LayerKvCache::new(3, 2, 2).expect("cache shape is valid");
 
-        assert_eq!(cache.resident_bytes(), 192);
+        assert_eq!(cache.resident_bytes(), 288);
 
         cache
             .append(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
             .expect("token fits");
         assert_eq!(cache.token_count(), 1);
-        assert_eq!(cache.resident_bytes(), 192);
+        assert_eq!(cache.resident_bytes(), 288);
     }
 
     #[test]

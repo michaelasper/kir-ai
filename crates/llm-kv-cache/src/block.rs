@@ -108,6 +108,24 @@ impl CacheBlock {
         Ok(token_index)
     }
 
+    pub(crate) fn write_at(
+        &mut self,
+        token_index: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvCacheError> {
+        self.validate_token_shape(key, value)?;
+        if token_index >= self.token_count {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let start = token_index * self.vector_len;
+        let end = start + self.vector_len;
+        self.keys[start..end].copy_from_slice(key);
+        self.values[start..end].copy_from_slice(value);
+        self.content_hash = None;
+        Ok(())
+    }
+
     pub fn key(&self, token_index: usize) -> Option<&[f32]> {
         self.token_slice(&self.keys, token_index)
     }
