@@ -2940,6 +2940,7 @@ fn stable_prefix_lane_metric(
         .copied()
         .filter(|sample| sample.status == "passed")
         .collect::<Vec<_>>();
+    let request_cache_observations = matching_request_cache_observations(lane, &samples);
     Some(NormalizedStablePrefixLaneMetric {
         lane: lane.name.clone(),
         lane_kind: lane.kind,
@@ -2958,14 +2959,18 @@ fn stable_prefix_lane_metric(
         p50_elapsed_latency_ms: percentile_for_samples(&passed, |sample| sample.latency_ms),
         latency_delta_vs_fastest_ms: None,
         avg_prompt_tokens: average_u64(passed.iter().filter_map(|sample| sample.prompt_tokens)),
-        avg_cached_tokens: average_u64(passed.iter().filter_map(|sample| sample.cached_tokens)),
+        avg_cached_tokens: average_u64(
+            passed
+                .iter()
+                .filter_map(|sample| sample_cached_tokens(sample, &request_cache_observations)),
+        ),
         avg_uncached_tokens: average_u64(
             passed
                 .iter()
-                .filter_map(|sample| sample_uncached_tokens(sample)),
+                .filter_map(|sample| sample_uncached_tokens(sample, &request_cache_observations)),
         ),
-        cache_status_counts: cache_status_counts(&passed),
-        request_cache_observations: matching_request_cache_observations(lane, &samples),
+        cache_status_counts: cache_status_counts(&passed, &request_cache_observations),
+        request_cache_observations,
     })
 }
 
@@ -3229,30 +3234,72 @@ fn cache_speedup(
     }
 }
 
-fn cache_status_counts(samples: &[&NormalizedSampleReport]) -> BTreeMap<String, usize> {
+fn cache_status_counts(
+    samples: &[&NormalizedSampleReport],
+    observations: &[NormalizedStablePrefixRequestCacheObservation],
+) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for sample in samples {
         *counts
-            .entry(cache_status_from_sample(sample).to_owned())
+            .entry(cache_status_for_sample(sample, observations))
             .or_insert(0) += 1;
     }
     counts
 }
 
-fn cache_status_from_sample(sample: &NormalizedSampleReport) -> &'static str {
-    if sample.cached_tokens_status != "present" {
-        return "unknown";
+fn cache_status_for_sample(
+    sample: &NormalizedSampleReport,
+    observations: &[NormalizedStablePrefixRequestCacheObservation],
+) -> String {
+    if let Some(status) = cache_status_from_sample(sample) {
+        return status.to_owned();
     }
-    match (sample.prompt_tokens, sample.cached_tokens) {
+    request_cache_observation_for_sample(sample, observations)
+        .map(|observation| observation.cache_status.clone())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn cache_status_from_sample(sample: &NormalizedSampleReport) -> Option<&'static str> {
+    if sample.cached_tokens_status != "present" {
+        return None;
+    }
+    Some(match (sample.prompt_tokens, sample.cached_tokens) {
         (_, Some(0)) => "miss",
         (Some(prompt), Some(cached)) if cached >= prompt => "hit",
         (Some(_), Some(_)) => "partial",
         _ => "unknown",
-    }
+    })
 }
 
-fn sample_uncached_tokens(sample: &NormalizedSampleReport) -> Option<u64> {
-    Some(sample.prompt_tokens?.saturating_sub(sample.cached_tokens?))
+fn sample_cached_tokens(
+    sample: &NormalizedSampleReport,
+    observations: &[NormalizedStablePrefixRequestCacheObservation],
+) -> Option<u64> {
+    sample.cached_tokens.or_else(|| {
+        request_cache_observation_for_sample(sample, observations)
+            .and_then(|observation| observation.cached_tokens)
+    })
+}
+
+fn sample_uncached_tokens(
+    sample: &NormalizedSampleReport,
+    observations: &[NormalizedStablePrefixRequestCacheObservation],
+) -> Option<u64> {
+    if let Some(cached_tokens) = sample.cached_tokens {
+        return Some(sample.prompt_tokens?.saturating_sub(cached_tokens));
+    }
+    request_cache_observation_for_sample(sample, observations)
+        .and_then(|observation| observation.uncached_tokens)
+}
+
+fn request_cache_observation_for_sample<'a>(
+    sample: &NormalizedSampleReport,
+    observations: &'a [NormalizedStablePrefixRequestCacheObservation],
+) -> Option<&'a NormalizedStablePrefixRequestCacheObservation> {
+    let request_id = sample.request_id.as_deref()?;
+    observations
+        .iter()
+        .find(|observation| observation.request_id == request_id)
 }
 
 fn matching_request_cache_observations(

@@ -86,9 +86,11 @@ MLX prompt-cache control is a sidecar launch policy, not a Kir request-body
 field. Launch `mlx_lm.server`/`mlx_vlm.server` with `--prompt-cache-size` or
 `--prompt-cache-bytes` and keep request serialization stable. Kir records the
 stable cache identity in backend/admin metrics and consumes upstream
-`usage.prompt_tokens_details.cached_tokens` when the sidecar reports it, but it
-does not send unsupported `cache_key`, `session_id`, or `prompt_cache_key`
-fields to MLX request bodies.
+`usage.prompt_tokens_details.cached_tokens` when the sidecar reports it. When
+that upstream field is absent, Kir proxy admin metrics derive a best-effort
+cache status from prior matching stable-prefix observations. Kir does not send
+unsupported `cache_key`, `session_id`, or `prompt_cache_key` fields to MLX
+request bodies.
 
 The default request-size limits accept the current long-context benchmark
 payloads, including the synthetic 135k stable-prefix probe. Lower the three
@@ -447,8 +449,9 @@ Each measured sample reports `schema_variant`, `tool_choice_variant`,
 `schema_canonicalized`, `schema_permuted`, `tool_schema_sha256`,
 `tool_schema_bytes`, `cache_phase`, `prewarmed`, latency, HTTP status, finish
 reason, prompt/completion/total tokens, cached-token status/count when provided
-by upstream `usage.prompt_tokens_details.cached_tokens`, validation
-classification, and the stream timing fields when observed. The top-level
+by upstream `usage.prompt_tokens_details.cached_tokens` or matching Kir proxy
+admin request-cache observations, validation classification, and the stream
+timing fields when observed. The top-level
 `plan_summary` records probe and lane counts, selected phase/probe/lane names,
 warmup request count, measured request count, total HTTP requests, and planned
 prompt-token budget. Live runs print progress and ETA lines to stderr while

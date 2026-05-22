@@ -1498,6 +1498,90 @@ async fn admin_metrics_request_cache_records_stable_prefix_identity_for_repeat_a
 }
 
 #[tokio::test]
+async fn admin_metrics_request_cache_derives_repeat_prefix_status_without_cached_token_usage() {
+    let app = build_router_with_unauthenticated_admin(Box::new(CachedUsageBackend {
+        prompt_tokens: 100,
+        prompt_cached_tokens: None,
+        completion_tokens: 5,
+    }));
+    let chat_body = |request_id: &str, user_content: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("x-request-id", request_id)
+            .body(Body::from(
+                json!({
+                    "model": llm_engine::DEFAULT_MODEL_ID,
+                    "messages": [
+                        {"role": "system", "content": "You are a coding agent."},
+                        {"role": "user", "content": user_content}
+                    ],
+                    "tools": [{
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "description": "Lookup project context.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string"}
+                                },
+                                "required": ["query"]
+                            }
+                        }
+                    }],
+                    "max_tokens": 8
+                })
+                .to_string(),
+            ))
+            .expect("request builds")
+    };
+
+    let first = app
+        .clone()
+        .oneshot(chat_body("agent-fallback-1", "first turn"))
+        .await
+        .expect("first chat response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = app
+        .clone()
+        .oneshot(chat_body("agent-fallback-2", "second turn"))
+        .await
+        .expect("second chat response");
+    assert_eq!(second.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let recent = body["request_cache"]["recent"]
+        .as_array()
+        .expect("recent observations");
+    assert_eq!(recent.len(), 2);
+    let cold = &recent[0];
+    let warm = &recent[1];
+
+    assert_eq!(cold["request_id"], "agent-fallback-1");
+    assert_eq!(cold["cache_status"], "unknown");
+    assert!(cold["cached_tokens"].is_null());
+    assert!(cold["uncached_tokens"].is_null());
+    assert_eq!(warm["request_id"], "agent-fallback-2");
+    assert_eq!(warm["cache_status"], "partial");
+    assert!(warm["cached_tokens"].is_null());
+    assert!(warm["uncached_tokens"].is_null());
+    assert_eq!(cold["stable_prefix_key"], warm["stable_prefix_key"]);
+    assert_ne!(cold["prompt_hash"], warm["prompt_hash"]);
+}
+
+#[tokio::test]
 async fn admin_metrics_request_cache_records_streamed_observation() {
     let app = build_router_with_unauthenticated_admin(Box::new(CachedUsageBackend {
         prompt_tokens: 50,

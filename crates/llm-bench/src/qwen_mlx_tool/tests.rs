@@ -40,6 +40,63 @@ fn qwen_mlx_tool_normalized_lane_spec_defaults_to_qwen_no_thinking_and_rejects_u
 }
 
 #[test]
+fn stable_prefix_counts_use_request_cache_observation_when_usage_omits_cached_tokens() {
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+        SchemaVariant::CanonicalCurrent,
+        ToolChoiceVariant::Required,
+    );
+    let lane_config =
+        lane("name=kir,endpoint=http://127.0.0.1:8080,model=local-qwen36-mlx,kind=kir_ai_proxy");
+    let mut lane = NormalizedLaneReport::planned(&lane_config, 0, 0, None);
+    let mut sample = NormalizedSampleReport::base(
+        probe,
+        CachePhase::WarmSameToolSchema,
+        RunMode::Sequential,
+        0,
+        None,
+        true,
+        128,
+    );
+    sample.status = "passed".to_owned();
+    sample.classification = "passed".to_owned();
+    sample.latency_ms = Some(42);
+    sample.prompt_tokens = Some(100);
+    sample.completion_tokens = Some(5);
+    sample.total_tokens = Some(105);
+    sample.cached_tokens_status = "missing";
+    sample.request_id = Some("req-2".to_owned());
+    lane.samples.push(sample);
+    lane.admin_metrics.after = Some(json!({
+        "request_cache": {
+            "recent": [{
+                "request_id": "req-2",
+                "model": "local-qwen36-mlx",
+                "streamed": true,
+                "prompt_tokens": 100,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "cache_status": "partial",
+                "latency_ms": 7
+            }]
+        }
+    }));
+
+    let metric = stable_prefix_lane_metric(
+        &lane,
+        probe,
+        CachePhase::WarmSameToolSchema,
+        RunMode::Sequential,
+    )
+    .expect("stable prefix metric");
+
+    assert_eq!(metric.cache_status_counts.get("partial"), Some(&1));
+    assert!(!metric.cache_status_counts.contains_key("unknown"));
+    assert_eq!(metric.request_cache_observations.len(), 1);
+    assert_eq!(metric.request_cache_observations[0].cache_status, "partial");
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_cache_prefill_profile_expands_default_lanes() {
     let snapshot =
         "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";

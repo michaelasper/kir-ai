@@ -187,10 +187,14 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   `cache_key`, `cache_template_id`, `model_family`, `tool_schema_hash`,
   `system_prompt_hash`, `chat_template_kwargs_hash`, `stable_prefix_key`, and
   `latency_ms`.
-  `cache_status` is `unknown` when upstream cached-token details are absent,
-  `miss` when cached tokens are `0`, `hit` when cached tokens are greater than
-  or equal to prompt tokens, and `partial` otherwise. Identity fields are
-  hashes or template identifiers only: prompts, messages, tool schemas, and
+  `cache_status` is `unknown` when cached-token details are absent and no
+  prior matching Kir cache identity is available, `miss` when cached tokens are
+  `0`, `hit` when cached tokens are greater than or equal to prompt tokens, and
+  `partial` otherwise. If upstream usage omits cached-token details, Kir derives
+  a best-effort `partial`/`hit` status from prior observations with the same
+  stable prefix identity; derived partial observations leave token counts
+  absent. Identity fields are hashes or template identifiers only: prompts,
+  messages, tool schemas, and
   request bodies are not stored. `stable_prefix_key` is a versioned hash over
   model family, chat template ID, tool schema hash, system prompt hash, and
   chat template kwargs hash so repeated agent turns can be grouped without

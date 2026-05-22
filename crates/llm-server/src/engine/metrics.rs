@@ -49,6 +49,18 @@ pub(super) struct RequestCacheObservation {
 }
 
 impl RequestCacheObservation {
+    fn shares_stable_prefix_with(&self, prior: &Self) -> bool {
+        self.stable_prefix_key.is_some()
+            && self.stable_prefix_key == prior.stable_prefix_key
+            && self.model == prior.model
+            && self.cache_key == prior.cache_key
+            && self.cache_template_id == prior.cache_template_id
+    }
+
+    fn has_same_prompt_as(&self, prior: &Self) -> bool {
+        self.prompt_hash.is_some() && self.prompt_hash == prior.prompt_hash
+    }
+
     pub(super) fn from_usage(
         request_id: &str,
         model: &str,
@@ -115,14 +127,43 @@ impl RequestCacheObservations {
         }
     }
 
-    pub(super) fn record(&mut self, observation: RequestCacheObservation) {
+    pub(super) fn record(&mut self, mut observation: RequestCacheObservation) {
         if self.capacity == 0 {
             return;
         }
+        self.apply_history_fallback(&mut observation);
         while self.recent.len() >= self.capacity {
             self.recent.pop_front();
         }
         self.recent.push_back(observation);
+    }
+
+    fn apply_history_fallback(&self, observation: &mut RequestCacheObservation) {
+        if observation.cache_status != RequestCacheStatus::Unknown {
+            return;
+        }
+        let Some(prior) = self
+            .recent
+            .iter()
+            .rev()
+            .find(|prior| observation.shares_stable_prefix_with(prior))
+        else {
+            return;
+        };
+        observation.cache_status = if observation.has_same_prompt_as(prior) {
+            observation.cached_tokens = Some(observation.prompt_tokens);
+            observation.uncached_tokens = Some(0);
+            RequestCacheStatus::Hit
+        } else {
+            RequestCacheStatus::Partial
+        };
+        tracing::debug!(
+            request_id = %observation.request_id,
+            model = %observation.model,
+            cache_status = ?observation.cache_status,
+            stable_prefix_key = observation.stable_prefix_key.as_deref(),
+            "derived request cache status from prior cache identity"
+        );
     }
 
     pub(super) fn snapshot(&self) -> RequestCacheSnapshot {
