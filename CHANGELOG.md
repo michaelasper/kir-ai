@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.37.0](https://github.com/michaelasper/kir-ai/compare/v1.36.8...v1.37.0) (2026-05-22)
+
+### Features
+
+* **COR-238:** persist snapshot verification stamps ([92c7ced](https://github.com/michaelasper/kir-ai/commit/92c7ced64df4738cfe51c40aa42c11ee47d7d839))
+
 ## [1.36.8](https://github.com/michaelasper/kir-ai/compare/v1.36.7...v1.36.8) (2026-05-22)
 
 ### Bug Fixes
