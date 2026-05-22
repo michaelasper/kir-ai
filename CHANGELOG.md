@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.5](https://github.com/michaelasper/kir-ai/compare/v1.36.4...v1.36.5) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-241:** reuse hub endpoint for model CLI ([e34365c](https://github.com/michaelasper/kir-ai/commit/e34365c902caf59c316354b80550c0b50254a97e))
+
 ## [1.36.4](https://github.com/michaelasper/kir-ai/compare/v1.36.3...v1.36.4) (2026-05-22)
 
 ### Bug Fixes
