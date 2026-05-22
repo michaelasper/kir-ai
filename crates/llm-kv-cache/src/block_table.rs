@@ -40,8 +40,29 @@ impl BlockTable {
         self.blocks.get(index).copied()
     }
 
+    pub(crate) fn replace(
+        &mut self,
+        index: usize,
+        block_id: BlockId,
+    ) -> Result<BlockId, KvCacheError> {
+        if block_id.is_invalid() {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let slot = self
+            .blocks
+            .get_mut(index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let previous = *slot;
+        *slot = block_id;
+        Ok(previous)
+    }
+
     pub fn as_slice(&self) -> &[BlockId] {
         &self.blocks
+    }
+
+    pub(crate) fn contains(&self, block_id: BlockId) -> bool {
+        self.blocks.contains(&block_id)
     }
 
     pub fn remove_last(&mut self) -> Option<BlockId> {
@@ -126,6 +147,20 @@ impl SessionBlockTable {
 
     pub fn owned_block_ids(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.owned_blocks.iter().copied()
+    }
+
+    pub(crate) fn replace_owned_block(
+        &mut self,
+        index: usize,
+        block_id: BlockId,
+    ) -> Result<(BlockId, bool), KvCacheError> {
+        let previous = self.block_table.replace(index, block_id)?;
+        self.owned_blocks.insert(block_id);
+        let should_release_previous = !self.block_table.contains(previous);
+        if should_release_previous {
+            self.owned_blocks.remove(&previous);
+        }
+        Ok((previous, should_release_previous))
     }
 
     pub(crate) fn touch(&mut self, last_access: u64) {

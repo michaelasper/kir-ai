@@ -116,6 +116,79 @@ impl BlockPool {
         Some(block_id)
     }
 
+    pub fn copy_on_write_session_block(
+        &mut self,
+        session_id: SessionId,
+        index: usize,
+    ) -> Result<BlockId, KvCacheError> {
+        let block_id = self
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.read_block(index))
+            .ok_or(KvCacheError::InvalidShape)?;
+        let ref_count = self
+            .blocks
+            .get(&block_id)
+            .filter(|block| block.ref_count() > 0)
+            .ok_or(KvCacheError::InvalidShape)?
+            .ref_count();
+        if ref_count == 1 {
+            self.touch_session_block(session_id, block_id)?;
+            return Ok(block_id);
+        }
+        if self.free_list.is_empty() {
+            self.evict_sessions_until_free(session_id);
+        }
+        let ref_count = self
+            .blocks
+            .get(&block_id)
+            .filter(|block| block.ref_count() > 0)
+            .ok_or(KvCacheError::InvalidShape)?
+            .ref_count();
+        if ref_count == 1 {
+            self.touch_session_block(session_id, block_id)?;
+            return Ok(block_id);
+        }
+        let new_block_id = self.allocate().ok_or(KvCacheError::CapacityExceeded {
+            requested: 1,
+            available: 0,
+        })?;
+        let access = self.next_access();
+        let copy_result = {
+            let [Some(source), Some(destination)] =
+                self.blocks.get_disjoint_mut([&block_id, &new_block_id])
+            else {
+                self.release(new_block_id);
+                return Err(KvCacheError::InvalidShape);
+            };
+            destination.copy_contents_from(source, access)
+        };
+        if let Err(error) = copy_result {
+            self.release(new_block_id);
+            return Err(error);
+        }
+        let replace_result = {
+            let session = self
+                .sessions
+                .get_mut(&session_id)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let result = session.replace_owned_block(index, new_block_id);
+            session.touch(access);
+            result
+        };
+        let (_, should_release_previous) = match replace_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.release(new_block_id);
+                return Err(error);
+            }
+        };
+        if should_release_previous {
+            self.release(block_id);
+        }
+        Ok(new_block_id)
+    }
+
     pub fn lru_session(&self) -> Option<SessionId> {
         self.lru_session_except(None)
     }
@@ -180,7 +253,12 @@ impl BlockPool {
     }
 
     pub fn block_mut(&mut self, block_id: BlockId) -> Option<&mut CacheBlock> {
-        self.blocks.get_mut(&block_id)
+        let block = self.blocks.get_mut(&block_id)?;
+        if block.ref_count() == 1 {
+            Some(block)
+        } else {
+            None
+        }
     }
 
     fn append_block_to_session_inner(
@@ -212,6 +290,28 @@ impl BlockPool {
             .ok_or(KvCacheError::InvalidShape)?;
         if retain_new_owner && newly_owned {
             block.increment_ref_count();
+        }
+        block.touch(access);
+        Ok(())
+    }
+
+    fn touch_session_block(
+        &mut self,
+        session_id: SessionId,
+        block_id: BlockId,
+    ) -> Result<(), KvCacheError> {
+        let access = self.next_access();
+        let session = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or(KvCacheError::InvalidShape)?;
+        session.touch(access);
+        let block = self
+            .blocks
+            .get_mut(&block_id)
+            .ok_or(KvCacheError::InvalidShape)?;
+        if block.ref_count() == 0 {
+            return Err(KvCacheError::InvalidShape);
         }
         block.touch(access);
         Ok(())

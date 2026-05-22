@@ -104,6 +104,7 @@ impl CacheBlock {
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
         self.token_count += 1;
+        self.content_hash = None;
         Ok(token_index)
     }
 
@@ -144,6 +145,23 @@ impl CacheBlock {
         self.clear();
         self.ref_count = 1;
         self.last_access = last_access;
+    }
+
+    pub(crate) fn copy_contents_from(
+        &mut self,
+        source: &Self,
+        last_access: u64,
+    ) -> Result<(), KvCacheError> {
+        if self.capacity_tokens != source.capacity_tokens || self.vector_len != source.vector_len {
+            return Err(KvCacheError::InvalidShape);
+        }
+        self.token_count = source.token_count;
+        self.ref_count = 1;
+        self.content_hash = source.content_hash;
+        self.last_access = last_access;
+        self.keys.copy_from_slice(&source.keys);
+        self.values.copy_from_slice(&source.values);
+        Ok(())
     }
 
     fn token_slice<'a>(&self, storage: &'a [f32], token_index: usize) -> Option<&'a [f32]> {

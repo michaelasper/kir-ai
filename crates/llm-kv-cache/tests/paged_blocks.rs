@@ -92,6 +92,18 @@ fn cache_block_clear_resets_contents_without_changing_identity() {
 }
 
 #[test]
+fn cache_block_append_invalidates_content_hash() {
+    let mut block = CacheBlock::new(2, 2).expect("block shape is valid");
+
+    block.set_content_hash(Some([3_u8; 32]));
+    block
+        .append(&[1.0, 2.0], &[10.0, 20.0])
+        .expect("token fits");
+
+    assert_eq!(block.content_hash(), None);
+}
+
+#[test]
 fn block_table_appends_counts_and_indexes_valid_block_ids() {
     let first = BlockId::new(1).expect("id is valid");
     let second = BlockId::new(2).expect("id is valid");
@@ -309,6 +321,121 @@ fn releasing_session_decrements_owned_shared_block_refcounts_once() {
         0
     );
     assert_eq!(pool.free_blocks(), 1);
+}
+
+#[test]
+fn shared_session_block_is_not_directly_mutable_without_cow() {
+    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let owner = pool.create_session().expect("session id is available");
+    let writer = pool.create_session().expect("session id is available");
+    let shared_block = pool.allocate_for_session(owner).expect("owner allocates");
+
+    pool.append_block_to_session(writer, shared_block)
+        .expect("writer can share owner prefix block");
+
+    assert_eq!(
+        pool.block(shared_block).expect("block exists").ref_count(),
+        2
+    );
+    assert!(pool.block_mut(shared_block).is_none());
+}
+
+#[test]
+fn copy_on_write_session_block_clones_shared_prefix_on_first_write() {
+    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let reader = pool.create_session().expect("session id is available");
+    let writer = pool.create_session().expect("session id is available");
+    let shared_block = pool.allocate_for_session(reader).expect("reader allocates");
+
+    pool.block_mut(shared_block)
+        .expect("exclusive block is mutable")
+        .append(&[1.0, 2.0], &[10.0, 20.0])
+        .expect("token fits");
+    pool.append_block_to_session(writer, shared_block)
+        .expect("writer can share reader prefix block");
+
+    let writer_block = pool
+        .copy_on_write_session_block(writer, 0)
+        .expect("shared writer block is cloned");
+
+    assert_ne!(writer_block, shared_block);
+    assert_eq!(pool.read_session_block(reader, 0), Some(shared_block));
+    assert_eq!(pool.read_session_block(writer, 0), Some(writer_block));
+    assert_eq!(
+        pool.block(shared_block)
+            .expect("shared block exists")
+            .ref_count(),
+        1
+    );
+    assert_eq!(
+        pool.block(writer_block)
+            .expect("writer block exists")
+            .ref_count(),
+        1
+    );
+    assert_eq!(
+        pool.block(shared_block)
+            .expect("shared block exists")
+            .key(0),
+        Some(&[1.0, 2.0][..])
+    );
+
+    pool.block_mut(writer_block)
+        .expect("writer block is now exclusive")
+        .append(&[3.0, 4.0], &[30.0, 40.0])
+        .expect("token fits");
+
+    assert_eq!(
+        pool.block(shared_block)
+            .expect("reader block remains live")
+            .token_count(),
+        1
+    );
+    assert_eq!(
+        pool.block(writer_block)
+            .expect("writer block remains live")
+            .token_count(),
+        2
+    );
+    assert_eq!(
+        pool.block(writer_block)
+            .expect("writer block remains live")
+            .key(1),
+        Some(&[3.0, 4.0][..])
+    );
+}
+
+#[test]
+fn releasing_last_session_after_cow_returns_all_blocks_to_free_list() {
+    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let reader = pool.create_session().expect("session id is available");
+    let writer = pool.create_session().expect("session id is available");
+    let shared_block = pool.allocate_for_session(reader).expect("reader allocates");
+
+    pool.append_block_to_session(writer, shared_block)
+        .expect("writer can share reader prefix block");
+    let writer_block = pool
+        .copy_on_write_session_block(writer, 0)
+        .expect("shared writer block is cloned");
+
+    assert_eq!(pool.free_blocks(), 0);
+    assert!(pool.release_session(reader));
+    assert_eq!(
+        pool.block(shared_block).expect("block exists").ref_count(),
+        0
+    );
+    assert_eq!(
+        pool.block(writer_block).expect("block exists").ref_count(),
+        1
+    );
+    assert_eq!(pool.free_blocks(), 1);
+
+    assert!(pool.release_session(writer));
+    assert_eq!(
+        pool.block(writer_block).expect("block exists").ref_count(),
+        0
+    );
+    assert_eq!(pool.free_blocks(), 2);
 }
 
 #[test]
