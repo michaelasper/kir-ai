@@ -59,12 +59,9 @@ struct MlxPromptTokensDetails {
 #[derive(Debug)]
 pub(super) struct MlxSseParser {
     prompt_tokens: u64,
-    prompt_token_fallback: u64,
     prompt_cached_tokens: Option<u64>,
     has_upstream_prompt_tokens: bool,
-    estimated_completion_tokens: u64,
     emitted_completion_tokens: u64,
-    uses_upstream_usage: bool,
     saw_done: bool,
     line_buffer: String,
     stop_filter: MlxControlStopFilter,
@@ -123,7 +120,7 @@ impl MlxSseParser {
     }
 
     fn new_inner(
-        prompt: &str,
+        _prompt: &str,
         stop_tokens: &'static [&'static str],
         tool_markup: MlxToolMarkup,
         emit_structured_tool_deltas: bool,
@@ -134,12 +131,9 @@ impl MlxSseParser {
             .transpose()?;
         Ok(Self {
             prompt_tokens: 0,
-            prompt_token_fallback: count_whitespace_tokens(prompt),
             prompt_cached_tokens: None,
             has_upstream_prompt_tokens: false,
-            estimated_completion_tokens: 0,
             emitted_completion_tokens: 0,
-            uses_upstream_usage: false,
             saw_done: false,
             line_buffer: String::new(),
             stop_filter: MlxControlStopFilter::new(stop_tokens),
@@ -363,16 +357,10 @@ impl MlxSseParser {
             let emissions = qwen_xml.push_str(text)?;
             return Ok(self.qwen_xml_emissions_to_chunks(emissions));
         }
-        self.estimated_completion_tokens = self
-            .estimated_completion_tokens
-            .saturating_add(count_visible_tokens(text));
         Ok(vec![self.chunk(text.to_owned(), Vec::new())])
     }
 
     fn push_rendered_tool_call_text(&mut self, text: &str) -> Vec<BackendStreamChunk> {
-        self.estimated_completion_tokens = self
-            .estimated_completion_tokens
-            .saturating_add(count_visible_tokens(text));
         vec![self.chunk(text.to_owned(), Vec::new())]
     }
 
@@ -380,16 +368,10 @@ impl MlxSseParser {
         &mut self,
         emissions: Vec<QwenXmlEmission>,
     ) -> Vec<BackendStreamChunk> {
-        let chunks = emissions
+        emissions
             .into_iter()
             .map(|emission| self.chunk(emission.text, emission.tool_call_deltas))
-            .collect::<Vec<_>>();
-        for chunk in &chunks {
-            self.estimated_completion_tokens = self
-                .estimated_completion_tokens
-                .saturating_add(count_visible_tokens(&chunk.text));
-        }
-        chunks
+            .collect::<Vec<_>>()
     }
 
     fn chunk(
@@ -415,7 +397,6 @@ impl MlxSseParser {
         finish_reason: Option<BackendFinishReason>,
         is_final_chunk: bool,
     ) {
-        self.apply_prompt_token_fallback_if_needed(is_final_chunk);
         let completion_tokens =
             self.completion_token_delta(usage_completion_tokens, is_final_chunk);
         if let Some(last) = chunks.last_mut() {
@@ -433,12 +414,6 @@ impl MlxSseParser {
                 finish_reason,
                 progress: None,
             });
-        }
-    }
-
-    fn apply_prompt_token_fallback_if_needed(&mut self, is_final_chunk: bool) {
-        if is_final_chunk && !self.has_upstream_prompt_tokens && self.prompt_tokens == 0 {
-            self.prompt_tokens = self.prompt_token_fallback;
         }
     }
 
@@ -495,22 +470,14 @@ impl MlxSseParser {
     fn completion_token_delta(
         &mut self,
         usage_completion_tokens: Option<u64>,
-        is_final_chunk: bool,
+        _is_final_chunk: bool,
     ) -> u64 {
         if let Some(total) = usage_completion_tokens {
-            self.uses_upstream_usage = true;
             let delta = total.saturating_sub(self.emitted_completion_tokens);
             self.emitted_completion_tokens = self.emitted_completion_tokens.max(total);
             return delta;
         }
-        if self.uses_upstream_usage || !is_final_chunk {
-            return 0;
-        }
-        let delta = self
-            .estimated_completion_tokens
-            .saturating_sub(self.emitted_completion_tokens);
-        self.emitted_completion_tokens = self.estimated_completion_tokens;
-        delta
+        0
     }
 }
 
@@ -1255,14 +1222,6 @@ fn mlx_sse_data(line: &str) -> Option<&str> {
         .map(|data| data.strip_prefix(' ').unwrap_or(data))
 }
 
-fn count_visible_tokens(text: &str) -> u64 {
-    if text.trim().is_empty() {
-        0
-    } else {
-        count_whitespace_tokens(text)
-    }
-}
-
 fn mlx_finish_reason(reason: Option<&str>) -> Result<BackendFinishReason, BackendError> {
     match reason {
         Some("length") => Ok(BackendFinishReason::Length),
@@ -1423,8 +1382,8 @@ pub(super) fn parse_mlx_completion_body_with_tools(
 
 pub(super) fn fold_mlx_chunks(
     chunks: Vec<BackendStreamChunk>,
-    prompt: &str,
-    has_upstream_prompt_tokens: bool,
+    _prompt: &str,
+    _has_upstream_prompt_tokens: bool,
 ) -> BackendOutput {
     let mut text = String::new();
     let mut prompt_tokens = 0;
@@ -1439,12 +1398,6 @@ pub(super) fn fold_mlx_chunks(
         if let Some(reason) = chunk.finish_reason {
             finish_reason = reason;
         }
-    }
-    if !has_upstream_prompt_tokens && prompt_tokens == 0 {
-        prompt_tokens = count_whitespace_tokens(prompt);
-    }
-    if completion_tokens == 0 && !text.is_empty() {
-        completion_tokens = count_whitespace_tokens(&text);
     }
     BackendOutput {
         prompt_tokens,
@@ -1462,8 +1415,4 @@ fn max_optional_u64(current: Option<u64>, next: Option<u64>) -> Option<u64> {
         (None, Some(next)) => Some(next),
         (None, None) => None,
     }
-}
-
-pub(super) fn count_whitespace_tokens(text: &str) -> u64 {
-    text.split_whitespace().count().max(1) as u64
 }

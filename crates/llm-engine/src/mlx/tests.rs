@@ -717,7 +717,7 @@ fn mlx_sse_parser_uses_upstream_prompt_tokens_below_whitespace_estimate() {
 }
 
 #[test]
-fn mlx_sse_parser_applies_prompt_fallback_without_upstream_usage() {
+fn mlx_sse_parser_leaves_missing_prompt_usage_unreported() {
     let mut parser = MlxSseParser::new_streaming(
         "one two three four",
         MLX_QWEN_CONTROL_STOP_TOKENS,
@@ -733,8 +733,51 @@ fn mlx_sse_parser_applies_prompt_fallback_without_upstream_usage() {
 
     assert_eq!(
         chunks.last().expect("final chunk is emitted").prompt_tokens,
-        4
+        0
     );
+    assert_eq!(
+        chunks
+            .last()
+            .expect("final chunk is emitted")
+            .completion_tokens,
+        1
+    );
+}
+
+#[test]
+fn mlx_sse_parser_leaves_missing_completion_usage_unreported() {
+    let mut parser = MlxSseParser::new_streaming(
+        "one two three four",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::Json,
+    );
+    let chunks = parser
+        .push_str(
+            "data:{\"choices\":[{\"text\":\"hello world\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4}}\n\ndata:[DONE]\n\n",
+        )
+        .expect("parse chunk without completion usage");
+    let final_chunks = parser.finish().expect("finish parser");
+    let chunks = chunks.into_iter().chain(final_chunks).collect::<Vec<_>>();
+    let final_chunk = chunks.last().expect("final chunk is emitted");
+
+    assert_eq!(final_chunk.prompt_tokens, 4);
+    assert_eq!(final_chunk.completion_tokens, 0);
+}
+
+#[test]
+fn mlx_completion_body_leaves_missing_usage_unreported() {
+    let (output, _) = parse_mlx_completion_body(
+        "{\"choices\":[{\"text\":\"hello world\",\"finish_reason\":\"stop\"}]}",
+        "one two three four",
+        MLX_QWEN_CONTROL_STOP_TOKENS,
+        MlxToolMarkup::Json,
+        None,
+    )
+    .expect("completion body parses");
+
+    assert_eq!(output.text, "hello world");
+    assert_eq!(output.prompt_tokens, 0);
+    assert_eq!(output.completion_tokens, 0);
 }
 
 #[test]
@@ -2003,7 +2046,7 @@ fn mlx_sse_parser_flushes_non_stop_prefix_at_done() {
             .iter()
             .map(|chunk| chunk.completion_tokens)
             .sum::<u64>(),
-        2
+        0
     );
 }
 
