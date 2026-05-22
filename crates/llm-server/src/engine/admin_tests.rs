@@ -1,4 +1,5 @@
 use super::admin::*;
+use super::metrics::ToolStreamSnapshot;
 use llm_api::ApiError;
 use schemars::schema_for;
 use std::fs;
@@ -24,6 +25,7 @@ fn generate_admin_api_schemas() {
             schema_for!(AdminModelPullResponse),
         ),
         ("AdminMetricsResponse", schema_for!(AdminMetricsResponse)),
+        ("ToolStreamSnapshot", schema_for!(ToolStreamSnapshot)),
         ("ApiError", schema_for!(ApiError)),
     ];
 

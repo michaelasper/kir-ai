@@ -76,6 +76,57 @@ async fn admin_metrics_endpoint_reports_request_id_when_auth_is_required() {
 }
 
 #[tokio::test]
+async fn admin_tool_stream_metrics_requires_bearer_token_when_configured() {
+    let app = build_router_with_backend_and_options(
+        Box::new(StaticBackend {
+            text: "unused".to_owned(),
+        }),
+        EngineOptions {
+            admin_token: Some("secret-admin-token".to_owned()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics.tool_stream")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("tool stream metrics response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "admin_auth_required");
+    assert_eq!(body["error"]["phase"], "admin_auth");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics.tool_stream")
+                .header("authorization", "Bearer secret-admin-token")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("authenticated tool stream metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["capacity"], 128);
+    assert_eq!(
+        body["recent"]
+            .as_array()
+            .expect("recent observations is array")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn admin_metrics_report_artifact_verification_failures() {
     let temp = tempfile::tempdir().expect("tempdir");
     let snapshot_path = write_verified_test_snapshot(temp.path()).await;
@@ -895,6 +946,7 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
     );
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/admin/metrics")
@@ -949,6 +1001,42 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
         assert!(
             observation.get(forbidden).is_none(),
             "tool stream observation must not store sensitive field {forbidden}"
+        );
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/metrics.tool_stream")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("tool stream metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+    let recent = body["recent"].as_array().expect("tool stream observations");
+    assert_eq!(body["capacity"], 128);
+    assert_eq!(recent.len(), 1);
+    let observation = &recent[0];
+    assert_eq!(observation["request_id"], request_id);
+    assert_eq!(observation["model"], "local-mlx");
+    assert_eq!(observation["streamed"], true);
+    assert!(observation["kir_first_tool_delta_ms"].as_u64().is_some());
+    assert!(observation["validated_tool_call_ms"].as_u64().is_some());
+    assert!(observation["mlx_first_tool_delta_ms"].as_u64().is_some());
+    assert!(observation["latency_ms"].as_u64().is_some());
+    for forbidden in [
+        "messages",
+        "prompt",
+        "tools",
+        "tool_schema",
+        "arguments",
+        "request_body",
+    ] {
+        assert!(
+            observation.get(forbidden).is_none(),
+            "tool stream endpoint must not store sensitive field {forbidden}"
         );
     }
 }

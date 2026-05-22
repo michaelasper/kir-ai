@@ -3,7 +3,8 @@ use super::protocol::protocol_test_backend;
 use super::{
     admin::{
         ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_mlx_metrics, admin_model,
-        admin_model_plan, admin_model_pull, admin_model_verify, admin_models, health, models,
+        admin_model_plan, admin_model_pull, admin_model_verify, admin_models,
+        admin_tool_stream_metrics, health, models,
     },
     config::{EngineConfigError, EngineOptions, default_model_home, parse_hub_client},
     inference::{chat_completions, completions},
@@ -233,6 +234,7 @@ fn router_for_state(state: AppState) -> Router {
         )
         .route("/admin/metrics", get(admin_metrics))
         .route("/admin/metrics.mlx", get(admin_mlx_metrics))
+        .route("/admin/metrics.tool_stream", get(admin_tool_stream_metrics))
         .merge(inference_routes)
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(json_body_limit))

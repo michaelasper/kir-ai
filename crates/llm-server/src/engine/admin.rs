@@ -464,6 +464,18 @@ pub(super) async fn admin_mlx_metrics(
     Ok(Json(metrics))
 }
 
+pub(super) async fn admin_tool_stream_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ToolStreamSnapshot>, EngineError> {
+    require_admin(&state, &headers)?;
+    let snapshot = state
+        .tool_stream
+        .lock_or_panic("tool stream observations")
+        .snapshot();
+    Ok(Json(snapshot))
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct AdminMetricsResponse {
     requests_total: u64,

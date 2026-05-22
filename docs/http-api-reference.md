@@ -19,6 +19,7 @@ http://127.0.0.1:3000
 | `GET` | `/admin/models` | Read-only status for served model aliases. |
 | `GET` | `/admin/models/{alias}` | Read-only status for one served model alias. |
 | `GET` | `/admin/metrics` | Aggregate inference counters and token totals. |
+| `GET` | `/admin/metrics.tool_stream` | Bounded per-request streamed tool-call timing observations. |
 | `POST` | `/admin/models/{alias}/verify` | Verify the served snapshot from its manifest. |
 | `POST` | `/admin/models/{alias}/plan` | Build a download plan for the served model alias. |
 | `POST` | `/admin/models/{alias}/pull` | Pull and promote a snapshot into the configured model store. |
@@ -279,6 +280,49 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
     "completion_tokens": 15000,
     "total_tokens": 20000
   }
+}
+```
+
+## `GET /admin/metrics.tool_stream`
+
+Returns the bounded per-request streamed tool-call timing ring directly. This
+is the same `tool_stream` snapshot embedded in `GET /admin/metrics`, without
+the aggregate counters around it.
+
+### Response Fields
+
+- `capacity`: Maximum number of retained observations. This is fixed at `128`.
+- `recent`: Successful streamed tool-call observations keyed by `request_id`,
+  ordered from oldest to newest retained entry.
+- Each observation includes `request_id`, `model`, `streamed`, scalar Kir
+  timing milestones, scalar MLX upstream timing milestones when available, and
+  `latency_ms`.
+- Prompts, messages, tool schemas, tool arguments, and request bodies are not
+  stored.
+
+### Sample Response
+
+```json
+{
+  "capacity": 128,
+  "recent": [
+    {
+      "request_id": "req-456",
+      "model": "local-qwen36-mlx",
+      "streamed": true,
+      "kir_first_tool_delta_ms": 576,
+      "tool_argument_assembly_ms": 582,
+      "tool_intent_fill_ms": 584,
+      "tool_schema_validation_ms": 588,
+      "validated_tool_call_ms": 590,
+      "mlx_response_headers_ms": 80,
+      "mlx_first_upstream_byte_ms": 120,
+      "mlx_first_parsed_chunk_ms": 180,
+      "mlx_first_tool_delta_ms": 560,
+      "mlx_upstream_complete_ms": 585,
+      "latency_ms": 610
+    }
+  ]
 }
 ```
 
