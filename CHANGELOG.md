@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.42.3](https://github.com/michaelasper/kir-ai/compare/v1.42.2...v1.42.3) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-346:** make generated tool call ids opaque ([14eeb1b](https://github.com/michaelasper/kir-ai/commit/14eeb1bd4ebece900e53ee1e9156b925aa4315e7))
+
 ## [1.42.2](https://github.com/michaelasper/kir-ai/compare/v1.42.1...v1.42.2) (2026-05-22)
 
 ### Bug Fixes
