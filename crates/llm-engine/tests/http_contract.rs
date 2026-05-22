@@ -1049,6 +1049,30 @@ async fn generate_after_pre_cancel<B: ModelBackend + ?Sized>(
     backend.generate(request).await
 }
 
+fn runnable_qwen_files() -> Vec<HubFile> {
+    vec![
+        HubFile::new("config.json", 2, Some("\"cfg\"")),
+        HubFile::new("tokenizer.json", 2, Some("\"tok\"")),
+        HubFile::new(
+            "model.safetensors",
+            4,
+            Some("3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"),
+        ),
+    ]
+}
+
+async fn write_runnable_qwen_files(snapshot_path: &Path) {
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    tokio::fs::write(snapshot_path.join("model.safetensors"), b"data")
+        .await
+        .expect("weights");
+}
+
 async fn write_verified_test_snapshot(root: &Path) -> PathBuf {
     write_verified_test_snapshot_with_profile(
         root,
@@ -1065,6 +1089,58 @@ async fn write_verified_mlx_test_snapshot(root: &Path) -> PathBuf {
         ModelProfile::qwen36_mlx_4bit(),
     )
     .await
+}
+
+async fn write_verified_runnable_test_snapshot(root: &Path) -> PathBuf {
+    let store = ModelStore::new(root);
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    write_runnable_qwen_files(&snapshot_path).await;
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+    snapshot_path
+}
+
+async fn write_verified_metadata_only_test_snapshot(root: &Path) -> PathBuf {
+    let store = ModelStore::new(root);
+    let full_plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let metadata_plan = full_plan.metadata_only();
+    let snapshot_path = store.snapshot_path(&metadata_plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    store
+        .verify_existing_snapshot(&metadata_plan)
+        .await
+        .expect("snapshot verifies");
+    snapshot_path
 }
 
 async fn write_verified_test_snapshot_with_profile(

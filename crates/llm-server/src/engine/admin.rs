@@ -125,9 +125,12 @@ pub(super) async fn admin_model(
     Ok(Json(admin_model_status(&state, &metadata).await))
 }
 
+const RUNNABLE_VERIFICATION_MODE: &str = "runnable";
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct AdminModelVerifyResponse {
     status: String,
+    verification_mode: String,
     snapshot_path: String,
     repo_id: String,
     resolved_commit: String,
@@ -154,7 +157,7 @@ pub(super) async fn admin_model_verify(
             ))
         })?;
     let snapshot_path = snapshot.path;
-    let verification = match ModelStore::verify_snapshot(&snapshot_path).await {
+    let verification = match ModelStore::verify_runnable_snapshot(&snapshot_path).await {
         Ok(verification) => verification,
         Err(err) => {
             record_artifact_verification_failure_metrics(&state);
@@ -166,6 +169,7 @@ pub(super) async fn admin_model_verify(
         .map_err(EngineError::ModelStore)?;
     Ok(Json(AdminModelVerifyResponse {
         status: "ok".to_owned(),
+        verification_mode: RUNNABLE_VERIFICATION_MODE.to_owned(),
         snapshot_path: verification.snapshot.path.to_string_lossy().into_owned(),
         repo_id: verification.snapshot.manifest.repo_id.clone(),
         resolved_commit: verification.snapshot.manifest.resolved_commit.clone(),

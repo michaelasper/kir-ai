@@ -33,6 +33,35 @@ async fn write_runnable_qwen_files(snapshot_path: &Path) {
         .expect("weights");
 }
 
+async fn write_verified_metadata_only_snapshot(root: &Path) -> std::path::PathBuf {
+    let store = ModelStore::new(root);
+    let full_plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let metadata_plan = full_plan.metadata_only();
+    let snapshot_path = store.snapshot_path(&metadata_plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("config");
+    tokio::fs::write(snapshot_path.join("tokenizer.json"), "{}")
+        .await
+        .expect("tokenizer");
+    store
+        .verify_existing_snapshot(&metadata_plan)
+        .await
+        .expect("snapshot verifies");
+    snapshot_path
+}
+
 fn spawn_test_hub_server(
     handler: impl FnOnce(TcpListener) + Send + 'static,
 ) -> (String, thread::JoinHandle<()>) {
@@ -1736,6 +1765,68 @@ async fn model_list_outputs_promoted_snapshots() {
             .len(),
         64
     );
+}
+
+#[tokio::test]
+async fn model_verify_outputs_runnable_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        runnable_qwen_files(),
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    write_runnable_qwen_files(&snapshot_path).await;
+    store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["model", "verify"])
+        .arg(&snapshot_path)
+        .output()
+        .expect("run model verify");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json output");
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["verification_mode"], "runnable");
+    assert_eq!(value["verified_files"], 3);
+    assert_eq!(value["verified_bytes"], 8);
+    assert_eq!(value["snapshot_path"], snapshot_path.display().to_string());
+}
+
+#[tokio::test]
+async fn model_verify_rejects_metadata_only_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_metadata_only_snapshot(temp.path()).await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .args(["model", "verify"])
+        .arg(&snapshot_path)
+        .output()
+        .expect("run model verify");
+
+    assert!(!output.status.success(), "verify unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("contains no weight files"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("--metadata-only"), "stderr: {stderr}");
 }
 
 #[tokio::test]

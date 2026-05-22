@@ -140,7 +140,7 @@ async fn admin_model_endpoint_reports_mlx_backend_identity() {
 #[tokio::test]
 async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let snapshot_path = write_verified_test_snapshot(temp.path()).await;
+    let snapshot_path = write_verified_runnable_test_snapshot(temp.path()).await;
     ModelStore::new(temp.path())
         .record_snapshot_alias(llm_engine::DEFAULT_MODEL_ID, &snapshot_path)
         .await
@@ -170,9 +170,50 @@ async fn admin_model_verify_endpoint_verifies_loaded_snapshot() {
     let body = body_json(response.into_body()).await;
     assert_eq!(body["status"], "ok");
     assert_eq!(body["repo_id"], "Qwen/Qwen3.6-35B-A3B");
-    assert_eq!(body["verified_files"], 1);
-    assert_eq!(body["verified_bytes"], 2);
+    assert_eq!(body["verification_mode"], "runnable");
+    assert_eq!(body["verified_files"], 3);
+    assert_eq!(body["verified_bytes"], 8);
     assert_eq!(body["snapshot_path"], snapshot_path.display().to_string());
+}
+
+#[tokio::test]
+async fn admin_model_verify_endpoint_rejects_metadata_only_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot_path = write_verified_metadata_only_test_snapshot(temp.path()).await;
+    ModelStore::new(temp.path())
+        .record_snapshot_alias(llm_engine::DEFAULT_MODEL_ID, &snapshot_path)
+        .await
+        .expect("snapshot alias");
+    let response = build_router_with_unauthenticated_admin_and_options(
+        Box::new(SnapshotMetadataBackend),
+        EngineOptions {
+            model_home: Some(temp.path().to_path_buf()),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/admin/models/{}/verify",
+                llm_engine::DEFAULT_MODEL_ID
+            ))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("admin model verify response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "model_integrity_failed");
+    assert_eq!(body["error"]["phase"], "model_artifact_verification");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("contains no weight files"),
+        "message: {message}"
+    );
 }
 
 #[tokio::test]

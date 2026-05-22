@@ -651,6 +651,7 @@ Output shape:
 ```json
 {
   "status": "ok",
+  "verification_mode": "runnable",
   "snapshot_path": "...",
   "repo_id": "Qwen/Qwen3.6-35B-A3B",
   "resolved_commit": "...",
@@ -660,6 +661,7 @@ Output shape:
 }
 ```
 
+The `verification_mode` field is always `"runnable"` for this command.
 Verification checks file presence, file type, size, SHA-256 when available,
 readiness metadata for built-in profiles, and safetensors index shard coverage.
 Successful verification records the snapshot as recently used for prune

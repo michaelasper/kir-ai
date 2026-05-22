@@ -20,7 +20,7 @@ http://127.0.0.1:3000
 | `GET` | `/admin/models/{alias}` | Read-only status for one served model alias. |
 | `GET` | `/admin/metrics` | Aggregate inference counters and token totals. |
 | `GET` | `/admin/metrics.tool_stream` | Bounded per-request streamed tool-call timing observations. |
-| `POST` | `/admin/models/{alias}/verify` | Verify the served snapshot from its manifest. |
+| `POST` | `/admin/models/{alias}/verify` | Run runnable verification for the served snapshot. |
 | `POST` | `/admin/models/{alias}/plan` | Build a download plan for the served model alias. |
 | `POST` | `/admin/models/{alias}/pull` | Pull and promote a snapshot into the configured model store. |
 | `POST` | `/admin/requests/{request_id}/cancel` | Cancel an active chat or completion request. |
@@ -343,9 +343,15 @@ the aggregate counters around it.
 
 ## `POST /admin/models/{alias}/verify`
 
-Verifies the currently served snapshot against its `llm-engine-manifest.json`
-and returns verified file and byte counts. This endpoint requires the served
-backend to expose snapshot metadata.
+Runs runnable verification for the currently served snapshot. This uses the same
+semantics as `llm-engine model verify`: manifest file integrity plus config,
+tokenizer, weight artifact, built-in profile, and safetensors index checks.
+Metadata-only snapshots fail with `model_integrity_failed` and should be pulled
+again without `--metadata-only` before serving.
+
+Successful responses include `verification_mode: "runnable"` with verified file
+and byte counts. This endpoint requires the served backend to expose snapshot
+metadata.
 
 ## `POST /admin/models/{alias}/plan`
 

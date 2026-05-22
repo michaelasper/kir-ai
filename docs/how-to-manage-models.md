@@ -185,8 +185,11 @@ Verification checks every manifest file for:
 - built-in profile metadata consistency
 - safetensors index shard coverage
 
-`model verify` is always a deep check. It is the command to use before release
-or after moving snapshots between disks.
+`model verify` and `POST /admin/models/{alias}/verify` both run runnable
+verification and report `verification_mode: "runnable"`. Use this check before
+release, after moving snapshots between disks, or before serving a snapshot.
+Metadata-only snapshots are manifest-valid but fail runnable verification until
+they are pulled again without `--metadata-only`.
 
 Treat `model_integrity_failed` as a signal to pull or restore the snapshot
 again.

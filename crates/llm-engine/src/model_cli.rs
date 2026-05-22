@@ -186,6 +186,7 @@ pub async fn model_verify_json(snapshot_path: impl AsRef<Path>) -> anyhow::Resul
     ModelStore::mark_snapshot_used(snapshot_path).await?;
     Ok(serde_json::json!({
         "status": "ok",
+        "verification_mode": "runnable",
         "snapshot_path": verification.snapshot.path,
         "repo_id": verification.snapshot.manifest.repo_id,
         "resolved_commit": verification.snapshot.manifest.resolved_commit,

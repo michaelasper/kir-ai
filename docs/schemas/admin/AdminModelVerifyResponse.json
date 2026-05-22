@@ -6,6 +6,9 @@
     "status": {
       "type": "string"
     },
+    "verification_mode": {
+      "type": "string"
+    },
     "snapshot_path": {
       "type": "string"
     },
@@ -31,6 +34,7 @@
   },
   "required": [
     "status",
+    "verification_mode",
     "snapshot_path",
     "repo_id",
     "resolved_commit",
