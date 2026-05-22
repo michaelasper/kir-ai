@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.40.0](https://github.com/michaelasper/kir-ai/compare/v1.39.0...v1.40.0) (2026-05-22)
+
+### Features
+
+* **COR-303:** add session block table management ([457bfd6](https://github.com/michaelasper/kir-ai/commit/457bfd62f44b1951f6920edea37ed8da6d2a73c1))
+
 ## [1.39.0](https://github.com/michaelasper/kir-ai/compare/v1.38.0...v1.39.0) (2026-05-22)
 
 ### Features
