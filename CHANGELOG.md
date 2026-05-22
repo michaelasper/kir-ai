@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.32.0](https://github.com/michaelasper/kir-ai/compare/v1.31.0...v1.32.0) (2026-05-22)
+
+### Features
+
+* **COR-323:** expose stable prefix cache identity ([ddd3af2](https://github.com/michaelasper/kir-ai/commit/ddd3af23178055203e0c49aa662a862031da9284))
+
 ## [1.31.0](https://github.com/michaelasper/kir-ai/compare/v1.30.0...v1.31.0) (2026-05-22)
 
 ### Features
