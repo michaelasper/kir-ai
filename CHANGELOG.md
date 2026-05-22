@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.43.0](https://github.com/michaelasper/kir-ai/compare/v1.42.3...v1.43.0) (2026-05-22)
+
+### Features
+
+* **COR-317:** add experimental qwen mlx prefill sweep ([c1e53a9](https://github.com/michaelasper/kir-ai/commit/c1e53a91dc1fa572a7b246be5d0e1e1c314f12c9))
+
 ## [1.42.3](https://github.com/michaelasper/kir-ai/compare/v1.42.2...v1.42.3) (2026-05-22)
 
 ### Bug Fixes
