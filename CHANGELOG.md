@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.4](https://github.com/michaelasper/kir-ai/compare/v1.36.3...v1.36.4) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-312:** require secure hub endpoint for tokens ([34bbf25](https://github.com/michaelasper/kir-ai/commit/34bbf255c674a65d7e6aaeb7d8b92a7e530b5f11))
+
 ## [1.36.3](https://github.com/michaelasper/kir-ai/compare/v1.36.2...v1.36.3) (2026-05-22)
 
 ### Bug Fixes
