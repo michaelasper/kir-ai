@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.32.1](https://github.com/michaelasper/kir-ai/compare/v1.32.0...v1.32.1) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-322:** defer mlx prompt token fallback ([379605f](https://github.com/michaelasper/kir-ai/commit/379605f00d4057399348d0e73e1a6964dda08724))
+
 ## [1.32.0](https://github.com/michaelasper/kir-ai/compare/v1.31.0...v1.32.0) (2026-05-22)
 
 ### Features
