@@ -304,6 +304,7 @@ fn engine_state(
         request_cache: Arc::new(Mutex::new(
             super::metrics::RequestCacheObservations::default(),
         )),
+        tool_stream: Arc::new(Mutex::new(super::metrics::ToolStreamObservations::default())),
         generation_phases: Arc::new(GenerationPhaseMetrics::default()),
         model_scheduler: Arc::new(ModelScheduler::new(ModelSchedulerOptions {
             concurrency_limit: options.concurrency_limit.max(1),

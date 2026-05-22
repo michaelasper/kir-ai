@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use llm_backend::{
     BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendStreamChunk, ModelBackend,
+    BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendStreamTimingMilestone,
+    ModelBackend,
 };
 use llm_models::ModelFamily;
 use serde_json::json;
@@ -345,7 +346,11 @@ impl MlxBackend {
             };
             let status = response.status();
             if status.is_success() {
-                request_metrics.record_stream_response_headers();
+                let latency = request_metrics.record_stream_response_headers();
+                yield mlx_timing_progress_chunk(
+                    BackendStreamTimingMilestone::ResponseHeaders,
+                    latency,
+                );
                 let mut bytes = response.bytes_stream();
                 let mut parser = MlxSseParser::new_streaming(
                     request.prompt(),
@@ -404,7 +409,12 @@ impl MlxBackend {
                     };
                     saw_first_byte = true;
                     output_observation.response_bytes += bytes.len() as u64;
-                    request_metrics.record_first_upstream_byte();
+                    if let Some(latency) = request_metrics.record_first_upstream_byte() {
+                        yield mlx_timing_progress_chunk(
+                            BackendStreamTimingMilestone::FirstUpstreamByte,
+                            latency,
+                        );
+                    }
                     request_metrics.record_response_bytes(bytes.len());
                     let chunk = match std::str::from_utf8(&bytes) {
                         Ok(chunk) => chunk,
@@ -424,18 +434,38 @@ impl MlxBackend {
                     request_metrics.record_stream_chunks(parsed_chunks.len());
                     for parsed in parsed_chunks {
                         output_observation.observe_chunk(&parsed);
-                        request_metrics.record_first_parsed_chunk();
-                        if !parsed.tool_call_deltas.is_empty() {
-                            request_metrics.record_first_tool_delta();
+                        if let Some(latency) = request_metrics.record_first_parsed_chunk() {
+                            yield mlx_timing_progress_chunk(
+                                BackendStreamTimingMilestone::FirstParsedChunk,
+                                latency,
+                            );
+                        }
+                        if !parsed.tool_call_deltas.is_empty()
+                            && let Some(latency) = request_metrics.record_first_tool_delta()
+                        {
+                            yield mlx_timing_progress_chunk(
+                                BackendStreamTimingMilestone::FirstToolDelta,
+                                latency,
+                            );
                         }
                         if parsed.finish_reason.is_some() {
                             request_metrics.record_finish_chunk();
-                            request_metrics.record_stream_complete();
+                            if let Some(latency) = request_metrics.record_stream_complete() {
+                                yield mlx_timing_progress_chunk(
+                                    BackendStreamTimingMilestone::UpstreamComplete,
+                                    latency,
+                                );
+                            }
                         }
                         yield parsed;
                     }
                 }
-                request_metrics.record_stream_complete();
+                if let Some(latency) = request_metrics.record_stream_complete() {
+                    yield mlx_timing_progress_chunk(
+                        BackendStreamTimingMilestone::UpstreamComplete,
+                        latency,
+                    );
+                }
                 let final_chunks = match parser.finish() {
                     Ok(chunks) => chunks,
                     Err(err) => {
@@ -458,13 +488,28 @@ impl MlxBackend {
                 );
                 request_metrics.finish_success();
                 for parsed in final_chunks {
-                    request_metrics.record_first_parsed_chunk();
-                    if !parsed.tool_call_deltas.is_empty() {
-                        request_metrics.record_first_tool_delta();
+                    if let Some(latency) = request_metrics.record_first_parsed_chunk() {
+                        yield mlx_timing_progress_chunk(
+                            BackendStreamTimingMilestone::FirstParsedChunk,
+                            latency,
+                        );
+                    }
+                    if !parsed.tool_call_deltas.is_empty()
+                        && let Some(latency) = request_metrics.record_first_tool_delta()
+                    {
+                        yield mlx_timing_progress_chunk(
+                            BackendStreamTimingMilestone::FirstToolDelta,
+                            latency,
+                        );
                     }
                     if parsed.finish_reason.is_some() {
                         request_metrics.record_finish_chunk();
-                        request_metrics.record_stream_complete();
+                        if let Some(latency) = request_metrics.record_stream_complete() {
+                            yield mlx_timing_progress_chunk(
+                                BackendStreamTimingMilestone::UpstreamComplete,
+                                latency,
+                            );
+                        }
                     }
                     yield parsed;
                 }
@@ -489,6 +534,28 @@ impl MlxBackend {
         }
         .boxed()
     }
+}
+
+fn mlx_timing_progress_chunk(
+    milestone: BackendStreamTimingMilestone,
+    latency: std::time::Duration,
+) -> BackendStreamChunk {
+    BackendStreamChunk {
+        text: String::new(),
+        tool_call_deltas: Vec::new(),
+        prompt_tokens: 0,
+        prompt_cached_tokens: None,
+        completion_tokens: 0,
+        finish_reason: None,
+        progress: Some(BackendStreamProgress::MlxStreamTiming {
+            milestone,
+            latency_ms: duration_millis_u64(latency),
+        }),
+    }
+}
+
+fn duration_millis_u64(latency: std::time::Duration) -> u64 {
+    u64::try_from(latency.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Default)]

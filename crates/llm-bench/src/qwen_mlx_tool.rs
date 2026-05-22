@@ -3281,6 +3281,7 @@ fn tool_required_stream_lane_timing_report(
         }),
         admin_metrics: normalized_tool_stream_admin_metrics(&lane.admin_metrics),
         admin_metrics_error: lane.admin_metrics.error.clone(),
+        tool_stream_observations: matching_tool_stream_observations(lane, &samples),
     }
 }
 
@@ -3539,6 +3540,76 @@ fn avg_present_f64(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
         sum += value;
     }
     (count > 0).then_some(sum / f64::from(count))
+}
+
+fn matching_tool_stream_observations(
+    lane: &NormalizedLaneReport,
+    samples: &[&NormalizedSampleReport],
+) -> Vec<NormalizedToolStreamObservation> {
+    if lane.kind != NormalizedLaneKind::KirAiProxy.as_str() {
+        return Vec::new();
+    }
+    let request_ids = samples
+        .iter()
+        .filter_map(|sample| sample.request_id.as_deref())
+        .collect::<Vec<_>>();
+    if request_ids.is_empty() {
+        return Vec::new();
+    }
+    lane.admin_metrics
+        .after
+        .as_ref()
+        .and_then(|metrics| metrics.pointer("/tool_stream/recent"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| tool_stream_observation(value, &request_ids, samples))
+        .collect()
+}
+
+fn tool_stream_observation(
+    value: &Value,
+    request_ids: &[&str],
+    samples: &[&NormalizedSampleReport],
+) -> Option<NormalizedToolStreamObservation> {
+    let request_id = value.get("request_id")?.as_str()?;
+    if !request_ids.contains(&request_id) {
+        return None;
+    }
+    let sample = samples
+        .iter()
+        .find(|sample| sample.request_id.as_deref() == Some(request_id))?;
+    Some(NormalizedToolStreamObservation {
+        request_id: request_id.to_owned(),
+        model: value.get("model")?.as_str()?.to_owned(),
+        streamed: value.get("streamed")?.as_bool()?,
+        client_first_byte_ms: sample.stream_timing.first_byte_latency_ms,
+        client_first_sse_data_ms: sample.stream_timing.first_sse_data_latency_ms,
+        client_visible_first_tool_delta_ms: sample.stream_timing.first_tool_delta_latency_ms,
+        client_tool_finish_ms: sample.stream_timing.tool_finish_latency_ms,
+        kir_first_tool_delta_ms: value.get("kir_first_tool_delta_ms").and_then(Value::as_u64),
+        tool_argument_assembly_ms: value
+            .get("tool_argument_assembly_ms")
+            .and_then(Value::as_u64),
+        tool_intent_fill_ms: value.get("tool_intent_fill_ms").and_then(Value::as_u64),
+        tool_schema_validation_ms: value
+            .get("tool_schema_validation_ms")
+            .and_then(Value::as_u64),
+        tool_finish_ms: value.get("tool_finish_ms").and_then(Value::as_u64),
+        validated_tool_call_ms: value.get("validated_tool_call_ms").and_then(Value::as_u64),
+        mlx_response_headers_ms: value.get("mlx_response_headers_ms").and_then(Value::as_u64),
+        mlx_first_upstream_byte_ms: value
+            .get("mlx_first_upstream_byte_ms")
+            .and_then(Value::as_u64),
+        mlx_first_parsed_chunk_ms: value
+            .get("mlx_first_parsed_chunk_ms")
+            .and_then(Value::as_u64),
+        mlx_first_tool_delta_ms: value.get("mlx_first_tool_delta_ms").and_then(Value::as_u64),
+        mlx_upstream_complete_ms: value
+            .get("mlx_upstream_complete_ms")
+            .and_then(Value::as_u64),
+        latency_ms: value.get("latency_ms")?.as_u64()?,
+    })
 }
 
 fn normalized_tool_stream_admin_metrics(
@@ -5837,6 +5908,7 @@ impl NormalizedToolRequiredStreamTimingReport {
                     p50_first_semantic_delta_latency_ms: None,
                     admin_metrics: None,
                     admin_metrics_error: None,
+                    tool_stream_observations: Vec::new(),
                 })
                 .collect(),
         }
@@ -5900,6 +5972,30 @@ struct NormalizedToolRequiredStreamLaneTimingReport {
     p50_first_semantic_delta_latency_ms: Option<u128>,
     admin_metrics: Option<NormalizedToolRequiredStreamAdminMetrics>,
     admin_metrics_error: Option<String>,
+    tool_stream_observations: Vec<NormalizedToolStreamObservation>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedToolStreamObservation {
+    request_id: String,
+    model: String,
+    streamed: bool,
+    client_first_byte_ms: Option<u128>,
+    client_first_sse_data_ms: Option<u128>,
+    client_visible_first_tool_delta_ms: Option<u128>,
+    client_tool_finish_ms: Option<u128>,
+    kir_first_tool_delta_ms: Option<u64>,
+    tool_argument_assembly_ms: Option<u64>,
+    tool_intent_fill_ms: Option<u64>,
+    tool_schema_validation_ms: Option<u64>,
+    tool_finish_ms: Option<u64>,
+    validated_tool_call_ms: Option<u64>,
+    mlx_response_headers_ms: Option<u64>,
+    mlx_first_upstream_byte_ms: Option<u64>,
+    mlx_first_parsed_chunk_ms: Option<u64>,
+    mlx_first_tool_delta_ms: Option<u64>,
+    mlx_upstream_complete_ms: Option<u64>,
+    latency_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]

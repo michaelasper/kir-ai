@@ -828,6 +828,7 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
     .await
     .expect("MLX backend opens");
     let app = build_router_with_unauthenticated_admin(Box::new(backend));
+    let request_id = "tool-stream-qwen-xml";
 
     let before_response = app
         .clone()
@@ -849,6 +850,7 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
+                .header("x-request-id", request_id)
                 .body(Body::from(
                     json!({
                         "model": "local-mlx",
@@ -883,6 +885,14 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
     assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
     assert!(body.contains("\"name\":\"read_file\""));
     assert!(body.contains("\"finish_reason\":\"tool_calls\""));
+    assert!(
+        !body.contains("mlx_stream_timing"),
+        "internal MLX timing progress must not be exposed to client SSE: {body}"
+    );
+    assert!(
+        !body.contains("first_upstream_byte"),
+        "internal MLX timing milestones must not be exposed to client SSE: {body}"
+    );
 
     let response = app
         .oneshot(
@@ -908,6 +918,39 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
         ],
         1,
     );
+    let recent = body["tool_stream"]["recent"]
+        .as_array()
+        .expect("tool stream observations");
+    assert_eq!(body["tool_stream"]["capacity"], 128);
+    assert_eq!(recent.len(), 1);
+    let observation = &recent[0];
+    assert_eq!(observation["request_id"], request_id);
+    assert_eq!(observation["model"], "local-mlx");
+    assert_eq!(observation["streamed"], true);
+    assert!(observation["kir_first_tool_delta_ms"].as_u64().is_some());
+    assert!(observation["tool_argument_assembly_ms"].as_u64().is_some());
+    assert!(observation["tool_intent_fill_ms"].as_u64().is_some());
+    assert!(observation["tool_schema_validation_ms"].as_u64().is_some());
+    assert!(observation["validated_tool_call_ms"].as_u64().is_some());
+    assert!(observation["mlx_response_headers_ms"].as_u64().is_some());
+    assert!(observation["mlx_first_upstream_byte_ms"].as_u64().is_some());
+    assert!(observation["mlx_first_parsed_chunk_ms"].as_u64().is_some());
+    assert!(observation["mlx_first_tool_delta_ms"].as_u64().is_some());
+    assert!(observation["mlx_upstream_complete_ms"].as_u64().is_some());
+    assert!(observation["latency_ms"].as_u64().is_some());
+    for forbidden in [
+        "messages",
+        "prompt",
+        "tools",
+        "tool_schema",
+        "arguments",
+        "request_body",
+    ] {
+        assert!(
+            observation.get(forbidden).is_none(),
+            "tool stream observation must not store sensitive field {forbidden}"
+        );
+    }
 }
 
 #[tokio::test]

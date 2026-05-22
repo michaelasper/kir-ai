@@ -2153,6 +2153,7 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
         tool_finish_latency_ms: Some(70),
         first_semantic_delta_latency_ms: Some(30),
     };
+    sample.request_id = Some("tool-req-1".to_owned());
     lane_report.samples.push(sample);
     lane_report.admin_metrics = NormalizedAdminMetricsCapture {
         before: Some(json!({
@@ -2183,6 +2184,36 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
                     "stream_first_parsed_chunk_ms": {"count": 3, "min": 2.0, "max": 20.0, "avg": 8.0},
                     "stream_first_tool_delta_ms": {"count": 3, "min": 3.0, "max": 25.0, "avg": 10.0}
                 }
+            },
+            "tool_stream": {
+                "capacity": 128,
+                "recent": [
+                    {
+                        "request_id": "unrelated",
+                        "model": "qwen",
+                        "streamed": true,
+                        "kir_first_tool_delta_ms": 99,
+                        "validated_tool_call_ms": 100,
+                        "latency_ms": 120
+                    },
+                    {
+                        "request_id": "tool-req-1",
+                        "model": "qwen",
+                        "streamed": true,
+                        "kir_first_tool_delta_ms": 30,
+                        "tool_argument_assembly_ms": 40,
+                        "tool_intent_fill_ms": 50,
+                        "tool_schema_validation_ms": 60,
+                        "tool_finish_ms": 70,
+                        "validated_tool_call_ms": 70,
+                        "mlx_response_headers_ms": 8,
+                        "mlx_first_upstream_byte_ms": 10,
+                        "mlx_first_parsed_chunk_ms": 20,
+                        "mlx_first_tool_delta_ms": 25,
+                        "mlx_upstream_complete_ms": 65,
+                        "latency_ms": 80
+                    }
+                ]
             }
         })),
         error: None,
@@ -2199,6 +2230,19 @@ fn qwen_mlx_tool_normalized_tool_stream_timing_report_includes_admin_stage_delta
     assert_eq!(admin.tool_argument_assembly_ms.count_delta, Some(1));
     assert_eq!(admin.tool_finish_ms.count_delta, Some(1));
     assert_eq!(admin.mlx_stream_first_upstream_byte_ms.count_delta, Some(1));
+    let report_json = serde_json::to_value(&report).expect("report serializes");
+    let observations = report_json
+        .pointer("/lanes/0/tool_stream_observations")
+        .and_then(serde_json::Value::as_array)
+        .expect("tool-stream observations are included");
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0]["request_id"], "tool-req-1");
+    assert_eq!(observations[0]["client_first_byte_ms"], 12);
+    assert_eq!(observations[0]["client_first_sse_data_ms"], 13);
+    assert_eq!(observations[0]["client_visible_first_tool_delta_ms"], 30);
+    assert_eq!(observations[0]["kir_first_tool_delta_ms"], 30);
+    assert_eq!(observations[0]["mlx_first_tool_delta_ms"], 25);
+    assert_eq!(observations[0]["validated_tool_call_ms"], 70);
 }
 
 #[test]

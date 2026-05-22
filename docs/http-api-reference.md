@@ -194,6 +194,16 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   model family, chat template ID, tool schema hash, system prompt hash, and
   chat template kwargs hash so repeated agent turns can be grouped without
   exposing prompt content.
+- `tool_stream`: Bounded per-request streamed tool-call timing observations.
+  `capacity` is fixed at `128`; `recent` contains successful streamed tool
+  requests keyed by `request_id` with scalar timing fields only. Kir-visible
+  milestones use `kir_first_tool_delta_ms`, `tool_argument_assembly_ms`,
+  `tool_intent_fill_ms`, `tool_schema_validation_ms`, `tool_finish_ms`, and
+  `validated_tool_call_ms`. MLX upstream milestones use
+  `mlx_response_headers_ms`, `mlx_first_upstream_byte_ms`,
+  `mlx_first_parsed_chunk_ms`, `mlx_first_tool_delta_ms`, and
+  `mlx_upstream_complete_ms`. Prompts, messages, tool schemas, tool arguments,
+  and request bodies are not stored.
 - `request_latency_ms`: Summary (count, min, max, avg) of total outer kir-ai
   request duration.
 - `non_streamed_request_latency_ms`: Summary of outer kir-ai request duration
@@ -240,6 +250,27 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
         "chat_template_kwargs_hash": "sha256:38ff...",
         "stable_prefix_key": "sha256:fb52...",
         "latency_ms": 95
+      }
+    ]
+  },
+  "tool_stream": {
+    "capacity": 128,
+    "recent": [
+      {
+        "request_id": "req-456",
+        "model": "local-qwen36-mlx",
+        "streamed": true,
+        "kir_first_tool_delta_ms": 576,
+        "tool_argument_assembly_ms": 582,
+        "tool_intent_fill_ms": 584,
+        "tool_schema_validation_ms": 588,
+        "validated_tool_call_ms": 590,
+        "mlx_response_headers_ms": 80,
+        "mlx_first_upstream_byte_ms": 120,
+        "mlx_first_parsed_chunk_ms": 180,
+        "mlx_first_tool_delta_ms": 560,
+        "mlx_upstream_complete_ms": 585,
+        "latency_ms": 610
       }
     ]
   },

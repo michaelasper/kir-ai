@@ -4,12 +4,12 @@ use super::{
     AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
     metrics::{
-        record_failure_metrics, record_first_tool_delta_metrics, record_runtime_error_metrics,
-        record_stream_client_disconnect_metrics, record_stream_stall_metrics,
-        record_success_metrics, record_time_to_first_token_metrics,
+        PendingToolStreamObservation, record_failure_metrics, record_first_tool_delta_metrics,
+        record_runtime_error_metrics, record_stream_client_disconnect_metrics,
+        record_stream_stall_metrics, record_success_metrics, record_time_to_first_token_metrics,
         record_tool_argument_assembly_metrics, record_tool_finish_metrics,
         record_tool_intent_fill_metrics, record_tool_schema_validation_metrics,
-        record_validated_tool_call_metrics,
+        record_tool_stream_observation, record_validated_tool_call_metrics,
     },
 };
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
@@ -79,22 +79,29 @@ where
                             ttft_recorded = true;
                         }
                         if !first_tool_delta_recorded && progress.has_tool_delta() {
+                            let latency = lifecycle.request_started.elapsed();
                             record_first_tool_delta_metrics(
                                 &lifecycle.state,
-                                lifecycle.request_started.elapsed(),
+                                latency,
                             );
+                            lifecycle.tool_stream.record_kir_first_tool_delta(latency);
                             first_tool_delta_recorded = true;
                         }
                         if !validated_tool_call_recorded && progress.has_tool_call_finish() {
                             let latency = lifecycle.request_started.elapsed();
                             record_tool_finish_metrics(&lifecycle.state, latency);
                             record_validated_tool_call_metrics(&lifecycle.state, latency);
+                            lifecycle.tool_stream.record_tool_finish(latency);
+                            lifecycle.tool_stream.record_validated_tool_call(latency);
                             validated_tool_call_recorded = true;
                         }
                         stall_deadline.record_progress_metadata(progress);
                         yield sse_json_event(chunk);
                     }
                     EngineStreamStep::Progress(progress) => {
+                        if lifecycle.tool_stream.record_backend_progress(&progress) {
+                            continue;
+                        }
                         if lifecycle.active_request.cancellation.is_cancelled() {
                             for event in lifecycle.finish_cancellation(
                                 "request was cancelled before stream progress delivery",
@@ -130,6 +137,7 @@ where
                         }
                         record_tool_stage_metrics(
                             &lifecycle.state,
+                            &mut lifecycle.tool_stream,
                             stage,
                             lifecycle.request_started.elapsed(),
                         );
@@ -179,18 +187,22 @@ where
 
 fn record_tool_stage_metrics(
     state: &AppState,
+    tool_stream: &mut PendingToolStreamObservation,
     stage: ChatCompletionStreamStage,
     latency: Duration,
 ) {
     match stage {
         ChatCompletionStreamStage::ToolArgumentAssemblyComplete => {
             record_tool_argument_assembly_metrics(state, latency);
+            tool_stream.record_tool_argument_assembly(latency);
         }
         ChatCompletionStreamStage::ToolIntentFillComplete => {
             record_tool_intent_fill_metrics(state, latency);
+            tool_stream.record_tool_intent_fill(latency);
         }
         ChatCompletionStreamStage::ToolSchemaValidationComplete => {
             record_tool_schema_validation_metrics(state, latency);
+            tool_stream.record_tool_schema_validation(latency);
         }
     }
 }
@@ -288,6 +300,7 @@ pub(super) struct StreamRunLifecycle {
     phase: GenerationPhaseGuard,
     request_started: Instant,
     cache_identity: Option<RequestCacheIdentity>,
+    tool_stream: PendingToolStreamObservation,
     terminal: Option<StreamTerminalOutcome>,
 }
 
@@ -300,6 +313,8 @@ impl StreamRunLifecycle {
             phase,
             request_started,
         } = run;
+        let tool_stream =
+            PendingToolStreamObservation::new(request_id.clone(), model.clone(), true);
         Self {
             state,
             request_id,
@@ -309,6 +324,7 @@ impl StreamRunLifecycle {
             phase,
             request_started,
             cache_identity: None,
+            tool_stream,
             terminal: None,
         }
     }
@@ -338,6 +354,12 @@ impl StreamRunLifecycle {
         self.terminal = Some(StreamTerminalOutcome::Success);
         match self.active_request.mark_finished() {
             super::requests::RequestFinishResult::Finished => {
+                if let Some(observation) = self
+                    .tool_stream
+                    .to_observation(self.request_started.elapsed())
+                {
+                    record_tool_stream_observation(&self.state, observation);
+                }
                 record_success_metrics(
                     &self.state,
                     &self.request_id,

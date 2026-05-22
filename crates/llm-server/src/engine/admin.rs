@@ -1,7 +1,7 @@
 use super::{
     AppState, EngineError,
     metrics::{
-        RequestCacheSnapshot, record_artifact_verification_failure_metrics,
+        RequestCacheSnapshot, ToolStreamSnapshot, record_artifact_verification_failure_metrics,
         record_cancellation_metrics, record_model_pull_failure_metrics,
         record_model_pull_success_metrics,
     },
@@ -379,6 +379,10 @@ pub(super) async fn admin_metrics(
         .request_cache
         .lock_or_panic("request cache observations")
         .snapshot();
+    let tool_stream = state
+        .tool_stream
+        .lock_or_panic("tool stream observations")
+        .snapshot();
     let response = AdminMetricsResponse {
         requests_total: metrics.requests_total(),
         successful_requests: metrics.successful_requests(),
@@ -432,6 +436,7 @@ pub(super) async fn admin_metrics(
         #[cfg(feature = "tool-calls")]
         validated_tool_call_ms: LatencySummary::from_metrics(validated_tool_call),
         request_cache,
+        tool_stream,
         tokens: TokenSummary {
             prompt_tokens: tokens.prompt_tokens(),
             completion_tokens: tokens.completion_tokens(),
@@ -513,6 +518,7 @@ pub(super) struct AdminMetricsResponse {
     #[cfg(feature = "tool-calls")]
     validated_tool_call_ms: LatencySummary,
     request_cache: RequestCacheSnapshot,
+    tool_stream: ToolStreamSnapshot,
     tokens: TokenSummary,
 }
 

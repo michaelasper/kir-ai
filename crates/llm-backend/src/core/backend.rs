@@ -440,6 +440,20 @@ pub enum BackendStreamProgress {
         tokens: u64,
         total_tokens: u64,
     },
+    MlxStreamTiming {
+        milestone: BackendStreamTimingMilestone,
+        latency_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendStreamTimingMilestone {
+    ResponseHeaders,
+    FirstUpstreamByte,
+    FirstParsedChunk,
+    FirstToolDelta,
+    UpstreamComplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

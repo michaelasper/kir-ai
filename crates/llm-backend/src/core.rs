@@ -20,9 +20,10 @@ pub use backend::{
     BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
     BackendError, BackendErrorDomain, BackendFinishReason, BackendHealth, BackendHealthStatus,
     BackendModelMetadata, BackendOutput, BackendRequest, BackendRequestKind, BackendStreamChunk,
-    BackendStreamProgress, BackendToolCall, BackendToolCallDelta, BackendToolCallFunction,
-    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
-    BackendToolFunctionDefinition, BackendToolType, ModelBackend, SamplingConfig,
+    BackendStreamProgress, BackendStreamTimingMilestone, BackendToolCall, BackendToolCallDelta,
+    BackendToolCallFunction, BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice,
+    BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType, ModelBackend,
+    SamplingConfig,
 };
 pub use gemma::{
     GemmaLayerCache, GemmaLayerCacheSnapshot, gemma_cache_count_for_spec,

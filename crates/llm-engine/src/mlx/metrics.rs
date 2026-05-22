@@ -278,45 +278,50 @@ impl MlxBackendRequestMetrics {
         self.metrics.record_zero_output_success(observation);
     }
 
-    pub(super) fn record_stream_response_headers(&self) {
-        self.metrics
-            .record_stream_response_headers(self.started.elapsed());
+    pub(super) fn record_stream_response_headers(&self) -> Duration {
+        let latency = self.started.elapsed();
+        self.metrics.record_stream_response_headers(latency);
+        latency
     }
 
-    pub(super) fn record_first_upstream_byte(&mut self) {
+    pub(super) fn record_first_upstream_byte(&mut self) -> Option<Duration> {
         if self.observed_first_upstream_byte {
-            return;
+            return None;
         }
         self.observed_first_upstream_byte = true;
-        self.metrics
-            .record_stream_first_upstream_byte(self.started.elapsed());
+        let latency = self.started.elapsed();
+        self.metrics.record_stream_first_upstream_byte(latency);
+        Some(latency)
     }
 
-    pub(super) fn record_first_parsed_chunk(&mut self) {
+    pub(super) fn record_first_parsed_chunk(&mut self) -> Option<Duration> {
         if self.observed_first_parsed_chunk {
-            return;
+            return None;
         }
         self.observed_first_parsed_chunk = true;
-        self.metrics
-            .record_stream_first_parsed_chunk(self.started.elapsed());
+        let latency = self.started.elapsed();
+        self.metrics.record_stream_first_parsed_chunk(latency);
+        Some(latency)
     }
 
-    pub(super) fn record_first_tool_delta(&mut self) {
+    pub(super) fn record_first_tool_delta(&mut self) -> Option<Duration> {
         if self.observed_first_tool_delta {
-            return;
+            return None;
         }
         self.observed_first_tool_delta = true;
-        self.metrics
-            .record_stream_first_tool_delta(self.started.elapsed());
+        let latency = self.started.elapsed();
+        self.metrics.record_stream_first_tool_delta(latency);
+        Some(latency)
     }
 
-    pub(super) fn record_stream_complete(&mut self) {
+    pub(super) fn record_stream_complete(&mut self) -> Option<Duration> {
         if self.observed_stream_complete {
-            return;
+            return None;
         }
         self.observed_stream_complete = true;
-        self.metrics
-            .record_stream_upstream_complete(self.started.elapsed());
+        let latency = self.started.elapsed();
+        self.metrics.record_stream_upstream_complete(latency);
+        Some(latency)
     }
 
     pub(super) fn finish_success(&mut self) {

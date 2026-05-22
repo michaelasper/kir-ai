@@ -460,6 +460,13 @@ elapsed latency, token and cached-token stats, optional Kir MLX upstream admin
 timing, process RSS, stalled-request deltas, and no-progress deltas. Runs are
 flagged invalid when samples fail, TTFT or required stream/tool deltas are
 missing, or Kir admin metrics report stalled/no-progress deltas.
+The top-level `tool_required_stream` report separates client-observed first
+byte, first SSE data, first tool delta, tool finish, and first semantic delta
+from Kir admin timing. For Kir proxy lanes with `x-request-id` and admin access,
+it also includes matching `/admin/metrics.tool_stream` observations so
+`client_visible_first_tool_delta_ms`, `mlx_first_tool_delta_ms`,
+`kir_first_tool_delta_ms`, and `validated_tool_call_ms` can be compared per
+request.
 The `stable_prefix` report groups by probe, cache phase, run mode, and lane. It
 reports p50 first semantic/tool delta, p50 elapsed latency, average
 prompt/cached/uncached tokens, cache status counts (`unknown`, `miss`,
