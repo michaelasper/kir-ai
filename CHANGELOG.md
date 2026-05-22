@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.42.0](https://github.com/michaelasper/kir-ai/compare/v1.41.0...v1.42.0) (2026-05-22)
+
+### Features
+
+* **COR-301:** add sliding block ring eviction ([b62b0de](https://github.com/michaelasper/kir-ai/commit/b62b0dec4343696c2df47b647895ae870a68409d))
+
 ## [1.41.0](https://github.com/michaelasper/kir-ai/compare/v1.40.0...v1.41.0) (2026-05-22)
 
 ### Features
