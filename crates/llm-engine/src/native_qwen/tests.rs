@@ -153,6 +153,7 @@ fn metal_backend_metrics_records_resident_attention_cache_activity() {
 
     metrics.record_kv_cache_allocation(16);
     metrics.record_kv_cache_sync(8);
+    metrics.record_kv_cache_skipped_syncs(3);
     metrics.record_kv_cache_residency(16, 2);
     metrics.record_kv_cache_eviction(2, 16);
     metrics.record_kv_cache_residency(0, 0);
@@ -166,6 +167,7 @@ fn metal_backend_metrics_records_resident_attention_cache_activity() {
     let kv = &snapshot["kv_cache"];
     assert_eq!(kv["allocations"], 1);
     assert_eq!(kv["syncs"], 1);
+    assert_eq!(kv["skipped_syncs"], 3);
     assert_eq!(kv["evictions"], 2);
     assert_eq!(kv["bytes_uploaded"], 24);
     assert_eq!(kv["bytes_evicted"], 16);

@@ -644,3 +644,158 @@ fn multiple_sessions_read_independent_block_tables_safely() {
         1
     );
 }
+
+#[test]
+fn block_pool_metrics_track_sharing_cow_eviction_and_utilization() {
+    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let initial = pool.metrics_snapshot();
+
+    assert_eq!(initial.total_blocks, 3);
+    assert_eq!(initial.resident_blocks, 0);
+    assert_eq!(initial.active_blocks, 0);
+    assert_eq!(initial.free_list_blocks, 3);
+    assert_eq!(initial.pool_utilization_pct, 0.0);
+    assert_eq!(initial.total_refcount_increments, 0);
+    assert_eq!(initial.pool_high_water_blocks, 0);
+
+    let owner = pool
+        .create_session()
+        .expect("owner session id is available");
+    let reader = pool
+        .create_session()
+        .expect("reader session id is available");
+    let first = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate first block");
+    let second = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate second block");
+
+    pool.block_mut(first)
+        .expect("first block is exclusive")
+        .append(&[1.0, 2.0], &[10.0, 20.0])
+        .expect("token fits");
+    pool.append_block_to_session(reader, first)
+        .expect("reader can share owner block");
+
+    let shared = pool.metrics_snapshot();
+    assert_eq!(shared.resident_blocks, 2);
+    assert_eq!(shared.active_blocks, 3);
+    assert_eq!(shared.shared_blocks, 1);
+    assert_eq!(shared.refcount_total, 3);
+    assert_eq!(shared.max_refcount_seen, 2);
+    assert_eq!(shared.total_refcount_increments, 1);
+    assert_eq!(shared.cow_bytes_saved, 32);
+    assert_eq!(shared.free_list_blocks, 1);
+    assert_eq!(shared.pool_high_water_blocks, 2);
+    assert!((shared.avg_refcount - 1.5).abs() < f64::EPSILON);
+    assert!((shared.pool_utilization_pct - 66.666_666_666_666_66).abs() < f64::EPSILON);
+
+    let reader_block = pool
+        .copy_on_write_session_block(reader, 0)
+        .expect("shared reader block is cloned before write");
+    assert_ne!(reader_block, first);
+
+    let cow = pool.metrics_snapshot();
+    assert_eq!(cow.resident_blocks, 3);
+    assert_eq!(cow.active_blocks, 3);
+    assert_eq!(cow.shared_blocks, 0);
+    assert_eq!(cow.total_cow_clones, 1);
+    assert_eq!(cow.cow_bytes_saved, 32);
+    assert_eq!(cow.pool_high_water_blocks, 3);
+    assert_eq!(cow.free_list_blocks, 0);
+
+    let newcomer = pool
+        .create_session()
+        .expect("newcomer session id is available");
+    let reused = pool
+        .allocate_for_session(newcomer)
+        .expect("LRU eviction frees a block for newcomer");
+
+    assert!([first, second].contains(&reused));
+    assert!(pool.session(owner).is_none());
+
+    let evicted = pool.metrics_snapshot();
+    assert_eq!(evicted.sessions, 2);
+    assert_eq!(evicted.resident_blocks, 2);
+    assert_eq!(evicted.active_blocks, 2);
+    assert_eq!(evicted.blocks_evicted_lru, 2);
+    assert_eq!(evicted.sessions_evicted_lru, 1);
+    assert_eq!(evicted.eviction_high_water_mark, 3);
+    assert_eq!(evicted.pool_high_water_blocks, 3);
+}
+
+#[test]
+fn block_pool_metrics_reset_when_pool_is_recreated() {
+    let mut pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
+    let session = pool.create_session().expect("session id is available");
+
+    pool.allocate_for_session(session)
+        .expect("session can allocate");
+
+    let active = pool.metrics_snapshot();
+    assert_eq!(active.resident_blocks, 1);
+    assert_eq!(active.pool_high_water_blocks, 1);
+
+    let recreated = BlockPool::new(1, 2, 2).expect("pool shape is valid");
+    let reset = recreated.metrics_snapshot();
+
+    assert_eq!(reset.total_blocks, 1);
+    assert_eq!(reset.resident_blocks, 0);
+    assert_eq!(reset.active_blocks, 0);
+    assert_eq!(reset.total_refcount_increments, 0);
+    assert_eq!(reset.total_cow_clones, 0);
+    assert_eq!(reset.blocks_evicted_lru, 0);
+    assert_eq!(reset.pool_high_water_blocks, 0);
+}
+
+#[test]
+fn block_pool_admin_snapshot_includes_session_block_tables_and_refcounts() {
+    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let owner = pool
+        .create_session()
+        .expect("owner session id is available");
+    let reader = pool
+        .create_session()
+        .expect("reader session id is available");
+    let shared_block = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate");
+
+    pool.append_block_to_session(reader, shared_block)
+        .expect("reader can share owner block");
+
+    let snapshot = pool.snapshot();
+
+    assert_eq!(snapshot.metrics.total_blocks, 2);
+    assert_eq!(snapshot.metrics.shared_blocks, 1);
+    assert_eq!(snapshot.sessions.len(), 2);
+    assert_eq!(snapshot.sessions[0].session_id, owner);
+    assert_eq!(snapshot.sessions[0].block_table.len(), 1);
+    assert_eq!(snapshot.sessions[0].block_table[0].index, 0);
+    assert_eq!(
+        snapshot.sessions[0].block_table[0].block_id,
+        shared_block.as_u64()
+    );
+    assert_eq!(snapshot.sessions[0].block_table[0].ref_count, 2);
+    assert!(
+        snapshot.sessions[0]
+            .owned_blocks
+            .contains(&shared_block.as_u64())
+    );
+    assert_eq!(snapshot.sessions[1].session_id, reader);
+    assert_eq!(
+        snapshot.sessions[1].block_table[0].block_id,
+        shared_block.as_u64()
+    );
+    assert_eq!(snapshot.sessions[1].block_table[0].ref_count, 2);
+    assert_eq!(
+        snapshot
+            .blocks
+            .iter()
+            .find(|block| block.block_id == shared_block.as_u64())
+            .expect("shared block is represented")
+            .ref_count,
+        2
+    );
+}

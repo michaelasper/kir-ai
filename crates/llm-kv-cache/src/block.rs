@@ -187,6 +187,10 @@ impl CacheBlock {
         Arc::strong_count(&self.storage)
     }
 
+    pub fn payload_bytes(&self) -> u64 {
+        f32_bytes(&self.storage.keys).saturating_add(f32_bytes(&self.storage.values))
+    }
+
     pub(crate) fn retain_storage(&self) -> RetainedCacheBlock {
         RetainedCacheBlock {
             id: self.id,

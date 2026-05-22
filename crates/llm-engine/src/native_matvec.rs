@@ -370,6 +370,12 @@ impl NativeTextMetalState {
             active_blocks.iter().copied(),
             &synced_revisions,
         );
+        let skipped_syncs = active_blocks
+            .iter()
+            .map(LayerKvCacheBlock::block_id)
+            .collect::<HashSet<_>>()
+            .len()
+            .saturating_sub(sync_blocks.len());
         let mut allocated_bytes = 0_u64;
         let mut synced_bytes = 0_u64;
         let mut residency_changed = false;
@@ -423,6 +429,9 @@ impl NativeTextMetalState {
         }
         if synced_bytes > 0 {
             metrics.record_kv_cache_sync(synced_bytes);
+        }
+        if skipped_syncs > 0 {
+            metrics.record_kv_cache_skipped_syncs(skipped_syncs as u64);
         }
         if residency_changed {
             self.record_kv_cache_residency_locked(&mirrors);
@@ -843,7 +852,6 @@ mod kv_cache_sync_tests {
                 .expect("token appends");
         }
         let active_blocks = cache.active_blocks().expect("active block view is valid");
-        let first_block_id = active_blocks[0].block_id();
         let synced_revisions = active_blocks
             .iter()
             .map(|block| (block.block_id(), block.revision()))
@@ -864,10 +872,14 @@ mod kv_cache_sync_tests {
         cache
             .append_sliding(&[999.0], &[1999.0])
             .expect("sliding append overwrites one physical block");
+        let dirty_block_id = cache
+            .active_blocks()
+            .expect("dirty active block view is valid")[0]
+            .block_id();
         let dirty_plan = kv_cache_blocks_needing_sync(&cache, &synced_revisions)
             .expect("dirty sync plan is valid");
         assert_eq!(dirty_plan.len(), 1);
-        assert_eq!(dirty_plan[0].block_id(), first_block_id);
+        assert_eq!(dirty_plan[0].block_id(), dirty_block_id);
     }
 
     #[tokio::test]
@@ -965,6 +977,7 @@ struct MetalBf16MatrixCacheCounters {
 struct MetalCacheCounters {
     allocations: u64,
     syncs: u64,
+    skipped_syncs: u64,
     evictions: u64,
     bytes_uploaded: u64,
     bytes_evicted: u64,
@@ -1081,6 +1094,12 @@ impl MetalBackendMetrics {
         });
     }
 
+    pub(crate) fn record_kv_cache_skipped_syncs(&self, count: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.skipped_syncs = cache.skipped_syncs.saturating_add(count);
+        });
+    }
+
     pub(crate) fn record_kv_cache_eviction(&self, count: u64, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.evictions += count;
@@ -1193,6 +1212,7 @@ fn cache_counters_json(counters: MetalCacheCounters) -> Value {
     json!({
         "allocations": counters.allocations,
         "syncs": counters.syncs,
+        "skipped_syncs": counters.skipped_syncs,
         "evictions": counters.evictions,
         "bytes_uploaded": counters.bytes_uploaded,
         "bytes_evicted": counters.bytes_evicted,

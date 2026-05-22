@@ -1,4 +1,73 @@
 use super::*;
+use llm_server::{ServerBackendMetrics, ServerBackendMetricsSnapshot};
+
+#[derive(Debug)]
+struct PagedKvBackendMetrics;
+
+impl ServerBackendMetrics for PagedKvBackendMetrics {
+    fn snapshot(&self) -> ServerBackendMetricsSnapshot {
+        ServerBackendMetricsSnapshot {
+            metrics: [(
+                "paged_kv_cache".to_owned(),
+                json!({
+                    "resident_blocks": 2,
+                    "active_blocks": 3,
+                    "shared_blocks": 1,
+                    "total_cow_clones": 1,
+                    "blocks_evicted_lru": 2,
+                    "pool_utilization_pct": 66.66666666666666,
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn kv_cache_snapshot(&self) -> Option<Value> {
+        Some(json!({
+            "object": "kv_cache.block_pool",
+            "metrics": {
+                "total_blocks": 3,
+                "resident_blocks": 2,
+                "active_blocks": 3,
+                "free_list_blocks": 1,
+                "shared_blocks": 1,
+                "refcount_total": 3,
+                "max_refcount_seen": 2,
+                "total_cow_clones": 1,
+                "cow_bytes_saved": 32,
+                "blocks_evicted_lru": 2,
+                "pool_utilization_pct": 66.66666666666666
+            },
+            "sessions": [
+                {
+                    "session_id": 7,
+                    "layers": [
+                        {
+                            "layer": 0,
+                            "block_table": [
+                                {"index": 0, "block_id": 42, "ref_count": 2}
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "blocks": [
+                {"block_id": 42, "ref_count": 2, "token_count": 2}
+            ]
+        }))
+    }
+}
+
+fn build_router_with_paged_kv_metrics() -> Router {
+    router_builder(Box::new(StaticBackend {
+        text: "unused".to_owned(),
+    }))
+    .with_metrics(Arc::new(PagedKvBackendMetrics))
+    .allow_unauthenticated_admin()
+    .build()
+    .expect("test router builds")
+}
 
 #[tokio::test]
 async fn admin_metrics_endpoint_reports_supplied_request_id() {
@@ -34,6 +103,82 @@ async fn admin_metrics_endpoint_reports_supplied_request_id() {
             .len(),
         0
     );
+}
+
+#[tokio::test]
+async fn prometheus_metrics_include_paged_kv_cache_metrics() {
+    let response = build_router_with_paged_kv_metrics()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("prometheus metrics response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .expect("content-type header")
+            .to_str()
+            .expect("content type is string")
+            .starts_with("text/plain"),
+        "Prometheus endpoint should return text/plain"
+    );
+    let body = body_text(response.into_body()).await;
+
+    assert!(
+        body.contains("kir_paged_kv_cache_resident_blocks 2"),
+        "paged-KV resident block metric should be rendered:\n{body}"
+    );
+    assert!(
+        body.contains("kir_paged_kv_cache_shared_blocks 1"),
+        "paged-KV sharing metric should be rendered:\n{body}"
+    );
+    assert!(
+        body.contains("kir_paged_kv_cache_total_cow_clones 1"),
+        "paged-KV COW metric should be rendered:\n{body}"
+    );
+    assert!(
+        body.contains("kir_paged_kv_cache_blocks_evicted_lru 2"),
+        "paged-KV eviction metric should be rendered:\n{body}"
+    );
+}
+
+#[tokio::test]
+async fn admin_kv_cache_returns_backend_snapshot_with_block_tables_and_refcounts() {
+    let response = build_router_with_paged_kv_metrics()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/kv-cache")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("admin KV cache response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response.into_body()).await;
+
+    assert_eq!(body["object"], "kv_cache.block_pool");
+    assert_eq!(body["metrics"]["resident_blocks"], 2);
+    assert_eq!(body["metrics"]["shared_blocks"], 1);
+    assert_eq!(body["metrics"]["total_cow_clones"], 1);
+    assert_eq!(body["sessions"][0]["session_id"], 7);
+    assert_eq!(body["sessions"][0]["layers"][0]["layer"], 0);
+    assert_eq!(
+        body["sessions"][0]["layers"][0]["block_table"][0]["block_id"],
+        42
+    );
+    assert_eq!(
+        body["sessions"][0]["layers"][0]["block_table"][0]["ref_count"],
+        2
+    );
+    assert_eq!(body["blocks"][0]["block_id"], 42);
+    assert_eq!(body["blocks"][0]["ref_count"], 2);
 }
 
 #[tokio::test]
