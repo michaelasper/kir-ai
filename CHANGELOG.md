@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.35.0](https://github.com/michaelasper/kir-ai/compare/v1.34.0...v1.35.0) (2026-05-22)
+
+### Features
+
+* **COR-318:** add required-tool TTFT matrix ([ea4a349](https://github.com/michaelasper/kir-ai/commit/ea4a349bad0a4b5440ad4b65e5d28bed4d7a187e))
+
 ## [1.34.0](https://github.com/michaelasper/kir-ai/compare/v1.33.0...v1.34.0) (2026-05-22)
 
 ### Features
