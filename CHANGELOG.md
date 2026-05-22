@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.33.0](https://github.com/michaelasper/kir-ai/compare/v1.32.1...v1.33.0) (2026-05-22)
+
+### Features
+
+* **COR-321:** add qwen tool logits bias hint ([8337739](https://github.com/michaelasper/kir-ai/commit/8337739a1d4ecf7cad0f21b4db494c837bdad4ba))
+
 ## [1.32.1](https://github.com/michaelasper/kir-ai/compare/v1.32.0...v1.32.1) (2026-05-22)
 
 ### Bug Fixes
