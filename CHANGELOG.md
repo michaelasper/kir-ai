@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.42.1](https://github.com/michaelasper/kir-ai/compare/v1.42.0...v1.42.1) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-300:** validate prefix hash snapshots ([3a07fd1](https://github.com/michaelasper/kir-ai/commit/3a07fd14f6f06bf35189dcfeac4402a0cb474200))
+
 ## [1.42.0](https://github.com/michaelasper/kir-ai/compare/v1.41.0...v1.42.0) (2026-05-22)
 
 ### Features
