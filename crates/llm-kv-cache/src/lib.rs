@@ -254,9 +254,17 @@ impl LayerKvCache {
         self.max_tokens - self.token_count
     }
 
-    /// Returns bytes retained by the compatibility key/value staging buffers.
+    /// Returns bytes retained by compatibility staging and block key/value storage.
     pub fn resident_bytes(&self) -> u64 {
-        f32_resident_bytes(&self.key_stage).saturating_add(f32_resident_bytes(&self.value_stage))
+        self.blocks.iter().fold(
+            f32_resident_bytes(&self.key_stage)
+                .saturating_add(f32_resident_bytes(&self.value_stage)),
+            |resident_bytes, block| {
+                resident_bytes
+                    .saturating_add(f32_resident_bytes(block.key_storage()))
+                    .saturating_add(f32_resident_bytes(block.value_storage()))
+            },
+        )
     }
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
@@ -977,16 +985,16 @@ mod tests {
     }
 
     #[test]
-    fn layer_kv_cache_resident_bytes_use_allocated_storage() {
+    fn layer_kv_cache_resident_bytes_count_stage_and_block_storage() {
         let mut cache = LayerKvCache::new(3, 2, 2).expect("cache shape is valid");
 
-        assert_eq!(cache.resident_bytes(), 96);
+        assert_eq!(cache.resident_bytes(), 192);
 
         cache
             .append(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
             .expect("token fits");
         assert_eq!(cache.token_count(), 1);
-        assert_eq!(cache.resident_bytes(), 96);
+        assert_eq!(cache.resident_bytes(), 192);
     }
 
     #[test]
