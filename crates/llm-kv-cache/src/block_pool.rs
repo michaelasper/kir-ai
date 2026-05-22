@@ -1,11 +1,36 @@
 use std::collections::HashMap;
 
-use crate::{BlockId, CacheBlock, KvCacheError, SessionBlockTable, SessionId};
+use crate::{BlockId, CacheBlock, CacheBlockHash, KvCacheError, SessionBlockTable, SessionId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrefixEntry {
+    blocks: Vec<PrefixBlockSnapshot>,
+}
+
+impl PrefixEntry {
+    fn block_ids(&self) -> Vec<BlockId> {
+        self.blocks
+            .iter()
+            .map(|snapshot| snapshot.block_id)
+            .collect()
+    }
+
+    fn terminal_hash(&self) -> Option<&CacheBlockHash> {
+        self.blocks.last().map(|snapshot| &snapshot.content_hash)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrefixBlockSnapshot {
+    block_id: BlockId,
+    content_hash: CacheBlockHash,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockPool {
     blocks: HashMap<BlockId, CacheBlock>,
     free_list: Vec<BlockId>,
+    prefixes: HashMap<CacheBlockHash, PrefixEntry>,
     sessions: HashMap<SessionId, SessionBlockTable>,
     next_session_id: SessionId,
     access_clock: u64,
@@ -31,6 +56,7 @@ impl BlockPool {
         Ok(Self {
             blocks,
             free_list,
+            prefixes: HashMap::new(),
             sessions: HashMap::new(),
             next_session_id: 1,
             access_clock: 0,
@@ -114,6 +140,41 @@ impl BlockPool {
         }
         block.touch(access);
         Some(block_id)
+    }
+
+    pub fn register_prefix(&mut self, prefix_hash: CacheBlockHash, block_ids: Vec<BlockId>) {
+        if let Some(entry) = self.prefix_entry_for(&block_ids)
+            && entry.terminal_hash() == Some(&prefix_hash)
+        {
+            self.prefixes.insert(prefix_hash, entry);
+        } else {
+            self.prefixes.remove(&prefix_hash);
+        }
+    }
+
+    pub fn lookup_prefix(&self, prefix_hash: &CacheBlockHash) -> Option<Vec<BlockId>> {
+        let entry = self.prefixes.get(prefix_hash)?;
+        if self.prefix_blocks_match(prefix_hash, entry) {
+            Some(entry.block_ids())
+        } else {
+            None
+        }
+    }
+
+    pub fn attach_prefix_to_session(
+        &mut self,
+        session_id: SessionId,
+        prefix_hash: &CacheBlockHash,
+    ) -> Option<Vec<BlockId>> {
+        if !self.sessions.contains_key(&session_id) {
+            return None;
+        }
+        let block_ids = self.lookup_prefix(prefix_hash)?;
+        for block_id in block_ids.iter().copied() {
+            self.append_block_to_session_inner(session_id, block_id, true)
+                .ok()?;
+        }
+        Some(block_ids)
     }
 
     pub fn copy_on_write_session_block(
@@ -315,6 +376,33 @@ impl BlockPool {
         }
         block.touch(access);
         Ok(())
+    }
+
+    fn prefix_entry_for(&self, block_ids: &[BlockId]) -> Option<PrefixEntry> {
+        let mut blocks = Vec::with_capacity(block_ids.len());
+        for block_id in block_ids {
+            let block = self.blocks.get(block_id)?;
+            if block.ref_count() == 0 {
+                return None;
+            }
+            blocks.push(PrefixBlockSnapshot {
+                block_id: *block_id,
+                content_hash: *block.content_hash()?,
+            });
+        }
+        Some(PrefixEntry { blocks })
+    }
+
+    fn prefix_blocks_match(&self, prefix_hash: &CacheBlockHash, entry: &PrefixEntry) -> bool {
+        entry.terminal_hash() == Some(prefix_hash)
+            && entry.blocks.iter().all(|snapshot| {
+                self.blocks.get(&snapshot.block_id).is_some_and(|block| {
+                    block.ref_count() > 0
+                        && block
+                            .content_hash()
+                            .is_some_and(|content_hash| content_hash == &snapshot.content_hash)
+                })
+            })
     }
 
     fn evict_sessions_until_free(&mut self, excluded_session_id: SessionId) {

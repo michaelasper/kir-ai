@@ -1,6 +1,34 @@
 use crate::{BlockId, KvCacheError};
+use sha2::{Digest, Sha256};
 
 pub type CacheBlockHash = [u8; 32];
+
+pub fn cache_block_chain_hash(
+    model_id: &str,
+    cache_context: &str,
+    previous_hash: &CacheBlockHash,
+    token_ids: &[u32],
+) -> CacheBlockHash {
+    let mut hasher = Sha256::new();
+    hasher.update(b"kir-ai-kv-block-chain/v1");
+    update_hash_with_bytes(&mut hasher, model_id.as_bytes());
+    update_hash_with_bytes(&mut hasher, cache_context.as_bytes());
+    hasher.update(previous_hash);
+    hasher.update((token_ids.len() as u64).to_le_bytes());
+    for token_id in token_ids {
+        hasher.update(token_id.to_le_bytes());
+    }
+
+    let digest = hasher.finalize();
+    let mut hash = [0_u8; 32];
+    hash.copy_from_slice(&digest);
+    hash
+}
+
+fn update_hash_with_bytes(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CacheBlock {

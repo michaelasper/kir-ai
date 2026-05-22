@@ -3,7 +3,7 @@ mod block_id;
 mod block_pool;
 mod block_table;
 
-pub use block::{CacheBlock, CacheBlockHash};
+pub use block::{CacheBlock, CacheBlockHash, cache_block_chain_hash};
 pub use block_id::BlockId;
 pub use block_pool::BlockPool;
 pub use block_table::{BlockTable, SessionBlockTable, SessionId};

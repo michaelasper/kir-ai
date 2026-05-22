@@ -1,4 +1,6 @@
-use llm_kv_cache::{BlockId, BlockPool, BlockTable, CacheBlock, KvCacheError};
+use llm_kv_cache::{
+    BlockId, BlockPool, BlockTable, CacheBlock, KvCacheError, cache_block_chain_hash,
+};
 
 #[test]
 fn block_id_exposes_invalid_sentinel_without_accepting_it_as_valid() {
@@ -101,6 +103,45 @@ fn cache_block_append_invalidates_content_hash() {
         .expect("token fits");
 
     assert_eq!(block.content_hash(), None);
+}
+
+#[test]
+fn cache_block_chain_hash_depends_on_full_prefix_identity() {
+    let root_hash = [0_u8; 32];
+    let first_hash =
+        cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[11, 12, 13]);
+    let first_hash_again =
+        cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[11, 12, 13]);
+
+    assert_eq!(first_hash, first_hash_again);
+    assert_ne!(
+        first_hash,
+        cache_block_chain_hash("model-b", "cache-context-a", &root_hash, &[11, 12, 13])
+    );
+    assert_ne!(
+        first_hash,
+        cache_block_chain_hash("model-a", "cache-context-b", &root_hash, &[11, 12, 13])
+    );
+    assert_ne!(
+        first_hash,
+        cache_block_chain_hash("model-a", "cache-context-a", &[1_u8; 32], &[11, 12, 13])
+    );
+    assert_ne!(
+        first_hash,
+        cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[11, 12, 99])
+    );
+
+    let second_hash = cache_block_chain_hash("model-a", "cache-context-a", &first_hash, &[21, 22]);
+    let changed_parent_hash =
+        cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[41, 42]);
+    let changed_second_hash = cache_block_chain_hash(
+        "model-a",
+        "cache-context-a",
+        &changed_parent_hash,
+        &[21, 22],
+    );
+
+    assert_ne!(second_hash, changed_second_hash);
 }
 
 #[test]
@@ -275,6 +316,103 @@ fn block_pool_creates_sessions_and_release_returns_owned_blocks() {
         .allocate_for_session(second_session)
         .expect("released session blocks are reusable");
     assert!([first_block, second_block].contains(&reused));
+}
+
+#[test]
+fn block_pool_prefix_lookup_and_attach_share_registered_blocks() {
+    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let owner = pool.create_session().expect("session id is available");
+    let reader = pool.create_session().expect("session id is available");
+    let root_hash = [0_u8; 32];
+    let first_hash = cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[1, 2]);
+    let terminal_hash = cache_block_chain_hash("model-a", "cache-context-a", &first_hash, &[3, 4]);
+    let first = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate first prefix block");
+    let second = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate second prefix block");
+
+    pool.block_mut(first)
+        .expect("first block is exclusive")
+        .set_content_hash(Some(first_hash));
+    pool.block_mut(second)
+        .expect("second block is exclusive")
+        .set_content_hash(Some(terminal_hash));
+    pool.register_prefix(terminal_hash, vec![first, second]);
+
+    assert_eq!(
+        pool.lookup_prefix(&terminal_hash),
+        Some(vec![first, second])
+    );
+    assert_eq!(
+        pool.attach_prefix_to_session(reader, &terminal_hash),
+        Some(vec![first, second])
+    );
+    assert_eq!(pool.read_session_block(reader, 0), Some(first));
+    assert_eq!(pool.read_session_block(reader, 1), Some(second));
+    assert_eq!(
+        pool.block(first).expect("first block exists").ref_count(),
+        2
+    );
+    assert_eq!(
+        pool.block(second).expect("second block exists").ref_count(),
+        2
+    );
+}
+
+#[test]
+fn block_pool_prefix_attach_misses_when_intermediate_block_is_reused_with_different_hash() {
+    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let owner = pool.create_session().expect("session id is available");
+    let root_hash = [0_u8; 32];
+    let first_hash = cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[1, 2]);
+    let terminal_hash = cache_block_chain_hash("model-a", "cache-context-a", &first_hash, &[3, 4]);
+    let reused_hash = cache_block_chain_hash("model-a", "cache-context-a", &root_hash, &[99, 100]);
+    let first = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate first prefix block");
+    let second = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate second prefix block");
+
+    pool.block_mut(first)
+        .expect("first block is exclusive")
+        .set_content_hash(Some(first_hash));
+    pool.block_mut(second)
+        .expect("second block is exclusive")
+        .set_content_hash(Some(terminal_hash));
+    pool.register_prefix(terminal_hash, vec![first, second]);
+
+    assert!(pool.release(first));
+    let recycler = pool.create_session().expect("session id is available");
+    let reused = pool
+        .allocate_for_session(recycler)
+        .expect("released intermediate block can be reused");
+    assert_eq!(reused, first);
+    pool.block_mut(reused)
+        .expect("reused block is exclusive")
+        .set_content_hash(Some(reused_hash));
+
+    let first_ref_count = pool.block(first).expect("first block exists").ref_count();
+    let second_ref_count = pool.block(second).expect("second block exists").ref_count();
+    let reader = pool.create_session().expect("session id is available");
+
+    assert_eq!(pool.lookup_prefix(&terminal_hash), None);
+    assert_eq!(pool.attach_prefix_to_session(reader, &terminal_hash), None);
+    assert_eq!(
+        pool.block(first).expect("first block exists").ref_count(),
+        first_ref_count
+    );
+    assert_eq!(
+        pool.block(second).expect("second block exists").ref_count(),
+        second_ref_count
+    );
+    assert!(
+        pool.session(reader)
+            .expect("reader session exists")
+            .is_empty()
+    );
 }
 
 #[test]
