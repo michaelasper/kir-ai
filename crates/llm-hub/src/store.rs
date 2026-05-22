@@ -1,8 +1,9 @@
 use crate::client::HubDownloadFileRequest;
 use crate::manifest::{
     PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest, SnapshotVerification,
-    canonicalize_snapshot_root, manifest_matches_plan, read_promoted_snapshot,
-    verify_promoted_snapshot, verify_snapshot_file,
+    SnapshotVerificationMode, canonicalize_snapshot_root, manifest_matches_plan,
+    read_promoted_snapshot, verification_stamp_matches_snapshot, verify_promoted_snapshot,
+    verify_snapshot_file, write_snapshot_verification_stamp,
 };
 use crate::plan::{snapshot_dir_name, validate_artifact_path};
 use crate::{DownloadPlan, HubClient, HubError, HubRepoId};
@@ -186,6 +187,11 @@ impl ModelStore {
                     .await
                 {
                     Ok(existing) => {
+                        write_snapshot_verification_stamp(
+                            &existing,
+                            SnapshotVerificationMode::Pull,
+                        )
+                        .await?;
                         remove_staging_dir(&staging).await?;
                         return Ok(existing);
                     }
@@ -239,7 +245,11 @@ impl ModelStore {
             .reuse_or_write_snapshot_manifest(plan, snapshot.clone())
             .await
         {
-            Ok(snapshot) => Ok(Some(snapshot)),
+            Ok(snapshot) => {
+                write_snapshot_verification_stamp(&snapshot, SnapshotVerificationMode::Pull)
+                    .await?;
+                Ok(Some(snapshot))
+            }
             Err(err) => {
                 self.quarantine_snapshot(&snapshot, err.to_string()).await?;
                 Ok(None)
@@ -273,7 +283,9 @@ impl ModelStore {
                     })
                     .await?;
             }
-            self.promote_staging_locked(plan, staging.clone()).await
+            let snapshot = self.promote_staging_locked(plan, staging.clone()).await?;
+            write_snapshot_verification_stamp(&snapshot, SnapshotVerificationMode::Pull).await?;
+            Ok(snapshot)
         }
         .await;
         if let Err(err) = result {
@@ -420,16 +432,22 @@ impl ModelStore {
         snapshot: impl AsRef<Path>,
     ) -> Result<SnapshotVerification, HubError> {
         let snapshot = Self::inspect_snapshot(snapshot).await?;
-        verify_promoted_snapshot(snapshot).await
+        let verification = verify_promoted_snapshot(snapshot).await?;
+        write_snapshot_verification_stamp(&verification.snapshot, SnapshotVerificationMode::Deep)
+            .await?;
+        Ok(verification)
     }
 
     pub async fn verify_runnable_snapshot(
         snapshot: impl AsRef<Path>,
     ) -> Result<SnapshotVerification, HubError> {
-        let verification = Self::verify_snapshot(snapshot).await?;
+        let snapshot = Self::inspect_snapshot(snapshot).await?;
+        let verification = verify_promoted_snapshot(snapshot).await?;
         if let Err(reason) = validate_runnable_snapshot(&verification.snapshot).await {
             return Err(HubError::integrity_failed(reason));
         }
+        write_snapshot_verification_stamp(&verification.snapshot, SnapshotVerificationMode::Deep)
+            .await?;
         Ok(verification)
     }
 
@@ -873,8 +891,17 @@ async fn snapshot_readiness(
 async fn validate_fast_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
     validate_builtin_profile_metadata(&snapshot.manifest)?;
     validate_manifest_file_classes(&snapshot.manifest, &snapshot.path)?;
-    validate_snapshot_file_metadata(snapshot).await?;
     validate_safetensors_index_shards(snapshot).await?;
+    if verification_stamp_matches_snapshot(snapshot).await.is_ok() {
+        return Ok(());
+    }
+    let verification = verify_promoted_snapshot(snapshot.clone())
+        .await
+        .map_err(|err| err.to_string())?;
+    validate_runnable_snapshot(&verification.snapshot).await?;
+    write_snapshot_verification_stamp(&verification.snapshot, SnapshotVerificationMode::Deep)
+        .await
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -882,7 +909,11 @@ async fn validate_deep_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<
     let verification = verify_promoted_snapshot(snapshot.clone())
         .await
         .map_err(|err| err.to_string())?;
-    validate_runnable_snapshot(&verification.snapshot).await
+    validate_runnable_snapshot(&verification.snapshot).await?;
+    write_snapshot_verification_stamp(&verification.snapshot, SnapshotVerificationMode::Deep)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 async fn validate_runnable_snapshot(snapshot: &PromotedSnapshot) -> Result<(), String> {
@@ -956,50 +987,6 @@ fn validate_manifest_file_classes(manifest: &SnapshotManifest, path: &Path) -> R
             "snapshot `{}` contains no weight files; pull without --metadata-only before serving",
             path.display()
         ));
-    }
-    Ok(())
-}
-
-async fn validate_snapshot_file_metadata(snapshot: &PromotedSnapshot) -> Result<(), String> {
-    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path)
-        .await
-        .map_err(|err| err.to_string())?;
-    for file in &snapshot.manifest.files {
-        validate_artifact_path(&file.path).map_err(|err| err.to_string())?;
-        let path = snapshot.path.join(&file.path);
-        let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|err| {
-            format!(
-                "snapshot file `{}` is missing or unreadable: {err}",
-                path.display()
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(format!("snapshot path `{}` is a symlink", path.display()));
-        }
-        let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|err| {
-            format!(
-                "snapshot file `{}` is missing or unreadable: {err}",
-                path.display()
-            )
-        })?;
-        if !canonical_path.starts_with(&canonical_snapshot_root) {
-            return Err(format!(
-                "snapshot file `{}` resolves outside snapshot root `{}`",
-                path.display(),
-                snapshot.path.display()
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(format!("snapshot path `{}` is not a file", path.display()));
-        }
-        if metadata.len() != file.size {
-            return Err(format!(
-                "snapshot file `{}` has size {}, expected {}",
-                path.display(),
-                metadata.len(),
-                file.size
-            ));
-        }
     }
     Ok(())
 }
@@ -1149,5 +1136,16 @@ mod tests {
         assert_eq!(verification.verified_files, 3);
         assert_eq!(verification.verified_bytes, 8);
         assert_eq!(snapshot_file_verification_count_for_tests(), 3);
+
+        reset_snapshot_file_verification_count_for_tests();
+        let record = ModelStore::inspect_snapshot_readiness_with_mode(
+            &snapshot_path,
+            SnapshotReadinessMode::Fast,
+        )
+        .await
+        .expect("fast readiness inspects");
+
+        assert_eq!(record.readiness.status(), "ready");
+        assert_eq!(snapshot_file_verification_count_for_tests(), 0);
     }
 }

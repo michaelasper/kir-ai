@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
 
 pub const SNAPSHOT_MANIFEST_FILE: &str = "llm-engine-manifest.json";
+pub const SNAPSHOT_VERIFICATION_FILE: &str = "llm-engine-verification.json";
+const SNAPSHOT_VERIFICATION_SCHEMA_VERSION: u32 = 1;
+const SNAPSHOT_VERIFICATION_TOOL_NAME: &str = "llm-engine";
 #[cfg(test)]
 static SNAPSHOT_FILE_VERIFICATION_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -91,6 +94,40 @@ pub struct SnapshotVerification {
     pub verified_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotVerificationMode {
+    Pull,
+    Deep,
+}
+
+impl SnapshotVerificationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pull => "pull",
+            Self::Deep => "deep",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotVerificationStamp {
+    pub schema_version: u32,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub manifest_digest: String,
+    pub verification_mode: SnapshotVerificationMode,
+    pub verified_at: DateTime<Utc>,
+    pub files: Vec<VerificationStampFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationStampFile {
+    pub path: String,
+    pub size: u64,
+    pub modified_at: DateTime<Utc>,
+}
+
 pub(crate) async fn read_promoted_snapshot(path: PathBuf) -> Result<PromotedSnapshot, HubError> {
     let manifest_path = path.join(SNAPSHOT_MANIFEST_FILE);
     let bytes = tokio::fs::read(&manifest_path).await.map_err(|err| {
@@ -137,6 +174,141 @@ pub(crate) async fn verify_promoted_snapshot(
         verified_files,
         verified_bytes,
     })
+}
+
+pub(crate) async fn write_snapshot_verification_stamp(
+    snapshot: &PromotedSnapshot,
+    verification_mode: SnapshotVerificationMode,
+) -> Result<SnapshotVerificationStamp, HubError> {
+    let stamp = SnapshotVerificationStamp {
+        schema_version: SNAPSHOT_VERIFICATION_SCHEMA_VERSION,
+        tool_name: SNAPSHOT_VERIFICATION_TOOL_NAME.to_owned(),
+        tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+        manifest_digest: snapshot.manifest_digest.clone(),
+        verification_mode,
+        verified_at: Utc::now(),
+        files: collect_verification_stamp_files(snapshot).await?,
+    };
+    let bytes = serde_json::to_vec_pretty(&stamp).map_err(|err| {
+        HubError::invalid_response(format!("verification stamp JSON failed: {err}"))
+    })?;
+    tokio::fs::write(snapshot.path.join(SNAPSHOT_VERIFICATION_FILE), bytes)
+        .await
+        .map_err(HubError::io)?;
+    Ok(stamp)
+}
+
+pub(crate) async fn verification_stamp_matches_snapshot(
+    snapshot: &PromotedSnapshot,
+) -> Result<SnapshotVerificationStamp, HubError> {
+    let stamp_path = snapshot.path.join(SNAPSHOT_VERIFICATION_FILE);
+    let bytes = tokio::fs::read(&stamp_path).await.map_err(|err| {
+        HubError::integrity_failed(format!(
+            "snapshot verification stamp `{}` is missing or unreadable: {err}",
+            stamp_path.display()
+        ))
+    })?;
+    let stamp = serde_json::from_slice::<SnapshotVerificationStamp>(&bytes).map_err(|err| {
+        HubError::integrity_failed(format!(
+            "invalid snapshot verification stamp `{}`: {err}",
+            stamp_path.display()
+        ))
+    })?;
+    if stamp.schema_version != SNAPSHOT_VERIFICATION_SCHEMA_VERSION {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot verification stamp `{}` has schema version {}, expected {}",
+            stamp_path.display(),
+            stamp.schema_version,
+            SNAPSHOT_VERIFICATION_SCHEMA_VERSION
+        )));
+    }
+    if stamp.tool_name != SNAPSHOT_VERIFICATION_TOOL_NAME {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot verification stamp `{}` was written by `{}`, expected `{}`",
+            stamp_path.display(),
+            stamp.tool_name,
+            SNAPSHOT_VERIFICATION_TOOL_NAME
+        )));
+    }
+    if stamp.manifest_digest != snapshot.manifest_digest {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot verification stamp `{}` manifest digest {}, expected {}",
+            stamp_path.display(),
+            stamp.manifest_digest,
+            snapshot.manifest_digest
+        )));
+    }
+    let current_files = collect_verification_stamp_files(snapshot).await?;
+    if stamp.files != current_files {
+        return Err(HubError::integrity_failed(format!(
+            "snapshot verification stamp `{}` is stale for manifest digest {}",
+            stamp_path.display(),
+            snapshot.manifest_digest
+        )));
+    }
+    Ok(stamp)
+}
+
+async fn collect_verification_stamp_files(
+    snapshot: &PromotedSnapshot,
+) -> Result<Vec<VerificationStampFile>, HubError> {
+    let canonical_snapshot_root = canonicalize_snapshot_root(&snapshot.path).await?;
+    let mut files = Vec::with_capacity(snapshot.manifest.files.len());
+    for file in &snapshot.manifest.files {
+        validate_artifact_path(&file.path)?;
+        let path = snapshot.path.join(&file.path);
+        let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|err| {
+            HubError::integrity_failed(format!(
+                "snapshot file `{}` is missing or unreadable: {err}",
+                path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(HubError::integrity_failed(format!(
+                "snapshot path `{}` is a symlink",
+                path.display()
+            )));
+        }
+        let canonical_path = tokio::fs::canonicalize(&path).await.map_err(|err| {
+            HubError::integrity_failed(format!(
+                "snapshot file `{}` is missing or unreadable: {err}",
+                path.display()
+            ))
+        })?;
+        if !canonical_path.starts_with(&canonical_snapshot_root) {
+            return Err(HubError::integrity_failed(format!(
+                "snapshot file `{}` resolves outside snapshot root `{}`",
+                path.display(),
+                snapshot.path.display()
+            )));
+        }
+        if !metadata.is_file() {
+            return Err(HubError::integrity_failed(format!(
+                "snapshot path `{}` is not a file",
+                path.display()
+            )));
+        }
+        if metadata.len() != file.size {
+            return Err(HubError::integrity_failed(format!(
+                "snapshot file `{}` has size {}, expected {}",
+                path.display(),
+                metadata.len(),
+                file.size
+            )));
+        }
+        let modified_at = metadata.modified().map_err(|err| {
+            HubError::integrity_failed(format!(
+                "snapshot file `{}` modified time is unreadable: {err}",
+                path.display()
+            ))
+        })?;
+        files.push(VerificationStampFile {
+            path: file.path.clone(),
+            size: metadata.len(),
+            modified_at: DateTime::<Utc>::from(modified_at),
+        });
+    }
+    Ok(files)
 }
 
 pub(crate) fn manifest_matches_plan(

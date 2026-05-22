@@ -1,6 +1,6 @@
 use llm_hub::{
     HubFile, HubRepoId, ModelProfile, ModelStore, PrunePolicy, SnapshotManifest,
-    SnapshotReadinessMode, build_download_plan,
+    build_download_plan,
 };
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Barrier;
@@ -48,6 +48,15 @@ fn safetensors_index_bytes(shards: &[&str]) -> Vec<u8> {
         .collect::<serde_json::Map<_, _>>();
     serde_json::to_vec(&serde_json::json!({ "weight_map": weight_map }))
         .expect("safetensors index serializes")
+}
+
+async fn read_verification_stamp(snapshot_path: &Path) -> serde_json::Value {
+    serde_json::from_slice(
+        &tokio::fs::read(snapshot_path.join("llm-engine-verification.json"))
+            .await
+            .expect("verification stamp bytes"),
+    )
+    .expect("verification stamp json")
 }
 
 #[tokio::test]
@@ -260,6 +269,57 @@ async fn verifies_existing_snapshot_and_refreshes_manifest_profile() {
 }
 
 #[tokio::test]
+async fn verification_stamp_records_manifest_and_verification_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = ModelStore::new(temp.path());
+    let plan = build_download_plan(
+        HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),
+        "main",
+        "0123456789abcdef0123456789abcdef01234567",
+        ModelProfile::qwen36_safetensors_bf16(),
+        vec![HubFile::new("config.json", 2, Some("\"cfg\""))],
+        &[],
+    )
+    .expect("plan builds");
+    let snapshot_path = store.snapshot_path(&plan);
+    tokio::fs::create_dir_all(&snapshot_path)
+        .await
+        .expect("snapshot dir");
+    tokio::fs::write(snapshot_path.join("config.json"), "{}")
+        .await
+        .expect("existing config");
+
+    let snapshot = store
+        .verify_existing_snapshot(&plan)
+        .await
+        .expect("snapshot verifies")
+        .expect("snapshot exists");
+
+    let pull_stamp = read_verification_stamp(&snapshot_path).await;
+    assert_eq!(pull_stamp["schema_version"], 1);
+    assert_eq!(pull_stamp["tool_name"], "llm-engine");
+    assert!(
+        pull_stamp["tool_version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty())
+    );
+    assert_eq!(pull_stamp["manifest_digest"], snapshot.manifest_digest);
+    assert_eq!(pull_stamp["verification_mode"], "pull");
+    assert!(pull_stamp["verified_at"].as_str().is_some());
+    assert_eq!(pull_stamp["files"][0]["path"], "config.json");
+    assert_eq!(pull_stamp["files"][0]["size"], 2);
+    assert!(pull_stamp["files"][0]["modified_at"].as_str().is_some());
+
+    ModelStore::verify_snapshot(&snapshot_path)
+        .await
+        .expect("deep verification succeeds");
+
+    let deep_stamp = read_verification_stamp(&snapshot_path).await;
+    assert_eq!(deep_stamp["manifest_digest"], snapshot.manifest_digest);
+    assert_eq!(deep_stamp["verification_mode"], "deep");
+}
+
+#[tokio::test]
 async fn verifying_existing_snapshot_twice_preserves_manifest_digest() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
@@ -432,7 +492,7 @@ async fn snapshot_inventory_reports_metadata_only_snapshots_without_quarantine()
 }
 
 #[tokio::test]
-async fn snapshot_inventory_uses_fast_readiness_without_hashing_weight_files() {
+async fn snapshot_inventory_quarantines_same_size_corruption_after_stamp_stales() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = ModelStore::new(temp.path());
     let plan = build_download_plan(
@@ -454,31 +514,25 @@ async fn snapshot_inventory_uses_fast_readiness_without_hashing_weight_files() {
         .await
         .expect("snapshot verifies")
         .expect("snapshot exists");
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     tokio::fs::write(snapshot_path.join("model.safetensors"), b"xxxx")
         .await
         .expect("same-size weight corruption");
 
     let inventory = store.snapshot_inventory().await.expect("inventory");
-    let deep = ModelStore::inspect_snapshot_readiness_with_mode(
-        &snapshot_path,
-        SnapshotReadinessMode::Deep,
-    )
-    .await
-    .expect("deep readiness inspects");
 
-    assert_eq!(inventory.ready_snapshots.len(), 1);
-    assert_eq!(inventory.ready_snapshots[0].path, snapshot_path);
+    assert!(inventory.ready_snapshots.is_empty());
     assert!(inventory.metadata_only_snapshots.is_empty());
-    assert!(inventory.quarantined_snapshots.is_empty());
-    assert_eq!(deep.readiness.status(), "invalid");
+    assert_eq!(inventory.quarantined_snapshots.len(), 1);
     assert!(
-        deep.readiness
-            .reason()
-            .expect("deep reason")
+        inventory.quarantined_snapshots[0]
+            .metadata
+            .reason
             .contains("sha256"),
-        "reason: {:?}",
-        deep.readiness.reason()
+        "reason: {}",
+        inventory.quarantined_snapshots[0].metadata.reason
     );
+    assert!(!snapshot_path.exists());
 }
 
 #[tokio::test]

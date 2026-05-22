@@ -14,7 +14,9 @@ pub use lifecycle::{
     DEFAULT_MODEL_REVISION, ModelLifecyclePlanOptions, ModelLifecycleRequest, ModelLifecycleService,
 };
 pub use manifest::{
-    ManifestFile, PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest, SnapshotVerification,
+    ManifestFile, PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SNAPSHOT_VERIFICATION_FILE,
+    SnapshotManifest, SnapshotVerification, SnapshotVerificationMode, SnapshotVerificationStamp,
+    VerificationStampFile,
 };
 pub use plan::{ArtifactClass, DownloadPlan, PlannedFile, build_download_plan};
 pub use profile::{DEFAULT_MODEL_PROFILE_NAME, ModelProfile};

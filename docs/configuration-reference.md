@@ -141,6 +141,7 @@ The store root defaults to `.llm-models`.
       snapshots/
         <resolved-commit>/
           llm-engine-manifest.json
+          llm-engine-verification.json
           config.json
           tokenizer.json
           model.safetensors.index.json
@@ -148,6 +149,7 @@ The store root defaults to `.llm-models`.
           ...
         <resolved-commit>.metadata-only/
           llm-engine-manifest.json
+          llm-engine-verification.json
           config.json
           tokenizer.json
           model.safetensors.index.json
@@ -199,6 +201,20 @@ Manifest file entries:
 | `class` | `config`, `tokenizer`, `weights`, `quantization`, `license`, or `other`. |
 
 SHA-256 verification happens only when `sha256` is present.
+
+## Snapshot Verification Stamp
+
+Successful `model pull`, existing-snapshot reuse after pull verification, and
+`model verify` write `llm-engine-verification.json` next to the manifest. The
+stamp records schema version, tool name/version, manifest digest, verification
+mode (`pull` or `deep`), verification timestamp, and per-file size/modified-time
+metadata.
+
+Fast readiness checks trust the stamp only when its manifest digest matches the
+current `llm-engine-manifest.json` and every manifest file still has the stamped
+size and modified time. Missing, stale, or malformed stamps are ignored and the
+snapshot falls back to deep verification before it can be reported ready;
+missing files and corrupt hashed files still fail closed.
 
 ## Native Snapshot Requirements
 
