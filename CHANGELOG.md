@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.0](https://github.com/michaelasper/kir-ai/compare/v1.35.0...v1.36.0) (2026-05-22)
+
+### Features
+
+* **COR-311:** add after-ttft tool delta metric ([d083ee3](https://github.com/michaelasper/kir-ai/commit/d083ee39c9ce5acb98ad9cf663384ed9f92846c7))
+
 ## [1.35.0](https://github.com/michaelasper/kir-ai/compare/v1.34.0...v1.35.0) (2026-05-22)
 
 ### Features
