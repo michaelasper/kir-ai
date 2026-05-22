@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.34.0](https://github.com/michaelasper/kir-ai/compare/v1.33.0...v1.34.0) (2026-05-22)
+
+### Features
+
+* **COR-320:** add tool stream timing attribution ([484f303](https://github.com/michaelasper/kir-ai/commit/484f303d2ee4202aa44ea044146e33e6332adb50))
+
+### Bug Fixes
+
+* **COR-320:** expose tool stream metrics endpoint ([8bcef13](https://github.com/michaelasper/kir-ai/commit/8bcef1395aa9e221653cc25e284c3e181a7e78e1))
+
 ## [1.33.0](https://github.com/michaelasper/kir-ai/compare/v1.32.1...v1.33.0) (2026-05-22)
 
 ### Features
