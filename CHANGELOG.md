@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.43.2](https://github.com/michaelasper/kir-ai/compare/v1.43.1...v1.43.2) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-297:** retain prefix cache blocks without stage payloads ([46f3cf7](https://github.com/michaelasper/kir-ai/commit/46f3cf708aae9b18c886216609a7c5e8782e1ce5))
+
 ## [1.43.1](https://github.com/michaelasper/kir-ai/compare/v1.43.0...v1.43.1) (2026-05-22)
 
 ### Bug Fixes
