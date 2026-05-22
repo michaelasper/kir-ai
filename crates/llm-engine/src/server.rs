@@ -10,7 +10,9 @@ use llm_backend::ModelBackend;
 use llm_server::{RouterBuilder, ServerBackendMetrics, ServerBackendMetricsSnapshot, ServerRouter};
 use std::sync::Arc;
 
-pub use llm_server::{EngineConfigError, EngineOptions, PublicInferenceRateLimit};
+pub use llm_server::{
+    EngineConfigError, EngineOptions, PublicInferenceRateLimit, configured_hub_client,
+};
 
 pub fn build_router() -> Result<ServerRouter, EngineConfigError> {
     llm_server::build_router()

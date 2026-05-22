@@ -23,7 +23,10 @@ export HF_TOKEN=hf_...
 ```
 
 `model plan` and `model pull` use this token for Hugging Face API and download
-requests.
+requests. They also share the server/admin Hub endpoint configuration: pass
+`--hub-endpoint <url>` or set `LLM_HUB_ENDPOINT` to target a Hugging
+Face-compatible mirror. If `HF_TOKEN` is set, the configured endpoint must be
+HTTPS; omit the token for tokenless local HTTP mirrors.
 
 ## Plan A Download
 

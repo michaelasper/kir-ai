@@ -6,7 +6,7 @@ use super::{
         admin_model_plan, admin_model_pull, admin_model_verify, admin_models,
         admin_tool_stream_metrics, health, models,
     },
-    config::{EngineConfigError, EngineOptions, default_model_home, parse_hub_client},
+    config::{EngineConfigError, EngineOptions, configured_hub_client, default_model_home},
     inference::{chat_completions, completions},
     lifecycle,
     requests::ActiveRequestRegistry,
@@ -193,12 +193,8 @@ fn build_router_from_parts(
     allow_unauthenticated_admin: bool,
     backend_metrics: Arc<dyn ServerBackendMetrics>,
 ) -> Result<Router, EngineConfigError> {
-    let hub_client = options
-        .hub_endpoint
-        .as_deref()
-        .map(|endpoint| parse_hub_client(endpoint, options.hf_token.as_deref()))
-        .transpose()?
-        .unwrap_or_default();
+    let hub_client =
+        configured_hub_client(options.hub_endpoint.as_deref(), options.hf_token.as_deref())?;
     Ok(router_for_state(engine_state(
         backend,
         options,

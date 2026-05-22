@@ -52,7 +52,7 @@ llm-engine serve \
 | `--loader <native-metal\|mlx>` / `--backend <native-metal\|mlx>` | manifest or `native-metal` | Overrides the snapshot loader when no Kir manifest is present. Fails if it conflicts with an existing manifest. |
 | `--family <qwen\|deep_seek\|gemma\|llama>` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots without a Kir manifest. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. |
 | `--model-id <id>` | `local-qwen36` or snapshot alias | Served model alias. Used with `--snapshot`; protocol test mode also serves `local-qwen36`. |
-| `--hub-endpoint <url>` | `https://huggingface.co` | Hugging Face-compatible Hub endpoint for admin model plan/pull routes. `LLM_HUB_ENDPOINT` is used when this flag is omitted. If `HF_TOKEN` is set, the endpoint must be HTTPS; omit `HF_TOKEN` for tokenless local HTTP mirrors. |
+| `--hub-endpoint <url>` | `https://huggingface.co` | Hugging Face-compatible Hub endpoint shared by serve/admin model routes and CLI `model plan`/`model pull`. `LLM_HUB_ENDPOINT` is used when this flag is omitted. If `HF_TOKEN` is set, the endpoint must be HTTPS; omit `HF_TOKEN` for tokenless local HTTP mirrors. |
 | `--max-new-tokens <u32>` | `256` | Native text generation cap per request. Values below `1` are clamped to `1`. |
 | `--max-prefill-tokens <usize>` | `2048` | Native text prefill chunk size. Long-context native serving depends on a large value here because prefill runs sequentially by chunk; values below `1` are clamped to `1`, and prompt retention is sized from the accepted prompt plus generation budget and fails closed at the model context limit. Lower this only for memory-constrained correctness probes. |
 | `--max-json-body-bytes <usize>` | `16777216` | HTTP JSON request body cap for API and admin JSON routes. Values below `1` are rejected. |
@@ -673,7 +673,8 @@ Plans a Hugging Face model download without writing a snapshot.
 llm-engine model plan <repo> \
   [--revision <rev>] \
   [--profile <profile>] \
-  [--metadata-only]
+  [--metadata-only] \
+  [--hub-endpoint <url>]
 ```
 
 | Option | Default | Description |
@@ -682,8 +683,9 @@ llm-engine model plan <repo> \
 | `--revision <rev>` | `main` | Branch, tag, or commit to resolve. The resolved commit must be immutable. |
 | `--profile <profile>` | `qwen36-safetensors-bf16` | Built-in model acquisition profile. |
 | `--metadata-only` | `false` | Excludes files classified as weights from the plan. |
+| `--hub-endpoint <url>` | `LLM_HUB_ENDPOINT` or `https://huggingface.co` | Hugging Face-compatible Hub endpoint. Uses the same endpoint and `HF_TOKEN` validation as `serve --hub-endpoint`. |
 
-`HF_TOKEN` is used when present.
+`LLM_HUB_ENDPOINT` is used when `--hub-endpoint` is omitted. `HF_TOKEN` is used when present; if a token is set, the configured Hub endpoint must be HTTPS.
 
 Supported profiles:
 
@@ -716,6 +718,7 @@ llm-engine model pull <repo> \
   [--revision <rev>] \
   [--profile <profile>] \
   [--metadata-only] \
+  [--hub-endpoint <url>] \
   [--alias <model-id>] \
   [--model-home <path>]
 ```

@@ -13,8 +13,8 @@ use llm_backend::{
 };
 use llm_engine::{
     DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit, SnapshotBackendLoader,
-    SnapshotBackendOptions, model_cli, open_snapshot_backend, parse_snapshot_model_family,
-    router_builder,
+    SnapshotBackendOptions, configured_hub_client, model_cli, open_snapshot_backend,
+    parse_snapshot_model_family, router_builder,
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
@@ -23,7 +23,7 @@ use llm_engine::{
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
-use llm_hub::{HubClient, ModelStore, SnapshotReadiness};
+use llm_hub::{ModelStore, SnapshotReadiness};
 #[cfg(feature = "diagnostics")]
 use llm_models::QwenModelSpec;
 #[cfg(feature = "diagnostics")]
@@ -708,7 +708,7 @@ mod tests {
 async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
     let Some(subcommand) = args.first() else {
         anyhow::bail!(
-            "usage: llm-engine model plan <repo> [--revision <rev>] [--profile <profile>]"
+            "usage: llm-engine model plan <repo> [--revision <rev>] [--profile <profile>] [--hub-endpoint <url>]"
         );
     };
     match subcommand.as_str() {
@@ -1123,7 +1123,10 @@ async fn run_model_command(args: Vec<String>) -> anyhow::Result<()> {
         "plan" | "pull" => {
             let options = model_cli::model_plan_options_from_args(subcommand, &args)?;
             let token = std::env::var("HF_TOKEN").ok();
-            let client = HubClient::default();
+            let hub_endpoint = flag_value(&args, "--hub-endpoint")
+                .map(str::to_owned)
+                .or_else(|| std::env::var("LLM_HUB_ENDPOINT").ok());
+            let client = configured_hub_client(hub_endpoint.as_deref(), token.as_deref())?;
             let mut plan = client
                 .plan_model(
                     options.repo_id,

@@ -94,6 +94,16 @@ impl std::fmt::Display for EngineConfigError {
 
 impl std::error::Error for EngineConfigError {}
 
+pub fn configured_hub_client(
+    endpoint: Option<&str>,
+    hf_token: Option<&str>,
+) -> Result<HubClient, EngineConfigError> {
+    endpoint
+        .map(|endpoint| parse_hub_client(endpoint, hf_token))
+        .transpose()
+        .map(|client| client.unwrap_or_default())
+}
+
 pub(super) fn parse_hub_client(
     endpoint: &str,
     hf_token: Option<&str>,
