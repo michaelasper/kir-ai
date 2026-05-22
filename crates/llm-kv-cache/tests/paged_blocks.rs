@@ -188,3 +188,194 @@ fn block_pool_maintains_lru_access_order_for_allocated_blocks() {
         0
     );
 }
+
+#[test]
+fn block_pool_creates_sessions_and_release_returns_owned_blocks() {
+    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let first_session = pool.create_session().expect("session id is available");
+    let second_session = pool.create_session().expect("session id is available");
+
+    assert_ne!(first_session, second_session);
+    assert_eq!(pool.session_count(), 2);
+    assert_eq!(
+        pool.session(first_session)
+            .expect("session exists")
+            .session_id(),
+        first_session
+    );
+    assert!(
+        pool.session(first_session)
+            .expect("session exists")
+            .created_at()
+            < pool
+                .session(second_session)
+                .expect("session exists")
+                .created_at()
+    );
+
+    let first_block = pool
+        .allocate_for_session(first_session)
+        .expect("first session can allocate");
+    let second_block = pool
+        .allocate_for_session(first_session)
+        .expect("first session can allocate again");
+    let third_block = pool
+        .allocate_for_session(second_session)
+        .expect("second session can allocate");
+
+    assert_ne!(first_block, second_block);
+    assert_ne!(first_block, third_block);
+    assert_eq!(pool.free_blocks(), 0);
+    assert_eq!(pool.allocated_blocks(), 3);
+    assert_eq!(
+        pool.session(first_session)
+            .expect("session remains live")
+            .block_count(),
+        2
+    );
+    assert_eq!(
+        pool.session(first_session)
+            .expect("session remains live")
+            .owned_block_count(),
+        2
+    );
+
+    assert!(pool.release_session(first_session));
+
+    assert!(pool.session(first_session).is_none());
+    assert_eq!(pool.session_count(), 1);
+    assert_eq!(pool.free_blocks(), 2);
+    assert_eq!(pool.allocated_blocks(), 1);
+    assert_eq!(
+        pool.block(first_block).expect("block exists").ref_count(),
+        0
+    );
+    assert_eq!(
+        pool.block(second_block).expect("block exists").ref_count(),
+        0
+    );
+    assert_eq!(
+        pool.block(third_block).expect("block exists").ref_count(),
+        1
+    );
+
+    let reused = pool
+        .allocate_for_session(second_session)
+        .expect("released session blocks are reusable");
+    assert!([first_block, second_block].contains(&reused));
+}
+
+#[test]
+fn releasing_session_decrements_owned_shared_block_refcounts_once() {
+    let mut pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
+    let owner = pool.create_session().expect("session id is available");
+    let reader = pool.create_session().expect("session id is available");
+    let shared_block = pool
+        .allocate_for_session(owner)
+        .expect("owner can allocate");
+
+    pool.append_block_to_session(reader, shared_block)
+        .expect("second session can share allocated block");
+    pool.append_block_to_session(reader, shared_block)
+        .expect("same session can map shared block more than once");
+
+    assert_eq!(
+        pool.block(shared_block).expect("block exists").ref_count(),
+        2
+    );
+    assert_eq!(
+        pool.session(reader).expect("session exists").block_count(),
+        2
+    );
+    assert_eq!(
+        pool.session(reader)
+            .expect("session exists")
+            .owned_block_count(),
+        1
+    );
+
+    assert!(pool.release_session(owner));
+    assert_eq!(
+        pool.block(shared_block).expect("block exists").ref_count(),
+        1
+    );
+    assert_eq!(pool.free_blocks(), 0);
+    assert_eq!(pool.read_session_block(reader, 0), Some(shared_block));
+    assert_eq!(pool.read_session_block(reader, 1), Some(shared_block));
+
+    assert!(pool.release_session(reader));
+    assert_eq!(
+        pool.block(shared_block).expect("block exists").ref_count(),
+        0
+    );
+    assert_eq!(pool.free_blocks(), 1);
+}
+
+#[test]
+fn full_pool_evicts_least_recently_used_session_before_allocating() {
+    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let cold = pool.create_session().expect("session id is available");
+    let hot = pool.create_session().expect("session id is available");
+    let cold_block = pool.allocate_for_session(cold).expect("cold allocates");
+    let hot_block = pool.allocate_for_session(hot).expect("hot allocates");
+
+    assert_eq!(pool.lru_session(), Some(cold));
+    assert_eq!(pool.read_session_block(hot, 0), Some(hot_block));
+    assert_eq!(pool.lru_session(), Some(cold));
+
+    let newcomer = pool.create_session().expect("session id is available");
+    let reused_block = pool
+        .allocate_for_session(newcomer)
+        .expect("LRU session eviction frees a block");
+
+    assert_eq!(reused_block, cold_block);
+    assert!(pool.session(cold).is_none());
+    assert!(pool.session(hot).is_some());
+    assert!(pool.session(newcomer).is_some());
+    assert_eq!(
+        pool.block(hot_block).expect("hot block exists").ref_count(),
+        1
+    );
+    assert_eq!(pool.total_blocks(), 2);
+    assert_eq!(pool.free_blocks(), 0);
+}
+
+#[test]
+fn multiple_sessions_read_independent_block_tables_safely() {
+    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let first = pool.create_session().expect("session id is available");
+    let second = pool.create_session().expect("session id is available");
+    let first_block = pool.allocate_for_session(first).expect("first allocates");
+    let second_block = pool.allocate_for_session(second).expect("second allocates");
+
+    pool.block_mut(first_block)
+        .expect("first block exists")
+        .append(&[1.0, 2.0], &[10.0, 20.0])
+        .expect("token fits");
+    pool.block_mut(second_block)
+        .expect("second block exists")
+        .append(&[3.0, 4.0], &[30.0, 40.0])
+        .expect("token fits");
+
+    assert_eq!(pool.read_session_block(first, 0), Some(first_block));
+    assert_eq!(pool.read_session_block(second, 0), Some(second_block));
+    assert_eq!(
+        pool.block(first_block).expect("first block exists").key(0),
+        Some(&[1.0, 2.0][..])
+    );
+    assert_eq!(
+        pool.block(second_block)
+            .expect("second block exists")
+            .key(0),
+        Some(&[3.0, 4.0][..])
+    );
+
+    assert!(pool.release_session(first));
+    assert_eq!(pool.read_session_block(second, 0), Some(second_block));
+    assert_eq!(
+        pool.block(second_block)
+            .expect("second block exists")
+            .ref_count(),
+        1
+    );
+}

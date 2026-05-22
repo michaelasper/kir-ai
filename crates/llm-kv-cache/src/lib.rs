@@ -6,7 +6,7 @@ mod block_table;
 pub use block::{CacheBlock, CacheBlockHash};
 pub use block_id::BlockId;
 pub use block_pool::BlockPool;
-pub use block_table::BlockTable;
+pub use block_table::{BlockTable, SessionBlockTable, SessionId};
 
 use std::{
     fmt,
