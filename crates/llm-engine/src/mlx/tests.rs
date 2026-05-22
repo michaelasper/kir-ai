@@ -898,6 +898,133 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
 }
 
 #[tokio::test]
+async fn mlx_backend_adds_qwen_tool_logits_bias_kwargs_for_required_tools() {
+    let server = FakeMlxServer::start(
+        r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}"#,
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            tool_parser: MlxToolParserMode::QwenXml,
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+    let request = BackendRequest::chat_completion(
+        "local-mlx",
+        "read a file",
+        backend_chat_context_with_tools(
+            vec![ChatMessage::user("read Cargo.toml")],
+            vec![BackendToolDefinition::function(
+                "read_file",
+                "Read a file.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    }
+                }),
+            )],
+        ),
+        Some(12),
+        SamplingConfig::Greedy,
+        Some(llm_backend::BackendToolChoice::RequiredAny),
+        false,
+        BackendCacheContext::chat_template(
+            "chatml/qwen/v1",
+            Some("tool-schema-compatibility-v1".to_owned()),
+        ),
+    );
+
+    let output = backend
+        .generate(request.clone())
+        .await
+        .expect("mlx generation succeeds");
+
+    assert_eq!(server.received_path(), "/v1/chat/completions");
+    let expected_kwargs =
+        serde_json::json!({"enable_thinking": false, "enable_tool_logits_bias": true});
+    let received = server.received_body();
+    assert_eq!(received["tool_choice"], "required");
+    assert_eq!(received["chat_template_kwargs"], expected_kwargs);
+    let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("qwen");
+    let fingerprint = mlx_request_fingerprint(
+        MlxUpstreamProtocol::ChatCompletions,
+        false,
+        &metadata,
+        &request,
+    );
+    let expected_hash = {
+        let bytes = serde_json::to_vec(&expected_kwargs).expect("kwargs serialize");
+        let digest = Sha256::digest(&bytes);
+        format!("{digest:x}")
+    };
+    assert_eq!(
+        fingerprint["chat_template_kwargs_hash"].as_str(),
+        Some(expected_hash.as_str())
+    );
+    assert_eq!(output.finish_reason, BackendFinishReason::ToolCalls);
+    assert!(output.text.starts_with("<tool_call>"));
+    assert!(output.text.contains("\"name\":\"read_file\""));
+    assert!(output.text.contains("\"path\":\"Cargo.toml\""));
+}
+
+#[tokio::test]
+async fn mlx_backend_omits_qwen_tool_logits_bias_kwargs_without_required_tools() {
+    let server = FakeMlxServer::start(
+        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1}}"#,
+    );
+    let backend = MlxBackend::open_with_options(
+        "local-mlx",
+        server.snapshot_path(),
+        MlxBackendOptions {
+            endpoint: server.endpoint(),
+            family: Some(ModelFamily::Qwen),
+            tool_parser: MlxToolParserMode::QwenXml,
+            ..MlxBackendOptions::default()
+        },
+    )
+    .await
+    .expect("backend opens");
+
+    let output = backend
+        .generate(BackendRequest::chat_completion(
+            "local-mlx",
+            "read a file",
+            backend_chat_context_with_tools(
+                vec![ChatMessage::user("read Cargo.toml")],
+                vec![BackendToolDefinition::function(
+                    "read_file",
+                    "Read a file.",
+                    serde_json::json!({}),
+                )],
+            ),
+            Some(12),
+            SamplingConfig::Greedy,
+            None,
+            false,
+            BackendCacheContext::chat_template(
+                "chatml/qwen/v1",
+                Some("tool-schema-compatibility-v1".to_owned()),
+            ),
+        ))
+        .await
+        .expect("mlx generation succeeds");
+
+    assert_eq!(output.text, "ok");
+    let received = server.received_body();
+    assert!(received.get("tool_choice").is_none());
+    assert_eq!(
+        received["chat_template_kwargs"],
+        serde_json::json!({"enable_thinking": false})
+    );
+}
+
+#[tokio::test]
 async fn mlx_backend_streaming_completion_requests_include_usage_by_default() {
     let server = FakeMlxServer::start(
         "data:{\"choices\":[{\"text\":\"one\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\ndata:[DONE]\n\n",

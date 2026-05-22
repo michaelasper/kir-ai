@@ -4,6 +4,7 @@ use llm_models::ModelFamily;
 use serde_json::Value;
 use std::path::Path;
 
+const MLX_TOOL_LOGITS_BIAS_KWARG: &str = "enable_tool_logits_bias";
 pub(super) const MLX_QWEN_CONTROL_STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
 pub(super) const MLX_DEEPSEEK_CONTROL_STOP_TOKENS: &[&str] =
     &["<｜end▁of▁sentence｜>", "<｜User｜>", "<|endoftext|>"];
@@ -88,9 +89,16 @@ pub(super) fn mlx_chat_template_kwargs_for_metadata(
 
 pub(super) fn mlx_effective_chat_template_kwargs(
     metadata: &BackendModelMetadata,
-    _request: &BackendRequest,
+    request: &BackendRequest,
 ) -> Option<Value> {
-    mlx_chat_template_kwargs_for_metadata(metadata)
+    let mut kwargs = mlx_chat_template_kwargs_for_metadata(metadata);
+    if mlx_tool_logits_bias_applies(metadata, request) {
+        let value = kwargs.get_or_insert_with(|| Value::Object(Default::default()));
+        if let Value::Object(map) = value {
+            map.insert(MLX_TOOL_LOGITS_BIAS_KWARG.to_owned(), Value::Bool(true));
+        }
+    }
+    kwargs
 }
 
 fn mlx_chat_template_kwargs_for_family(family: ModelFamily) -> Option<Value> {
@@ -98,6 +106,15 @@ fn mlx_chat_template_kwargs_for_family(family: ModelFamily) -> Option<Value> {
         .adapter()
         .chat_template_kwargs_json()
         .map(|kwargs| serde_json::from_str(kwargs).expect("static chat template kwargs JSON"))
+}
+
+fn mlx_tool_logits_bias_applies(metadata: &BackendModelMetadata, request: &BackendRequest) -> bool {
+    if metadata_family(metadata) != Some(ModelFamily::Qwen) {
+        return false;
+    }
+    request.as_chat().is_some_and(|chat| {
+        chat.required_tool_choice.is_some() && !chat.chat_context.tools.is_empty()
+    })
 }
 
 pub(super) fn mlx_upstream_protocol_for_request(

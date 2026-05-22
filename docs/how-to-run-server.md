@@ -92,6 +92,12 @@ for cache and fallback paths, but it is not the source of truth for MLX chat
 requests. The only rendered-prompt MLX chat fallback is Llama conversation mode
 when no structured `chat_context` is available.
 
+For Qwen MLX requests with a required tool choice, Kir adds
+`"enable_tool_logits_bias":true` to the forwarded `chat_template_kwargs`. This
+is a request-level hint for sidecars that honor it to bias decoding toward
+structured tool-call tokens; ordinary Qwen chat requests keep only
+`"enable_thinking":false`.
+
 Start the Qwen MLX sidecar separately:
 
 ```sh

@@ -77,7 +77,10 @@ equivalent local ingress.
 Stable-prefix serving for Qwen agent traffic is `--canonical-tool-schemas` plus
 Qwen family metadata. Kir records Qwen chat-template kwargs as
 `{"enable_thinking":false}` in cache identity and forwards the same kwargs to
-MLX chat-completion sidecars.
+MLX chat-completion sidecars. Required-tool Qwen MLX requests add
+`"enable_tool_logits_bias":true` to those kwargs so sidecars that honor the
+request-level hint can bias structured tool-call decoding; non-required requests
+keep the base Qwen kwargs.
 
 MLX prompt-cache control is a sidecar launch policy, not a Kir request-body
 field. Launch `mlx_lm.server`/`mlx_vlm.server` with `--prompt-cache-size` or
