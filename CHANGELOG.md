@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.8](https://github.com/michaelasper/kir-ai/compare/v1.36.7...v1.36.8) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-239:** align model verify semantics ([d39fef5](https://github.com/michaelasper/kir-ai/commit/d39fef5c7c1cb81792a2ce994759f369bc4c018e))
+
 ## [1.36.7](https://github.com/michaelasper/kir-ai/compare/v1.36.6...v1.36.7) (2026-05-22)
 
 ### Bug Fixes
