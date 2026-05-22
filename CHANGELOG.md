@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.1](https://github.com/michaelasper/kir-ai/compare/v1.36.0...v1.36.1) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-308:** recover mlx cache status without upstream cached tokens ([4b80670](https://github.com/michaelasper/kir-ai/commit/4b80670f2f7958ae6233c08d8ee795d37adafbb3))
+
 ## [1.36.0](https://github.com/michaelasper/kir-ai/compare/v1.35.0...v1.36.0) (2026-05-22)
 
 ### Features
