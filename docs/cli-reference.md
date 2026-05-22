@@ -313,6 +313,33 @@ llm-engine bench qwen-mlx-tool-normalized \
   --output qwen-mlx-prefill-135k.json
 ```
 
+Use the explicit experimental profile when testing larger prefill chunks beyond
+`8192`. It keeps the default `qwen-mlx-prefill-135k` profile unchanged and runs
+only the `context_recall_stream_135k` probe by default. Start one direct MLX
+sidecar and one matching Kir proxy per lane:
+
+```sh
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8080 --prefill-step-size 8192 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8081 --prefill-step-size 12288 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8082 --prefill-step-size 16384 --chat-template-args '{"enable_thinking":false}'
+mlx_lm.server --model "$SNAPSHOT" --host 127.0.0.1 --port 8083 --prefill-step-size 32768 --chat-template-args '{"enable_thinking":false}'
+```
+
+```sh
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3000 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8080/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3001 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8081/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3002 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8082/v1
+cargo run -p llm-engine -- serve --addr 127.0.0.1:3003 --snapshot "$SNAPSHOT" --loader mlx --family qwen --model-id local-qwen36-mlx --mlx-endpoint http://127.0.0.1:8083/v1
+```
+
+```sh
+llm-engine bench qwen-mlx-tool-normalized \
+  --sweep-profile qwen-mlx-prefill-135k-experimental \
+  --snapshot "$SNAPSHOT" \
+  --samples 1 \
+  --output qwen-mlx-prefill-135k-experimental.json
+```
+
 The stable agent-prefix profile compares one direct MLX sidecar on `8080/v1`
 with one Kir proxy on `3000`. The benchmark does not launch either process.
 Start the direct sidecar with Qwen no-thinking chat-template args:
@@ -400,6 +427,15 @@ prefill-sweep-135k` and expands `mlx-prefill-default`, `kir-prefill-default`,
 `kir-prefill-8192` on direct ports `8080` through `8085` and proxy ports
 `3000` through `3005`.
 
+The `qwen-mlx-prefill-135k-experimental` profile defaults to `--probe-suite
+prefill-sweep-135k-context-recall` and expands `mlx-prefill-8192-control`,
+`kir-prefill-8192-control`, `mlx-prefill-experimental-12288`,
+`kir-prefill-experimental-12288`, `mlx-prefill-experimental-16384`,
+`kir-prefill-experimental-16384`, `mlx-prefill-experimental-32768`, and
+`kir-prefill-experimental-32768` on direct ports `8080` through `8083` and
+proxy ports `3000` through `3003`. Experimental lanes set `experimental: true`
+in the JSON report; the `8192-control` lanes are marked `false`.
+
 The `qwen-mlx-stable-prefix` profile defaults to `--probe-suite
 stable-agent-prefix` and expands `mlx-stable-prefix` on
 `http://127.0.0.1:8080/v1` plus `kir-stable-prefix` on
@@ -407,8 +443,8 @@ stable-agent-prefix` and expands `mlx-stable-prefix` on
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill`, `qwen-mlx-prefill-135k`, and `qwen-mlx-stable-prefix` require `--snapshot` and use the default MLX/Kir proxy ports above. |
-| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `required-tool-ttft-matrix`, `prefill-sweep-135k`, `stable-agent-prefix`, or `stable-prefix-smoke`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
+| `--sweep-profile <name>` | none | Expands a built-in lane matrix. `qwen-mlx-cache-prefill`, `qwen-mlx-prefill-135k`, `qwen-mlx-prefill-135k-experimental`, and `qwen-mlx-stable-prefix` require `--snapshot` and use the default MLX/Kir proxy ports above. |
+| `--probe-suite <name>` | profile default | Selects `full-matrix`, `focused-agentic-gate`, `required-tool-ttft-matrix`, `prefill-sweep-135k`, `prefill-sweep-135k-context-recall`, `stable-agent-prefix`, or `stable-prefix-smoke`. `qwen-mlx-prefill-135k` defaults to `prefill-sweep-135k`; `qwen-mlx-prefill-135k-experimental` defaults to `prefill-sweep-135k-context-recall`; `qwen-mlx-stable-prefix` defaults to `stable-agent-prefix`; other modes default to `full-matrix`. |
 | `--snapshot <path>` | none | Raw Hugging Face snapshot path used by built-in sweep profiles. The profile records it as `snapshot`, `launched_model_id`, and raw snapshot identity. |
 | `--cache-phases <csv>` | `cold,warm_same_prompt,warm_same_tool_schema` | Selects cache phases after probe-suite expansion. For example, `warm_same_prompt` runs one warmup pass for that phase before measured samples when `--warmups` is greater than `0`. |
 | `--only-lanes <csv>` | all lanes | Filters lanes by name after built-in profile expansion or explicit lane parsing. Unknown lane names fail before execution. |
@@ -452,8 +488,8 @@ Each measured sample reports `schema_variant`, `tool_choice_variant`,
 `tool_schema_bytes`, `cache_phase`, `prewarmed`, latency, HTTP status, finish
 reason, prompt/completion/total tokens, cached-token status/count when provided
 by upstream `usage.prompt_tokens_details.cached_tokens` or matching Kir proxy
-admin request-cache observations, validation classification, and the stream
-timing fields when observed. The top-level
+admin request-cache observations, validation classification, optional safety
+failure classification, and the stream timing fields when observed. The top-level
 `plan_summary` records probe and lane counts, selected phase/probe/lane names,
 warmup request count, measured request count, total HTTP requests, and planned
 prompt-token budget. Live runs print progress and ETA lines to stderr while
@@ -485,11 +521,13 @@ lanes to move first tool delta earlier, and requires candidate pass/fail,
 classification, and `tool_calls` finish signatures to remain unchanged.
 The `prefill_sweep` report ranks lanes by p50 first semantic delta for each
 probe, cache phase, and run mode, while preserving lane kind, prefill step size,
-response headers, first response byte, first parsed SSE chunk, first tool delta,
-elapsed latency, token and cached-token stats, optional Kir MLX upstream admin
-timing, process RSS, stalled-request deltas, and no-progress deltas. Runs are
-flagged invalid when samples fail, TTFT or required stream/tool deltas are
-missing, or Kir admin metrics report stalled/no-progress deltas.
+experimental marker, response headers, first response byte, first parsed SSE
+chunk, first semantic/tool delta, elapsed latency, prompt/cached/uncached-token
+stats, optional Kir MLX upstream admin timing, process RSS, stalled-request
+deltas, no-progress deltas, and failure-classification counts. Runs are flagged
+invalid when samples fail, TTFT or required stream/tool deltas are missing, OOM
+or Metal failures are classified, resource limits are exceeded, progress
+validation fails, or Kir admin metrics report stalled/no-progress deltas.
 The top-level `tool_required_stream` report separates client-observed first
 byte, first SSE data, first tool delta, tool finish, and first semantic delta
 from Kir admin timing, including `first_tool_delta_after_ttft_ms` to separate

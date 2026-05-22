@@ -426,6 +426,92 @@ fn qwen_mlx_tool_normalized_prefill_135k_profile_expands_direct_proxy_pairs() {
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_prefill_135k_experimental_profile_is_context_recall_only() {
+    let snapshot =
+        "/tmp/huggingface/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/abcdef1234567890";
+    let args = args(&[
+        "--sweep-profile",
+        "qwen-mlx-prefill-135k-experimental",
+        "--snapshot",
+        snapshot,
+    ]);
+    let lanes = parse_lane_specs(&args).expect("experimental profile expands");
+
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "mlx-prefill-8192-control",
+            "kir-prefill-8192-control",
+            "mlx-prefill-experimental-12288",
+            "kir-prefill-experimental-12288",
+            "mlx-prefill-experimental-16384",
+            "kir-prefill-experimental-16384",
+            "mlx-prefill-experimental-32768",
+            "kir-prefill-experimental-32768",
+        ]
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.endpoint.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:8081/v1",
+            "http://127.0.0.1:3001",
+            "http://127.0.0.1:8082/v1",
+            "http://127.0.0.1:3002",
+            "http://127.0.0.1:8083/v1",
+            "http://127.0.0.1:3003",
+        ]
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.experimental)
+            .collect::<Vec<_>>(),
+        [false, false, true, true, true, true, true, true]
+    );
+    assert_eq!(
+        lanes
+            .iter()
+            .map(|lane| lane.mlx_lm_settings.prefill_step_size)
+            .collect::<Vec<_>>(),
+        [
+            DefaultOrU64::Value(8192),
+            DefaultOrU64::Value(8192),
+            DefaultOrU64::Value(12288),
+            DefaultOrU64::Value(12288),
+            DefaultOrU64::Value(16384),
+            DefaultOrU64::Value(16384),
+            DefaultOrU64::Value(32768),
+            DefaultOrU64::Value(32768),
+        ]
+    );
+
+    let suite = parse_probe_suite_flag(
+        &args,
+        Some(NormalizedSweepProfile::QwenMlxPrefill135kExperimental),
+    )
+    .expect("experimental profile default suite");
+    assert_eq!(suite, NormalizedProbeSuite::PrefillSweep135kContextRecall);
+    assert_eq!(suite.name(), "prefill_sweep_135k_context_recall");
+    let probes = suite.probes();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].case, NormalizedCaseKind::ContextRecallStream135k);
+    assert_eq!(probes[0].max_tokens, DEFAULT_MAX_TOKENS);
+    assert!(sweep_profile_requires_exact_token_prompt(Some(
+        NormalizedSweepProfile::QwenMlxPrefill135kExperimental
+    )));
+    assert!(!NormalizedLaneReport::planned(&lanes[0], 0, 0, None).experimental);
+    assert!(NormalizedLaneReport::planned(&lanes[2], 0, 0, None).experimental);
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_explicit_lane_mode_remains_available() {
     let lanes = parse_lane_specs(&args(&[
         "--lane",
@@ -1887,6 +1973,7 @@ fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes()
     );
     invalid_proxy.status = "failed".to_owned();
     invalid_proxy.classification = "response_validation_failed".to_owned();
+    invalid_proxy.failure_classification = Some("progress_validation_failed".to_owned());
     invalid_proxy.latency_ms = Some(140);
     invalid_proxy.stream_timing = StreamTimingReport {
         first_byte_latency_ms: Some(95),
@@ -1971,6 +2058,17 @@ fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes()
             .invalid_reasons
             .contains(&"admin_no_progress_delta".to_owned())
     );
+    assert!(
+        invalid
+            .invalid_reasons
+            .contains(&"progress_validation_failed".to_owned())
+    );
+    assert_eq!(
+        invalid
+            .failure_classifications
+            .get("progress_validation_failed"),
+        Some(&1)
+    );
     assert_eq!(invalid.stream_stalled_requests_delta, Some(1));
     assert_eq!(invalid.no_progress_failures_delta, Some(2));
     assert_eq!(invalid.process_rss_bytes_after, Some(160));
@@ -1982,6 +2080,82 @@ fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes()
             .stream_first_upstream_byte_ms
             .count_delta,
         Some(1)
+    );
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_failed_samples_classify_safety_failures() {
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::ContextRecallStream135k,
+        SchemaVariant::CanonicalCurrent,
+        ToolChoiceVariant::Required,
+    );
+    let context = SampleContext {
+        probe,
+        phase: CachePhase::Cold,
+        run_mode: RunMode::Sequential,
+        sample_index: 0,
+        request_index: None,
+        planned_prompt_tokens: 135_000,
+        prewarmed: false,
+        expected_probe_id: probe.case.probe_id().to_owned(),
+        expected_marker: Some(CONTEXT_RECALL_STREAM_135K_MARKER.to_owned()),
+    };
+
+    let oom = failed_sample(
+        context.clone(),
+        "stream_body_failed",
+        Duration::from_millis(10),
+        Some(500),
+        None,
+        "MLX Metal command buffer failed: out of memory".to_owned(),
+        StreamTimingReport::default(),
+    );
+    assert_eq!(oom.failure_classification.as_deref(), Some("oom"));
+
+    let metal = failed_sample(
+        context.clone(),
+        "stream_body_failed",
+        Duration::from_millis(10),
+        Some(500),
+        None,
+        "MTLCommandBufferErrorDomain: command buffer execution failed".to_owned(),
+        StreamTimingReport::default(),
+    );
+    assert_eq!(
+        metal.failure_classification.as_deref(),
+        Some("metal_failure")
+    );
+
+    let timeout = failed_sample(
+        context.clone(),
+        "stream_http_request_failed",
+        Duration::from_millis(30 * 60 * 1000),
+        None,
+        None,
+        "operation timed out".to_owned(),
+        StreamTimingReport::default(),
+    );
+    assert_eq!(
+        timeout.failure_classification.as_deref(),
+        Some("resource_limit_exceeded")
+    );
+
+    let validation = sample_from_validation(
+        context,
+        Err("streamed recall tool arguments were not JSON".to_owned()),
+        ProbeResponseMetadata {
+            latency: Duration::from_millis(100),
+            stream_timing: StreamTimingReport::default(),
+            http_status: Some(200),
+            response_headers: None,
+            finish_reason: Some("stop".to_owned()),
+            usage: usage_from_value(None),
+        },
+    );
+    assert_eq!(
+        validation.failure_classification.as_deref(),
+        Some("progress_validation_failed")
     );
 }
 

@@ -28,6 +28,7 @@ const DEFAULT_MAX_TOKENS: u32 = 512;
 const REQUIRED_TOOL_TTFT_MAX_TOKENS: [u32; 3] = [24, 48, 96];
 const QWEN_MLX_CACHE_PREFILL_PROFILE: &str = "qwen-mlx-cache-prefill";
 const QWEN_MLX_PREFILL_135K_PROFILE: &str = "qwen-mlx-prefill-135k";
+const QWEN_MLX_PREFILL_135K_EXPERIMENTAL_PROFILE: &str = "qwen-mlx-prefill-135k-experimental";
 const QWEN_MLX_STABLE_PREFIX_PROFILE: &str = "qwen-mlx-stable-prefix";
 const PROFILE_PROXY_MODEL_ID: &str = "local-qwen36-mlx";
 const PROFILE_CACHE_BYTES_1G: u64 = 1_073_741_824;
@@ -244,8 +245,8 @@ fn print_help() {
 Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
-  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, or qwen-mlx-stable-prefix (requires --snapshot)
-  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke
+  --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, qwen-mlx-prefill-135k-experimental, or qwen-mlx-stable-prefix (requires --snapshot)
+  --probe-suite <name>          Probe suite: full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, prefill-sweep-135k-context-recall, stable-agent-prefix, or stable-prefix-smoke
   --snapshot <path>             Raw Hugging Face snapshot path for built-in sweep profiles
   --cache-phases <csv>          Cache phases to run: cold, warm_same_prompt, warm_same_tool_schema [default: all]
   --only-lanes <csv>            Keep only the named lanes after built-in profile expansion
@@ -387,6 +388,9 @@ fn expand_sweep_profile(
     Ok(match profile {
         NormalizedSweepProfile::QwenMlxCachePrefill => qwen_mlx_cache_prefill_lanes(snapshot),
         NormalizedSweepProfile::QwenMlxPrefill135k => qwen_mlx_prefill_135k_lanes(snapshot),
+        NormalizedSweepProfile::QwenMlxPrefill135kExperimental => {
+            qwen_mlx_prefill_135k_experimental_lanes(snapshot)
+        }
         NormalizedSweepProfile::QwenMlxStablePrefix => qwen_mlx_stable_prefix_lanes(snapshot),
     })
 }
@@ -469,6 +473,7 @@ fn qwen_mlx_cache_prefill_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
             template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
             tool_parser: MlxToolParserMode::Auto,
             mlx_lm_settings: MlxLmSettings::default(),
+            experimental: false,
         },
     ]
 }
@@ -505,6 +510,41 @@ fn qwen_mlx_prefill_135k_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
     lanes
 }
 
+fn qwen_mlx_prefill_135k_experimental_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
+    let steps = [
+        ("8192-control", DefaultOrU64::Value(8192), false),
+        ("experimental-12288", DefaultOrU64::Value(12288), true),
+        ("experimental-16384", DefaultOrU64::Value(16384), true),
+        ("experimental-32768", DefaultOrU64::Value(32768), true),
+    ];
+    let mut lanes = Vec::with_capacity(steps.len() * 2);
+    for (index, (label, prefill_step_size, experimental)) in steps.into_iter().enumerate() {
+        let port_offset = index as u16;
+        let settings = MlxLmSettings {
+            prefill_step_size,
+            ..MlxLmSettings::default()
+        };
+        let mut direct = profile_direct_lane(
+            &format!("mlx-prefill-{label}"),
+            8080 + port_offset,
+            settings,
+            snapshot,
+        );
+        direct.experimental = experimental;
+        lanes.push(direct);
+
+        let mut proxy = profile_proxy_lane(
+            &format!("kir-prefill-{label}"),
+            3000 + port_offset,
+            settings,
+            snapshot,
+        );
+        proxy.experimental = experimental;
+        lanes.push(proxy);
+    }
+    lanes
+}
+
 fn qwen_mlx_stable_prefix_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
     vec![
         NormalizedLaneConfig {
@@ -518,6 +558,7 @@ fn qwen_mlx_stable_prefix_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
             template: NormalizedTemplatePolicy::QwenNoThinking,
             tool_parser: MlxToolParserMode::Auto,
             mlx_lm_settings: MlxLmSettings::default(),
+            experimental: false,
         },
         NormalizedLaneConfig {
             name: "kir-stable-prefix".to_owned(),
@@ -530,6 +571,7 @@ fn qwen_mlx_stable_prefix_lanes(snapshot: &str) -> Vec<NormalizedLaneConfig> {
             template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
             tool_parser: MlxToolParserMode::Auto,
             mlx_lm_settings: MlxLmSettings::default(),
+            experimental: false,
         },
     ]
 }
@@ -551,6 +593,7 @@ fn profile_direct_lane(
         template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
         tool_parser: MlxToolParserMode::Auto,
         mlx_lm_settings,
+        experimental: false,
     }
 }
 
@@ -571,6 +614,7 @@ fn profile_proxy_lane(
         template: NormalizedTemplatePolicy::SidecarChatTemplateArgs,
         tool_parser: MlxToolParserMode::Auto,
         mlx_lm_settings,
+        experimental: false,
     }
 }
 
@@ -641,6 +685,7 @@ fn parse_lane_spec(spec: &str) -> anyhow::Result<NormalizedLaneConfig> {
         template,
         tool_parser,
         mlx_lm_settings,
+        experimental: false,
     })
 }
 
@@ -838,7 +883,13 @@ async fn load_lane_snapshot_identity(
 }
 
 fn sweep_profile_requires_exact_token_prompt(profile: Option<NormalizedSweepProfile>) -> bool {
-    matches!(profile, Some(NormalizedSweepProfile::QwenMlxPrefill135k))
+    matches!(
+        profile,
+        Some(
+            NormalizedSweepProfile::QwenMlxPrefill135k
+                | NormalizedSweepProfile::QwenMlxPrefill135kExperimental
+        )
+    )
 }
 
 fn load_lane_tokenizer(lane: &NormalizedLaneConfig) -> anyhow::Result<HuggingFaceTokenizer> {
@@ -1346,6 +1397,9 @@ fn sample_from_validation(
         Err(err) => {
             sample.status = "failed".to_owned();
             sample.classification = "response_validation_failed".to_owned();
+            sample.failure_classification =
+                classify_sample_failure("response_validation_failed", response.http_status, &err)
+                    .map(str::to_owned);
             sample.error = Some(err);
         }
     }
@@ -1371,7 +1425,10 @@ fn failed_sample(
         context.planned_prompt_tokens,
     );
     sample.status = "failed".to_owned();
-    sample.classification = classification.into();
+    let classification = classification.into();
+    sample.failure_classification =
+        classify_sample_failure(&classification, http_status, &error).map(str::to_owned);
+    sample.classification = classification;
     sample.latency_ms = Some(latency.as_millis());
     sample.stream_timing = stream_timing;
     sample.http_status = http_status;
@@ -1379,6 +1436,36 @@ fn failed_sample(
     sample.response_headers = response_headers;
     sample.error = Some(error);
     sample
+}
+
+fn classify_sample_failure(
+    classification: &str,
+    http_status: Option<u16>,
+    error: &str,
+) -> Option<&'static str> {
+    let error = error.to_ascii_lowercase();
+    if error.contains("out of memory") || error.contains("out-of-memory") || error.contains("oom") {
+        return Some("oom");
+    }
+    if error.contains("metal")
+        || error.contains("mtlcommandbuffer")
+        || error.contains("command buffer")
+    {
+        return Some("metal_failure");
+    }
+    if classification == "response_validation_failed" {
+        return Some("progress_validation_failed");
+    }
+    if matches!(http_status, Some(408 | 413 | 429 | 503 | 507))
+        || error.contains("timed out")
+        || error.contains("timeout")
+        || error.contains("deadline")
+        || error.contains("resource exhausted")
+        || error.contains("memory pressure")
+    {
+        return Some("resource_limit_exceeded");
+    }
+    None
 }
 
 fn chat_completions_url(endpoint: &str) -> String {
@@ -2782,6 +2869,7 @@ fn prefill_sweep_lane_metric(
         admin_counter_delta(&lane.admin_metrics, &["stream_stalled_requests"]);
     let no_progress_failures_delta =
         admin_counter_delta(&lane.admin_metrics, &["no_progress_failures"]);
+    let failure_classifications = sample_failure_classification_counts(&samples);
     let mut invalid_reasons = Vec::new();
     if fail_count > 0 {
         invalid_reasons.push("sample_failed".to_owned());
@@ -2799,14 +2887,17 @@ fn prefill_sweep_lane_metric(
     if no_progress_failures_delta.is_some_and(|delta| delta > 0) {
         invalid_reasons.push("admin_no_progress_delta".to_owned());
     }
+    invalid_reasons.extend(failure_classifications.keys().cloned());
     invalid_reasons.sort();
     invalid_reasons.dedup();
 
     Some(NormalizedPrefillSweepLaneMetric {
         lane: lane.name.clone(),
         lane_kind: lane.kind,
+        experimental: lane.experimental,
         prefill_step_size: lane.mlx_lm_settings.prefill_step_size,
         valid: invalid_reasons.is_empty(),
+        failure_classifications,
         invalid_reasons,
         sample_count: samples.len(),
         pass_count,
@@ -2825,6 +2916,11 @@ fn prefill_sweep_lane_metric(
             passed.iter().filter_map(|sample| sample.tokens_per_second),
         ),
         avg_cached_tokens: average_u64(passed.iter().filter_map(|sample| sample.cached_tokens)),
+        avg_uncached_tokens: average_u64(
+            passed
+                .iter()
+                .filter_map(|sample| sample_direct_uncached_tokens(sample)),
+        ),
         avg_prompt_tokens: average_u64(passed.iter().filter_map(|sample| sample.prompt_tokens)),
         avg_completion_tokens: average_u64(
             passed.iter().filter_map(|sample| sample.completion_tokens),
@@ -3247,6 +3343,18 @@ fn cache_status_counts(
     counts
 }
 
+fn sample_failure_classification_counts(
+    samples: &[&NormalizedSampleReport],
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for sample in samples {
+        if let Some(classification) = &sample.failure_classification {
+            *counts.entry(classification.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 fn cache_status_for_sample(
     sample: &NormalizedSampleReport,
     observations: &[NormalizedStablePrefixRequestCacheObservation],
@@ -3279,6 +3387,10 @@ fn sample_cached_tokens(
         request_cache_observation_for_sample(sample, observations)
             .and_then(|observation| observation.cached_tokens)
     })
+}
+
+fn sample_direct_uncached_tokens(sample: &NormalizedSampleReport) -> Option<u64> {
+    Some(sample.prompt_tokens?.saturating_sub(sample.cached_tokens?))
 }
 
 fn sample_uncached_tokens(
@@ -4320,6 +4432,7 @@ struct NormalizedLaneConfig {
     template: NormalizedTemplatePolicy,
     tool_parser: MlxToolParserMode,
     mlx_lm_settings: MlxLmSettings,
+    experimental: bool,
 }
 
 impl NormalizedLaneConfig {
@@ -4380,6 +4493,7 @@ impl NormalizedLaneConfig {
 enum NormalizedSweepProfile {
     QwenMlxCachePrefill,
     QwenMlxPrefill135k,
+    QwenMlxPrefill135kExperimental,
     QwenMlxStablePrefix,
 }
 
@@ -4388,9 +4502,10 @@ impl NormalizedSweepProfile {
         match value {
             QWEN_MLX_CACHE_PREFILL_PROFILE => Ok(Self::QwenMlxCachePrefill),
             QWEN_MLX_PREFILL_135K_PROFILE => Ok(Self::QwenMlxPrefill135k),
+            QWEN_MLX_PREFILL_135K_EXPERIMENTAL_PROFILE => Ok(Self::QwenMlxPrefill135kExperimental),
             QWEN_MLX_STABLE_PREFIX_PROFILE => Ok(Self::QwenMlxStablePrefix),
             other => anyhow::bail!(
-                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE}, {QWEN_MLX_PREFILL_135K_PROFILE}, or {QWEN_MLX_STABLE_PREFIX_PROFILE}"
+                "unknown --sweep-profile `{other}`; expected {QWEN_MLX_CACHE_PREFILL_PROFILE}, {QWEN_MLX_PREFILL_135K_PROFILE}, {QWEN_MLX_PREFILL_135K_EXPERIMENTAL_PROFILE}, or {QWEN_MLX_STABLE_PREFIX_PROFILE}"
             ),
         }
     }
@@ -4399,6 +4514,7 @@ impl NormalizedSweepProfile {
         match self {
             Self::QwenMlxCachePrefill => QWEN_MLX_CACHE_PREFILL_PROFILE,
             Self::QwenMlxPrefill135k => QWEN_MLX_PREFILL_135K_PROFILE,
+            Self::QwenMlxPrefill135kExperimental => QWEN_MLX_PREFILL_135K_EXPERIMENTAL_PROFILE,
             Self::QwenMlxStablePrefix => QWEN_MLX_STABLE_PREFIX_PROFILE,
         }
     }
@@ -4407,6 +4523,9 @@ impl NormalizedSweepProfile {
         match self {
             Self::QwenMlxCachePrefill => NormalizedProbeSuite::FullMatrix,
             Self::QwenMlxPrefill135k => NormalizedProbeSuite::PrefillSweep135k,
+            Self::QwenMlxPrefill135kExperimental => {
+                NormalizedProbeSuite::PrefillSweep135kContextRecall
+            }
             Self::QwenMlxStablePrefix => NormalizedProbeSuite::StableAgentPrefix,
         }
     }
@@ -4872,6 +4991,7 @@ enum NormalizedProbeSuite {
     FocusedAgenticGate,
     RequiredToolTtftMatrix,
     PrefillSweep135k,
+    PrefillSweep135kContextRecall,
     StableAgentPrefix,
     StablePrefixSmoke,
 }
@@ -4885,10 +5005,13 @@ impl NormalizedProbeSuite {
                 Ok(Self::RequiredToolTtftMatrix)
             }
             "prefill-sweep-135k" | "prefill_sweep_135k" => Ok(Self::PrefillSweep135k),
+            "prefill-sweep-135k-context-recall" | "prefill_sweep_135k_context_recall" => {
+                Ok(Self::PrefillSweep135kContextRecall)
+            }
             "stable-agent-prefix" | "stable_agent_prefix" => Ok(Self::StableAgentPrefix),
             "stable-prefix-smoke" | "stable_prefix_smoke" => Ok(Self::StablePrefixSmoke),
             other => anyhow::bail!(
-                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, stable-agent-prefix, or stable-prefix-smoke"
+                "unknown --probe-suite `{other}`; expected full-matrix, focused-agentic-gate, required-tool-ttft-matrix, prefill-sweep-135k, prefill-sweep-135k-context-recall, stable-agent-prefix, or stable-prefix-smoke"
             ),
         }
     }
@@ -4899,6 +5022,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate => "focused_agentic_gate",
             Self::RequiredToolTtftMatrix => "required_tool_ttft_matrix",
             Self::PrefillSweep135k => "prefill_sweep_135k",
+            Self::PrefillSweep135kContextRecall => "prefill_sweep_135k_context_recall",
             Self::StableAgentPrefix => "stable_agent_prefix",
             Self::StablePrefixSmoke => "stable_prefix_smoke",
         }
@@ -4910,6 +5034,9 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate => NormalizedProbePlan::focused_agentic_gate(),
             Self::RequiredToolTtftMatrix => NormalizedProbePlan::required_tool_ttft_matrix(),
             Self::PrefillSweep135k => NormalizedProbePlan::prefill_sweep_135k(),
+            Self::PrefillSweep135kContextRecall => {
+                NormalizedProbePlan::prefill_sweep_135k_context_recall()
+            }
             Self::StableAgentPrefix => NormalizedProbePlan::stable_agent_prefix(),
             Self::StablePrefixSmoke => NormalizedProbePlan::stable_prefix_smoke(),
         }
@@ -4924,6 +5051,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate
             | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
+            | Self::PrefillSweep135kContextRecall
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_case_names(probes),
         }
@@ -4938,6 +5066,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate
             | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
+            | Self::PrefillSweep135kContextRecall
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_schema_variant_names(probes),
         }
@@ -4952,6 +5081,7 @@ impl NormalizedProbeSuite {
             Self::FocusedAgenticGate
             | Self::RequiredToolTtftMatrix
             | Self::PrefillSweep135k
+            | Self::PrefillSweep135kContextRecall
             | Self::StableAgentPrefix
             | Self::StablePrefixSmoke => probe_tool_choice_variant_names(probes),
         }
@@ -5067,6 +5197,14 @@ impl NormalizedProbePlan {
                 ToolChoiceVariant::Required,
             ),
         ]
+    }
+
+    fn prefill_sweep_135k_context_recall() -> Vec<Self> {
+        vec![Self::new(
+            NormalizedCaseKind::ContextRecallStream135k,
+            SchemaVariant::CanonicalCurrent,
+            ToolChoiceVariant::Required,
+        )]
     }
 
     fn stable_agent_prefix() -> Vec<Self> {
@@ -5582,6 +5720,7 @@ struct NormalizedLaneReport {
     status: String,
     endpoint: String,
     kind: &'static str,
+    experimental: bool,
     declared_model_id: String,
     effective_request_model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5639,6 +5778,7 @@ impl NormalizedLaneReport {
             status: "planned".to_owned(),
             endpoint: lane.endpoint.clone(),
             kind: lane.kind.as_str(),
+            experimental: lane.experimental,
             declared_model_id: lane.declared_model_id.clone(),
             effective_request_model_id: lane.effective_request_model_id().to_owned(),
             launched_model_id: lane.launched_model_id.clone(),
@@ -5835,6 +5975,8 @@ struct NormalizedSampleReport {
     status: String,
     classification: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    failure_classification: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     latency_ms: Option<u128>,
     #[serde(flatten)]
     stream_timing: StreamTimingReport,
@@ -5891,6 +6033,7 @@ impl NormalizedSampleReport {
             prewarmed,
             status: "planned".to_owned(),
             classification: "planned".to_owned(),
+            failure_classification: None,
             latency_ms: None,
             stream_timing: StreamTimingReport::default(),
             tokens_per_second: None,
@@ -6083,8 +6226,10 @@ struct NormalizedPrefillSweepRow {
 struct NormalizedPrefillSweepLaneMetric {
     lane: String,
     lane_kind: &'static str,
+    experimental: bool,
     prefill_step_size: DefaultOrU64,
     valid: bool,
+    failure_classifications: BTreeMap<String, usize>,
     invalid_reasons: Vec<String>,
     sample_count: usize,
     pass_count: usize,
@@ -6097,6 +6242,7 @@ struct NormalizedPrefillSweepLaneMetric {
     latency_delta_vs_fastest_ms: Option<u128>,
     avg_tokens_per_second: Option<f64>,
     avg_cached_tokens: Option<f64>,
+    avg_uncached_tokens: Option<f64>,
     avg_prompt_tokens: Option<f64>,
     avg_completion_tokens: Option<f64>,
     avg_total_tokens: Option<f64>,
