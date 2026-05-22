@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.7](https://github.com/michaelasper/kir-ai/compare/v1.36.6...v1.36.7) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-351:** centralize ApiError HTTP status mapping ([1ad8cc9](https://github.com/michaelasper/kir-ai/commit/1ad8cc9aed5c37f63679f724e49b98c66b1bc054))
+
 ## [1.36.6](https://github.com/michaelasper/kir-ai/compare/v1.36.5...v1.36.6) (2026-05-22)
 
 ### Bug Fixes
