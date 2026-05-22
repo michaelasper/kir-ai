@@ -31,6 +31,15 @@ pub(super) async fn chat_completions(
         let events = async_stream::stream! {
             let mut stream_lifecycle =
                 super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
+            match stream_state.runtime.chat_request_cache_identity(request.as_ref()) {
+                Ok(identity) => stream_lifecycle.set_cache_identity(identity),
+                Err(err) => {
+                    for event in stream_lifecycle.finish_runtime_error(err) {
+                        yield event;
+                    }
+                    return;
+                }
+            }
             match stream_state
                 .runtime
                 .chat_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
@@ -61,6 +70,10 @@ pub(super) async fn chat_completions(
         return Ok(response);
     }
     let run = lifecycle::start_chat_generation(&state, &headers, request.as_ref()).await?;
+    let cache_identity = match state.runtime.chat_request_cache_identity(request.as_ref()) {
+        Ok(identity) => identity,
+        Err(err) => return Err(run.finish_runtime_error(&state, err)),
+    };
     let response = match state
         .runtime
         .chat_validated_with_cancel(request, run.cancellation())
@@ -78,6 +91,7 @@ pub(super) async fn chat_completions(
         &response.usage,
         streamed,
         finished.elapsed(),
+        Some(&cache_identity),
     );
     let mut response = Json(response).into_response();
     lifecycle::insert_request_id_header(&mut response, finished.request_id());
@@ -103,6 +117,11 @@ pub(super) async fn completions(
         let events = async_stream::stream! {
             let mut stream_lifecycle =
                 super::streaming::StreamRunLifecycle::new(stream_state.clone(), stream_run, model);
+            stream_lifecycle.set_cache_identity(
+                stream_state
+                    .runtime
+                    .completion_request_cache_identity(request.as_ref()),
+            );
             match stream_state
                 .runtime
                 .completion_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
@@ -133,6 +152,9 @@ pub(super) async fn completions(
         return Ok(response);
     }
     let run = lifecycle::start_completion_generation(&state, &headers, request.as_ref()).await?;
+    let cache_identity = state
+        .runtime
+        .completion_request_cache_identity(request.as_ref());
     let response = match state
         .runtime
         .completion_validated_with_cancel(request, run.cancellation())
@@ -150,6 +172,7 @@ pub(super) async fn completions(
         &response.usage,
         streamed,
         finished.elapsed(),
+        Some(&cache_identity),
     );
     let mut response = Json(response).into_response();
     lifecycle::insert_request_id_header(&mut response, finished.request_id());

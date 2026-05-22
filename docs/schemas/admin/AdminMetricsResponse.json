@@ -347,6 +347,54 @@
         "cache_status": {
           "$ref": "#/$defs/RequestCacheStatus"
         },
+        "prompt_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_template_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_schema_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system_prompt_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chat_template_kwargs_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stable_prefix_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "latency_ms": {
           "type": "integer",
           "format": "uint64",

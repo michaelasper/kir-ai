@@ -17,7 +17,10 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -205,6 +208,13 @@ struct CachedUsageBackend {
     completion_tokens: u64,
 }
 
+struct CacheTransitionBackend {
+    prompt_tokens: u64,
+    warm_cached_tokens: u64,
+    completion_tokens: u64,
+    calls: AtomicUsize,
+}
+
 struct FamilyStaticBackend {
     model_id: &'static str,
     family: &'static str,
@@ -261,6 +271,40 @@ impl ModelBackend for CachedUsageBackend {
             text: "cached response".to_owned(),
             prompt_tokens: self.prompt_tokens,
             prompt_cached_tokens: self.prompt_cached_tokens,
+            completion_tokens: self.completion_tokens,
+            finish_reason: BackendFinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[async_trait]
+impl ModelBackend for CacheTransitionBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "cache-transition")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(BackendOutput {
+            text: "cached response".to_owned(),
+            prompt_tokens: self.prompt_tokens,
+            prompt_cached_tokens: Some(if call == 0 {
+                0
+            } else {
+                self.warm_cached_tokens
+            }),
             completion_tokens: self.completion_tokens,
             finish_reason: BackendFinishReason::Stop,
         })

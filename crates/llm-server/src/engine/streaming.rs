@@ -18,8 +18,8 @@ use futures::{Stream, StreamExt};
 use llm_api::Usage;
 use llm_backend::BackendStreamProgress;
 use llm_runtime::{
-    ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent, RuntimeError,
-    StreamProgressMetadata,
+    ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent,
+    RequestCacheIdentity, RuntimeError, StreamProgressMetadata,
 };
 use std::{
     convert::Infallible,
@@ -287,6 +287,7 @@ pub(super) struct StreamRunLifecycle {
     scheduler_slot: SchedulerPermit,
     phase: GenerationPhaseGuard,
     request_started: Instant,
+    cache_identity: Option<RequestCacheIdentity>,
     terminal: Option<StreamTerminalOutcome>,
 }
 
@@ -307,8 +308,13 @@ impl StreamRunLifecycle {
             scheduler_slot,
             phase,
             request_started,
+            cache_identity: None,
             terminal: None,
         }
+    }
+
+    pub(super) fn set_cache_identity(&mut self, identity: RequestCacheIdentity) {
+        self.cache_identity = Some(identity);
     }
 
     pub(super) fn cancellation(&self) -> tokio_util::sync::CancellationToken {
@@ -339,6 +345,7 @@ impl StreamRunLifecycle {
                     usage,
                     streamed,
                     self.request_started.elapsed(),
+                    self.cache_identity.as_ref(),
                 );
                 Ok(())
             }

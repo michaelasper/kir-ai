@@ -1,5 +1,6 @@
 mod adapters;
 mod backend_request;
+mod cache_identity;
 mod capabilities;
 mod chat;
 mod completions;
@@ -12,6 +13,7 @@ mod stop;
 mod streaming;
 mod tool_call;
 
+pub use cache_identity::RequestCacheIdentity;
 pub use error::RuntimeError;
 pub use no_progress::{NoProgressClass, classify_no_progress};
 pub use runtime::{Runtime, RuntimeOptions};

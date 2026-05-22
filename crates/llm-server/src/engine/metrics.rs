@@ -1,7 +1,7 @@
 use super::AppState;
 use crate::sync_ext::FailPoisonedMutex;
 use llm_api::Usage;
-use llm_runtime::RuntimeError;
+use llm_runtime::{RequestCacheIdentity, RuntimeError};
 use llm_telemetry::TokenCounters;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -27,6 +27,22 @@ pub(super) struct RequestCacheObservation {
     pub(super) cached_tokens: Option<u64>,
     pub(super) uncached_tokens: Option<u64>,
     pub(super) cache_status: RequestCacheStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) prompt_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cache_template_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) model_family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tool_schema_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) system_prompt_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) chat_template_kwargs_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stable_prefix_key: Option<String>,
     pub(super) latency_ms: u64,
 }
 
@@ -37,6 +53,7 @@ impl RequestCacheObservation {
         streamed: bool,
         usage: &Usage,
         latency: Duration,
+        identity: Option<&RequestCacheIdentity>,
     ) -> Self {
         let cached_tokens = usage
             .prompt_tokens_details
@@ -56,6 +73,15 @@ impl RequestCacheObservation {
             cached_tokens,
             uncached_tokens: cached_tokens.map(|cached| usage.prompt_tokens.saturating_sub(cached)),
             cache_status,
+            prompt_hash: identity.map(|identity| identity.prompt_hash.clone()),
+            cache_key: identity.map(|identity| identity.cache_key.clone()),
+            cache_template_id: identity.map(|identity| identity.cache_template_id.clone()),
+            model_family: identity.and_then(|identity| identity.model_family.clone()),
+            tool_schema_hash: identity.and_then(|identity| identity.tool_schema_hash.clone()),
+            system_prompt_hash: identity.and_then(|identity| identity.system_prompt_hash.clone()),
+            chat_template_kwargs_hash: identity
+                .and_then(|identity| identity.chat_template_kwargs_hash.clone()),
+            stable_prefix_key: identity.and_then(|identity| identity.stable_prefix_key.clone()),
             latency_ms: duration_millis_u64(latency),
         }
     }
@@ -112,6 +138,7 @@ pub(super) fn record_success_metrics(
     usage: &Usage,
     streamed: bool,
     latency: Duration,
+    cache_identity: Option<&RequestCacheIdentity>,
 ) {
     let prompt_cached_tokens = usage
         .prompt_tokens_details
@@ -127,7 +154,12 @@ pub(super) fn record_success_metrics(
         .request_cache
         .lock_or_panic("request cache observations")
         .record(RequestCacheObservation::from_usage(
-            request_id, model, streamed, usage, latency,
+            request_id,
+            model,
+            streamed,
+            usage,
+            latency,
+            cache_identity,
         ));
 }
 
@@ -269,6 +301,7 @@ mod tests {
             false,
             &Usage::new(10, 1).with_prompt_cached_tokens(Some(0)),
             Duration::from_millis(7),
+            None,
         );
         let partial = RequestCacheObservation::from_usage(
             "partial",
@@ -276,6 +309,7 @@ mod tests {
             false,
             &Usage::new(10, 1).with_prompt_cached_tokens(Some(4)),
             Duration::from_millis(7),
+            None,
         );
         let hit = RequestCacheObservation::from_usage(
             "hit",
@@ -283,6 +317,7 @@ mod tests {
             false,
             &Usage::new(10, 1).with_prompt_cached_tokens(Some(10)),
             Duration::from_millis(7),
+            None,
         );
         let overshoot = RequestCacheObservation::from_usage(
             "overshoot",
@@ -290,6 +325,7 @@ mod tests {
             false,
             &Usage::new(10, 1).with_prompt_cached_tokens(Some(12)),
             Duration::from_millis(7),
+            None,
         );
         let unknown = RequestCacheObservation::from_usage(
             "unknown",
@@ -297,6 +333,7 @@ mod tests {
             false,
             &Usage::new(10, 1),
             Duration::from_millis(7),
+            None,
         );
 
         assert_eq!(miss.cache_status, RequestCacheStatus::Miss);
@@ -322,6 +359,7 @@ mod tests {
                 false,
                 &Usage::new(10, 1).with_prompt_cached_tokens(Some(index)),
                 Duration::from_millis(index),
+                None,
             ));
         }
 

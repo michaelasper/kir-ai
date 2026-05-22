@@ -182,11 +182,18 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`
   is fixed at `128`; `recent` contains successful buffered and streaming
   requests with `request_id`, `model`, `streamed`, `prompt_tokens`,
-  `cached_tokens`, `uncached_tokens`, `cache_status`, and `latency_ms`.
+  `cached_tokens`, `uncached_tokens`, `cache_status`, `prompt_hash`,
+  `cache_key`, `cache_template_id`, `model_family`, `tool_schema_hash`,
+  `system_prompt_hash`, `chat_template_kwargs_hash`, `stable_prefix_key`, and
+  `latency_ms`.
   `cache_status` is `unknown` when upstream cached-token details are absent,
   `miss` when cached tokens are `0`, `hit` when cached tokens are greater than
-  or equal to prompt tokens, and `partial` otherwise. Prompts, messages, tool
-  schemas, and request bodies are not stored.
+  or equal to prompt tokens, and `partial` otherwise. Identity fields are
+  hashes or template identifiers only: prompts, messages, tool schemas, and
+  request bodies are not stored. `stable_prefix_key` is a versioned hash over
+  model family, chat template ID, tool schema hash, system prompt hash, and
+  chat template kwargs hash so repeated agent turns can be grouped without
+  exposing prompt content.
 - `request_latency_ms`: Summary (count, min, max, avg) of total outer kir-ai
   request duration.
 - `non_streamed_request_latency_ms`: Summary of outer kir-ai request duration
@@ -224,6 +231,14 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
         "cached_tokens": 1792,
         "uncached_tokens": 256,
         "cache_status": "partial",
+        "prompt_hash": "sha256:3b7c...",
+        "cache_key": "sha256:cb45...",
+        "cache_template_id": "chatml/qwen/v1",
+        "model_family": "qwen",
+        "tool_schema_hash": "sha256:07af...",
+        "system_prompt_hash": "sha256:911d...",
+        "chat_template_kwargs_hash": "sha256:38ff...",
+        "stable_prefix_key": "sha256:fb52...",
         "latency_ms": 95
       }
     ]

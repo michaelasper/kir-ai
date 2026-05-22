@@ -19,6 +19,7 @@ llm-models = { path = "../llm-models" }
 llm-tokenizer = { path = "../llm-tokenizer" }
 llm-tool-parser = { path = "../llm-tool-parser" }
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true

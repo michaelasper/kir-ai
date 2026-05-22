@@ -222,7 +222,9 @@ fn empty_backend_tool_parameters() -> serde_json::Value {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {
     pub key: BackendCacheKey,
+    pub cache_template_id: String,
     pub tool_schema: Option<String>,
+    pub chat_template_kwargs: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -260,7 +262,9 @@ impl BackendCacheContext {
         let prompt_template = "raw-prompt/v1";
         Self {
             key: BackendCacheKey::from_identity(prompt_template, None, None),
+            cache_template_id: prompt_template.to_owned(),
             tool_schema: None,
+            chat_template_kwargs: None,
         }
     }
 
@@ -279,7 +283,12 @@ impl BackendCacheContext {
             tool_schema.as_deref(),
             chat_template_kwargs.as_deref(),
         );
-        Self { key, tool_schema }
+        Self {
+            key,
+            cache_template_id: template_id,
+            tool_schema,
+            chat_template_kwargs,
+        }
     }
 }
 

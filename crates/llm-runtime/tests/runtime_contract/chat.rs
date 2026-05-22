@@ -568,6 +568,74 @@ async fn runtime_non_qwen_cache_context_omits_template_kwargs() {
     assert_eq!(observed.cache_context().key.as_str(), expected.key.as_str());
 }
 
+#[test]
+fn runtime_chat_request_cache_identity_tracks_stable_agent_prefix() {
+    let runtime = Runtime::new(ReplayBackend {
+        output: BackendOutput {
+            text: "cached response".to_owned(),
+            prompt_tokens: 10,
+            prompt_cached_tokens: Some(0),
+            completion_tokens: 1,
+            finish_reason: BackendFinishReason::Stop,
+        },
+    });
+    let request_for_turn = |user_content: &str, system_content: &str| ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![
+            ChatMessage::system(system_content),
+            ChatMessage::user(user_content),
+        ],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "Lookup project context.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let first = runtime
+        .chat_request_cache_identity(&request_for_turn("first turn", "You are a coding agent."))
+        .expect("first cache identity");
+    let second = runtime
+        .chat_request_cache_identity(&request_for_turn("second turn", "You are a coding agent."))
+        .expect("second cache identity");
+    let changed_system = runtime
+        .chat_request_cache_identity(&request_for_turn("second turn", "You are a reviewer."))
+        .expect("changed system cache identity");
+
+    assert_eq!(first.cache_template_id, "chatml/qwen/v1");
+    assert_eq!(first.model_family.as_deref(), Some("qwen"));
+    assert!(first.cache_key.starts_with("sha256:"));
+    assert!(first.prompt_hash.starts_with("sha256:"));
+    assert!(
+        first
+            .tool_schema_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(
+        first
+            .system_prompt_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(
+        first
+            .stable_prefix_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("sha256:"))
+    );
+    assert_ne!(first.prompt_hash, second.prompt_hash);
+    assert_eq!(first.stable_prefix_key, second.stable_prefix_key);
+    assert_ne!(second.stable_prefix_key, changed_system.stable_prefix_key);
+}
+
 #[tokio::test]
 async fn runtime_canonicalizes_tool_schema_when_opted_in() {
     let observed = Arc::new(Mutex::new(None));
