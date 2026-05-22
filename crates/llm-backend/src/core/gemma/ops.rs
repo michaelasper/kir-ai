@@ -9,8 +9,8 @@ use super::super::native_attention::{
     native_full_attention_sequence_with_cache_from_parts,
 };
 use super::super::{
-    KvCacheError, LayerKvCache, LayerKvCacheSnapshot, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError,
+    KvCacheError, LayerKvCache, LayerKvCachePrefixState, LayerKvCacheSnapshot, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
@@ -24,6 +24,11 @@ pub enum GemmaLayerCacheSnapshot {
     Attention(LayerKvCacheSnapshot),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum GemmaLayerCachePrefixState {
+    Attention(LayerKvCachePrefixState),
+}
+
 impl GemmaLayerCache {
     pub fn snapshot(&self) -> GemmaLayerCacheSnapshot {
         match self {
@@ -35,6 +40,24 @@ impl GemmaLayerCache {
         match snapshot {
             GemmaLayerCacheSnapshot::Attention(snapshot) => {
                 LayerKvCache::from_snapshot(snapshot).map(Self::Attention)
+            }
+        }
+    }
+
+    pub fn prefix_cache_state(&self) -> GemmaLayerCachePrefixState {
+        match self {
+            Self::Attention(cache) => {
+                GemmaLayerCachePrefixState::Attention(cache.prefix_cache_state())
+            }
+        }
+    }
+
+    pub fn from_prefix_cache_state(
+        state: &GemmaLayerCachePrefixState,
+    ) -> Result<Self, KvCacheError> {
+        match state {
+            GemmaLayerCachePrefixState::Attention(state) => {
+                LayerKvCache::from_prefix_cache_state(state).map(Self::Attention)
             }
         }
     }

@@ -31,8 +31,18 @@ const MAX_MATCHING_PREFIX_TOKENS: usize = 256;
 struct LookupPayload;
 
 impl NativeTextPrefixCacheValue for LookupPayload {
-    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
-        std::mem::size_of_val(hidden) as u64 + caches.len() as u64
+    type PrefixCacheState = Self;
+
+    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+        caches.to_vec()
+    }
+
+    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+        Some(states.to_vec())
+    }
+
+    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
+        std::mem::size_of_val(hidden) as u64 + states.len() as u64
     }
 }
 

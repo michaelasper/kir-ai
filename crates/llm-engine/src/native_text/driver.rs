@@ -70,7 +70,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     ) -> NativeTextPrefixCacheNamespace;
     fn prefix_cache_hit_is_compatible(
         &self,
-        _caches: &[Self::LayerCache],
+        _states: &[<Self::LayerCache as NativeTextPrefixCacheValue>::PrefixCacheState],
         _cache_tokens: usize,
     ) -> bool {
         true

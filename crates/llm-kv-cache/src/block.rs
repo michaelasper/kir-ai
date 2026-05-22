@@ -1,5 +1,7 @@
-use crate::{BlockId, KvCacheError};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+
+use crate::{BlockId, KvCacheError};
 
 pub type CacheBlockHash = [u8; 32];
 
@@ -41,8 +43,52 @@ pub struct CacheBlock {
     ref_count: usize,
     content_hash: Option<CacheBlockHash>,
     last_access: u64,
+    storage: Arc<CacheBlockStorage>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CacheBlockStorage {
     keys: Vec<f32>,
     values: Vec<f32>,
+}
+
+impl CacheBlockStorage {
+    fn new(storage_len: usize) -> Self {
+        Self {
+            keys: vec![0.0; storage_len],
+            values: vec![0.0; storage_len],
+        }
+    }
+
+    fn fill_zero(&mut self) {
+        self.keys.fill(0.0);
+        self.values.fill(0.0);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetainedCacheBlock {
+    id: BlockId,
+    revision: u64,
+    capacity_tokens: usize,
+    vector_len: usize,
+    token_count: usize,
+    content_hash: Option<CacheBlockHash>,
+    storage: Arc<CacheBlockStorage>,
+}
+
+impl RetainedCacheBlock {
+    pub(crate) fn block_id(&self) -> BlockId {
+        self.id
+    }
+
+    pub(crate) fn storage_ref_count(&self) -> usize {
+        Arc::strong_count(&self.storage)
+    }
+
+    pub(crate) fn payload_bytes(&self) -> u64 {
+        f32_bytes(&self.storage.keys).saturating_add(f32_bytes(&self.storage.values))
+    }
 }
 
 impl CacheBlock {
@@ -63,8 +109,7 @@ impl CacheBlock {
             ref_count: 0,
             content_hash: None,
             last_access: 0,
-            keys: vec![0.0; storage_len],
-            values: vec![0.0; storage_len],
+            storage: Arc::new(CacheBlockStorage::new(storage_len)),
         })
     }
 
@@ -77,11 +122,41 @@ impl CacheBlock {
     }
 
     pub(crate) fn ensure_exclusive_identity(&mut self) -> Result<(), KvCacheError> {
-        if self.shared {
+        if self.shared || Arc::strong_count(&self.storage) > 1 {
             self.id = BlockId::next()?;
             self.shared = false;
         }
         Ok(())
+    }
+
+    pub(crate) fn from_retained(retained: &RetainedCacheBlock) -> Result<Self, KvCacheError> {
+        if retained.capacity_tokens == 0
+            || retained.vector_len == 0
+            || retained.token_count > retained.capacity_tokens
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let expected_len = retained
+            .capacity_tokens
+            .checked_mul(retained.vector_len)
+            .ok_or(KvCacheError::InvalidShape)?;
+        if retained.storage.keys.len() != expected_len
+            || retained.storage.values.len() != expected_len
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+        Ok(Self {
+            id: retained.id,
+            revision: retained.revision,
+            shared: true,
+            capacity_tokens: retained.capacity_tokens,
+            vector_len: retained.vector_len,
+            token_count: retained.token_count,
+            ref_count: 0,
+            content_hash: retained.content_hash,
+            last_access: 0,
+            storage: Arc::clone(&retained.storage),
+        })
     }
 
     pub fn capacity_tokens(&self) -> usize {
@@ -106,6 +181,22 @@ impl CacheBlock {
 
     pub fn ref_count(&self) -> usize {
         self.ref_count
+    }
+
+    pub fn retained_storage_ref_count(&self) -> usize {
+        Arc::strong_count(&self.storage)
+    }
+
+    pub(crate) fn retain_storage(&self) -> RetainedCacheBlock {
+        RetainedCacheBlock {
+            id: self.id,
+            revision: self.revision,
+            capacity_tokens: self.capacity_tokens,
+            vector_len: self.vector_len,
+            token_count: self.token_count,
+            content_hash: self.content_hash,
+            storage: Arc::clone(&self.storage),
+        }
     }
 
     pub fn increment_ref_count(&mut self) -> usize {
@@ -145,8 +236,9 @@ impl CacheBlock {
         let token_index = self.token_count;
         let start = token_index * self.vector_len;
         let end = start + self.vector_len;
-        self.keys[start..end].copy_from_slice(key);
-        self.values[start..end].copy_from_slice(value);
+        let storage = Arc::make_mut(&mut self.storage);
+        storage.keys[start..end].copy_from_slice(key);
+        storage.values[start..end].copy_from_slice(value);
         self.token_count += 1;
         self.content_hash = None;
         self.revision = self.revision.saturating_add(1);
@@ -165,35 +257,36 @@ impl CacheBlock {
         }
         let start = token_index * self.vector_len;
         let end = start + self.vector_len;
-        self.keys[start..end].copy_from_slice(key);
-        self.values[start..end].copy_from_slice(value);
+        let storage = Arc::make_mut(&mut self.storage);
+        storage.keys[start..end].copy_from_slice(key);
+        storage.values[start..end].copy_from_slice(value);
         self.content_hash = None;
         self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
     pub fn key(&self, token_index: usize) -> Option<&[f32]> {
-        self.token_slice(&self.keys, token_index)
+        self.token_slice(&self.storage.keys, token_index)
     }
 
     pub fn value(&self, token_index: usize) -> Option<&[f32]> {
-        self.token_slice(&self.values, token_index)
+        self.token_slice(&self.storage.values, token_index)
     }
 
     pub fn keys(&self) -> &[f32] {
-        &self.keys[..self.used_len()]
+        &self.storage.keys[..self.used_len()]
     }
 
     pub fn values(&self) -> &[f32] {
-        &self.values[..self.used_len()]
+        &self.storage.values[..self.used_len()]
     }
 
     pub fn key_storage(&self) -> &[f32] {
-        &self.keys
+        &self.storage.keys
     }
 
     pub fn value_storage(&self) -> &[f32] {
-        &self.values
+        &self.storage.values
     }
 
     pub fn clear(&mut self) {
@@ -201,8 +294,13 @@ impl CacheBlock {
         self.ref_count = 0;
         self.content_hash = None;
         self.last_access = 0;
-        self.keys.fill(0.0);
-        self.values.fill(0.0);
+        if Arc::strong_count(&self.storage) > 1 {
+            self.storage = Arc::new(CacheBlockStorage::new(self.storage.keys.len()));
+            self.shared = true;
+        } else {
+            Arc::make_mut(&mut self.storage).fill_zero();
+            self.shared = false;
+        }
         self.revision = self.revision.saturating_add(1);
     }
 
@@ -224,8 +322,9 @@ impl CacheBlock {
         self.ref_count = 1;
         self.content_hash = source.content_hash;
         self.last_access = last_access;
-        self.keys.copy_from_slice(&source.keys);
-        self.values.copy_from_slice(&source.values);
+        let storage = Arc::make_mut(&mut self.storage);
+        storage.keys.copy_from_slice(&source.storage.keys);
+        storage.values.copy_from_slice(&source.storage.values);
         self.revision = self.revision.saturating_add(1);
         Ok(())
     }
@@ -271,8 +370,11 @@ impl Clone for CacheBlock {
             ref_count: self.ref_count,
             content_hash: self.content_hash,
             last_access: self.last_access,
-            keys: self.keys.clone(),
-            values: self.values.clone(),
+            storage: Arc::clone(&self.storage),
         }
     }
+}
+
+fn f32_bytes(values: &[f32]) -> u64 {
+    (values.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64)
 }

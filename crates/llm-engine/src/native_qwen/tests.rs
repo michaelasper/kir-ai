@@ -210,6 +210,10 @@ fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
         .append(&[1.0, 2.0], &[3.0, 4.0])
         .expect("token fits");
     let original_cache_id = layer_cache.id();
+    let original_block_id = layer_cache.block_ids()[0];
+    let original_block_ptr = layer_cache.active_blocks().expect("active blocks")[0]
+        .key_storage()
+        .as_ptr();
     let caches = vec![QwenLayerCache::Full(layer_cache)];
 
     cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches, &metrics);
@@ -222,6 +226,14 @@ fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
     match &hit.caches[0] {
         QwenLayerCache::Full(cache) => {
             assert_ne!(cache.id(), original_cache_id);
+            assert_eq!(cache.block_ids()[0], original_block_id);
+            assert_eq!(
+                cache.active_blocks().expect("active blocks")[0]
+                    .key_storage()
+                    .as_ptr(),
+                original_block_ptr,
+                "Qwen prefix hits should share retained KV block storage"
+            );
             assert_eq!(cache.token_count(), 1);
         }
         QwenLayerCache::Linear(_) => panic!("expected full-attention cache"),

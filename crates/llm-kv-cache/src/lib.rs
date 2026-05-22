@@ -9,9 +9,12 @@ pub use block_pool::BlockPool;
 pub use block_table::{BlockTable, SessionBlockTable, SessionId};
 
 use std::{
+    collections::HashSet,
     fmt,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+use block::RetainedCacheBlock;
 
 static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -106,6 +109,67 @@ pub struct LayerKvCacheSnapshot {
     pub tokens_seen: usize,
     pub keys: Vec<f32>,
     pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerKvCachePrefixState {
+    revision: u64,
+    max_tokens: usize,
+    key_value_heads: usize,
+    head_dim: usize,
+    token_count: usize,
+    tokens_seen: usize,
+    window_start: usize,
+    blocks: Vec<LayerKvCachePrefixBlock>,
+}
+
+impl LayerKvCachePrefixState {
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    pub fn block_ids(&self) -> Vec<BlockId> {
+        self.blocks
+            .iter()
+            .map(|block| block.retained.block_id())
+            .collect()
+    }
+
+    pub fn retained_block_ref_count(&self, block_id: BlockId) -> Option<usize> {
+        self.blocks
+            .iter()
+            .find(|block| block.retained.block_id() == block_id)
+            .map(|block| block.retained.storage_ref_count())
+    }
+
+    pub fn retained_block_payload_bytes(&self) -> u64 {
+        self.blocks.iter().fold(0_u64, |total, block| {
+            total.saturating_add(block.retained.payload_bytes())
+        })
+    }
+
+    pub fn metadata_bytes(&self) -> u64 {
+        let scalar_bytes = std::mem::size_of::<u64>()
+            .saturating_add(6_usize.saturating_mul(std::mem::size_of::<usize>()));
+        let block_metadata_bytes = self.blocks.len().saturating_mul(
+            std::mem::size_of::<BlockId>()
+                .saturating_add(std::mem::size_of::<u64>())
+                .saturating_add(4_usize.saturating_mul(std::mem::size_of::<usize>())),
+        );
+        (scalar_bytes as u64)
+            .saturating_add(block_metadata_bytes as u64)
+            .saturating_add(self.retained_block_payload_bytes())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LayerKvCachePrefixBlock {
+    block_index: usize,
+    retained: RetainedCacheBlock,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -286,6 +350,76 @@ impl LayerKvCache {
         Ok(cache)
     }
 
+    pub fn prefix_cache_state(&self) -> LayerKvCachePrefixState {
+        let mut seen = HashSet::new();
+        let mut blocks = Vec::new();
+        for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
+            let Some((block_index, _)) = self.physical_block_position(physical_token_index) else {
+                continue;
+            };
+            let Some(block_id) = self.block_table.get(block_index) else {
+                continue;
+            };
+            if !seen.insert(block_id) {
+                continue;
+            }
+            let Some(block) = self.blocks.get(block_index) else {
+                continue;
+            };
+            if block.id() != block_id {
+                continue;
+            }
+            blocks.push(LayerKvCachePrefixBlock {
+                block_index,
+                retained: block.retain_storage(),
+            });
+        }
+        LayerKvCachePrefixState {
+            revision: self.revision,
+            max_tokens: self.max_tokens,
+            key_value_heads: self.key_value_heads,
+            head_dim: self.head_dim,
+            token_count: self.token_count,
+            tokens_seen: self.tokens_seen,
+            window_start: self.window_start,
+            blocks,
+        }
+    }
+
+    pub fn from_prefix_cache_state(state: &LayerKvCachePrefixState) -> Result<Self, KvCacheError> {
+        if state.max_tokens == 0
+            || state.key_value_heads == 0
+            || state.head_dim == 0
+            || state.token_count > state.max_tokens
+            || state.tokens_seen < state.token_count
+            || state.window_start >= state.max_tokens
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let mut cache = Self::new(state.max_tokens, state.key_value_heads, state.head_dim)?;
+        for prefix_block in &state.blocks {
+            let block = CacheBlock::from_retained(&prefix_block.retained)?;
+            if prefix_block.block_index >= cache.blocks.len()
+                || block.vector_len() != cache.vector_len()
+                || block.capacity_tokens()
+                    != cache.blocks[prefix_block.block_index].capacity_tokens()
+            {
+                return Err(KvCacheError::InvalidShape);
+            }
+            cache
+                .block_table
+                .replace(prefix_block.block_index, block.id())?;
+            cache.blocks[prefix_block.block_index] = block;
+        }
+        cache.revision = state.revision;
+        cache.token_count = state.token_count;
+        cache.tokens_seen = state.tokens_seen;
+        cache.window_start = state.window_start;
+        cache.rebuild_stage_from_blocks()?;
+        Ok(cache)
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -397,6 +531,13 @@ impl LayerKvCache {
 
     pub fn block_ids(&self) -> &[BlockId] {
         self.block_table.as_slice()
+    }
+
+    pub fn retained_block_ref_count(&self, block_id: BlockId) -> Option<usize> {
+        self.blocks
+            .iter()
+            .find(|block| block.id() == block_id)
+            .map(CacheBlock::retained_storage_ref_count)
     }
 
     pub fn active_blocks(&self) -> Result<Vec<LayerKvCacheBlock<'_>>, KvCacheError> {
@@ -566,6 +707,31 @@ impl LayerKvCache {
         let mirror_end = mirror_start + vector_len;
         self.key_stage[mirror_start..mirror_end].copy_from_slice(key);
         self.value_stage[mirror_start..mirror_end].copy_from_slice(value);
+    }
+
+    fn rebuild_stage_from_blocks(&mut self) -> Result<(), KvCacheError> {
+        self.key_stage.fill(0.0);
+        self.value_stage.fill(0.0);
+        for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
+            let (block_index, block_token_index) = self
+                .physical_block_position(physical_token_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block = self
+                .blocks
+                .get(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let key = block
+                .key(block_token_index)
+                .ok_or(KvCacheError::InvalidShape)?
+                .to_vec();
+            let value = block
+                .value(block_token_index)
+                .ok_or(KvCacheError::InvalidShape)?
+                .to_vec();
+            self.write_stage_token(physical_token_index, &key, &value);
+        }
+        Ok(())
     }
 
     fn validate_token_shape(&self, key: &[f32], value: &[f32]) -> Result<(), KvCacheError> {
@@ -1262,6 +1428,98 @@ mod tests {
             prefix_revision,
             "the cached prefix block remains unchanged"
         );
+    }
+
+    #[test]
+    fn layer_kv_cache_prefix_state_retains_active_blocks_without_stage_payloads() {
+        let max_tokens = LAYER_KV_BLOCK_TOKENS + 1;
+        let mut cache = LayerKvCache::new(max_tokens, 1, 2).expect("cache shape is valid");
+        cache
+            .append(&[1.0, 2.0], &[10.0, 20.0])
+            .expect("prefix token fits");
+
+        let prefix_block_id = cache.block_ids()[0];
+        let state = cache.prefix_cache_state();
+
+        assert_eq!(state.block_ids(), vec![prefix_block_id]);
+        assert_eq!(
+            state.retained_block_payload_bytes(),
+            (LAYER_KV_BLOCK_TOKENS * cache.vector_len() * 2 * std::mem::size_of::<f32>()) as u64
+        );
+        assert!(
+            state.metadata_bytes() >= state.retained_block_payload_bytes(),
+            "entry sizing must include the retained block payload it keeps alive"
+        );
+        assert!(
+            state.metadata_bytes() < cache.resident_bytes(),
+            "prefix state should not retain full cache staging or inactive block storage"
+        );
+        assert_eq!(cache.retained_block_ref_count(prefix_block_id), Some(2));
+    }
+
+    #[test]
+    fn layer_kv_cache_prefix_hit_rebuilds_local_stage_and_cows_only_blocks() {
+        let mut cache = LayerKvCache::new(4, 1, 1).expect("cache shape is valid");
+        cache.append(&[1.0], &[10.0]).expect("prefix token fits");
+        let prefix_block_id = cache.block_ids()[0];
+        let prefix_block_key_ptr = cache.active_blocks().expect("active blocks")[0]
+            .key_storage()
+            .as_ptr();
+
+        let state = cache.prefix_cache_state();
+        let mut hit_cache =
+            LayerKvCache::from_prefix_cache_state(&state).expect("prefix state restores");
+        let hit_stage_ptr = hit_cache.key_storage().as_ptr();
+
+        assert_eq!(hit_cache.block_ids()[0], prefix_block_id);
+        assert_eq!(
+            hit_cache.active_blocks().expect("active blocks")[0]
+                .key_storage()
+                .as_ptr(),
+            prefix_block_key_ptr,
+            "prefix hit should share retained block storage"
+        );
+        assert_eq!(cache.retained_block_ref_count(prefix_block_id), Some(3));
+
+        hit_cache
+            .append(&[2.0], &[20.0])
+            .expect("suffix token fits");
+
+        assert_eq!(
+            hit_cache.key_storage().as_ptr(),
+            hit_stage_ptr,
+            "suffix writes should not COW-clone a shared full staging buffer"
+        );
+        assert_ne!(
+            hit_cache.block_ids()[0],
+            prefix_block_id,
+            "suffix write should fork only the touched prefix block"
+        );
+        assert_eq!(cache.retained_block_ref_count(prefix_block_id), Some(2));
+        assert_eq!(cache.key(0), Some(&[1.0][..]));
+        assert_eq!(hit_cache.key(0), Some(&[1.0][..]));
+        assert_eq!(hit_cache.key(1), Some(&[2.0][..]));
+    }
+
+    #[test]
+    fn layer_kv_cache_clear_with_retained_prefix_forks_reused_block_identity() {
+        let mut cache = LayerKvCache::new(4, 1, 1).expect("cache shape is valid");
+        cache.append(&[1.0], &[10.0]).expect("prefix token fits");
+        let prefix_block_id = cache.block_ids()[0];
+        let state = cache.prefix_cache_state();
+
+        cache.clear();
+        cache.append(&[2.0], &[20.0]).expect("new token fits");
+
+        assert_ne!(
+            cache.block_ids()[0],
+            prefix_block_id,
+            "reusing a block whose storage is retained by a prefix entry must get a new id"
+        );
+        let restored =
+            LayerKvCache::from_prefix_cache_state(&state).expect("prefix state restores");
+        assert_eq!(restored.block_ids()[0], prefix_block_id);
+        assert_eq!(restored.key(0), Some(&[1.0][..]));
     }
 
     #[test]

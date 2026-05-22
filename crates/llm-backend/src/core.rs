@@ -1,6 +1,6 @@
 pub use llm_kv_cache::{
-    BlockId, KvCacheError, LayerKvCache, LayerKvCacheBlock, LayerKvCacheSnapshot,
-    LinearAttentionCache, LinearAttentionCacheSnapshot,
+    BlockId, KvCacheError, LayerKvCache, LayerKvCacheBlock, LayerKvCachePrefixState,
+    LayerKvCacheSnapshot, LinearAttentionCache, LinearAttentionCacheSnapshot,
 };
 
 mod backend;
@@ -26,10 +26,10 @@ pub use backend::{
     SamplingConfig,
 };
 pub use gemma::{
-    GemmaLayerCache, GemmaLayerCacheSnapshot, gemma_cache_count_for_spec,
-    gemma_decode_token_with_cache, gemma_final_norm_for_spec, gemma_layer_caches_for_spec,
-    gemma_lm_head_logits_for_spec, gemma_lm_head_top_k_for_spec, gemma_prefill_sequence_with_cache,
-    gemma_static_f32_tensors_for_spec,
+    GemmaLayerCache, GemmaLayerCachePrefixState, GemmaLayerCacheSnapshot,
+    gemma_cache_count_for_spec, gemma_decode_token_with_cache, gemma_final_norm_for_spec,
+    gemma_layer_caches_for_spec, gemma_lm_head_logits_for_spec, gemma_lm_head_top_k_for_spec,
+    gemma_prefill_sequence_with_cache, gemma_static_f32_tensors_for_spec,
 };
 pub use math::{InferenceScratchpad, MathError, TopKLogit, TopKWeight};
 pub use native_matvec::{
@@ -45,15 +45,16 @@ pub use native_text::{
 pub use protocol_test::ProtocolTestBackend;
 pub use qwen::{
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
-    QwenEmbeddingProbe, QwenLayerCache, QwenLayerCacheSnapshot, QwenLinearAttentionProjectionProbe,
-    QwenMoeDims, QwenMoeRouterProbe, qwen_decode_token_with_cache, qwen_decoder_layer_first_token,
-    qwen_embedding_and_layer0_norm, qwen_final_norm, qwen_final_norm_for_spec,
-    qwen_layer_caches_for_spec, qwen_layer_moe_forward, qwen_layer_moe_forward_in_place,
-    qwen_layer_moe_router, qwen_layer0_linear_attention_first_token,
-    qwen_layer0_linear_attention_projections, qwen_layer0_moe_forward, qwen_layer0_moe_router,
-    qwen_layer0_post_attention_norm, qwen_linear_decoder_layer_first_token,
-    qwen_lm_head_logits_for_spec, qwen_lm_head_top_k, qwen_lm_head_top_k_for_spec,
-    qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
+    QwenEmbeddingProbe, QwenLayerCache, QwenLayerCachePrefixState, QwenLayerCacheSnapshot,
+    QwenLinearAttentionProjectionProbe, QwenMoeDims, QwenMoeRouterProbe,
+    qwen_decode_token_with_cache, qwen_decoder_layer_first_token, qwen_embedding_and_layer0_norm,
+    qwen_final_norm, qwen_final_norm_for_spec, qwen_layer_caches_for_spec, qwen_layer_moe_forward,
+    qwen_layer_moe_forward_in_place, qwen_layer_moe_router,
+    qwen_layer0_linear_attention_first_token, qwen_layer0_linear_attention_projections,
+    qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
+    qwen_linear_decoder_layer_first_token, qwen_lm_head_logits_for_spec, qwen_lm_head_top_k,
+    qwen_lm_head_top_k_for_spec, qwen_prefill_sequence_with_cache,
+    qwen_static_f32_tensors_for_spec,
 };
 pub use safetensors::{
     F32TensorCacheWarmup, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,

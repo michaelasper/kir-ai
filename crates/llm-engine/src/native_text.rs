@@ -388,9 +388,19 @@ mod tests {
     }
 
     impl NativeTextPrefixCacheValue for TestCache {
-        fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+        type PrefixCacheState = Self;
+
+        fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+            caches.to_vec()
+        }
+
+        fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+            Some(states.to_vec())
+        }
+
+        fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
             std::mem::size_of_val(hidden) as u64
-                + caches.iter().map(|cache| cache.bytes).sum::<u64>()
+                + states.iter().map(|cache| cache.bytes).sum::<u64>()
         }
     }
 
@@ -421,9 +431,19 @@ mod tests {
     }
 
     impl NativeTextPrefixCacheValue for LockObservingCache {
-        fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+        type PrefixCacheState = Self;
+
+        fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+            caches.to_vec()
+        }
+
+        fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+            Some(states.to_vec())
+        }
+
+        fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
             std::mem::size_of_val(hidden) as u64
-                + caches.iter().map(|cache| cache.bytes).sum::<u64>()
+                + states.iter().map(|cache| cache.bytes).sum::<u64>()
         }
     }
 

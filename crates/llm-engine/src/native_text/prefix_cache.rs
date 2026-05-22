@@ -5,25 +5,34 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub(crate) trait NativeTextPrefixCacheValue: Clone {
-    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64;
+pub(crate) trait NativeTextPrefixCacheValue: Sized {
+    type PrefixCacheState: Clone + std::fmt::Debug;
+
+    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState>;
+
+    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>>;
+
+    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64;
 }
 
 #[derive(Debug)]
-pub(crate) struct NativeTextPrefixCache<C> {
+pub(crate) struct NativeTextPrefixCache<C: NativeTextPrefixCacheValue> {
     pub(crate) max_bytes: u64,
     pub(crate) inner: Mutex<NativeTextPrefixCacheInner<C>>,
 }
 
 #[derive(Debug)]
-pub(crate) struct NativeTextPrefixCacheInner<C> {
+pub(crate) struct NativeTextPrefixCacheInner<C: NativeTextPrefixCacheValue> {
     pub(crate) entries:
         HashMap<NativeTextPrefixCacheNamespace, HashMap<Vec<usize>, NativeTextPrefixCacheEntry<C>>>,
     pub(crate) used_bytes: u64,
     pub(crate) next_access: u64,
 }
 
-impl<C> Default for NativeTextPrefixCacheInner<C> {
+impl<C> Default for NativeTextPrefixCacheInner<C>
+where
+    C: NativeTextPrefixCacheValue,
+{
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
@@ -90,20 +99,20 @@ pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> Strin
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NativeTextPrefixCacheEntry<C> {
+pub(crate) struct NativeTextPrefixCacheEntry<C: NativeTextPrefixCacheValue> {
     pub(crate) payload: Arc<NativeTextPrefixCacheEntryPayload<C>>,
     pub(crate) byte_len: u64,
     pub(crate) last_used: u64,
 }
 
 #[derive(Debug)]
-pub(crate) struct NativeTextPrefixCacheEntryPayload<C> {
+pub(crate) struct NativeTextPrefixCacheEntryPayload<C: NativeTextPrefixCacheValue> {
     pub(crate) hidden: Vec<f32>,
-    pub(crate) caches: Vec<C>,
+    pub(crate) states: Vec<C::PrefixCacheState>,
 }
 
 #[derive(Debug)]
-pub(crate) struct NativeTextPrefixCacheHit<C> {
+pub(crate) struct NativeTextPrefixCacheHit<C: NativeTextPrefixCacheValue> {
     pub(crate) token_count: usize,
     pub(crate) hidden: Vec<f32>,
     pub(crate) caches: Vec<C>,
@@ -162,7 +171,7 @@ where
         namespace: &NativeTextPrefixCacheNamespace,
         tokens: &[usize],
         metrics: &NativeTextPrefixCacheMetrics,
-        mut is_compatible: impl FnMut(&[C]) -> bool,
+        mut is_compatible: impl FnMut(&[C::PrefixCacheState]) -> bool,
     ) -> Option<NativeTextPrefixCacheHit<C>> {
         let (hit, entries_scanned, namespace_entries_scanned) = {
             let mut inner = self.inner.lock_or_panic("native text prefix cache");
@@ -181,7 +190,7 @@ where
                     entries_scanned += 1;
                     if entry_tokens.len() > best_len
                         && tokens.starts_with(entry_tokens)
-                        && is_compatible(&entry.payload.caches)
+                        && is_compatible(&entry.payload.states)
                     {
                         best_len = entry_tokens.len();
                         best_entry = Some(entry);
@@ -204,6 +213,14 @@ where
             metrics.record_miss_tokens(tokens.len() as u64);
             return None;
         };
+        let caches = match C::prefix_cache_from_state(&payload.states) {
+            Some(caches) => caches,
+            None => {
+                metrics.record_miss();
+                metrics.record_miss_tokens(tokens.len() as u64);
+                return None;
+            }
+        };
         let hit_tokens = best_len as u64;
         metrics.record_hit(hit_tokens);
         metrics.record_miss_tokens((tokens.len() as u64).saturating_sub(hit_tokens));
@@ -211,7 +228,7 @@ where
         Some(NativeTextPrefixCacheHit {
             token_count: best_len,
             hidden: payload.hidden.clone(),
-            caches: payload.caches.clone(),
+            caches,
         })
     }
 
@@ -226,14 +243,15 @@ where
         if tokens.is_empty() {
             return;
         }
-        let byte_len = C::prefix_cache_entry_bytes(hidden, caches);
+        let states = C::prefix_cache_state(caches);
+        let byte_len = C::prefix_cache_entry_bytes(hidden, &states);
         if byte_len > self.max_bytes {
             metrics.record_rejected();
             return;
         }
         let payload = Arc::new(NativeTextPrefixCacheEntryPayload {
             hidden: hidden.to_vec(),
-            caches: caches.to_vec(),
+            states,
         });
         let entry_tokens = tokens.to_vec();
         let mut removed_entries = Vec::new();
@@ -274,7 +292,10 @@ where
     }
 }
 
-impl<C> NativeTextPrefixCacheInner<C> {
+impl<C> NativeTextPrefixCacheInner<C>
+where
+    C: NativeTextPrefixCacheValue,
+{
     fn next_access(&mut self) -> u64 {
         let access = self.next_access;
         self.next_access = self.next_access.saturating_add(1);

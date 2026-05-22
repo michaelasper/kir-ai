@@ -16,8 +16,9 @@ use super::super::native_attention::{
     require_native_output_projection_shape,
 };
 use super::super::{
-    CpuNativeMatvecBackend, KvCacheError, LayerKvCache, LayerKvCacheSnapshot, LinearAttentionCache,
-    LinearAttentionCacheSnapshot, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+    CpuNativeMatvecBackend, KvCacheError, LayerKvCache, LayerKvCachePrefixState,
+    LayerKvCacheSnapshot, LinearAttentionCache, LinearAttentionCacheSnapshot, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
 use super::matvec::{l2_normalize_f32, rms_norm_f32, rms_norm_f32_in_place};
 use llm_models::{AttentionKind, QwenModelSpec};
@@ -303,6 +304,12 @@ pub enum QwenLayerCacheSnapshot {
     Full(LayerKvCacheSnapshot),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum QwenLayerCachePrefixState {
+    Linear(LinearAttentionCacheSnapshot),
+    Full(LayerKvCachePrefixState),
+}
+
 impl QwenLayerCache {
     pub fn snapshot(&self) -> QwenLayerCacheSnapshot {
         match self {
@@ -318,6 +325,26 @@ impl QwenLayerCache {
             }
             QwenLayerCacheSnapshot::Full(snapshot) => {
                 LayerKvCache::from_snapshot(snapshot).map(Self::Full)
+            }
+        }
+    }
+
+    pub fn prefix_cache_state(&self) -> QwenLayerCachePrefixState {
+        match self {
+            Self::Linear(cache) => QwenLayerCachePrefixState::Linear(cache.snapshot()),
+            Self::Full(cache) => QwenLayerCachePrefixState::Full(cache.prefix_cache_state()),
+        }
+    }
+
+    pub fn from_prefix_cache_state(
+        state: &QwenLayerCachePrefixState,
+    ) -> Result<Self, KvCacheError> {
+        match state {
+            QwenLayerCachePrefixState::Linear(snapshot) => {
+                LinearAttentionCache::from_snapshot(snapshot.clone()).map(Self::Linear)
+            }
+            QwenLayerCachePrefixState::Full(state) => {
+                LayerKvCache::from_prefix_cache_state(state).map(Self::Full)
             }
         }
     }

@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    GemmaLayerCache, InferenceScratchpad, ModelBackend, NativeMatvecBackend,
-    NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig, gemma_cache_count_for_spec,
-    gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
+    GemmaLayerCache, GemmaLayerCachePrefixState, InferenceScratchpad, ModelBackend,
+    NativeMatvecBackend, NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig,
+    gemma_cache_count_for_spec, gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
     native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
 };
 use llm_models::{GemmaModelSpec, ModelFamily};
@@ -72,11 +72,28 @@ pub(crate) fn native_gemma_prefix_cache_metrics_snapshot() -> Value {
 }
 
 impl NativeTextPrefixCacheValue for GemmaLayerCache {
-    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+    type PrefixCacheState = GemmaLayerCachePrefixState;
+
+    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+        caches
+            .iter()
+            .map(GemmaLayerCache::prefix_cache_state)
+            .collect()
+    }
+
+    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+        states
+            .iter()
+            .map(GemmaLayerCache::from_prefix_cache_state)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    }
+
+    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;
-        caches.iter().fold(hidden_bytes, |total, cache| {
-            total.saturating_add(match cache {
-                GemmaLayerCache::Attention(cache) => cache.resident_bytes(),
+        states.iter().fold(hidden_bytes, |total, state| {
+            total.saturating_add(match state {
+                GemmaLayerCachePrefixState::Attention(state) => state.metadata_bytes(),
             })
         })
     }
@@ -321,11 +338,11 @@ impl NativeTextAdapter for NativeGemmaAdapter {
 
     fn prefix_cache_hit_is_compatible(
         &self,
-        caches: &[GemmaLayerCache],
+        states: &[GemmaLayerCachePrefixState],
         cache_tokens: usize,
     ) -> bool {
-        caches.iter().all(|cache| match cache {
-            GemmaLayerCache::Attention(cache) => cache.max_tokens() >= cache_tokens,
+        states.iter().all(|state| match state {
+            GemmaLayerCachePrefixState::Attention(state) => state.max_tokens() >= cache_tokens,
         })
     }
 
@@ -546,7 +563,7 @@ mod tests {
     use super::*;
     use crate::native_text::NativeTextStopTokens;
     use crate::sync_ext::FailPoisonedMutex;
-    use llm_backend::{BackendCacheContext, BackendToolChoice, LayerKvCache};
+    use llm_backend::{BackendCacheContext, BackendToolChoice, BlockId, LayerKvCache};
     use llm_models::{GemmaFamilyAdapter, ModelFamilyAdapter};
     use serde_json::json;
     use std::{
@@ -675,6 +692,10 @@ mod tests {
             .append(&[1.0, 2.0], &[3.0, 4.0])
             .expect("token fits");
         let original_cache_id = layer_cache.id();
+        let original_block_id = layer_cache.block_ids()[0];
+        let original_block_ptr = layer_cache.active_blocks().expect("active blocks")[0]
+            .key_storage()
+            .as_ptr();
         let caches = vec![GemmaLayerCache::Attention(layer_cache)];
 
         cache.store(namespace.clone(), &[1, 2], &[0.25, 0.75], &caches, &metrics);
@@ -687,6 +708,14 @@ mod tests {
         match &hit.caches[0] {
             GemmaLayerCache::Attention(cache) => {
                 assert_ne!(cache.id(), original_cache_id);
+                assert_eq!(cache.block_ids()[0], original_block_id);
+                assert_eq!(
+                    cache.active_blocks().expect("active blocks")[0]
+                        .key_storage()
+                        .as_ptr(),
+                    original_block_ptr,
+                    "Gemma prefix hits should share retained KV block storage"
+                );
                 assert_eq!(cache.token_count(), 1);
             }
         }
@@ -701,6 +730,73 @@ mod tests {
                 .is_none(),
             "tool schema changes must not reuse prefix state"
         );
+    }
+
+    #[test]
+    fn native_gemma_prefix_cache_lru_eviction_releases_retained_block_refs() {
+        let metrics = NativeGemmaPrefixCacheMetrics::default();
+        let hidden = [0.25, 0.75];
+
+        let mut first_layer = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        first_layer
+            .append(&[1.0, 2.0], &[10.0, 20.0])
+            .expect("first token fits");
+        let first_block_id = first_layer.block_ids()[0];
+        let first_caches = vec![GemmaLayerCache::Attention(first_layer)];
+        let first_states =
+            <GemmaLayerCache as NativeTextPrefixCacheValue>::prefix_cache_state(&first_caches);
+        let entry_bytes = <GemmaLayerCache as NativeTextPrefixCacheValue>::prefix_cache_entry_bytes(
+            &hidden,
+            &first_states,
+        );
+        drop(first_states);
+        let cache = NativeGemmaPrefixCache::new(entry_bytes);
+        let first_namespace = native_gemma_test_prefix_namespace("lru-release-first");
+        cache.store(
+            first_namespace.clone(),
+            &[1, 2],
+            &hidden,
+            &first_caches,
+            &metrics,
+        );
+        assert_eq!(
+            retained_block_ref_count(&first_caches, first_block_id),
+            Some(2),
+            "stored prefix entry should retain the active block"
+        );
+
+        let mut second_layer = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        second_layer
+            .append(&[3.0, 4.0], &[30.0, 40.0])
+            .expect("second token fits");
+        let second_block_id = second_layer.block_ids()[0];
+        let second_caches = vec![GemmaLayerCache::Attention(second_layer)];
+        let second_namespace = native_gemma_test_prefix_namespace("lru-release-second");
+        cache.store(
+            second_namespace.clone(),
+            &[3, 4],
+            &hidden,
+            &second_caches,
+            &metrics,
+        );
+
+        assert_eq!(
+            retained_block_ref_count(&first_caches, first_block_id),
+            Some(1),
+            "LRU eviction should drop the retained prefix block reference"
+        );
+        assert_eq!(
+            retained_block_ref_count(&second_caches, second_block_id),
+            Some(2)
+        );
+        assert!(cache.lookup(&first_namespace, &[1, 2], &metrics).is_none());
+        assert!(cache.lookup(&second_namespace, &[3, 4], &metrics).is_some());
+    }
+
+    fn retained_block_ref_count(caches: &[GemmaLayerCache], block_id: BlockId) -> Option<usize> {
+        match &caches[0] {
+            GemmaLayerCache::Attention(cache) => cache.retained_block_ref_count(block_id),
+        }
     }
 
     #[test]

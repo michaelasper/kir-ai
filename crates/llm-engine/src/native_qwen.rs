@@ -17,7 +17,7 @@ use futures::stream::BoxStream;
 use llm_backend::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     InferenceScratchpad, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
-    QwenLayerCache, SafeTensorShardStore, SamplingConfig,
+    QwenLayerCache, QwenLayerCachePrefixState, SafeTensorShardStore, SamplingConfig,
     native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
     qwen_layer_caches_for_spec, qwen_static_f32_tensors_for_spec,
 };
@@ -64,15 +64,38 @@ fn native_qwen_prefix_cache_metrics() -> &'static NativeQwenPrefixCacheMetrics {
 }
 
 impl NativeTextPrefixCacheValue for QwenLayerCache {
-    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+    type PrefixCacheState = QwenLayerCachePrefixState;
+
+    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+        caches
+            .iter()
+            .map(QwenLayerCache::prefix_cache_state)
+            .collect()
+    }
+
+    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+        states
+            .iter()
+            .map(QwenLayerCache::from_prefix_cache_state)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    }
+
+    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;
-        caches.iter().fold(hidden_bytes, |total, cache| {
-            total.saturating_add(match cache {
-                QwenLayerCache::Full(cache) => cache.resident_bytes(),
-                QwenLayerCache::Linear(cache) => cache.resident_bytes(),
+        states.iter().fold(hidden_bytes, |total, state| {
+            total.saturating_add(match state {
+                QwenLayerCachePrefixState::Full(state) => state.metadata_bytes(),
+                QwenLayerCachePrefixState::Linear(state) => {
+                    linear_attention_snapshot_bytes(&state.conv_window, &state.recurrent_state)
+                }
             })
         })
     }
+}
+
+fn linear_attention_snapshot_bytes(conv_window: &[f32], recurrent_state: &[f32]) -> u64 {
+    std::mem::size_of_val(conv_window).saturating_add(std::mem::size_of_val(recurrent_state)) as u64
 }
 
 impl NativeTextCacheMirrorSource for QwenLayerCache {
@@ -284,12 +307,12 @@ impl NativeTextAdapter for NativeQwenAdapter {
 
     fn prefix_cache_hit_is_compatible(
         &self,
-        caches: &[QwenLayerCache],
+        states: &[QwenLayerCachePrefixState],
         cache_tokens: usize,
     ) -> bool {
-        caches.iter().all(|cache| match cache {
-            QwenLayerCache::Full(cache) => cache.max_tokens() >= cache_tokens,
-            QwenLayerCache::Linear(_) => true,
+        states.iter().all(|state| match state {
+            QwenLayerCachePrefixState::Full(state) => state.max_tokens() >= cache_tokens,
+            QwenLayerCachePrefixState::Linear(_) => true,
         })
     }
 

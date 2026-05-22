@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use llm_backend::{LayerKvCache, LinearAttentionCache, QwenLayerCache};
+use llm_backend::{LayerKvCache, LinearAttentionCache, QwenLayerCache, QwenLayerCachePrefixState};
 
 mod sync_ext {
     pub(crate) use llm_util::sync_ext::FailPoisonedMutex;
@@ -46,16 +46,30 @@ const COLD_MISS_ITERATIONS: usize = 20_000;
 const HIT_CLONE_ITERATIONS: usize = 8;
 
 impl NativeTextPrefixCacheValue for QwenLayerCache {
-    fn prefix_cache_entry_bytes(hidden: &[f32], caches: &[Self]) -> u64 {
+    type PrefixCacheState = QwenLayerCachePrefixState;
+
+    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+        caches
+            .iter()
+            .map(QwenLayerCache::prefix_cache_state)
+            .collect()
+    }
+
+    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+        states
+            .iter()
+            .map(QwenLayerCache::from_prefix_cache_state)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    }
+
+    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;
-        caches.iter().fold(hidden_bytes, |total, cache| {
-            total.saturating_add(match cache {
-                QwenLayerCache::Full(cache) => {
-                    ((cache.key_storage().len() + cache.value_storage().len())
-                        * std::mem::size_of::<f32>()) as u64
-                }
-                QwenLayerCache::Linear(cache) => {
-                    ((cache.conv_window().len() + cache.recurrent_state().len())
+        states.iter().fold(hidden_bytes, |total, state| {
+            total.saturating_add(match state {
+                QwenLayerCachePrefixState::Full(state) => state.metadata_bytes(),
+                QwenLayerCachePrefixState::Linear(state) => {
+                    ((state.conv_window.len() + state.recurrent_state.len())
                         * std::mem::size_of::<f32>()) as u64
                 }
             })
@@ -110,7 +124,11 @@ impl CloneFixture {
         } else {
             vec![usize::MAX - 1]
         };
-        let payload_bytes = QwenLayerCache::prefix_cache_entry_bytes(&hidden, &caches);
+        let states = <QwenLayerCache as NativeTextPrefixCacheValue>::prefix_cache_state(&caches);
+        let payload_bytes =
+            <QwenLayerCache as NativeTextPrefixCacheValue>::prefix_cache_entry_bytes(
+                &hidden, &states,
+            );
 
         cache.store(namespace.clone(), &entry_tokens, &hidden, &caches, &metrics);
 
