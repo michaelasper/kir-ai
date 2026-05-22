@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.36.6](https://github.com/michaelasper/kir-ai/compare/v1.36.5...v1.36.6) (2026-05-22)
+
+### Bug Fixes
+
+* **COR-240:** preserve admin lifecycle validation errors ([c3efc93](https://github.com/michaelasper/kir-ai/commit/c3efc936d798fb302f5dd54add9652e5113c8428))
+* **COR-240:** unify model lifecycle planning ([091134d](https://github.com/michaelasper/kir-ai/commit/091134de7011c068e4fee8ac848f7a787a3cafbb))
+
 ## [1.36.5](https://github.com/michaelasper/kir-ai/compare/v1.36.4...v1.36.5) (2026-05-22)
 
 ### Bug Fixes
