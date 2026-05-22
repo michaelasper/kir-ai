@@ -30,9 +30,11 @@ fn update_hash_with_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct CacheBlock {
     id: BlockId,
+    revision: u64,
+    shared: bool,
     capacity_tokens: usize,
     vector_len: usize,
     token_count: usize,
@@ -53,6 +55,8 @@ impl CacheBlock {
             .ok_or(KvCacheError::InvalidShape)?;
         Ok(Self {
             id: BlockId::next()?,
+            revision: 0,
+            shared: false,
             capacity_tokens,
             vector_len,
             token_count: 0,
@@ -66,6 +70,18 @@ impl CacheBlock {
 
     pub fn id(&self) -> BlockId {
         self.id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn ensure_exclusive_identity(&mut self) -> Result<(), KvCacheError> {
+        if self.shared {
+            self.id = BlockId::next()?;
+            self.shared = false;
+        }
+        Ok(())
     }
 
     pub fn capacity_tokens(&self) -> usize {
@@ -133,6 +149,7 @@ impl CacheBlock {
         self.values[start..end].copy_from_slice(value);
         self.token_count += 1;
         self.content_hash = None;
+        self.revision = self.revision.saturating_add(1);
         Ok(token_index)
     }
 
@@ -151,6 +168,7 @@ impl CacheBlock {
         self.keys[start..end].copy_from_slice(key);
         self.values[start..end].copy_from_slice(value);
         self.content_hash = None;
+        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -185,6 +203,7 @@ impl CacheBlock {
         self.last_access = 0;
         self.keys.fill(0.0);
         self.values.fill(0.0);
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub(crate) fn reset_for_allocation(&mut self, last_access: u64) {
@@ -207,6 +226,7 @@ impl CacheBlock {
         self.last_access = last_access;
         self.keys.copy_from_slice(&source.keys);
         self.values.copy_from_slice(&source.values);
+        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -236,5 +256,23 @@ impl CacheBlock {
 
     fn used_len(&self) -> usize {
         self.token_count * self.vector_len
+    }
+}
+
+impl Clone for CacheBlock {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            revision: self.revision,
+            shared: true,
+            capacity_tokens: self.capacity_tokens,
+            vector_len: self.vector_len,
+            token_count: self.token_count,
+            ref_count: self.ref_count,
+            content_hash: self.content_hash,
+            last_access: self.last_access,
+            keys: self.keys.clone(),
+            values: self.values.clone(),
+        }
     }
 }

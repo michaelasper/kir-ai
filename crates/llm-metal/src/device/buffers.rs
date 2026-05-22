@@ -1,4 +1,4 @@
-use super::{MetalDevice, MetalError};
+use super::{MetalDevice, MetalError, command::finish_command_buffer_async};
 use metal::{Buffer, MTLResourceOptions};
 use std::{collections::HashMap, ffi::c_void};
 
@@ -367,6 +367,91 @@ impl MetalDevice {
         Ok(())
     }
 
+    pub async fn copy_f16_buffer_range(
+        &self,
+        source: &F16Buffer,
+        source_start: usize,
+        destination: &F16Buffer,
+        destination_start: usize,
+        len: usize,
+    ) -> Result<(), MetalError> {
+        let source_end = source_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("source f16 buffer copy range overflows usize".to_owned())
+        })?;
+        if source_end > source.len {
+            return Err(MetalError::InvalidShape(format!(
+                "source f16 buffer copy range {source_start}..{source_end} exceeds buffer length {}",
+                source.len
+            )));
+        }
+        let destination_end = destination_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("destination f16 buffer copy range overflows usize".to_owned())
+        })?;
+        if destination_end > destination.len {
+            return Err(MetalError::InvalidShape(format!(
+                "destination f16 buffer copy range {destination_start}..{destination_end} exceeds buffer length {}",
+                destination.len
+            )));
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        let Some(source_buffer) = source.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f16 buffer copy requires a source Metal buffer".to_owned(),
+            ));
+        };
+        let Some(destination_buffer) = destination.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f16 buffer copy requires a destination Metal buffer".to_owned(),
+            ));
+        };
+        let element_size = std::mem::size_of::<u16>();
+        let byte_len = len.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape("f16 buffer copy byte length overflows usize".to_owned())
+        })?;
+        let source_offset = source_start.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape("source f16 buffer copy offset overflows usize".to_owned())
+        })?;
+        let destination_offset = destination_start.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "destination f16 buffer copy offset overflows usize".to_owned(),
+            )
+        })?;
+        let byte_len = u64::try_from(byte_len).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "f16 buffer copy byte length does not fit u64: {err}"
+            ))
+        })?;
+        let source_offset = u64::try_from(source_offset).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "source f16 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+        let destination_offset = u64::try_from(destination_offset).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "destination f16 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+
+        let command_buffer = self.attention_scores_f16.queue.new_command_buffer();
+        let encoder = command_buffer.new_blit_command_encoder();
+        encoder.copy_from_buffer(
+            source_buffer,
+            source_offset,
+            destination_buffer,
+            destination_offset,
+            byte_len,
+        );
+        encoder.end_encoding();
+        finish_command_buffer_async(
+            &self.synchronization,
+            command_buffer,
+            "copy_f16_buffer_range",
+        )
+        .await
+    }
+
     pub fn write_f32_buffer(&self, buffer: &F32Buffer, values: &[f32]) -> Result<(), MetalError> {
         if values.len() != buffer.len {
             return Err(MetalError::InvalidShape(format!(
@@ -561,5 +646,31 @@ mod tests {
         let reused_small = device.take_scratch_buffer(16);
         assert_eq!(device.scratch_buffer_count_for_test(16), 1);
         device.return_scratch_buffer(16, reused_small);
+    }
+
+    #[tokio::test]
+    async fn copy_f16_buffer_range_copies_between_existing_buffers() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 copy test");
+            return;
+        };
+
+        let source = device
+            .new_f16_buffer_from_f32(&[1.0, 2.0, 3.0, 4.0])
+            .expect("source buffer");
+        let destination = device.new_f16_buffer_len(4).expect("destination buffer");
+
+        device
+            .copy_f16_buffer_range(&source, 1, &destination, 0, 2)
+            .await
+            .expect("buffer copy succeeds");
+
+        let mut output = vec![0.0; 2];
+        device
+            .select_head_rows_f16_buffered(&destination, 2, 1, 0, 1, &mut output)
+            .await
+            .expect("copied f16 rows are readable");
+        assert_eq!(output, vec![2.0, 3.0]);
     }
 }

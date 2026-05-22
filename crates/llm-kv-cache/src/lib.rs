@@ -108,6 +108,66 @@ pub struct LayerKvCacheSnapshot {
     pub values: Vec<f32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LayerKvCacheBlock<'a> {
+    block_id: BlockId,
+    revision: u64,
+    logical_token_start: usize,
+    block_token_start: usize,
+    token_count: usize,
+    vector_len: usize,
+    key_storage: &'a [f32],
+    value_storage: &'a [f32],
+}
+
+impl<'a> LayerKvCacheBlock<'a> {
+    pub fn block_id(&self) -> BlockId {
+        self.block_id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn logical_token_start(&self) -> usize {
+        self.logical_token_start
+    }
+
+    pub fn block_token_start(&self) -> usize {
+        self.block_token_start
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    pub fn vector_len(&self) -> usize {
+        self.vector_len
+    }
+
+    pub fn keys(&self) -> &'a [f32] {
+        self.row_slice(self.key_storage)
+    }
+
+    pub fn values(&self) -> &'a [f32] {
+        self.row_slice(self.value_storage)
+    }
+
+    pub fn key_storage(&self) -> &'a [f32] {
+        self.key_storage
+    }
+
+    pub fn value_storage(&self) -> &'a [f32] {
+        self.value_storage
+    }
+
+    fn row_slice(&self, storage: &'a [f32]) -> &'a [f32] {
+        let start = self.block_token_start * self.vector_len;
+        let end = start + self.token_count * self.vector_len;
+        &storage[start..end]
+    }
+}
+
 impl Clone for LayerKvCache {
     fn clone(&self) -> Self {
         Self {
@@ -335,6 +395,48 @@ impl LayerKvCache {
         block.value(block_token_index)
     }
 
+    pub fn block_ids(&self) -> &[BlockId] {
+        self.block_table.as_slice()
+    }
+
+    pub fn active_blocks(&self) -> Result<Vec<LayerKvCacheBlock<'_>>, KvCacheError> {
+        let mut active_blocks: Vec<LayerKvCacheBlock<'_>> = Vec::new();
+        for logical_token_index in 0..self.token_count {
+            let (block_index, block_token_index) = self
+                .block_position(logical_token_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block_id = self
+                .block_table
+                .get(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block = self
+                .blocks
+                .get(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            if block.id() != block_id {
+                return Err(KvCacheError::InvalidShape);
+            }
+            if let Some(previous) = active_blocks.last_mut()
+                && previous.block_id == block_id
+                && previous.block_token_start + previous.token_count == block_token_index
+            {
+                previous.token_count += 1;
+                continue;
+            }
+            active_blocks.push(LayerKvCacheBlock {
+                block_id,
+                revision: block.revision(),
+                logical_token_start: logical_token_index,
+                block_token_start: block_token_index,
+                token_count: 1,
+                vector_len: self.vector_len(),
+                key_storage: block.key_storage(),
+                value_storage: block.value_storage(),
+            });
+        }
+        Ok(active_blocks)
+    }
+
     pub fn keys(&self) -> &[f32] {
         let start = self.window_start * self.vector_len();
         &self.key_stage[start..start + self.used_len()]
@@ -395,13 +497,24 @@ impl LayerKvCache {
             .block_table
             .get(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
+        let write_block_id = {
+            let block = self
+                .blocks
+                .get_mut(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            if block.id() != block_id {
+                return Err(KvCacheError::InvalidShape);
+            }
+            block.ensure_exclusive_identity()?;
+            block.id()
+        };
+        if write_block_id != block_id {
+            self.block_table.replace(block_index, write_block_id)?;
+        }
         let block = self
             .blocks
             .get_mut(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
-        if block.id() != block_id {
-            return Err(KvCacheError::InvalidShape);
-        }
         let block_token_index = block.append(key, value)?;
         if block_token_index != expected_block_token_index {
             return Err(KvCacheError::InvalidShape);
@@ -422,13 +535,24 @@ impl LayerKvCache {
             .block_table
             .get(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
+        let write_block_id = {
+            let block = self
+                .blocks
+                .get_mut(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            if block.id() != block_id {
+                return Err(KvCacheError::InvalidShape);
+            }
+            block.ensure_exclusive_identity()?;
+            block.id()
+        };
+        if write_block_id != block_id {
+            self.block_table.replace(block_index, write_block_id)?;
+        }
         let block = self
             .blocks
             .get_mut(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
-        if block.id() != block_id {
-            return Err(KvCacheError::InvalidShape);
-        }
         block.write_at(block_token_index, key, value)
     }
 
@@ -1062,6 +1186,82 @@ mod tests {
             .expect("token fits");
         assert_eq!(cache.token_count(), 1);
         assert_eq!(cache.resident_bytes(), 288);
+    }
+
+    #[test]
+    fn layer_kv_cache_active_blocks_expose_logical_rows_and_revisions() {
+        let max_tokens = LAYER_KV_BLOCK_TOKENS + 1;
+        let mut cache = LayerKvCache::new(max_tokens, 1, 1).expect("cache shape is valid");
+
+        for token in 0..max_tokens {
+            cache
+                .append(&[token as f32], &[1000.0 + token as f32])
+                .expect("token appends");
+        }
+
+        let active_blocks = cache.active_blocks().expect("active block view is valid");
+        assert_eq!(active_blocks.len(), 2);
+        assert_eq!(active_blocks[0].logical_token_start(), 0);
+        assert_eq!(active_blocks[0].block_token_start(), 0);
+        assert_eq!(active_blocks[0].token_count(), LAYER_KV_BLOCK_TOKENS);
+        assert_eq!(active_blocks[0].keys()[0], 0.0);
+        assert_eq!(
+            active_blocks[0].keys()[LAYER_KV_BLOCK_TOKENS - 1],
+            (LAYER_KV_BLOCK_TOKENS - 1) as f32
+        );
+        assert_eq!(
+            active_blocks[1].logical_token_start(),
+            LAYER_KV_BLOCK_TOKENS
+        );
+        assert_eq!(active_blocks[1].block_token_start(), 0);
+        assert_eq!(active_blocks[1].token_count(), 1);
+        assert_eq!(active_blocks[1].keys(), &[LAYER_KV_BLOCK_TOKENS as f32]);
+
+        let first_revision = active_blocks[0].revision();
+        let second_revision = active_blocks[1].revision();
+        cache
+            .append_sliding(&[999.0], &[1999.0])
+            .expect("sliding append overwrites the first physical block row");
+        let active_blocks = cache.active_blocks().expect("active block view is valid");
+
+        assert_eq!(
+            active_blocks[0].block_id(),
+            active_blocks[2].block_id(),
+            "sliding wrap should split the same physical block into logical runs"
+        );
+        assert!(active_blocks[0].revision() > first_revision);
+        assert_eq!(active_blocks[1].revision(), second_revision);
+        assert_eq!(active_blocks[0].keys()[0], 1.0);
+        assert_eq!(
+            active_blocks[2].keys()[active_blocks[2].token_count() - 1],
+            999.0
+        );
+    }
+
+    #[test]
+    fn cloned_layer_kv_cache_forks_block_identity_on_suffix_write() {
+        let mut cache = LayerKvCache::new(4, 1, 1).expect("cache shape is valid");
+        cache.append(&[1.0], &[10.0]).expect("prefix token fits");
+        let prefix_block_id = cache.block_ids()[0];
+        let prefix_revision = cache.active_blocks().expect("active blocks")[0].revision();
+
+        let mut first_suffix = cache.clone();
+        let mut second_suffix = cache.clone();
+        first_suffix
+            .append(&[2.0], &[20.0])
+            .expect("first suffix token fits");
+        second_suffix
+            .append(&[3.0], &[30.0])
+            .expect("second suffix token fits");
+
+        assert_ne!(first_suffix.block_ids()[0], prefix_block_id);
+        assert_ne!(second_suffix.block_ids()[0], prefix_block_id);
+        assert_ne!(first_suffix.block_ids()[0], second_suffix.block_ids()[0]);
+        assert_eq!(
+            cache.active_blocks().expect("active blocks")[0].revision(),
+            prefix_revision,
+            "the cached prefix block remains unchanged"
+        );
     }
 
     #[test]

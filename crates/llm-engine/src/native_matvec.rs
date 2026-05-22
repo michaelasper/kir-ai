@@ -1,8 +1,8 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::{
-    CpuNativeMatvecBackend, LayerKvCache, LinearAttentionCache, MathError,
-    NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError, TopKLogit, TopKWeight,
+    BlockId, CpuNativeMatvecBackend, LayerKvCache, LayerKvCacheBlock, LinearAttentionCache,
+    MathError, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
 };
 use serde_json::{Value, json};
 use std::{
@@ -11,24 +11,29 @@ use std::{
 };
 
 pub(crate) const DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(test)]
 const METAL_KV_CACHE_MIRROR_BLOCK_TOKENS: usize = 256;
 
 pub(crate) struct NativeTextMetalState {
     pub(crate) device: llm_metal::MetalDevice,
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
-    kv_caches: Mutex<HashMap<u64, MetalLayerKvCacheMirror>>,
+    kv_blocks: Mutex<HashMap<BlockId, MetalBlockKvMirror>>,
     linear_caches: Mutex<HashMap<u64, MetalLinearAttentionCacheMirror>>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeTextCacheMirrorIds {
-    kv: Vec<u64>,
+    kv: Vec<BlockId>,
     linear: Vec<u64>,
 }
 
 impl NativeTextCacheMirrorIds {
-    pub(crate) fn push_kv(&mut self, id: u64) {
-        self.kv.push(id);
+    pub(crate) fn push_kv_cache(&mut self, cache: &LayerKvCache) {
+        for block_id in cache.block_ids() {
+            if !self.kv.contains(block_id) {
+                self.kv.push(*block_id);
+            }
+        }
     }
 
     #[cfg(feature = "native-qwen")]
@@ -64,12 +69,20 @@ pub(crate) enum NativeTextMatvecBackend {
 }
 
 #[derive(Debug)]
-struct MetalLayerKvCacheMirror {
+struct MetalBlockKvMirror {
+    block_id: BlockId,
     keys: llm_metal::F16Buffer,
     values: llm_metal::F16Buffer,
-    revision: u64,
-    token_count: usize,
-    next_position: usize,
+    revision_at_last_sync: u64,
+}
+
+#[derive(Debug)]
+struct MetalBlockCopy {
+    source_keys: llm_metal::F16Buffer,
+    source_values: llm_metal::F16Buffer,
+    source_start: usize,
+    destination_start: usize,
+    element_count: usize,
 }
 
 #[derive(Debug)]
@@ -253,7 +266,7 @@ impl NativeTextMetalState {
         Self {
             device,
             bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(weight_cache_bytes)),
-            kv_caches: Mutex::new(HashMap::new()),
+            kv_blocks: Mutex::new(HashMap::new()),
             linear_caches: Mutex::new(HashMap::new()),
         }
     }
@@ -347,82 +360,74 @@ impl NativeTextMetalState {
     }
 
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
-        let keys = cache.keys();
-        let values = cache.values();
-        let storage_len = kv_cache_mirror_storage_len(cache, METAL_KV_CACHE_MIRROR_BLOCK_TOKENS)?;
-        let live_mirror_byte_len = kv_cache_live_mirror_byte_len(cache)?;
-        let mut caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
-        match caches.get_mut(&cache.id()) {
-            Some(mirror)
-                if mirror.keys.len() >= keys.len() && mirror.values.len() >= values.len() =>
-            {
-                match kv_cache_sync_plan(cache, mirror.progress()) {
-                    KvCacheSyncPlan::Noop => Ok(()),
-                    KvCacheSyncPlan::Append {
-                        start_element,
-                        element_count,
-                    } => {
-                        let end = start_element + element_count;
-                        self.device.write_f16_buffer_range_from_f32(
-                            &mirror.keys,
-                            start_element,
-                            &keys[start_element..end],
-                        )?;
-                        self.device.write_f16_buffer_range_from_f32(
-                            &mirror.values,
-                            start_element,
-                            &values[start_element..end],
-                        )?;
-                        mirror.mark_synced(cache);
-                        native_text_metal_metrics()
-                            .record_kv_cache_sync(kv_cache_pair_mirror_byte_len(element_count)?);
-                        Ok(())
-                    }
-                    KvCacheSyncPlan::Full => {
-                        self.device
-                            .write_f16_buffer_range_from_f32(&mirror.keys, 0, keys)?;
-                        self.device
-                            .write_f16_buffer_range_from_f32(&mirror.values, 0, values)?;
-                        mirror.mark_synced(cache);
-                        native_text_metal_metrics().record_kv_cache_sync(live_mirror_byte_len);
-                        Ok(())
-                    }
+        let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
+        let mut mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
+        let synced_revisions = mirrors
+            .iter()
+            .map(|(block_id, mirror)| (*block_id, mirror.revision_at_last_sync))
+            .collect::<HashMap<_, _>>();
+        let sync_blocks = kv_cache_blocks_needing_sync_from_active(
+            active_blocks.iter().copied(),
+            &synced_revisions,
+        );
+        let mut allocated_bytes = 0_u64;
+        let mut synced_bytes = 0_u64;
+        let mut residency_changed = false;
+
+        for block in sync_blocks {
+            let byte_len = kv_cache_block_pair_mirror_byte_len(block)?;
+            match mirrors.get_mut(&block.block_id()) {
+                Some(mirror)
+                    if mirror.keys.len() == block.key_storage().len()
+                        && mirror.values.len() == block.value_storage().len() =>
+                {
+                    self.device.write_f16_buffer_range_from_f32(
+                        &mirror.keys,
+                        0,
+                        block.key_storage(),
+                    )?;
+                    self.device.write_f16_buffer_range_from_f32(
+                        &mirror.values,
+                        0,
+                        block.value_storage(),
+                    )?;
+                    mirror.revision_at_last_sync = block.revision();
+                    synced_bytes = synced_bytes.saturating_add(byte_len);
+                }
+                Some(mirror) => {
+                    mirror.keys = self.device.new_f16_buffer_from_f32(block.key_storage())?;
+                    mirror.values = self.device.new_f16_buffer_from_f32(block.value_storage())?;
+                    mirror.revision_at_last_sync = block.revision();
+                    synced_bytes = synced_bytes.saturating_add(byte_len);
+                    residency_changed = true;
+                }
+                None => {
+                    mirrors.insert(
+                        block.block_id(),
+                        MetalBlockKvMirror {
+                            block_id: block.block_id(),
+                            keys: self.device.new_f16_buffer_from_f32(block.key_storage())?,
+                            values: self.device.new_f16_buffer_from_f32(block.value_storage())?,
+                            revision_at_last_sync: block.revision(),
+                        },
+                    );
+                    allocated_bytes = allocated_bytes.saturating_add(byte_len);
+                    residency_changed = true;
                 }
             }
-            Some(mirror) => {
-                mirror.keys = self.device.new_f16_buffer_len(storage_len)?;
-                mirror.values = self.device.new_f16_buffer_len(storage_len)?;
-                self.device
-                    .write_f16_buffer_range_from_f32(&mirror.keys, 0, keys)?;
-                self.device
-                    .write_f16_buffer_range_from_f32(&mirror.values, 0, values)?;
-                mirror.mark_synced(cache);
-                native_text_metal_metrics().record_kv_cache_sync(live_mirror_byte_len);
-                self.record_kv_cache_residency_locked(&caches);
-                Ok(())
-            }
-            None => {
-                let key_buffer = self.device.new_f16_buffer_len(storage_len)?;
-                let value_buffer = self.device.new_f16_buffer_len(storage_len)?;
-                self.device
-                    .write_f16_buffer_range_from_f32(&key_buffer, 0, keys)?;
-                self.device
-                    .write_f16_buffer_range_from_f32(&value_buffer, 0, values)?;
-                caches.insert(
-                    cache.id(),
-                    MetalLayerKvCacheMirror {
-                        keys: key_buffer,
-                        values: value_buffer,
-                        revision: cache.revision(),
-                        token_count: cache.token_count(),
-                        next_position: cache.next_position(),
-                    },
-                );
-                native_text_metal_metrics().record_kv_cache_allocation(live_mirror_byte_len);
-                self.record_kv_cache_residency_locked(&caches);
-                Ok(())
-            }
         }
+
+        let metrics = native_text_metal_metrics();
+        if allocated_bytes > 0 {
+            metrics.record_kv_cache_allocation(allocated_bytes);
+        }
+        if synced_bytes > 0 {
+            metrics.record_kv_cache_sync(synced_bytes);
+        }
+        if residency_changed {
+            self.record_kv_cache_residency_locked(&mirrors);
+        }
+        Ok(())
     }
 
     async fn select_kv_cache_head_rows(
@@ -434,19 +439,10 @@ impl NativeTextMetalState {
         head_len: usize,
         output: &mut [f32],
     ) -> Result<(), llm_metal::MetalError> {
-        self.sync_kv_cache(cache)?;
-        let values = {
-            let caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
-            let mirror = caches.get(&cache.id()).ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(format!(
-                    "missing Metal KV cache mirror for cache {}",
-                    cache.id()
-                ))
-            })?;
-            match tensor {
-                NativeKvCacheTensor::Key => mirror.keys.clone(),
-                NativeKvCacheTensor::Value => mirror.values.clone(),
-            }
+        let (keys, values) = self.gather_kv_cache_rows(cache, row_count).await?;
+        let values = match tensor {
+            NativeKvCacheTensor::Key => keys,
+            NativeKvCacheTensor::Value => values,
         };
         self.device
             .select_head_rows_f16_buffered(
@@ -472,17 +468,7 @@ impl NativeTextMetalState {
         score_scale: f32,
         output: &mut [f32],
     ) -> Result<(), llm_metal::MetalError> {
-        self.sync_kv_cache(cache)?;
-        let (keys, values) = {
-            let caches = self.kv_caches.lock_or_panic("Metal KV cache mirror");
-            let mirror = caches.get(&cache.id()).ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(format!(
-                    "missing Metal KV cache mirror for cache {}",
-                    cache.id()
-                ))
-            })?;
-            (mirror.keys.clone(), mirror.values.clone())
-        };
+        let (keys, values) = self.gather_kv_cache_rows(cache, row_count).await?;
         self.device
             .full_attention_cache_mix_f16_buffered(
                 &keys,
@@ -496,6 +482,113 @@ impl NativeTextMetalState {
                 output,
             )
             .await
+    }
+
+    async fn gather_kv_cache_rows(
+        &self,
+        cache: &LayerKvCache,
+        row_count: usize,
+    ) -> Result<(llm_metal::F16Buffer, llm_metal::F16Buffer), llm_metal::MetalError> {
+        if row_count > cache.token_count() {
+            return Err(llm_metal::MetalError::InvalidShape(format!(
+                "KV cache row_count {row_count} exceeds token_count {}",
+                cache.token_count()
+            )));
+        }
+        self.sync_kv_cache(cache)?;
+        let vector_len = cache.vector_len();
+        let element_count = row_count.checked_mul(vector_len).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape("KV cache gather length overflows usize".to_owned())
+        })?;
+        let keys = self.device.new_f16_buffer_len(element_count)?;
+        let values = self.device.new_f16_buffer_len(element_count)?;
+        if element_count == 0 {
+            return Ok((keys, values));
+        }
+
+        let copies = {
+            let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
+            let mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
+            let mut copies = Vec::new();
+            for block in active_blocks {
+                if block.logical_token_start() >= row_count {
+                    break;
+                }
+                let copy_tokens = block
+                    .token_count()
+                    .min(row_count - block.logical_token_start());
+                let source_start = block
+                    .block_token_start()
+                    .checked_mul(vector_len)
+                    .ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "KV cache gather source start overflows usize".to_owned(),
+                        )
+                    })?;
+                let destination_start = block
+                    .logical_token_start()
+                    .checked_mul(vector_len)
+                    .ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "KV cache gather destination start overflows usize".to_owned(),
+                        )
+                    })?;
+                let element_count = copy_tokens.checked_mul(vector_len).ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(
+                        "KV cache gather copy length overflows usize".to_owned(),
+                    )
+                })?;
+                let mirror = mirrors.get(&block.block_id()).ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(format!(
+                        "missing Metal KV block mirror for block {}",
+                        block.block_id()
+                    ))
+                })?;
+                if mirror.block_id != block.block_id() {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "Metal KV block mirror key mismatch: map key {}, mirror block {}",
+                        block.block_id(),
+                        mirror.block_id
+                    )));
+                }
+                if mirror.revision_at_last_sync != block.revision() {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "stale Metal KV block mirror for block {}",
+                        block.block_id()
+                    )));
+                }
+                copies.push(MetalBlockCopy {
+                    source_keys: mirror.keys.clone(),
+                    source_values: mirror.values.clone(),
+                    source_start,
+                    destination_start,
+                    element_count,
+                });
+            }
+            copies
+        };
+
+        for copy in copies {
+            self.device
+                .copy_f16_buffer_range(
+                    &copy.source_keys,
+                    copy.source_start,
+                    &keys,
+                    copy.destination_start,
+                    copy.element_count,
+                )
+                .await?;
+            self.device
+                .copy_f16_buffer_range(
+                    &copy.source_values,
+                    copy.source_start,
+                    &values,
+                    copy.destination_start,
+                    copy.element_count,
+                )
+                .await?;
+        }
+        Ok((keys, values))
     }
 
     fn sync_linear_cache(&self, cache: &LinearAttentionCache) -> Result<(), llm_metal::MetalError> {
@@ -595,7 +688,7 @@ impl NativeTextMetalState {
             cache.append_cache_mirror_ids(&mut removed);
         }
         if !removed.kv.is_empty() {
-            let mut mirrors = self.kv_caches.lock_or_panic("Metal KV cache mirror");
+            let mut mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
             for id in removed.kv {
@@ -629,7 +722,7 @@ impl NativeTextMetalState {
         }
     }
 
-    fn record_kv_cache_residency_locked(&self, caches: &HashMap<u64, MetalLayerKvCacheMirror>) {
+    fn record_kv_cache_residency_locked(&self, caches: &HashMap<BlockId, MetalBlockKvMirror>) {
         let resident_bytes = caches
             .values()
             .map(|mirror| mirror.keys.byte_len() as u64 + mirror.values.byte_len() as u64)
@@ -670,116 +763,52 @@ fn cache_resident_mirror_byte_len(elements: usize) -> Result<u64, llm_metal::Met
     cache_resident_byte_len_for::<u16>(elements)
 }
 
-#[cfg(test)]
-fn kv_cache_live_byte_len(cache: &LayerKvCache) -> Result<u64, llm_metal::MetalError> {
-    cache_resident_byte_len(cache.keys().len() + cache.values().len())
+fn kv_cache_shape_error(err: llm_backend::KvCacheError) -> llm_metal::MetalError {
+    llm_metal::MetalError::InvalidShape(format!("invalid block KV cache shape: {err}"))
 }
 
-fn kv_cache_live_mirror_byte_len(cache: &LayerKvCache) -> Result<u64, llm_metal::MetalError> {
-    cache_resident_mirror_byte_len(cache.keys().len() + cache.values().len())
-}
-
-fn kv_cache_mirror_storage_len(
-    cache: &LayerKvCache,
-    block_tokens: usize,
-) -> Result<usize, llm_metal::MetalError> {
-    let block_tokens = block_tokens.max(1);
-    let live_tokens = cache.token_count();
-    if live_tokens == 0 {
-        return Ok(0);
-    }
-    let storage_tokens = live_tokens
-        .div_ceil(block_tokens)
-        .checked_mul(block_tokens)
-        .ok_or_else(|| {
-            llm_metal::MetalError::InvalidShape(
-                "Metal KV cache mirror block count overflows usize".to_owned(),
-            )
-        })?
-        .min(cache.max_tokens());
-    storage_tokens
-        .checked_mul(cache.vector_len())
-        .ok_or_else(|| {
-            llm_metal::MetalError::InvalidShape(
-                "Metal KV cache mirror storage length overflows usize".to_owned(),
-            )
-        })
-}
-
-#[cfg(test)]
-fn kv_cache_mirror_storage_byte_len(
-    cache: &LayerKvCache,
-    block_tokens: usize,
+fn kv_cache_block_pair_mirror_byte_len(
+    block: LayerKvCacheBlock<'_>,
 ) -> Result<u64, llm_metal::MetalError> {
-    kv_cache_pair_mirror_byte_len(kv_cache_mirror_storage_len(cache, block_tokens)?)
+    let elements = block
+        .key_storage()
+        .len()
+        .checked_add(block.value_storage().len())
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal KV block mirror byte length overflows usize".to_owned(),
+            )
+        })?;
+    cache_resident_mirror_byte_len(elements)
 }
 
-fn kv_cache_pair_mirror_byte_len(elements_per_tensor: usize) -> Result<u64, llm_metal::MetalError> {
-    cache_resident_mirror_byte_len(elements_per_tensor.checked_mul(2).ok_or_else(|| {
-        llm_metal::MetalError::InvalidShape(
-            "Metal KV cache pair byte length overflows usize".to_owned(),
-        )
-    })?)
+#[cfg(test)]
+fn kv_cache_blocks_needing_sync<'a>(
+    cache: &'a LayerKvCache,
+    synced_revisions: &HashMap<BlockId, u64>,
+) -> Result<Vec<LayerKvCacheBlock<'a>>, llm_metal::MetalError> {
+    let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
+    Ok(kv_cache_blocks_needing_sync_from_active(
+        active_blocks,
+        synced_revisions,
+    ))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MetalLayerKvCacheMirrorProgress {
-    revision: u64,
-    token_count: usize,
-    next_position: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KvCacheSyncPlan {
-    Noop,
-    Append {
-        start_element: usize,
-        element_count: usize,
-    },
-    Full,
-}
-
-impl MetalLayerKvCacheMirror {
-    fn progress(&self) -> MetalLayerKvCacheMirrorProgress {
-        MetalLayerKvCacheMirrorProgress {
-            revision: self.revision,
-            token_count: self.token_count,
-            next_position: self.next_position,
+fn kv_cache_blocks_needing_sync_from_active<'a>(
+    active_blocks: impl IntoIterator<Item = LayerKvCacheBlock<'a>>,
+    synced_revisions: &HashMap<BlockId, u64>,
+) -> Vec<LayerKvCacheBlock<'a>> {
+    let mut seen = HashSet::new();
+    let mut sync_blocks = Vec::new();
+    for block in active_blocks {
+        if !seen.insert(block.block_id()) {
+            continue;
+        }
+        if synced_revisions.get(&block.block_id()).copied() != Some(block.revision()) {
+            sync_blocks.push(block);
         }
     }
-
-    fn mark_synced(&mut self, cache: &LayerKvCache) {
-        self.revision = cache.revision();
-        self.token_count = cache.token_count();
-        self.next_position = cache.next_position();
-    }
-}
-
-fn kv_cache_sync_plan(
-    cache: &LayerKvCache,
-    previous: MetalLayerKvCacheMirrorProgress,
-) -> KvCacheSyncPlan {
-    if previous.revision == cache.revision() {
-        return KvCacheSyncPlan::Noop;
-    }
-    let appended_tokens = match cache.token_count().checked_sub(previous.token_count) {
-        Some(appended_tokens) if appended_tokens > 0 => appended_tokens,
-        _ => return KvCacheSyncPlan::Full,
-    };
-    if cache.next_position() != previous.next_position.saturating_add(appended_tokens) {
-        return KvCacheSyncPlan::Full;
-    }
-    let vector_len = cache.vector_len();
-    let Some(start_element) = previous.token_count.checked_mul(vector_len) else {
-        return KvCacheSyncPlan::Full;
-    };
-    let Some(element_count) = appended_tokens.checked_mul(vector_len) else {
-        return KvCacheSyncPlan::Full;
-    };
-    KvCacheSyncPlan::Append {
-        start_element,
-        element_count,
-    }
+    sync_blocks
 }
 
 #[cfg(test)]
@@ -787,137 +816,128 @@ mod kv_cache_sync_tests {
     use super::*;
 
     #[test]
-    fn kv_cache_live_byte_len_counts_only_used_tokens() {
-        let mut cache = LayerKvCache::new(8, 2, 2).expect("cache shape is valid");
-        cache
-            .append(&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0])
-            .expect("first token appends");
-        cache
-            .append(&[9.0, 10.0, 11.0, 12.0], &[13.0, 14.0, 15.0, 16.0])
-            .expect("second token appends");
-
-        let live_bytes = kv_cache_live_byte_len(&cache).expect("byte length fits");
-        let storage_bytes =
-            cache_resident_byte_len(cache.key_storage().len() + cache.value_storage().len())
-                .expect("storage byte length fits");
-
-        assert_eq!(live_bytes, 64);
-        assert_eq!(storage_bytes, 256);
-    }
-
-    #[test]
-    fn kv_cache_incremental_sync_plan_detects_append_only_delta() {
-        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
-        cache
-            .append(&[1.0, 2.0], &[10.0, 20.0])
-            .expect("first token appends");
-        let previous = MetalLayerKvCacheMirrorProgress {
-            revision: cache.revision(),
-            token_count: cache.token_count(),
-            next_position: cache.next_position(),
-        };
-        cache
-            .append(&[3.0, 4.0], &[30.0, 40.0])
-            .expect("second token appends");
-
-        assert_eq!(
-            kv_cache_sync_plan(&cache, previous),
-            KvCacheSyncPlan::Append {
-                start_element: 2,
-                element_count: 2,
-            }
-        );
-    }
-
-    #[test]
-    fn kv_cache_incremental_sync_plan_falls_back_for_sliding_shift() {
-        let mut cache = LayerKvCache::new(2, 1, 2).expect("cache shape is valid");
-        cache
-            .append_sliding(&[1.0, 2.0], &[10.0, 20.0])
-            .expect("first token appends");
-        cache
-            .append_sliding(&[3.0, 4.0], &[30.0, 40.0])
-            .expect("second token appends");
-        let previous = MetalLayerKvCacheMirrorProgress {
-            revision: cache.revision(),
-            token_count: cache.token_count(),
-            next_position: cache.next_position(),
-        };
-        cache
-            .append_sliding(&[5.0, 6.0], &[50.0, 60.0])
-            .expect("full cache evicts oldest token");
-
-        assert_eq!(kv_cache_sync_plan(&cache, previous), KvCacheSyncPlan::Full);
-    }
-
-    #[test]
-    fn kv_cache_incremental_sync_plan_noops_for_matching_revision() {
-        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
-        cache
-            .append(&[1.0, 2.0], &[10.0, 20.0])
-            .expect("first token appends");
-        let previous = MetalLayerKvCacheMirrorProgress {
-            revision: cache.revision(),
-            token_count: cache.token_count(),
-            next_position: cache.next_position(),
-        };
-
-        assert_eq!(kv_cache_sync_plan(&cache, previous), KvCacheSyncPlan::Noop);
-    }
-
-    #[test]
-    fn kv_cache_metal_mirror_storage_grows_by_token_blocks() {
-        let mut cache = LayerKvCache::new(10, 1, 2).expect("cache shape is valid");
-        cache
-            .append(&[1.0, 2.0], &[10.0, 20.0])
-            .expect("first token appends");
-
-        assert_eq!(
-            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
-            8
-        );
-
-        for token in 2..=5 {
-            cache
-                .append(&[token as f32, token as f32], &[token as f32, token as f32])
-                .expect("token appends");
-        }
-        assert_eq!(
-            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
-            16
-        );
-
-        while cache.remaining_tokens() > 0 {
-            cache
-                .append(&[9.0, 9.0], &[9.0, 9.0])
-                .expect("token appends");
-        }
-        assert_eq!(
-            kv_cache_mirror_storage_len(&cache, 4).expect("storage length fits"),
-            cache.key_storage().len()
-        );
-    }
-
-    #[test]
-    fn kv_cache_metal_mirror_byte_len_uses_f16_storage() {
+    fn kv_cache_block_mirror_byte_len_uses_f16_block_storage() {
         let mut cache = LayerKvCache::new(10, 1, 2).expect("cache shape is valid");
 
         cache
             .append(&[1.0, 2.0], &[3.0, 4.0])
             .expect("first token fits");
+        let block = cache
+            .active_blocks()
+            .expect("active block view is valid")
+            .remove(0);
 
         assert_eq!(
-            kv_cache_live_byte_len(&cache).expect("live byte length fits"),
-            16
+            kv_cache_block_pair_mirror_byte_len(block).expect("mirror byte length fits"),
+            80
         );
+    }
+
+    #[test]
+    fn kv_cache_block_sync_plan_syncs_only_missing_or_changed_blocks() {
+        let mut cache = LayerKvCache::new(METAL_KV_CACHE_MIRROR_BLOCK_TOKENS + 1, 1, 1)
+            .expect("cache shape is valid");
+        for token in 0..cache.max_tokens() {
+            cache
+                .append(&[token as f32], &[1000.0 + token as f32])
+                .expect("token appends");
+        }
+        let active_blocks = cache.active_blocks().expect("active block view is valid");
+        let first_block_id = active_blocks[0].block_id();
+        let synced_revisions = active_blocks
+            .iter()
+            .map(|block| (block.block_id(), block.revision()))
+            .collect::<HashMap<_, _>>();
+
+        let cold_plan =
+            kv_cache_blocks_needing_sync(&cache, &HashMap::new()).expect("cold sync plan is valid");
+        assert_eq!(cold_plan.len(), 2);
+
+        let reused_prefix = cache.clone();
+        let reused_plan = kv_cache_blocks_needing_sync(&reused_prefix, &synced_revisions)
+            .expect("reused prefix plan is valid");
+        assert!(
+            reused_plan.is_empty(),
+            "prefix blocks with unchanged revisions should not sync"
+        );
+
+        cache
+            .append_sliding(&[999.0], &[1999.0])
+            .expect("sliding append overwrites one physical block");
+        let dirty_plan = kv_cache_blocks_needing_sync(&cache, &synced_revisions)
+            .expect("dirty sync plan is valid");
+        assert_eq!(dirty_plan.len(), 1);
+        assert_eq!(dirty_plan[0].block_id(), first_block_id);
+    }
+
+    #[tokio::test]
+    async fn metal_block_mirror_attention_matches_cpu_reference_across_blocks() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping block mirror attention test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let row_count = METAL_KV_CACHE_MIRROR_BLOCK_TOKENS + 1;
+        let mut cache = LayerKvCache::new(row_count, 1, 2).expect("cache shape is valid");
+        let mut keys = Vec::with_capacity(row_count);
+        let mut values = Vec::with_capacity(row_count);
+        for token in 0..row_count {
+            let key = [
+                token as f32 / row_count as f32,
+                1.0 - token as f32 / (row_count as f32 * 2.0),
+            ];
+            let value = [(token % 7) as f32 - 3.0, (token % 11) as f32 * 0.25 - 1.0];
+            cache.append(&key, &value).expect("token appends");
+            keys.push(key);
+            values.push(value);
+        }
         assert_eq!(
-            kv_cache_live_mirror_byte_len(&cache).expect("mirror byte length fits"),
-            8
+            cache.active_blocks().expect("active blocks").len(),
+            2,
+            "test cache must span block mirrors"
         );
-        assert_eq!(
-            kv_cache_mirror_storage_byte_len(&cache, 4).expect("mirror storage byte length fits"),
-            32
-        );
+
+        let query = [0.25, -0.5];
+        let score_scale = 0.7;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, row_count, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal attention succeeds");
+
+        let expected = reference_attention(&query, &keys, &values, score_scale);
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-2,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+    }
+
+    fn reference_attention(
+        query: &[f32; 2],
+        keys: &[[f32; 2]],
+        values: &[[f32; 2]],
+        score_scale: f32,
+    ) -> [f32; 2] {
+        let mut scores = keys
+            .iter()
+            .map(|key| (query[0] * key[0] + query[1] * key[1]) * score_scale)
+            .collect::<Vec<_>>();
+        let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut total = 0.0;
+        for score in &mut scores {
+            *score = (*score - max_score).exp();
+            total += *score;
+        }
+        let mut output = [0.0, 0.0];
+        for (weight, value) in scores.iter().map(|score| score / total).zip(values) {
+            output[0] += weight * value[0];
+            output[1] += weight * value[1];
+        }
+        output
     }
 }
 
@@ -2934,19 +2954,27 @@ mod tests {
 
     #[test]
     fn cache_mirror_sources_collect_qwen_and_gemma_cache_ids() {
-        let qwen_kv = LayerKvCache::new(2, 1, 2).expect("qwen kv cache");
-        let qwen_kv_id = qwen_kv.id();
+        let mut qwen_kv = LayerKvCache::new(2, 1, 2).expect("qwen kv cache");
+        qwen_kv
+            .append(&[1.0, 2.0], &[10.0, 20.0])
+            .expect("qwen kv token fits");
+        let qwen_kv_blocks = qwen_kv.block_ids().to_vec();
         let qwen_linear = LinearAttentionCache::new(2, 3, 1, 2, 2).expect("qwen linear cache");
         let qwen_linear_id = qwen_linear.id();
-        let gemma_kv = LayerKvCache::new(2, 1, 2).expect("gemma kv cache");
-        let gemma_kv_id = gemma_kv.id();
+        let mut gemma_kv = LayerKvCache::new(2, 1, 2).expect("gemma kv cache");
+        gemma_kv
+            .append(&[3.0, 4.0], &[30.0, 40.0])
+            .expect("gemma kv token fits");
+        let gemma_kv_blocks = gemma_kv.block_ids().to_vec();
 
         let mut ids = NativeTextCacheMirrorIds::default();
         QwenLayerCache::Full(qwen_kv).append_cache_mirror_ids(&mut ids);
         QwenLayerCache::Linear(qwen_linear).append_cache_mirror_ids(&mut ids);
         GemmaLayerCache::Attention(gemma_kv).append_cache_mirror_ids(&mut ids);
 
-        assert_eq!(ids.kv, vec![qwen_kv_id, gemma_kv_id]);
+        let mut expected_kv = qwen_kv_blocks;
+        expected_kv.extend(gemma_kv_blocks);
+        assert_eq!(ids.kv, expected_kv);
         assert_eq!(ids.linear, vec![qwen_linear_id]);
     }
 

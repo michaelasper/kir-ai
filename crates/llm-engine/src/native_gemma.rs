@@ -85,7 +85,7 @@ impl NativeTextPrefixCacheValue for GemmaLayerCache {
 impl NativeTextCacheMirrorSource for GemmaLayerCache {
     fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds) {
         match self {
-            GemmaLayerCache::Attention(cache) => ids.push_kv(cache.id()),
+            GemmaLayerCache::Attention(cache) => ids.push_kv_cache(cache),
         }
     }
 }

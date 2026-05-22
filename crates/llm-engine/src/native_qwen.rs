@@ -78,7 +78,7 @@ impl NativeTextPrefixCacheValue for QwenLayerCache {
 impl NativeTextCacheMirrorSource for QwenLayerCache {
     fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds) {
         match self {
-            QwenLayerCache::Full(cache) => ids.push_kv(cache.id()),
+            QwenLayerCache::Full(cache) => ids.push_kv_cache(cache),
             QwenLayerCache::Linear(cache) => ids.push_linear(cache.id()),
         }
     }
