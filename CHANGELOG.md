@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.45.0](https://github.com/michaelasper/kir-ai/compare/v1.44.0...v1.45.0) (2026-05-23)
+
+### Features
+
+* **COR-244:** extract native runtime boundary ([9a62b0c](https://github.com/michaelasper/kir-ai/commit/9a62b0c4acd42bbce1030bc199a856ff62cef023))
+
 ## [1.44.0](https://github.com/michaelasper/kir-ai/compare/v1.43.2...v1.44.0) (2026-05-23)
 
 ### Features
