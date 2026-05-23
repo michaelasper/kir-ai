@@ -4,4 +4,5 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
+serde.workspace = true
 sha2.workspace = true

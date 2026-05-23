@@ -15,10 +15,12 @@ http://127.0.0.1:3000
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Server health and runtime identity. |
+| `GET` | `/metrics` | Prometheus text metrics scrape, including paged-KV counters when exposed by the backend. |
 | `GET` | `/v1/models` | OpenAI-compatible model list. |
 | `GET` | `/admin/models` | Read-only status for served model aliases. |
 | `GET` | `/admin/models/{alias}` | Read-only status for one served model alias. |
 | `GET` | `/admin/metrics` | Aggregate inference counters and token totals. |
+| `GET` | `/admin/kv-cache` | Detailed paged-KV cache snapshot when the backend exposes one. |
 | `GET` | `/admin/metrics.tool_stream` | Bounded per-request streamed tool-call timing observations. |
 | `POST` | `/admin/models/{alias}/verify` | Run runnable verification for the served snapshot. |
 | `POST` | `/admin/models/{alias}/plan` | Build a download plan for the served model alias. |
@@ -84,6 +86,24 @@ Response:
 
 The model id is the served backend model id. In native text mode, it comes from
 `--model-id`.
+
+## `GET /metrics`
+
+Returns Prometheus text exposition for numeric server and backend metrics. This
+route uses the same admin authentication policy as `/admin/metrics`.
+
+Paged-KV cache metrics are emitted with the `kir_paged_kv_cache_` prefix when
+the active backend exposes a KV cache snapshot. Examples include:
+
+```text
+kir_paged_kv_cache_resident_blocks 12
+kir_paged_kv_cache_active_blocks 18
+kir_paged_kv_cache_shared_blocks 4
+kir_paged_kv_cache_total_cow_clones 2
+kir_paged_kv_cache_cow_bytes_saved 1048576
+kir_paged_kv_cache_blocks_evicted_lru 3
+kir_paged_kv_cache_pool_utilization_pct 75
+```
 
 ## `GET /admin/models`
 
@@ -181,7 +201,9 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   prefix-cache objects include cache counters plus `prefill_chunks`,
   `prefill_tokens`, `hit_tokens`, `miss_tokens`, and
   `avoided_prefill_tokens` so warm-prefix runs can distinguish hit rate from
-  avoided prefill work.
+  avoided prefill work. Native text Metal KV cache metrics include resident
+  bytes/buffers, allocations, syncs, skipped syncs, bytes uploaded, evictions,
+  and bytes evicted when Metal support is compiled in.
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`
   is fixed at `128`; `recent` contains successful buffered and streaming
   requests with `request_id`, `model`, `streamed`, `prompt_tokens`,
@@ -297,6 +319,73 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
     "completion_tokens": 15000,
     "total_tokens": 20000
   }
+}
+```
+
+## `GET /admin/kv-cache`
+
+Returns the active backend's detailed paged-KV cache snapshot. Backends that
+own a paged-KV block pool can include per-session block tables, block refcounts,
+resident/free/shared block counts, COW clone counters, COW bytes saved,
+eviction counters and high-water marks, and pool utilization. The detailed
+session and block arrays are intended for explicit admin inspection; hot request
+paths update counters only.
+
+If the backend does not expose a live paged-KV snapshot, the response is still
+stable:
+
+```json
+{
+  "object": "kv_cache.snapshot",
+  "supported": false,
+  "reason": "backend did not expose a paged KV cache snapshot",
+  "metrics": {},
+  "sessions": [],
+  "layers": [],
+  "blocks": []
+}
+```
+
+Example supported snapshot shape:
+
+```json
+{
+  "object": "kv_cache.block_pool",
+  "metrics": {
+    "total_blocks": 128,
+    "resident_blocks": 96,
+    "active_blocks": 140,
+    "free_list_blocks": 32,
+    "shared_blocks": 24,
+    "refcount_total": 140,
+    "max_refcount_seen": 4,
+    "total_cow_clones": 6,
+    "cow_bytes_saved": 2097152,
+    "blocks_evicted_lru": 12,
+    "pool_utilization_pct": 75.0
+  },
+  "sessions": [
+    {
+      "session_id": 7,
+      "block_table": [
+        {
+          "index": 0,
+          "block_id": 42,
+          "ref_count": 2,
+          "token_count": 256
+        }
+      ],
+      "owned_blocks": [42]
+    }
+  ],
+  "blocks": [
+    {
+      "block_id": 42,
+      "ref_count": 2,
+      "token_count": 256,
+      "resident_bytes": 1048576
+    }
+  ]
 }
 ```
 

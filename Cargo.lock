@@ -1144,6 +1144,7 @@ dependencies = [
 name = "llm-kv-cache"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "sha2",
 ]
 

@@ -337,6 +337,40 @@ pub(super) async fn admin_metrics(
     headers: HeaderMap,
 ) -> Result<Json<AdminMetricsResponse>, EngineError> {
     require_admin(&state, &headers)?;
+    Ok(Json(admin_metrics_response(&state).await?))
+}
+
+pub(super) async fn prometheus_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, EngineError> {
+    require_admin(&state, &headers)?;
+    let response = admin_metrics_response(&state).await?;
+    let kv_cache = state.backend_metrics.kv_cache_snapshot();
+    let body = render_prometheus_metrics(&response, kv_cache.as_ref());
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    ))
+}
+
+pub(super) async fn admin_kv_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, EngineError> {
+    require_admin(&state, &headers)?;
+    Ok(Json(
+        state
+            .backend_metrics
+            .kv_cache_snapshot()
+            .unwrap_or_else(default_kv_cache_snapshot),
+    ))
+}
+
+async fn admin_metrics_response(state: &AppState) -> Result<AdminMetricsResponse, EngineError> {
     let metrics = *state.metrics.lock_or_panic("metrics");
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
@@ -357,7 +391,7 @@ pub(super) async fn admin_metrics(
     let tool_finish = metrics.tool_finish();
     #[cfg(feature = "tool-calls")]
     let validated_tool_call = metrics.validated_tool_call();
-    let model_store_usage = model_store_usage(&state).await?;
+    let model_store_usage = model_store_usage(state).await?;
     let scheduler = state.model_scheduler.snapshot();
     let active_requests = state.active_requests.active_count();
     let backend_metrics = state.backend_metrics.snapshot().metrics;
@@ -434,7 +468,88 @@ pub(super) async fn admin_metrics(
                 .map(|cached_tokens| TokenPromptTokensDetailsSummary { cached_tokens }),
         },
     };
-    Ok(Json(response))
+    Ok(response)
+}
+
+fn default_kv_cache_snapshot() -> Value {
+    json!({
+        "object": "kv_cache.snapshot",
+        "supported": false,
+        "reason": "backend did not expose a paged KV cache snapshot",
+        "metrics": {},
+        "sessions": [],
+        "layers": [],
+        "blocks": [],
+    })
+}
+
+fn render_prometheus_metrics(response: &AdminMetricsResponse, kv_cache: Option<&Value>) -> String {
+    let mut lines = Vec::new();
+    match serde_json::to_value(response) {
+        Ok(value) => append_prometheus_value(&mut lines, "kir", &value),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "failed to serialize admin metrics for Prometheus rendering"
+            );
+        }
+    }
+    if let Some(metrics) = kv_cache.and_then(|snapshot| snapshot.get("metrics")) {
+        append_prometheus_value(&mut lines, "kir_paged_kv_cache", metrics);
+    }
+    lines.sort();
+    lines.dedup();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut body = lines.join("\n");
+        body.push('\n');
+        body
+    }
+}
+
+fn append_prometheus_value(lines: &mut Vec<String>, prefix: &str, value: &Value) {
+    match value {
+        Value::Number(number) => {
+            if let Some(value) = prometheus_number(number) {
+                lines.push(format!("{prefix} {value}"));
+            }
+        }
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                let segment = prometheus_name_segment(key);
+                append_prometheus_value(lines, &format!("{prefix}_{segment}"), value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn prometheus_number(number: &serde_json::Number) -> Option<String> {
+    if let Some(value) = number.as_u64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = number.as_i64() {
+        return Some(value.to_string());
+    }
+    let value = number.as_f64()?;
+    value.is_finite().then(|| value.to_string())
+}
+
+fn prometheus_name_segment(segment: &str) -> String {
+    let mut output = String::with_capacity(segment.len());
+    for ch in segment.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            output.push(ch.to_ascii_lowercase());
+        } else {
+            output.push('_');
+        }
+    }
+    if output.is_empty() {
+        "value".to_owned()
+    } else {
+        output
+    }
 }
 
 pub(super) async fn admin_mlx_metrics(

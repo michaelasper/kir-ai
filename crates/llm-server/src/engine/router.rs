@@ -2,9 +2,9 @@
 use super::protocol::protocol_test_backend;
 use super::{
     admin::{
-        ModelStoreUsageCache, admin_cancel_request, admin_metrics, admin_mlx_metrics, admin_model,
-        admin_model_plan, admin_model_pull, admin_model_verify, admin_models,
-        admin_tool_stream_metrics, health, models,
+        ModelStoreUsageCache, admin_cancel_request, admin_kv_cache, admin_metrics,
+        admin_mlx_metrics, admin_model, admin_model_plan, admin_model_pull, admin_model_verify,
+        admin_models, admin_tool_stream_metrics, health, models, prometheus_metrics,
     },
     config::{EngineConfigError, EngineOptions, configured_hub_client, default_model_home},
     inference::{chat_completions, completions},
@@ -218,6 +218,7 @@ fn router_for_state(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(prometheus_metrics))
         .route("/v1/models", get(models))
         .route("/admin/models", get(admin_models))
         .route("/admin/models/{alias}", get(admin_model))
@@ -229,6 +230,7 @@ fn router_for_state(state: AppState) -> Router {
             post(admin_cancel_request),
         )
         .route("/admin/metrics", get(admin_metrics))
+        .route("/admin/kv-cache", get(admin_kv_cache))
         .route("/admin/metrics.mlx", get(admin_mlx_metrics))
         .route("/admin/metrics.tool_stream", get(admin_tool_stream_metrics))
         .merge(inference_routes)

@@ -34,6 +34,10 @@ pub struct ServerBackendMetricsSnapshot {
 
 pub trait ServerBackendMetrics: Send + Sync {
     fn snapshot(&self) -> ServerBackendMetricsSnapshot;
+
+    fn kv_cache_snapshot(&self) -> Option<Value> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]

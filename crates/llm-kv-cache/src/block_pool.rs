@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{BlockId, CacheBlock, CacheBlockHash, KvCacheError, SessionBlockTable, SessionId};
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrefixEntry {
@@ -34,6 +35,112 @@ pub struct BlockPool {
     sessions: HashMap<SessionId, SessionBlockTable>,
     next_session_id: SessionId,
     access_clock: u64,
+    metrics: PagedKvCacheMetrics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PagedKvCacheMetrics {
+    total_refcount_increments: u64,
+    total_cow_clones: u64,
+    cow_bytes_saved: u64,
+    blocks_evicted_lru: u64,
+    sessions_evicted_lru: u64,
+    eviction_high_water_mark: u64,
+    pool_high_water_blocks: u64,
+    max_refcount_seen: u64,
+}
+
+impl PagedKvCacheMetrics {
+    fn record_refcount(&mut self, ref_count: usize) {
+        self.max_refcount_seen = self.max_refcount_seen.max(ref_count as u64);
+    }
+
+    fn record_shared_refcount_increment(&mut self, ref_count: usize, bytes_saved: u64) {
+        self.total_refcount_increments = self.total_refcount_increments.saturating_add(1);
+        self.cow_bytes_saved = self.cow_bytes_saved.saturating_add(bytes_saved);
+        self.record_refcount(ref_count);
+    }
+
+    fn record_cow_clone(&mut self) {
+        self.total_cow_clones = self.total_cow_clones.saturating_add(1);
+    }
+
+    fn record_eviction(&mut self, evicted_blocks: usize, high_water_blocks: usize) {
+        self.sessions_evicted_lru = self.sessions_evicted_lru.saturating_add(1);
+        self.blocks_evicted_lru = self
+            .blocks_evicted_lru
+            .saturating_add(evicted_blocks as u64);
+        self.eviction_high_water_mark = self.eviction_high_water_mark.max(high_water_blocks as u64);
+    }
+
+    fn record_pool_residency(&mut self, resident_blocks: usize) {
+        self.pool_high_water_blocks = self.pool_high_water_blocks.max(resident_blocks as u64);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PagedKvCacheMetricsSnapshot {
+    pub total_blocks: u64,
+    pub resident_blocks: u64,
+    pub active_blocks: u64,
+    pub blocks_in_use: u64,
+    pub free_blocks: u64,
+    pub free_list_blocks: u64,
+    pub pool_utilization_pct: f64,
+    pub sessions: u64,
+    pub session_block_tables: u64,
+    pub shared_blocks: u64,
+    pub refcount_total: u64,
+    pub avg_refcount: f64,
+    pub max_refcount: u64,
+    pub max_refcount_seen: u64,
+    pub total_refcount_increments: u64,
+    pub total_cow_clones: u64,
+    pub cow_bytes_saved: u64,
+    pub blocks_evicted_lru: u64,
+    pub sessions_evicted_lru: u64,
+    pub eviction_high_water_mark: u64,
+    pub pool_high_water_blocks: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockPoolSnapshot {
+    pub object: String,
+    pub metrics: PagedKvCacheMetricsSnapshot,
+    pub sessions: Vec<SessionBlockTableSnapshot>,
+    pub blocks: Vec<CacheBlockSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionBlockTableSnapshot {
+    pub session_id: SessionId,
+    pub created_at: u64,
+    pub last_access: u64,
+    pub block_table: Vec<SessionBlockSnapshot>,
+    pub owned_blocks: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionBlockSnapshot {
+    pub index: usize,
+    pub block_id: u64,
+    pub ref_count: u64,
+    pub token_count: u64,
+    pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CacheBlockSnapshot {
+    pub block_id: u64,
+    pub revision: u64,
+    pub capacity_tokens: u64,
+    pub vector_len: u64,
+    pub token_count: u64,
+    pub ref_count: u64,
+    pub storage_ref_count: u64,
+    pub content_hash: Option<String>,
+    pub last_access: u64,
+    pub resident_bytes: u64,
 }
 
 impl BlockPool {
@@ -60,6 +167,7 @@ impl BlockPool {
             sessions: HashMap::new(),
             next_session_id: 1,
             access_clock: 0,
+            metrics: PagedKvCacheMetrics::default(),
         })
     }
 
@@ -76,6 +184,79 @@ impl BlockPool {
             .values()
             .filter(|block| block.ref_count() > 0)
             .count()
+    }
+
+    pub fn metrics_snapshot(&self) -> PagedKvCacheMetricsSnapshot {
+        let mut resident_blocks = 0_u64;
+        let mut shared_blocks = 0_u64;
+        let mut refcount_total = 0_u64;
+        let mut max_refcount = 0_u64;
+        for block in self.blocks.values() {
+            let ref_count = block.ref_count() as u64;
+            if ref_count == 0 {
+                continue;
+            }
+            resident_blocks = resident_blocks.saturating_add(1);
+            refcount_total = refcount_total.saturating_add(ref_count);
+            max_refcount = max_refcount.max(ref_count);
+            if ref_count > 1 {
+                shared_blocks = shared_blocks.saturating_add(1);
+            }
+        }
+        let total_blocks = self.blocks.len() as u64;
+        let active_blocks = self.sessions.values().fold(0_u64, |total, session| {
+            total.saturating_add(session.block_count() as u64)
+        });
+        let pool_utilization_pct = if total_blocks == 0 {
+            0.0
+        } else {
+            (resident_blocks as f64 / total_blocks as f64) * 100.0
+        };
+        let avg_refcount = if resident_blocks == 0 {
+            0.0
+        } else {
+            refcount_total as f64 / resident_blocks as f64
+        };
+        PagedKvCacheMetricsSnapshot {
+            total_blocks,
+            resident_blocks,
+            active_blocks,
+            blocks_in_use: resident_blocks,
+            free_blocks: self.free_list.len() as u64,
+            free_list_blocks: self.free_list.len() as u64,
+            pool_utilization_pct,
+            sessions: self.sessions.len() as u64,
+            session_block_tables: self.sessions.len() as u64,
+            shared_blocks,
+            refcount_total,
+            avg_refcount,
+            max_refcount,
+            max_refcount_seen: self.metrics.max_refcount_seen.max(max_refcount),
+            total_refcount_increments: self.metrics.total_refcount_increments,
+            total_cow_clones: self.metrics.total_cow_clones,
+            cow_bytes_saved: self.metrics.cow_bytes_saved,
+            blocks_evicted_lru: self.metrics.blocks_evicted_lru,
+            sessions_evicted_lru: self.metrics.sessions_evicted_lru,
+            eviction_high_water_mark: self.metrics.eviction_high_water_mark,
+            pool_high_water_blocks: self.metrics.pool_high_water_blocks,
+        }
+    }
+
+    pub fn snapshot(&self) -> BlockPoolSnapshot {
+        let mut sessions = self
+            .sessions
+            .values()
+            .map(|session| self.session_snapshot(session))
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| session.session_id);
+        let mut blocks = self.blocks.values().map(block_snapshot).collect::<Vec<_>>();
+        blocks.sort_by_key(|block| block.block_id);
+        BlockPoolSnapshot {
+            object: "kv_cache.block_pool".to_owned(),
+            metrics: self.metrics_snapshot(),
+            sessions,
+            blocks,
+        }
     }
 
     pub fn session_count(&self) -> usize {
@@ -95,14 +276,7 @@ impl BlockPool {
     }
 
     pub fn release_session(&mut self, session_id: SessionId) -> bool {
-        let Some(session) = self.sessions.remove(&session_id) else {
-            return false;
-        };
-        let owned_blocks: Vec<BlockId> = session.owned_block_ids().collect();
-        for block_id in owned_blocks {
-            self.release(block_id);
-        }
-        true
+        self.release_session_inner(session_id).is_some()
     }
 
     pub fn allocate_for_session(&mut self, session_id: SessionId) -> Option<BlockId> {
@@ -247,6 +421,7 @@ impl BlockPool {
         if should_release_previous {
             self.release(block_id);
         }
+        self.metrics.record_cow_clone();
         Ok(new_block_id)
     }
 
@@ -259,6 +434,8 @@ impl BlockPool {
         let access = self.next_access();
         let block = self.blocks.get_mut(&block_id)?;
         block.reset_for_allocation(access);
+        self.metrics.record_refcount(block.ref_count());
+        self.record_pool_residency();
         Some(block_id)
     }
 
@@ -273,7 +450,10 @@ impl BlockPool {
         if block.ref_count() == 0 {
             return false;
         }
-        block.increment_ref_count();
+        let bytes_saved = block.payload_bytes();
+        let ref_count = block.increment_ref_count();
+        self.metrics
+            .record_shared_refcount_increment(ref_count, bytes_saved);
         true
     }
 
@@ -350,10 +530,35 @@ impl BlockPool {
             .get_mut(&block_id)
             .ok_or(KvCacheError::InvalidShape)?;
         if retain_new_owner && newly_owned {
-            block.increment_ref_count();
+            let bytes_saved = block.payload_bytes();
+            let ref_count = block.increment_ref_count();
+            self.metrics
+                .record_shared_refcount_increment(ref_count, bytes_saved);
         }
         block.touch(access);
         Ok(())
+    }
+
+    fn release_session_inner(&mut self, session_id: SessionId) -> Option<usize> {
+        let session = self.sessions.remove(&session_id)?;
+        let owned_blocks: Vec<BlockId> = session.owned_block_ids().collect();
+        let mut released_blocks = 0_usize;
+        for block_id in owned_blocks {
+            let was_resident = self
+                .blocks
+                .get(&block_id)
+                .is_some_and(|block| block.ref_count() > 0);
+            if self.release(block_id)
+                && was_resident
+                && self
+                    .blocks
+                    .get(&block_id)
+                    .is_some_and(|block| block.ref_count() == 0)
+            {
+                released_blocks = released_blocks.saturating_add(1);
+            }
+        }
+        Some(released_blocks)
     }
 
     fn touch_session_block(
@@ -410,9 +615,12 @@ impl BlockPool {
             let Some(session_id) = self.lru_session_except(Some(excluded_session_id)) else {
                 break;
             };
-            if !self.release_session(session_id) {
+            let high_water_blocks = self.resident_blocks_from_free_list();
+            let Some(evicted_blocks) = self.release_session_inner(session_id) else {
                 break;
-            }
+            };
+            self.metrics
+                .record_eviction(evicted_blocks, high_water_blocks);
         }
     }
 
@@ -445,4 +653,71 @@ impl BlockPool {
         self.access_clock = self.access_clock.saturating_add(1);
         self.access_clock
     }
+
+    fn resident_blocks_from_free_list(&self) -> usize {
+        self.blocks.len().saturating_sub(self.free_list.len())
+    }
+
+    fn record_pool_residency(&mut self) {
+        let resident_blocks = self.resident_blocks_from_free_list();
+        self.metrics.record_pool_residency(resident_blocks);
+    }
+
+    fn session_snapshot(&self, session: &SessionBlockTable) -> SessionBlockTableSnapshot {
+        let block_table = session
+            .block_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, block_id)| {
+                let block = self.blocks.get(&block_id);
+                SessionBlockSnapshot {
+                    index,
+                    block_id: block_id.as_u64(),
+                    ref_count: block.map_or(0, |block| block.ref_count() as u64),
+                    token_count: block.map_or(0, |block| block.token_count() as u64),
+                    content_hash: block
+                        .and_then(CacheBlock::content_hash)
+                        .map(cache_block_hash_hex),
+                }
+            })
+            .collect();
+        let mut owned_blocks = session
+            .owned_block_ids()
+            .map(BlockId::as_u64)
+            .collect::<Vec<_>>();
+        owned_blocks.sort_unstable();
+        SessionBlockTableSnapshot {
+            session_id: session.session_id(),
+            created_at: session.created_at(),
+            last_access: session.last_access(),
+            block_table,
+            owned_blocks,
+        }
+    }
+}
+
+fn block_snapshot(block: &CacheBlock) -> CacheBlockSnapshot {
+    CacheBlockSnapshot {
+        block_id: block.id().as_u64(),
+        revision: block.revision(),
+        capacity_tokens: block.capacity_tokens() as u64,
+        vector_len: block.vector_len() as u64,
+        token_count: block.token_count() as u64,
+        ref_count: block.ref_count() as u64,
+        storage_ref_count: block.retained_storage_ref_count() as u64,
+        content_hash: block.content_hash().map(cache_block_hash_hex),
+        last_access: block.last_access(),
+        resident_bytes: block.payload_bytes(),
+    }
+}
+
+fn cache_block_hash_hex(hash: &CacheBlockHash) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(hash.len() * 2);
+    for byte in hash {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
