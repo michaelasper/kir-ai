@@ -202,6 +202,11 @@ Manifest file entries:
 
 SHA-256 verification happens only when `sha256` is present.
 
+Future disk-backed KV snapshots must carry their own compatibility header in
+addition to the model snapshot manifest. The required header fields, mismatch
+classification, and stale/cross-model/cross-template/cross-quant rejection plan
+are specified in [disk-kv-snapshot-header.md](disk-kv-snapshot-header.md).
+
 ## Snapshot Verification Stamp
 
 Successful `model pull`, existing-snapshot reuse after pull verification, and
