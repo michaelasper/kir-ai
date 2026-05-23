@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.44.0](https://github.com/michaelasper/kir-ai/compare/v1.43.2...v1.44.0) (2026-05-23)
+
+### Features
+
+* **COR-298:** expose paged KV cache metrics ([155f59a](https://github.com/michaelasper/kir-ai/commit/155f59a9b70ec379832e220df0f49ae513a4288d))
+* **COR-298:** merge paged KV cache metrics ([c39d683](https://github.com/michaelasper/kir-ai/commit/c39d68300fe62f9b1c6a178f28002098ea2d2174))
+
 ## [1.43.2](https://github.com/michaelasper/kir-ai/compare/v1.43.1...v1.43.2) (2026-05-22)
 
 ### Bug Fixes
