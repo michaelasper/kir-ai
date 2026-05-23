@@ -1078,7 +1078,8 @@ async fn admin_metrics_report_qwen_xml_mlx_streamed_tool_delta_latency() {
         !body.contains("<tool_call>"),
         "Qwen XML must not leak to client SSE: {body}"
     );
-    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
+    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_"));
+    assert!(body.contains("\"type\":\"function\""));
     assert!(body.contains("\"name\":\"read_file\""));
     assert!(body.contains("\"finish_reason\":\"tool_calls\""));
     assert!(

@@ -1,8 +1,8 @@
-use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 #[cfg(feature = "native-gemma")]
-use crate::{NativeGemmaAdapter, NativeGemmaBackend, NativeGemmaLoadOptions};
+use crate::native_gemma::{NativeGemmaAdapter, NativeGemmaBackend, NativeGemmaLoadOptions};
 #[cfg(feature = "native-qwen")]
-use crate::{NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions};
+use crate::native_qwen::{NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions};
+use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
@@ -121,11 +121,11 @@ impl NativeTextLoadOptions {
     }
 }
 
-pub(crate) fn native_text_metal_metrics_snapshot() -> serde_json::Value {
+pub fn native_text_metal_metrics_snapshot() -> serde_json::Value {
     crate::native_matvec::native_text_metal_metrics_snapshot()
 }
 
-pub(crate) fn native_text_prefix_cache_metrics_snapshot(
+pub fn native_text_prefix_cache_metrics_snapshot(
     qwen_snapshot: serde_json::Value,
 ) -> serde_json::Value {
     let mut metrics = serde_json::Map::new();
@@ -180,7 +180,7 @@ impl NativeTextBackend {
         Self::open_with_snapshot_identity(model_id, snapshot_path, options, identity).await
     }
 
-    pub(crate) async fn open_with_snapshot_identity(
+    pub async fn open_with_snapshot_identity(
         model_id: impl Into<String>,
         snapshot_path: impl AsRef<Path>,
         options: NativeTextLoadOptions,

@@ -1,7 +1,5 @@
-#[cfg(feature = "native-gemma")]
 use std::path::Path;
 
-#[cfg(feature = "native-gemma")]
 pub(crate) async fn read_optional_string(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(s) => Ok(Some(s)),

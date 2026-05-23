@@ -1,0 +1,52 @@
+[package]
+name = "llm-native-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["native-qwen", "native-gemma"]
+metal = ["dep:llm-metal"]
+native-gemma = ["native-text"]
+native-qwen = ["native-text"]
+native-text = [
+  "metal",
+  "dep:llm-sampler",
+  "dep:llm-tokenizer",
+  "dep:rand",
+  "dep:tokio-stream",
+]
+test-utils = ["llm-backend/test-utils"]
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+llm-backend = { path = "../llm-backend" }
+llm-backend-contracts = { path = "../llm-backend-contracts" }
+llm-hub = { path = "../llm-hub" }
+llm-metal = { path = "../llm-metal", optional = true }
+llm-models = { path = "../llm-models" }
+llm-sampler = { path = "../llm-sampler", optional = true }
+llm-tokenizer = { path = "../llm-tokenizer", optional = true }
+llm-util = { path = "../llm-util" }
+rand = { workspace = true, optional = true }
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, optional = true }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "prefix_cache_lookup"
+harness = false
+
+[[bench]]
+name = "prefix_cache_clone"
+harness = false

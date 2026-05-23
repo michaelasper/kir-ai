@@ -1,15 +1,6 @@
-mod fs_util;
 #[cfg(feature = "mlx")]
 mod mlx;
 pub mod model_cli;
-#[cfg(feature = "native-gemma")]
-mod native_gemma;
-#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-mod native_matvec;
-#[cfg(feature = "native-qwen")]
-mod native_qwen;
-#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-mod native_text;
 mod server;
 mod snapshot_backend;
 #[cfg(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma"))]
@@ -28,13 +19,20 @@ pub mod route {
     };
 }
 
+pub use llm_native_runtime::parse_snapshot_model_family;
+#[cfg(feature = "native-qwen")]
+pub use llm_native_runtime::{
+    DEFAULT_NATIVE_QWEN_MAX_NEW_TOKENS, NativeQwenBackend, NativeQwenLoadOptions,
+};
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+pub use llm_native_runtime::{
+    DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
+    DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextBackend, NativeTextLoadOptions,
+    NativeTextRuntimeOptions,
+};
+#[cfg(feature = "native-gemma")]
+pub use llm_native_runtime::{NativeGemmaBackend, NativeGemmaLoadOptions};
 #[cfg(feature = "mlx")]
 pub use mlx::*;
-#[cfg(feature = "native-gemma")]
-pub use native_gemma::*;
-#[cfg(feature = "native-qwen")]
-pub use native_qwen::*;
-#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-pub use native_text::*;
 pub use server::*;
 pub use snapshot_backend::*;

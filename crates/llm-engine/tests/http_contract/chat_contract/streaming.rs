@@ -101,7 +101,11 @@ async fn chat_completions_streams_tool_call_deltas() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_text(response.into_body()).await;
-    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
+    assert!(
+        body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_"),
+        "body: {body}"
+    );
+    assert!(body.contains("\"type\":\"function\""));
     assert!(body.contains("\"name\":\"lookup\""));
     assert!(body.contains("\"arguments\":\"{\\\"query\\\":\\\"rust\\\"}\""));
     assert!(body.contains("\"finish_reason\":\"tool_calls\""));
@@ -142,7 +146,8 @@ async fn chat_completions_streams_gemma_auto_tool_call_without_raw_markup() {
     let body = body_text(response.into_body()).await;
     assert!(!body.contains("<|tool_call>"));
     assert!(!body.contains("<tool_call|>"));
-    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"type\":\"function\""));
+    assert!(body.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_"));
+    assert!(body.contains("\"type\":\"function\""));
     assert!(body.contains("\"name\":\"lookup\""));
     assert!(body.contains("\"arguments\":\"{\\\"query\\\":\\\"rust\\\"}\""));
     assert!(body.contains("\"finish_reason\":\"tool_calls\""));

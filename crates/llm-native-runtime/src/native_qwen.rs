@@ -1,4 +1,3 @@
-use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use crate::{
     DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
@@ -12,6 +11,7 @@ use crate::{
         NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
+use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::native::{
@@ -516,7 +516,7 @@ fn native_qwen_warmable_bf16_matrix_tensors(
     crate::native_matvec::native_text_warmable_bf16_matrix_tensors(store)
 }
 
-pub(crate) fn native_qwen_prefix_cache_metrics_snapshot() -> Value {
+pub fn native_qwen_prefix_cache_metrics_snapshot() -> Value {
     native_qwen_prefix_cache_metrics().snapshot()
 }
 

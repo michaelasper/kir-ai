@@ -9,6 +9,7 @@ members = [
   "crates/llm-kv-cache",
   "crates/llm-metal",
   "crates/llm-models",
+  "crates/llm-native-runtime",
   "crates/llm-runtime",
   "crates/llm-sampler",
   "crates/llm-server",

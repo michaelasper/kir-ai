@@ -1,4 +1,3 @@
-use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use crate::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
@@ -12,6 +11,7 @@ use crate::{
         NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
     },
 };
+use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use llm_backend::native::{

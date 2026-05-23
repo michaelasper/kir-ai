@@ -1,12 +1,12 @@
 #[cfg(feature = "mlx")]
 use crate::mlx::mlx_backend_metrics_snapshot;
+use llm_backend_contracts::ModelBackend;
 #[cfg(feature = "native-qwen")]
-use crate::native_qwen::native_qwen_prefix_cache_metrics_snapshot;
+use llm_native_runtime::native_qwen_prefix_cache_metrics_snapshot;
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-use crate::native_text::{
+use llm_native_runtime::{
     native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot,
 };
-use llm_backend_contracts::ModelBackend;
 use llm_server::{RouterBuilder, ServerBackendMetrics, ServerBackendMetricsSnapshot, ServerRouter};
 use std::sync::Arc;
 
