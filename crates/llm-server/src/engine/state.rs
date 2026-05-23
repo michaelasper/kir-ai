@@ -7,7 +7,7 @@ use super::{
 };
 use crate::ServerBackendMetrics;
 use llm_api::RequestLimits;
-use llm_backend::ModelBackend;
+use llm_backend_contracts::ModelBackend;
 use llm_hub::HubClient;
 use llm_runtime::Runtime;
 use llm_telemetry::ServerMetrics;

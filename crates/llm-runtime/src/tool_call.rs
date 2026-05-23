@@ -4,7 +4,7 @@ use llm_api::{
     ApiError, ChatCompletionRequest, ToolCall, ToolCallDelta, ToolCallFunction,
     ToolCallFunctionDelta, ToolCallType, ToolChoice, generated_tool_call_id,
 };
-use llm_backend::BackendToolChoice;
+use llm_backend_contracts::BackendToolChoice;
 use llm_tool_parser::{ParsedAssistant, split_reasoning};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

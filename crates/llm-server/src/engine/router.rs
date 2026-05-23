@@ -26,7 +26,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use llm_backend::ModelBackend;
+use llm_backend_contracts::ModelBackend;
 use llm_hub::HubClient;
 use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;

@@ -14,12 +14,15 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use llm_backend::{
-    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    GemmaLayerCache, GemmaLayerCachePrefixState, InferenceScratchpad, ModelBackend,
-    NativeMatvecBackend, NativeTextLayerCachesMut, SafeTensorShardStore, SamplingConfig,
-    gemma_cache_count_for_spec, gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
+use llm_backend::native::{
+    GemmaLayerCache, GemmaLayerCachePrefixState, InferenceScratchpad, NativeMatvecBackend,
+    NativeTextLayerCachesMut, SafeTensorShardStore, gemma_cache_count_for_spec,
+    gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
     native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
+};
+use llm_backend_contracts::{
+    BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
+    ModelBackend, SamplingConfig,
 };
 use llm_models::{GemmaModelSpec, ModelFamily};
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -563,7 +566,8 @@ mod tests {
     use super::*;
     use crate::native_text::NativeTextStopTokens;
     use crate::sync_ext::FailPoisonedMutex;
-    use llm_backend::{BackendCacheContext, BackendToolChoice, BlockId, LayerKvCache};
+    use llm_backend::native::{BlockId, LayerKvCache};
+    use llm_backend_contracts::{BackendCacheContext, BackendToolChoice};
     use llm_models::{GemmaFamilyAdapter, ModelFamilyAdapter};
     use serde_json::json;
     use std::{

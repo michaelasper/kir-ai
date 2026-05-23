@@ -11,11 +11,12 @@ use crate::native_text::{
 };
 use crate::sync_ext::FailPoisonedMutex;
 use futures::StreamExt;
-use llm_backend::{
-    BackendCacheContext, BackendToolChoice, CpuNativeMatvecBackend, InferenceScratchpad,
-    LayerKvCache, MathError, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
-    qwen_layer_caches_for_spec, qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
+use llm_backend::native::{
+    CpuNativeMatvecBackend, InferenceScratchpad, LayerKvCache, MathError, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError, qwen_layer_caches_for_spec,
+    qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
 };
+use llm_backend_contracts::{BackendCacheContext, BackendToolChoice};
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use std::path::PathBuf;

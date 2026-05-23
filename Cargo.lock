@@ -1047,17 +1047,29 @@ name = "llm-backend"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
+ "llm-backend-contracts",
  "llm-kv-cache",
  "llm-models",
- "llm-util",
  "memmap2",
  "safetensors",
  "serde",
  "serde_json",
- "sha2",
  "thiserror",
  "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "llm-backend-contracts"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "llm-util",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
  "tokio-util",
 ]
 
@@ -1096,6 +1108,7 @@ dependencies = [
  "libc",
  "llm-api",
  "llm-backend",
+ "llm-backend-contracts",
  "llm-bench",
  "llm-hub",
  "llm-metal",
@@ -1180,6 +1193,7 @@ dependencies = [
  "futures",
  "llm-api",
  "llm-backend",
+ "llm-backend-contracts",
  "llm-models",
  "llm-tokenizer",
  "llm-tool-parser",
@@ -1206,6 +1220,7 @@ dependencies = [
  "libc",
  "llm-api",
  "llm-backend",
+ "llm-backend-contracts",
  "llm-hub",
  "llm-runtime",
  "llm-telemetry",

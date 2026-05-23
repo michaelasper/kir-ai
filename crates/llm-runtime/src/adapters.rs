@@ -1,5 +1,5 @@
 use llm_api::{ApiError, ChatMessage, ToolDefinition};
-use llm_backend::{
+use llm_backend_contracts::{
     BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
     BackendModelMetadata, BackendToolCall, BackendToolCallFunction, BackendToolCallType,
 };

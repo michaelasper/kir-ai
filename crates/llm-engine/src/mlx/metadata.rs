@@ -1,5 +1,5 @@
 use crate::snapshot_backend::ResolvedSnapshotBackend;
-use llm_backend::BackendModelMetadata;
+use llm_backend_contracts::BackendModelMetadata;
 use llm_models::{BackendKind, ModelFamily};
 
 pub(super) fn mlx_metadata(

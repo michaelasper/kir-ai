@@ -1,5 +1,5 @@
 use crate::sync_ext::FailPoisonedMutex;
-use llm_backend::{BackendModelMetadata, BackendRequest};
+use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},

@@ -1,11 +1,11 @@
 use llm_api::RequestLimits;
 #[cfg(feature = "diagnostics")]
-use llm_backend::{
+use llm_backend::native::{
     CpuNativeMatvecBackend, InferenceScratchpad, QwenMoeDims, SafeTensorFile, SafeTensorShardStore,
     qwen_embedding_and_layer0_norm,
 };
 #[cfg(feature = "diagnostics")]
-use llm_backend::{
+use llm_backend::native::{
     qwen_decoder_layer_first_token, qwen_final_norm, qwen_layer_moe_forward_in_place,
     qwen_layer_moe_router, qwen_layer0_linear_attention_first_token,
     qwen_layer0_linear_attention_projections, qwen_layer0_post_attention_norm,

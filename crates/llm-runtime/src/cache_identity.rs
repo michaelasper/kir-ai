@@ -1,7 +1,7 @@
 use crate::RuntimeError;
 use crate::runtime::Runtime;
 use llm_api::{ChatCompletionRequest, ChatMessage, ChatRole, CompletionRequest};
-use llm_backend::{BackendCacheContext, ModelBackend};
+use llm_backend_contracts::{BackendCacheContext, ModelBackend};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 

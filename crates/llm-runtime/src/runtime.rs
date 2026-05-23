@@ -1,7 +1,7 @@
 use crate::adapters::{SelectedChatAdapter, chat_adapter_for_metadata};
 use crate::{RuntimeError, ToolSchemaNormalization};
 use llm_api::{RequestLimits, ValidateRequest, Validated};
-use llm_backend::{BackendHealth, BackendModelMetadata, ModelBackend};
+use llm_backend_contracts::{BackendHealth, BackendModelMetadata, ModelBackend};
 
 #[derive(Debug, Clone)]
 pub struct Runtime<B> {

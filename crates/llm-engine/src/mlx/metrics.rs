@@ -1,6 +1,6 @@
 use super::protocol::{MlxUpstreamProtocol, mlx_effective_chat_template_kwargs};
 use crate::sync_ext::FailPoisonedMutex;
-use llm_backend::{BackendModelMetadata, BackendRequest, BackendToolChoice};
+use llm_backend_contracts::{BackendModelMetadata, BackendRequest, BackendToolChoice};
 use llm_telemetry::LatencyMetrics;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

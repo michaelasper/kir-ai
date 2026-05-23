@@ -6,9 +6,11 @@ use crate::{NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
-use llm_backend::{
+use llm_backend::native::InferenceScratchpad;
+#[allow(unused_imports)]
+use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, InferenceScratchpad, ModelBackend,
+    BackendStreamChunk, ModelBackend,
 };
 use llm_models::{ModelFamily, NativeTextModelSpec};
 use std::path::Path;
@@ -368,7 +370,7 @@ impl ModelBackend for NativeTextBackend {
 mod tests {
     use super::*;
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
-    use llm_backend::{
+    use llm_backend_contracts::{
         BackendChatContext, BackendChatMessage, BackendChatRole, BackendStreamProgress,
         BackendToolChoice, SamplingConfig,
     };
@@ -1047,7 +1049,7 @@ mod tests {
             SamplingConfig::Greedy,
             None,
             true,
-            llm_backend::BackendCacheContext::chat_template_with_kwargs(
+            llm_backend_contracts::BackendCacheContext::chat_template_with_kwargs(
                 "chatml/qwen/v1",
                 Some("schema-a".to_owned()),
                 Some(r#"{"enable_thinking":false}"#.to_owned()),
@@ -1090,7 +1092,7 @@ mod tests {
             "hello",
             Some(1),
             SamplingConfig::Greedy,
-            llm_backend::BackendCacheContext::chat_template_with_kwargs(
+            llm_backend_contracts::BackendCacheContext::chat_template_with_kwargs(
                 "chatml/qwen/v1",
                 Some("schema-a".to_owned()),
                 Some(r#"{"enable_thinking":false}"#.to_owned()),
@@ -1212,11 +1214,12 @@ mod tests {
     fn prefix_namespace_identity_changes_with_chat_template_kwargs() {
         let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
         let mut request = driver_test_request(1);
-        *request.cache_context_mut() = llm_backend::BackendCacheContext::chat_template_with_kwargs(
-            "chatml/qwen/v1",
-            None,
-            Some(r#"{"enable_thinking":false}"#.to_owned()),
-        );
+        *request.cache_context_mut() =
+            llm_backend_contracts::BackendCacheContext::chat_template_with_kwargs(
+                "chatml/qwen/v1",
+                None,
+                Some(r#"{"enable_thinking":false}"#.to_owned()),
+            );
 
         let no_thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
@@ -1226,11 +1229,12 @@ mod tests {
             cache_tokens: 16,
             max_prefill_tokens: 8,
         });
-        *request.cache_context_mut() = llm_backend::BackendCacheContext::chat_template_with_kwargs(
-            "chatml/qwen/v1",
-            None,
-            Some(r#"{"enable_thinking":true}"#.to_owned()),
-        );
+        *request.cache_context_mut() =
+            llm_backend_contracts::BackendCacheContext::chat_template_with_kwargs(
+                "chatml/qwen/v1",
+                None,
+                Some(r#"{"enable_thinking":true}"#.to_owned()),
+            );
         let thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
             metadata: &metadata,
@@ -1268,7 +1272,7 @@ mod tests {
                 SamplingConfig::Greedy,
                 required_tool_choice,
                 json_object_mode,
-                llm_backend::BackendCacheContext::chat_template(
+                llm_backend_contracts::BackendCacheContext::chat_template(
                     "chatml/qwen/v1",
                     Some(tool_schema.to_owned()),
                 ),
@@ -1327,7 +1331,7 @@ mod tests {
                     required_tool_name.to_owned(),
                 )),
                 false,
-                llm_backend::BackendCacheContext::chat_template(
+                llm_backend_contracts::BackendCacheContext::chat_template(
                     "chatml/qwen/v1",
                     Some("schema-a".to_owned()),
                 ),

@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [features]
 default = ["tool-calls"]
-test-utils = ["llm-backend/test-utils"]
+test-utils = ["dep:llm-backend", "llm-backend/test-utils"]
 tool-calls = ["llm-telemetry/tool-calls"]
 
 [dependencies]
@@ -16,7 +16,8 @@ axum.workspace = true
 futures.workspace = true
 libc.workspace = true
 llm-api = { path = "../llm-api" }
-llm-backend = { path = "../llm-backend" }
+llm-backend-contracts = { path = "../llm-backend-contracts" }
+llm-backend = { path = "../llm-backend", optional = true }
 llm-hub = { path = "../llm-hub" }
 llm-runtime = { path = "../llm-runtime" }
 llm-telemetry = { path = "../llm-telemetry", default-features = false }

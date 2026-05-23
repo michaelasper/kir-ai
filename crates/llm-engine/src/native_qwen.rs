@@ -14,12 +14,15 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use llm_backend::{
+use llm_backend::native::{
+    InferenceScratchpad, NativeMatvecBackend, NativeTextLayerCachesMut, QwenLayerCache,
+    QwenLayerCachePrefixState, SafeTensorShardStore, native_decode_token_with_cache_for_spec_ref,
+    native_prefill_sequence_with_cache_for_spec_ref, qwen_layer_caches_for_spec,
+    qwen_static_f32_tensors_for_spec,
+};
+use llm_backend_contracts::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
-    InferenceScratchpad, ModelBackend, NativeMatvecBackend, NativeTextLayerCachesMut,
-    QwenLayerCache, QwenLayerCachePrefixState, SafeTensorShardStore, SamplingConfig,
-    native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
-    qwen_layer_caches_for_spec, qwen_static_f32_tensors_for_spec,
+    ModelBackend, SamplingConfig,
 };
 use llm_models::{ModelFamily, QwenModelSpec};
 use llm_tokenizer::HuggingFaceTokenizer;
@@ -508,7 +511,7 @@ fn native_qwen_warmable_bf16_matrix_tensors(
     store: &SafeTensorShardStore,
 ) -> Result<
     Vec<crate::native_matvec::NativeTextWarmableBf16MatrixTensor>,
-    llm_backend::TensorLoadError,
+    llm_backend::native::TensorLoadError,
 > {
     crate::native_matvec::native_text_warmable_bf16_matrix_tensors(store)
 }

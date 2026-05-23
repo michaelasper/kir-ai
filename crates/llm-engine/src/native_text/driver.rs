@@ -7,9 +7,10 @@ use super::{
 use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use llm_backend::{
+use llm_backend::native::InferenceScratchpad;
+use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
-    BackendStreamChunk, BackendStreamProgress, InferenceScratchpad, ModelBackend, SamplingConfig,
+    BackendStreamChunk, BackendStreamProgress, ModelBackend, SamplingConfig,
 };
 use llm_sampler::TopPSamplerScratch;
 use llm_tokenizer::HuggingFaceTokenizer;

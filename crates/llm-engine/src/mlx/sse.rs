@@ -1,6 +1,6 @@
 use super::protocol::MlxToolMarkup;
 use llm_api::generated_tool_call_id;
-use llm_backend::{
+use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendOutput, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, BackendToolDefinition,
 };

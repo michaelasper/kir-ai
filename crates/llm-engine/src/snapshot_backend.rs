@@ -5,7 +5,7 @@ use crate::{
 };
 #[cfg(feature = "mlx")]
 use crate::{MlxBackend, MlxBackendOptions};
-use llm_backend::{BackendModelMetadata, ModelBackend};
+use llm_backend_contracts::{BackendModelMetadata, ModelBackend};
 use llm_hub::{ModelStore, PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest};
 use llm_models::{BackendKind, ModelFamily};
 use std::path::Path;
@@ -1090,7 +1090,7 @@ mod tests {
         let index =
             llm_models::SafetensorsIndex::from_json(&index_json).expect("Qwen index parses");
         let mut shards: TinyBf16ShardMap = std::collections::BTreeMap::new();
-        for tensor in llm_backend::qwen_static_f32_tensors_for_spec(&spec) {
+        for tensor in llm_backend::native::qwen_static_f32_tensors_for_spec(&spec) {
             let Some(shard) = index.shard_for(&tensor) else {
                 continue;
             };
@@ -1146,7 +1146,7 @@ mod tests {
     fn write_gemma4_static_f32_fixture_shard(root: &Path) {
         let config_json = std::fs::read_to_string(root.join("config.json")).expect("Gemma config");
         let spec = llm_models::GemmaModelSpec::from_config_json(&config_json).expect("Gemma spec");
-        let tensors = llm_backend::gemma_static_f32_tensors_for_spec(&spec)
+        let tensors = llm_backend::native::gemma_static_f32_tensors_for_spec(&spec)
             .into_iter()
             .map(|tensor| {
                 let shape = gemma_static_f32_tensor_shape(&spec, &tensor);

@@ -5,10 +5,11 @@ use axum::{
     http::{Request, StatusCode},
 };
 use futures::StreamExt;
-use llm_backend::{
+use llm_backend::ProtocolTestBackend;
+use llm_backend_contracts::{
     BackendCapabilities, BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata,
     BackendOutput, BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
-    BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend, ProtocolTestBackend,
+    BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend,
 };
 use llm_engine::{EngineOptions, PublicInferenceRateLimit, build_router, router_builder};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};

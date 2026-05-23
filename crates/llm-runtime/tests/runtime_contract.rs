@@ -3,12 +3,12 @@ use llm_api::{
     ChatCompletionRequest, ChatMessage, CompletionRequest, FinishReason, RequestLimits,
     ResponseFormat, ToolChoice, ToolDefinition, ValidateRequest,
 };
-use llm_backend::{
+use llm_backend::ProtocolTestBackend;
+use llm_backend_contracts::{
     BackendCacheContext, BackendCapabilities, BackendChatRole, BackendError, BackendFinishReason,
     BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk, BackendToolCallDelta,
     BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, BackendToolDefinition,
-    BackendToolFunctionDefinition, BackendToolType, ModelBackend, ProtocolTestBackend,
-    SamplingConfig,
+    BackendToolFunctionDefinition, BackendToolType, ModelBackend, SamplingConfig,
 };
 use llm_models::ModelFamily;
 use llm_runtime::{
@@ -44,6 +44,8 @@ mod capabilities;
 mod chat;
 #[path = "runtime_contract/completion.rs"]
 mod completion;
+#[path = "runtime_contract/dependency_boundary.rs"]
+mod dependency_boundary;
 #[path = "runtime_contract/family_adapters.rs"]
 mod family_adapters;
 #[path = "runtime_contract/json_mode.rs"]

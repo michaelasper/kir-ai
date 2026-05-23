@@ -15,7 +15,7 @@ use axum::{
     response::IntoResponse,
 };
 use llm_api::{ApiError, ModelCard, ModelList};
-use llm_backend::BackendModelMetadata;
+use llm_backend_contracts::BackendModelMetadata;
 use llm_hub::{
     DownloadPlan, HubError, ModelLifecyclePlanOptions, ModelLifecycleRequest,
     ModelLifecycleService, ModelStore, PromotedSnapshot,

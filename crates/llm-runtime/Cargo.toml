@@ -7,14 +7,15 @@ rust-version.workspace = true
 
 [features]
 default = []
-test-utils = ["llm-backend/test-utils"]
+test-utils = ["dep:llm-backend", "llm-backend/test-utils"]
 
 [dependencies]
 chrono.workspace = true
 async-stream.workspace = true
 futures.workspace = true
 llm-api = { path = "../llm-api" }
-llm-backend = { path = "../llm-backend" }
+llm-backend-contracts = { path = "../llm-backend-contracts" }
+llm-backend = { path = "../llm-backend", optional = true }
 llm-models = { path = "../llm-models" }
 llm-tokenizer = { path = "../llm-tokenizer" }
 llm-tool-parser = { path = "../llm-tool-parser" }

@@ -1,7 +1,7 @@
 use crate::snapshot_backend::{ResolvedSnapshotBackend, SnapshotBackendLoader};
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
-use llm_backend::{
+use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata, BackendOutput,
     BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendStreamTimingMilestone,
     ModelBackend,

@@ -1,5 +1,5 @@
 use super::MlxToolParserMode;
-use llm_backend::{BackendModelMetadata, BackendRequest};
+use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
 use llm_models::ModelFamily;
 use serde_json::Value;
 use std::path::Path;
@@ -122,14 +122,16 @@ pub(super) fn mlx_upstream_protocol_for_request(
     request: &BackendRequest,
 ) -> MlxUpstreamProtocol {
     match &request.kind {
-        llm_backend::BackendRequestKind::Chat(_) => MlxUpstreamProtocol::ChatCompletions,
-        llm_backend::BackendRequestKind::RawCompletion(_) => match metadata_family(metadata) {
-            Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
-            Some(ModelFamily::Qwen)
-            | Some(ModelFamily::DeepSeek)
-            | Some(ModelFamily::Llama)
-            | None => MlxUpstreamProtocol::Completions,
-        },
+        llm_backend_contracts::BackendRequestKind::Chat(_) => MlxUpstreamProtocol::ChatCompletions,
+        llm_backend_contracts::BackendRequestKind::RawCompletion(_) => {
+            match metadata_family(metadata) {
+                Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
+                Some(ModelFamily::Qwen)
+                | Some(ModelFamily::DeepSeek)
+                | Some(ModelFamily::Llama)
+                | None => MlxUpstreamProtocol::Completions,
+            }
+        }
     }
 }
 

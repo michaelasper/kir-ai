@@ -1,4 +1,4 @@
-use llm_backend::{
+use llm_backend::native::{
     CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeMatvecBackend, QwenLayerCache,
     QwenMoeDims, QwenMoeRouterProbe, SafeTensorShardStore, TensorLoadError, TopKWeight,
     qwen_decode_token_with_cache, qwen_layer_caches_for_spec, qwen_layer_moe_forward,
@@ -210,7 +210,7 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
 
     async fn linear_attention_recurrent_cache_update_f32_in_place(
         &self,
-        cache: &llm_backend::LinearAttentionCache,
+        cache: &llm_backend::native::LinearAttentionCache,
         state_start: usize,
         key: &[f32],
         value: &[f32],

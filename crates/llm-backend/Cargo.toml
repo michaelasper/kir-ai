@@ -12,15 +12,13 @@ test-utils = []
 
 [dependencies]
 async-trait.workspace = true
-futures.workspace = true
+llm-backend-contracts = { path = "../llm-backend-contracts" }
 llm-kv-cache = { path = "../llm-kv-cache" }
 llm-models = { path = "../llm-models" }
-llm-util = { path = "../llm-util" }
 memmap2.workspace = true
 safetensors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
 

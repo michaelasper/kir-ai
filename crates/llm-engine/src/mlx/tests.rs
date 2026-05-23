@@ -5,7 +5,7 @@ use super::protocol::{
 use super::sse::{fold_mlx_chunks, parse_mlx_completion_body};
 use super::*;
 use llm_api::ChatMessage;
-use llm_backend::{
+use llm_backend_contracts::{
     BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
     BackendFinishReason, BackendModelMetadata, BackendRequest, BackendToolCall,
     BackendToolCallDelta, BackendToolCallFunction, BackendToolCallType, BackendToolDefinition,
@@ -926,7 +926,7 @@ async fn mlx_backend_uses_non_streaming_qwen_xml_chat_completion() {
             ),
             Some(12),
             SamplingConfig::Greedy,
-            Some(llm_backend::BackendToolChoice::RequiredFunction(
+            Some(llm_backend_contracts::BackendToolChoice::RequiredFunction(
                 "read_file".to_owned(),
             )),
             false,
@@ -994,7 +994,7 @@ async fn mlx_backend_adds_qwen_tool_logits_bias_kwargs_for_required_tools() {
         ),
         Some(12),
         SamplingConfig::Greedy,
-        Some(llm_backend::BackendToolChoice::RequiredAny),
+        Some(llm_backend_contracts::BackendToolChoice::RequiredAny),
         false,
         BackendCacheContext::chat_template(
             "chatml/qwen/v1",
@@ -1639,7 +1639,7 @@ async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
             ),
             Some(12),
             SamplingConfig::Greedy,
-            Some(llm_backend::BackendToolChoice::RequiredFunction(
+            Some(llm_backend_contracts::BackendToolChoice::RequiredFunction(
                 "lookup".to_owned(),
             )),
             false,
@@ -2231,7 +2231,7 @@ async fn mlx_backend_preserves_structured_qwen_tool_call_response() {
             ),
             Some(12),
             SamplingConfig::Greedy,
-            Some(llm_backend::BackendToolChoice::RequiredFunction(
+            Some(llm_backend_contracts::BackendToolChoice::RequiredFunction(
                 "read_file".to_owned(),
             )),
             false,

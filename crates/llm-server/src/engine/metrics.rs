@@ -1,7 +1,7 @@
 use super::AppState;
 use crate::sync_ext::FailPoisonedMutex;
 use llm_api::Usage;
-use llm_backend::{BackendStreamProgress, BackendStreamTimingMilestone};
+use llm_backend_contracts::{BackendStreamProgress, BackendStreamTimingMilestone};
 use llm_runtime::{RequestCacheIdentity, RuntimeError};
 use llm_telemetry::TokenCounters;
 use schemars::JsonSchema;

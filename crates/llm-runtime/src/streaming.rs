@@ -21,7 +21,7 @@ use llm_api::{
     ChatCompletionStreamResponse, ChatRole, CompletionChoice, CompletionStreamResponse,
     ResponseFormat, Usage,
 };
-use llm_backend::{
+use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendStreamChunk, BackendStreamProgress,
     BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType,
 };

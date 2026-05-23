@@ -17,7 +17,7 @@ use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::Usage;
-use llm_backend::BackendStreamProgress;
+use llm_backend_contracts::BackendStreamProgress;
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent,
     RequestCacheIdentity, RuntimeError, StreamProgressMetadata,

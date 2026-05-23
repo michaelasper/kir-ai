@@ -10,7 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use llm_backend::{LayerKvCache, LinearAttentionCache, QwenLayerCache, QwenLayerCachePrefixState};
+use llm_backend::native::{
+    LayerKvCache, LinearAttentionCache, QwenLayerCache, QwenLayerCachePrefixState,
+};
 
 mod sync_ext {
     pub(crate) use llm_util::sync_ext::FailPoisonedMutex;

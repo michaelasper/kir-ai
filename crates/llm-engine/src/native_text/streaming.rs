@@ -1,5 +1,5 @@
 use futures::stream::{BoxStream, StreamExt};
-use llm_backend::{BackendError, BackendStreamChunk};
+use llm_backend_contracts::{BackendError, BackendStreamChunk};
 
 #[derive(Default)]
 pub(crate) struct NativeStreamTextDeltas {

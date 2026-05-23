@@ -1,5 +1,5 @@
 use crate::sync_ext::FailPoisonedMutex;
-use llm_backend::{
+use llm_backend::native::{
     BlockId, CpuNativeMatvecBackend, LayerKvCache, LayerKvCacheBlock, LinearAttentionCache,
     MathError, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
     SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
@@ -772,7 +772,7 @@ fn cache_resident_mirror_byte_len(elements: usize) -> Result<u64, llm_metal::Met
     cache_resident_byte_len_for::<u16>(elements)
 }
 
-fn kv_cache_shape_error(err: llm_backend::KvCacheError) -> llm_metal::MetalError {
+fn kv_cache_shape_error(err: llm_backend::native::KvCacheError) -> llm_metal::MetalError {
     llm_metal::MetalError::InvalidShape(format!("invalid block KV cache shape: {err}"))
 }
 
@@ -2970,7 +2970,9 @@ pub(crate) fn native_text_metal_metrics_snapshot() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm_backend::{GemmaLayerCache, LayerKvCache, LinearAttentionCache, QwenLayerCache};
+    use llm_backend::native::{
+        GemmaLayerCache, LayerKvCache, LinearAttentionCache, QwenLayerCache,
+    };
 
     #[test]
     fn cache_mirror_sources_collect_qwen_and_gemma_cache_ids() {

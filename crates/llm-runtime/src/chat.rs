@@ -20,7 +20,7 @@ use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
     ChatRole, ToolChoice, ValidateRequest, Validated,
 };
-use llm_backend::ModelBackend;
+use llm_backend_contracts::ModelBackend;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 

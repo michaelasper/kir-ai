@@ -1,7 +1,7 @@
 use crate::RuntimeError;
 use crate::runtime::Runtime;
 use llm_api::{ApiError, ChatCompletionRequest, ChatRole, CompletionRequest, ResponseFormat};
-use llm_backend::{BackendCapabilities, ModelBackend, SamplingConfig};
+use llm_backend_contracts::{BackendCapabilities, ModelBackend, SamplingConfig};
 
 impl<B> Runtime<B>
 where

@@ -1,8 +1,9 @@
-use llm_backend::{
-    BackendError, NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore,
-    SamplingConfig, native_final_norm_for_spec_ref, native_lm_head_logits_for_spec_ref,
+use llm_backend::native::{
+    NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore,
+    native_final_norm_for_spec_ref, native_lm_head_logits_for_spec_ref,
     native_lm_head_top_k_for_spec_ref,
 };
+use llm_backend_contracts::{BackendError, SamplingConfig};
 use llm_sampler::TopPSamplerScratch;
 use rand::{Rng as _, SeedableRng, rngs::SmallRng};
 use std::{
@@ -83,7 +84,7 @@ pub(crate) fn native_text_cache_namespace_token_bucket(
 }
 
 #[cfg(test)]
-use llm_backend::InferenceScratchpad;
+use llm_backend::native::InferenceScratchpad;
 
 #[cfg(test)]
 pub(crate) fn native_text_prefill_context_with_cache<C, F>(

@@ -1,4 +1,4 @@
-use super::{
+use super::backend::{
     BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
     BackendRequest, BackendToolChoice, BackendToolDefinition, ModelBackend,
 };

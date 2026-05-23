@@ -5,7 +5,7 @@ use super::{
     },
 };
 use llm_api::ChatMessage;
-use llm_backend::{
+use llm_backend_contracts::{
     BackendChatMessage, BackendChatRole, BackendError, BackendModelMetadata, BackendRequest,
     BackendToolCall, BackendToolCallFunction, BackendToolCallType, BackendToolDefinition,
     SamplingConfig,
@@ -167,8 +167,10 @@ fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {
         .as_chat()
         .and_then(|chat| chat.required_tool_choice.as_ref())
         .map(|choice| match choice {
-            llm_backend::BackendToolChoice::RequiredAny => Value::String("required".to_owned()),
-            llm_backend::BackendToolChoice::RequiredFunction(name) => serde_json::json!({
+            llm_backend_contracts::BackendToolChoice::RequiredAny => {
+                Value::String("required".to_owned())
+            }
+            llm_backend_contracts::BackendToolChoice::RequiredFunction(name) => serde_json::json!({
                 "type": "function",
                 "function": {
                     "name": name,

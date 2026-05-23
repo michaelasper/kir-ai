@@ -15,16 +15,6 @@ mod protocol_test;
 mod qwen;
 mod safetensors;
 
-pub use backend::{
-    BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
-    BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
-    BackendError, BackendErrorDomain, BackendFinishReason, BackendHealth, BackendHealthStatus,
-    BackendModelMetadata, BackendOutput, BackendRequest, BackendRequestKind, BackendStreamChunk,
-    BackendStreamProgress, BackendStreamTimingMilestone, BackendToolCall, BackendToolCallDelta,
-    BackendToolCallFunction, BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice,
-    BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType, ModelBackend,
-    SamplingConfig,
-};
 pub use gemma::{
     GemmaLayerCache, GemmaLayerCachePrefixState, GemmaLayerCacheSnapshot,
     gemma_cache_count_for_spec, gemma_decode_token_with_cache, gemma_final_norm_for_spec,

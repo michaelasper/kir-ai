@@ -6,7 +6,7 @@ use crate::native_qwen::native_qwen_prefix_cache_metrics_snapshot;
 use crate::native_text::{
     native_text_metal_metrics_snapshot, native_text_prefix_cache_metrics_snapshot,
 };
-use llm_backend::ModelBackend;
+use llm_backend_contracts::ModelBackend;
 use llm_server::{RouterBuilder, ServerBackendMetrics, ServerBackendMetricsSnapshot, ServerRouter};
 use std::sync::Arc;
 

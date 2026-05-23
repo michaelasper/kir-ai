@@ -1,5 +1,5 @@
 use llm_api::ApiError;
-use llm_backend::{BackendError, BackendErrorDomain};
+use llm_backend_contracts::{BackendError, BackendErrorDomain};
 use llm_tokenizer::TemplateError;
 use llm_tool_parser::ParserError;
 use thiserror::Error;
@@ -76,7 +76,6 @@ impl From<BackendError> for RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm_backend::TensorLoadError;
 
     #[test]
     fn backend_model_not_found_maps_to_model_unavailable() {
@@ -130,9 +129,10 @@ mod tests {
 
     #[test]
     fn structured_backend_failure_context_survives_runtime_mapping() {
-        let err = RuntimeError::from(BackendError::from(TensorLoadError::integrity(
+        let err = RuntimeError::from(BackendError::backend_failure(
+            "model_integrity_failed",
             "bad tensor header",
-        )));
+        ));
 
         assert!(matches!(
             err,

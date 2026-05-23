@@ -6,7 +6,7 @@ use llm_api::{
     ChatCompletionRequest, CompletionRequest, ResponseFormat, ToolCallType, ToolDefinition,
     canonicalize_json_value, canonicalize_tool_schemas,
 };
-use llm_backend::{
+use llm_backend_contracts::{
     BackendCacheContext, BackendChatContext, BackendRequest, BackendToolDefinition,
     BackendToolFunctionDefinition, BackendToolType, ModelBackend, SamplingConfig,
 };

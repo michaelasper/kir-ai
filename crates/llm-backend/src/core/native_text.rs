@@ -2,7 +2,7 @@
 // Family-neutral native text wrappers are retained for cross-family tests and
 // diagnostics even when production code enters through concrete family paths.
 
-use crate::{
+use super::{
     GemmaLayerCache, InferenceScratchpad, NativeMatvecBackend, QwenLayerCache,
     SafeTensorShardStore, TensorLoadError, TopKLogit, gemma_decode_token_with_cache,
     gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_logits_for_spec,

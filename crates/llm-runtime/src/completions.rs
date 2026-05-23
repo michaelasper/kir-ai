@@ -11,7 +11,7 @@ use chrono::Utc;
 use llm_api::{
     ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest, Validated,
 };
-use llm_backend::ModelBackend;
+use llm_backend_contracts::ModelBackend;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 

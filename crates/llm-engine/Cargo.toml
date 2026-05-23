@@ -39,6 +39,7 @@ futures.workspace = true
 getrandom.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
+llm-backend-contracts = { path = "../llm-backend-contracts" }
 llm-bench = { path = "../llm-bench", optional = true }
 llm-hub = { path = "../llm-hub" }
 llm-metal = { path = "../llm-metal", optional = true }

@@ -344,7 +344,7 @@ fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata
 mod tests {
     use super::*;
     use llm_api::ApiError;
-    use llm_backend::{BackendError, TensorLoadError};
+    use llm_backend_contracts::BackendError;
     use serde_json::json;
 
     const DOCUMENTED_ENGINE_ERROR_CODES: &[&str] = &[
@@ -421,9 +421,10 @@ mod tests {
 
     #[test]
     fn structured_backend_failure_context_survives_server_error_boundary() {
-        let err = RuntimeError::from(BackendError::from(TensorLoadError::integrity(
+        let err = RuntimeError::from(BackendError::backend_failure(
+            "model_integrity_failed",
             "bad tensor header",
-        )));
+        ));
 
         let RuntimeError::BackendFailed { source } = &err else {
             panic!("expected backend failure, got {err:?}");
