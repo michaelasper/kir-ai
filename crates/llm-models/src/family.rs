@@ -157,6 +157,10 @@ impl ModelFamily {
             Self::Llama => &LLAMA_FAMILY_ADAPTER,
         }
     }
+
+    pub fn supports_backend(self, backend: BackendKind) -> bool {
+        self.adapter().production_backends().contains(&backend)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -66,8 +66,8 @@ fn qwen35_4b_mlx_profiles_record_practical_chat_quant_identities() {
         ),
     ] {
         assert_eq!(profile.name, name);
-        assert_eq!(profile.family, "qwen");
-        assert_eq!(profile.loader, "mlx");
+        assert_eq!(profile.family, ModelFamily::Qwen);
+        assert_eq!(profile.loader, BackendKind::Mlx);
         assert_eq!(profile.quantization, quantization);
         assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
     }
@@ -107,7 +107,7 @@ fn qwen_bf16_profile_records_official_safetensors_identity() {
     let profile = ModelProfile::qwen36_safetensors_bf16();
 
     assert_eq!(profile.name, "qwen36-safetensors-bf16");
-    assert_eq!(profile.loader, "native-metal");
+    assert_eq!(profile.loader, BackendKind::NativeMetal);
     assert_eq!(profile.quantization, "bf16");
     assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
 }
@@ -132,7 +132,7 @@ fn qwen3_dense_bf16_profile_selects_small_native_snapshots() {
     .expect("plan builds");
 
     assert_eq!(plan.profile.name, "qwen3-dense-safetensors-bf16");
-    assert_eq!(plan.profile.loader, "native-metal");
+    assert_eq!(plan.profile.loader, BackendKind::NativeMetal);
     assert_eq!(plan.profile.quantization, "bf16");
     assert_eq!(plan.files_to_download.len(), 3);
     assert_eq!(plan.skipped_files, vec!["optimizer.pt"]);
@@ -162,8 +162,8 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
     )
     .expect("plan builds");
 
-    assert_eq!(plan.profile.family, "gemma");
-    assert_eq!(plan.profile.loader, "native-metal");
+    assert_eq!(plan.profile.family, ModelFamily::Gemma);
+    assert_eq!(plan.profile.loader, BackendKind::NativeMetal);
     assert_eq!(plan.profile.quantization, "bf16");
     assert_eq!(plan.files_to_download.len(), 4);
     assert_eq!(plan.total_bytes_to_download, 1_600);
@@ -183,8 +183,8 @@ fn gemma_text_profile_skips_multimodal_artifacts() {
 fn gemma_text_profile_uses_native_loader_metadata() {
     let profile = ModelProfile::gemma4_text_safetensors_bf16();
 
-    assert_eq!(profile.family, "gemma");
-    assert_eq!(profile.loader, "native-metal");
+    assert_eq!(profile.family, ModelFamily::Gemma);
+    assert_eq!(profile.loader, BackendKind::NativeMetal);
     assert_eq!(profile.quantization, "bf16");
 }
 
@@ -193,8 +193,8 @@ fn gemma4_e2b_mlx_4bit_profile_records_practical_chat_identity() {
     let profile = ModelProfile::gemma4_e2b_it_mlx_4bit();
 
     assert_eq!(profile.name, "gemma4-e2b-it-mlx-4bit");
-    assert_eq!(profile.family, "gemma");
-    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.family, ModelFamily::Gemma);
+    assert_eq!(profile.loader, BackendKind::Mlx);
     assert_eq!(profile.quantization, "4bit");
     assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
     assert!(
@@ -209,8 +209,8 @@ fn llama32_mlx_profile_records_practical_chat_identity() {
     let profile = ModelProfile::llama32_3b_instruct_mlx_4bit();
 
     assert_eq!(profile.name, "llama32-3b-instruct-mlx-4bit");
-    assert_eq!(profile.family, "llama");
-    assert_eq!(profile.loader, "mlx");
+    assert_eq!(profile.family, ModelFamily::Llama);
+    assert_eq!(profile.loader, BackendKind::Mlx);
     assert_eq!(profile.quantization, "4bit");
     assert!(profile.allow_patterns.contains(&"*.safetensors".to_owned()));
     assert!(
@@ -242,8 +242,8 @@ fn llama_text_profile_selects_text_artifacts_and_weights() {
     )
     .expect("plan builds");
 
-    assert_eq!(plan.profile.family, "llama");
-    assert_eq!(plan.profile.loader, "mlx");
+    assert_eq!(plan.profile.family, ModelFamily::Llama);
+    assert_eq!(plan.profile.loader, BackendKind::Mlx);
     assert_eq!(plan.files_to_download.len(), 4);
     assert_eq!(plan.total_bytes_to_download, 1_550);
     assert_eq!(
@@ -287,6 +287,36 @@ fn builtin_profile_names_match_lookup_table() {
 }
 
 #[test]
+fn builtin_profile_fields_are_typed_but_serialize_as_profile_slugs() {
+    let profile = ModelProfile::qwen36_safetensors_bf16();
+
+    assert_eq!(profile.family, ModelFamily::Qwen);
+    assert_eq!(profile.loader, BackendKind::NativeMetal);
+
+    let value = serde_json::to_value(&profile).expect("profile serializes");
+    assert_eq!(value["family"], "qwen");
+    assert_eq!(value["loader"], "native-metal");
+    assert_eq!(value["quantization"], "bf16");
+
+    let decoded: ModelProfile = serde_json::from_value(value).expect("profile deserializes");
+    assert_eq!(decoded.family, ModelFamily::Qwen);
+    assert_eq!(decoded.loader, BackendKind::NativeMetal);
+    assert_eq!(decoded.quantization, "bf16");
+
+    let decoded_alias: ModelProfile = serde_json::from_value(json!({
+        "name": "qwen36-safetensors-bf16",
+        "family": "qwen",
+        "loader": "native_metal",
+        "quantization": "bf16",
+        "allow_patterns": ["*.safetensors"],
+        "ignore_patterns": []
+    }))
+    .expect("profile deserializes legacy loader alias");
+    assert_eq!(decoded_alias.family, ModelFamily::Qwen);
+    assert_eq!(decoded_alias.loader, BackendKind::NativeMetal);
+}
+
+#[test]
 fn builtin_profiles_are_compatible_with_model_family_backend_support() {
     for name in ModelProfile::builtin_names() {
         let profile = ModelProfile::builtin(name)
@@ -307,22 +337,12 @@ fn builtin_profiles_are_compatible_with_model_family_backend_support() {
             profile.allow_patterns
         );
 
-        let family = ModelFamily::parse_slug(&profile.family).unwrap_or_else(|err| {
-            panic!(
-                "profile `{name}` declares unsupported family `{}`: {err}",
-                profile.family
-            )
-        });
-        let backend = BackendKind::parse_slug(&profile.loader).unwrap_or_else(|err| {
-            panic!(
-                "profile `{name}` declares unsupported backend loader `{}`: {err}",
-                profile.loader
-            )
-        });
+        let family = profile.family;
+        let backend = profile.loader;
         let supported_backends = family.adapter().production_backends();
 
         assert!(
-            supported_backends.contains(&backend),
+            family.supports_backend(backend),
             "profile `{name}` declares loader `{backend}` for family `{family}`, but supported loaders are: {}",
             backend_list(supported_backends)
         );

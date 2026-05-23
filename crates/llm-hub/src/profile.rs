@@ -1,13 +1,18 @@
+use llm_models::{BackendKind, ModelFamily};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_MODEL_PROFILE_NAME: &str = "qwen36-safetensors-bf16";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelProfile {
     pub name: String,
-    pub family: String,
-    pub loader: String,
+    #[serde(with = "model_family_slug")]
+    #[schemars(with = "String")]
+    pub family: ModelFamily,
+    #[serde(with = "backend_kind_slug")]
+    #[schemars(with = "String")]
+    pub loader: BackendKind,
     pub quantization: String,
     pub allow_patterns: Vec<String>,
     pub ignore_patterns: Vec<String>,
@@ -23,75 +28,65 @@ enum ProfileArtifactSet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BuiltinProfile {
     name: &'static str,
-    family: &'static str,
-    loader: &'static str,
+    family: ModelFamily,
+    loader: BackendKind,
     quantization: &'static str,
-    artifacts: ProfileArtifactSet,
 }
 
 const BUILTIN_PROFILES: &[BuiltinProfile] = &[
     BuiltinProfile {
         name: "gemma4-e2b-it-mlx-4bit",
-        family: "gemma",
-        loader: "mlx",
+        family: ModelFamily::Gemma,
+        loader: BackendKind::Mlx,
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::Gemma,
     },
     BuiltinProfile {
         name: "gemma4-text-safetensors-bf16",
-        family: "gemma",
-        loader: "native-metal",
+        family: ModelFamily::Gemma,
+        loader: BackendKind::NativeMetal,
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::Gemma,
     },
     BuiltinProfile {
         name: "llama32-3b-instruct-mlx-4bit",
-        family: "llama",
-        loader: "mlx",
+        family: ModelFamily::Llama,
+        loader: BackendKind::Mlx,
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::Llama,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-4bit",
-        family: "qwen",
-        loader: "mlx",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::Mlx,
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-8bit",
-        family: "qwen",
-        loader: "mlx",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::Mlx,
         quantization: "8bit",
-        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen35-4b-mlx-optiq-4bit",
-        family: "qwen",
-        loader: "mlx",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::Mlx,
         quantization: "optiq-4bit",
-        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen3-dense-safetensors-bf16",
-        family: "qwen",
-        loader: "native-metal",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::NativeMetal,
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen36-mlx-4bit",
-        family: "qwen",
-        loader: "mlx",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::Mlx,
         quantization: "4bit",
-        artifacts: ProfileArtifactSet::Qwen,
     },
     BuiltinProfile {
         name: "qwen36-safetensors-bf16",
-        family: "qwen",
-        loader: "native-metal",
+        family: ModelFamily::Qwen,
+        loader: BackendKind::NativeMetal,
         quantization: "bf16",
-        artifacts: ProfileArtifactSet::Qwen,
     },
 ];
 
@@ -149,7 +144,7 @@ impl ModelProfile {
     }
 
     fn from_builtin(profile: BuiltinProfile) -> Self {
-        let (allow_patterns, ignore_patterns) = match profile.artifacts {
+        let (allow_patterns, ignore_patterns) = match artifact_set_for_family(profile.family) {
             ProfileArtifactSet::Qwen => (
                 qwen_static_and_safetensors_patterns(),
                 qwen_ignore_patterns(),
@@ -165,12 +160,66 @@ impl ModelProfile {
         };
         Self {
             name: profile.name.to_owned(),
-            family: profile.family.to_owned(),
-            loader: profile.loader.to_owned(),
+            family: profile.family,
+            loader: profile.loader,
             quantization: profile.quantization.to_owned(),
             allow_patterns,
             ignore_patterns,
         }
+    }
+
+    pub fn family_slug(&self) -> &'static str {
+        self.family.canonical_slug()
+    }
+
+    pub fn loader_slug(&self) -> &'static str {
+        self.loader.canonical_slug()
+    }
+}
+
+fn artifact_set_for_family(family: ModelFamily) -> ProfileArtifactSet {
+    match family {
+        ModelFamily::Qwen | ModelFamily::DeepSeek => ProfileArtifactSet::Qwen,
+        ModelFamily::Gemma => ProfileArtifactSet::Gemma,
+        ModelFamily::Llama => ProfileArtifactSet::Llama,
+    }
+}
+
+mod model_family_slug {
+    use super::*;
+
+    pub fn serialize<S>(family: &ModelFamily, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(family.canonical_slug())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<ModelFamily, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        ModelFamily::parse_slug(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+mod backend_kind_slug {
+    use super::*;
+
+    pub fn serialize<S>(backend: &BackendKind, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(backend.canonical_slug())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BackendKind, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        BackendKind::parse_slug(&value).map_err(serde::de::Error::custom)
     }
 }
 

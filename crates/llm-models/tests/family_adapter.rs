@@ -54,6 +54,16 @@ fn backend_kind_serializes_to_manifest_loader_slugs() {
 }
 
 #[test]
+fn model_family_reports_backend_support_from_adapter_data() {
+    assert!(ModelFamily::Qwen.supports_backend(BackendKind::NativeMetal));
+    assert!(ModelFamily::Qwen.supports_backend(BackendKind::Mlx));
+    assert!(ModelFamily::Gemma.supports_backend(BackendKind::NativeMetal));
+    assert!(ModelFamily::Gemma.supports_backend(BackendKind::Mlx));
+    assert!(!ModelFamily::Llama.supports_backend(BackendKind::NativeMetal));
+    assert!(ModelFamily::Llama.supports_backend(BackendKind::Mlx));
+}
+
+#[test]
 fn qwen_family_declares_mlx_as_required_production_backend() {
     let adapter = QwenFamilyAdapter;
     let backends = adapter.production_backends();

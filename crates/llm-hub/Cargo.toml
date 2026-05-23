@@ -9,6 +9,7 @@ rust-version.workspace = true
 chrono.workspace = true
 futures.workspace = true
 hex.workspace = true
+llm-models = { path = "../llm-models" }
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -19,5 +20,4 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-llm-models = { path = "../llm-models" }
 tempfile.workspace = true

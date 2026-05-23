@@ -928,16 +928,18 @@ fn validate_builtin_profile_metadata(manifest: &SnapshotManifest) -> Result<(), 
         return Ok(());
     };
     let mut mismatches = Vec::new();
-    if manifest.family != profile.family {
+    if manifest.family != profile.family_slug() {
         mismatches.push(format!(
             "family `{}`, expected `{}`",
-            manifest.family, profile.family
+            manifest.family,
+            profile.family_slug()
         ));
     }
-    if manifest.loader != profile.loader {
+    if manifest.loader != profile.loader_slug() {
         mismatches.push(format!(
             "loader `{}`, expected `{}`",
-            manifest.loader, profile.loader
+            manifest.loader,
+            profile.loader_slug()
         ));
     }
     if manifest.quantization != profile.quantization {
