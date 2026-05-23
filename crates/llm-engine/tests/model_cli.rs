@@ -144,6 +144,28 @@ fn hub_model_info_body() -> String {
 }
 
 #[test]
+fn model_lifecycle_parser_is_exposed_from_cli_model_module() {
+    let args = [
+        "plan",
+        "Qwen/Qwen3.6-35B-A3B",
+        "--revision",
+        "refs/pr/1",
+        "--metadata-only",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+
+    let request = llm_engine::cli::model::model_lifecycle_request_from_args("plan", &args)
+        .expect("CLI lifecycle request parses");
+    let options = request.resolve().expect("request defaults resolve");
+
+    assert_eq!(options.repo_id.as_str(), "Qwen/Qwen3.6-35B-A3B");
+    assert_eq!(options.revision, "refs/pr/1");
+    assert!(options.metadata_only);
+}
+
+#[test]
 #[cfg(feature = "bench")]
 fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -1976,9 +1998,20 @@ async fn model_list_uses_fast_readiness_without_rehashing_weights() {
         .verify_existing_snapshot(&plan)
         .await
         .expect("snapshot verifies");
+    let weight_path = snapshot_path.join("model.safetensors");
+    let weight_modified_at = std::fs::metadata(&weight_path)
+        .expect("weight metadata")
+        .modified()
+        .expect("weight modified time");
     tokio::fs::write(snapshot_path.join("model.safetensors"), b"xxxx")
         .await
         .expect("same-size weight corruption");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&weight_path)
+        .expect("reopen corrupted weight")
+        .set_times(std::fs::FileTimes::new().set_modified(weight_modified_at))
+        .expect("restore weight modified time");
 
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
         .args(["model", "list", "--model-home"])

@@ -1,3 +1,4 @@
+pub mod cli;
 #[cfg(feature = "mlx")]
 mod mlx;
 pub mod model_cli;
