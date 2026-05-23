@@ -2,15 +2,11 @@
 // LM-head logits helpers are kept for backend parity tests and optional
 // diagnostics while the stable public API exposes only selected entry points.
 
-use super::*;
-
-pub(super) fn qwen_layer_tensor(layer_idx: usize, suffix: &str) -> String {
-    format!("model.language_model.layers.{layer_idx}.{suffix}")
-}
-
-pub(super) fn qwen_linear_attn_tensor(layer_idx: usize, suffix: &str) -> String {
-    qwen_layer_tensor(layer_idx, &format!("linear_attn.{suffix}"))
-}
+use super::super::super::math::TopKLogit;
+use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
+use super::norm::qwen_rms_norm_for_spec_in_place;
+use super::tensor_names::{QWEN_FINAL_NORM_WEIGHT, QWEN_LM_HEAD_WEIGHT};
+use llm_models::QwenModelSpec;
 
 pub async fn qwen_final_norm(
     store: &SafeTensorShardStore,

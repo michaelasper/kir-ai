@@ -1,7 +1,32 @@
-use super::super::super::math::{InferenceScratchpad, silu_f32};
+use super::super::super::math::{InferenceScratchpad, TopKWeight, silu_f32};
 use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
-use super::{QwenMoeDims, QwenMoeRouterProbe, qwen_layer_tensor};
+use super::tensor_names::qwen_layer_tensor;
 use llm_models::QwenModelSpec;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QwenMoeRouterProbe {
+    pub logits: Vec<f32>,
+    pub selected: Vec<TopKWeight>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QwenMoeDims {
+    pub hidden_size: usize,
+    pub num_experts: usize,
+    pub moe_intermediate_size: usize,
+    pub shared_expert_intermediate_size: usize,
+}
+
+impl QwenMoeDims {
+    pub fn from_spec(spec: &QwenModelSpec) -> Self {
+        Self {
+            hidden_size: spec.hidden_size as usize,
+            num_experts: spec.num_experts as usize,
+            moe_intermediate_size: spec.moe_intermediate_size as usize,
+            shared_expert_intermediate_size: spec.shared_expert_intermediate_size as usize,
+        }
+    }
+}
 
 pub(crate) async fn qwen_layer_dense_mlp(
     store: &SafeTensorShardStore,
@@ -62,7 +87,7 @@ pub(crate) async fn qwen_layer_dense_mlp(
     Ok(())
 }
 
-pub(super) async fn qwen_layer_feed_forward(
+pub(crate) async fn qwen_layer_feed_forward(
     store: &SafeTensorShardStore,
     spec: &QwenModelSpec,
     layer_idx: usize,
