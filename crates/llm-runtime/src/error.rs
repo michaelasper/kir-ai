@@ -1,6 +1,6 @@
 use llm_api::ApiError;
 use llm_backend_contracts::{BackendError, BackendErrorDomain};
-use llm_tokenizer::TemplateError;
+use llm_chat_template::TemplateError;
 use llm_tool_parser::ParserError;
 use thiserror::Error;
 

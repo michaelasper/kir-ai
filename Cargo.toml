@@ -4,6 +4,7 @@ members = [
   "crates/llm-backend",
   "crates/llm-backend-contracts",
   "crates/llm-bench",
+  "crates/llm-chat-template",
   "crates/llm-engine",
   "crates/llm-hub",
   "crates/llm-kv-cache",

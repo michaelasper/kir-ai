@@ -1095,6 +1095,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-chat-template"
+version = "0.1.0"
+dependencies = [
+ "llm-api",
+ "llm-models",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "llm-engine"
 version = "0.1.0"
 dependencies = [
@@ -1215,8 +1226,8 @@ dependencies = [
  "llm-api",
  "llm-backend",
  "llm-backend-contracts",
+ "llm-chat-template",
  "llm-models",
- "llm-tokenizer",
  "llm-tool-parser",
  "serde_json",
  "sha2",
@@ -1269,8 +1280,8 @@ name = "llm-tokenizer"
 version = "0.1.0"
 dependencies = [
  "llm-api",
+ "llm-chat-template",
  "llm-models",
- "serde",
  "serde_json",
  "thiserror",
  "tokenizers",

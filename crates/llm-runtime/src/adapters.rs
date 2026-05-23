@@ -3,8 +3,8 @@ use llm_backend_contracts::{
     BackendCacheContext, BackendChatContext, BackendChatMessage, BackendChatRole,
     BackendModelMetadata, BackendToolCall, BackendToolCallFunction, BackendToolCallType,
 };
+use llm_chat_template::render_family_chat_template_with_tool_instruction;
 use llm_models::ModelFamily;
-use llm_tokenizer::render_family_chat_template_with_tool_instruction;
 use llm_tool_parser::{ParsedAssistant, parse_assistant_for_family};
 
 use crate::RuntimeError;

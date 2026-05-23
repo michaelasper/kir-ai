@@ -1,16 +1,13 @@
 [package]
-name = "llm-tokenizer"
+name = "llm-chat-template"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-llm-chat-template = { path = "../llm-chat-template" }
-thiserror.workspace = true
-tokenizers.workspace = true
-
-[dev-dependencies]
 llm-api = { path = "../llm-api" }
 llm-models = { path = "../llm-models" }
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true

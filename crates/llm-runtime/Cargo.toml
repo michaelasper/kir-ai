@@ -16,8 +16,8 @@ futures.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend-contracts = { path = "../llm-backend-contracts" }
 llm-backend = { path = "../llm-backend", optional = true }
+llm-chat-template = { path = "../llm-chat-template" }
 llm-models = { path = "../llm-models" }
-llm-tokenizer = { path = "../llm-tokenizer" }
 llm-tool-parser = { path = "../llm-tool-parser" }
 serde_json.workspace = true
 sha2.workspace = true
