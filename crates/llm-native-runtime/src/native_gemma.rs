@@ -2,13 +2,15 @@ use crate::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
         NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
-        NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
+        NativeTextMatvecBackend,
     },
     native_text::{
         DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
         NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
         NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
+        NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions, NativeTextSnapshotOpen,
+        NativeTextSnapshotOpenFamily, NativeTextStopTokens, native_text_prefix_namespace,
+        open_native_text_snapshot,
     },
 };
 use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
@@ -24,7 +26,7 @@ use llm_backend_contracts::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     ModelBackend, SamplingConfig,
 };
-use llm_models::{GemmaModelSpec, ModelFamily};
+use llm_models::{GemmaModelSpec, ModelFamily, SafetensorsIndex};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
@@ -41,13 +43,7 @@ pub struct NativeGemmaBackend {
     driver: NativeTextDriver<NativeGemmaAdapter>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NativeGemmaLoadOptions {
-    pub eager_materialize_shards: bool,
-    pub metal_weight_cache_bytes: Option<u64>,
-    pub prefix_cache_bytes: Option<u64>,
-    pub warm_metal_weight_cache: bool,
-}
+pub type NativeGemmaLoadOptions = NativeTextRuntimeOptions;
 
 #[derive(Clone)]
 pub(crate) struct NativeGemmaAdapter {
@@ -144,45 +140,29 @@ impl NativeGemmaBackend {
     ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
-        let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = native_gemma_metadata(&model_id, &identity)?;
         reject_native_gemma_quantized_snapshot(snapshot_path).await?;
-        let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
-        let spec = GemmaModelSpec::from_config_json(&config_json)?;
-        let store = SafeTensorShardStore::open(snapshot_path)?;
-        spec.validate_text_weights(store.index())?;
-        if options.eager_materialize_shards {
-            store.materialize_all_shards().map_err(|err| {
-                anyhow::anyhow!("native Gemma safetensors materialization failed: {err}")
-            })?;
-        }
-        let static_f32_tensors = gemma_static_f32_tensors_for_spec(&spec);
-        let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
-        tracing::info!(
-            candidates = static_f32_warmup.candidates,
-            loaded = static_f32_warmup.loaded,
-            resident_bytes = static_f32_warmup.resident_bytes,
-            already_resident = static_f32_warmup.already_resident,
-            "native Gemma static f32 tensor cache warm-up complete"
-        );
-        let matvec = NativeTextMatvecBackend::system_default(
-            native_text_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
-            &cache_namespace,
-        );
-        if options.warm_metal_weight_cache {
-            let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
-                anyhow::anyhow!("native Gemma Metal weight cache warm-up failed: {err}")
-            })?;
-            tracing::info!(
-                candidates = warmup.candidates,
-                warmed = warmup.warmed,
-                already_resident = warmup.already_resident,
-                skipped_budget = warmup.skipped_budget,
-                skipped_non_metal = warmup.skipped_non_metal,
-                "native Gemma Metal BF16 weight cache warm-up complete"
-            );
-        }
-        let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
+        let NativeTextSnapshotOpen {
+            model_id,
+            metadata,
+            spec,
+            store,
+            matvec,
+            tokenizer,
+            prefix_cache_bytes,
+        } = open_native_text_snapshot(
+            model_id,
+            snapshot_path,
+            options,
+            metadata,
+            NativeTextSnapshotOpenFamily {
+                display_name: "Gemma",
+                parse_spec: parse_native_gemma_spec,
+                validate_text_weights: validate_native_gemma_text_weights,
+                static_f32_tensors_for_spec: gemma_static_f32_tensors_for_spec,
+            },
+        )
+        .await?;
         let adapter = NativeGemmaAdapter {
             model_id: model_id.clone(),
             metadata: metadata.clone(),
@@ -193,9 +173,7 @@ impl NativeGemmaBackend {
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeGemmaPrefixCache::new(
-                options
-                    .prefix_cache_bytes
-                    .unwrap_or(DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES),
+                prefix_cache_bytes.unwrap_or(DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES),
             )),
         };
         Ok(Self {
@@ -500,6 +478,17 @@ fn native_gemma_metadata(
         "native-gemma",
         Some(ModelFamily::Gemma),
     ))
+}
+
+fn parse_native_gemma_spec(config_json: &str) -> anyhow::Result<GemmaModelSpec> {
+    Ok(GemmaModelSpec::from_config_json(config_json)?)
+}
+
+fn validate_native_gemma_text_weights(
+    spec: &GemmaModelSpec,
+    index: &SafetensorsIndex,
+) -> anyhow::Result<()> {
+    Ok(spec.validate_text_weights(index)?)
 }
 
 async fn reject_native_gemma_quantized_snapshot(snapshot_path: &Path) -> anyhow::Result<()> {

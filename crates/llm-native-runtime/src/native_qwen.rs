@@ -2,13 +2,15 @@ use crate::{
     DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
     native_matvec::{
         NativeTextCacheMirrorCleaner, NativeTextCacheMirrorIds, NativeTextCacheMirrorSource,
-        NativeTextMatvecBackend, native_text_metal_weight_cache_bytes,
+        NativeTextMatvecBackend,
     },
     native_text::{
         DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
         NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
         NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, NativeTextStopTokens, native_text_prefix_namespace,
+        NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions, NativeTextSnapshotOpen,
+        NativeTextSnapshotOpenFamily, NativeTextStopTokens, native_text_prefix_namespace,
+        open_native_text_snapshot,
     },
 };
 use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
@@ -24,7 +26,7 @@ use llm_backend_contracts::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
     ModelBackend, SamplingConfig,
 };
-use llm_models::{ModelFamily, QwenModelSpec};
+use llm_models::{ModelFamily, QwenModelSpec, SafetensorsIndex};
 use llm_tokenizer::HuggingFaceTokenizer;
 use serde_json::Value;
 use std::{
@@ -110,13 +112,8 @@ impl NativeTextCacheMirrorSource for QwenLayerCache {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NativeQwenLoadOptions {
-    pub eager_materialize_shards: bool,
-    pub metal_weight_cache_bytes: Option<u64>,
-    pub prefix_cache_bytes: Option<u64>,
-    pub warm_metal_weight_cache: bool,
-}
+pub type NativeQwenLoadOptions = NativeTextRuntimeOptions;
+
 impl NativeQwenBackend {
     pub async fn open(
         model_id: impl Into<String>,
@@ -151,46 +148,28 @@ impl NativeQwenBackend {
     ) -> anyhow::Result<Self> {
         let model_id = model_id.into();
         let snapshot_path = snapshot_path.as_ref();
-        let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
-        let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
         let metadata = native_qwen_metadata(&model_id, &identity)?;
-        let store = SafeTensorShardStore::open(snapshot_path)?;
-        let spec = QwenModelSpec::from_config_json(&config_json)?;
-        spec.validate_text_weights(store.index())?;
-        if options.eager_materialize_shards {
-            let materialized_bytes = store.materialize_all_shards()?;
-            tracing::info!(
-                materialized_bytes,
-                "materialized native Qwen safetensors shards"
-            );
-        }
-        let static_f32_tensors = qwen_static_f32_tensors_for_spec(&spec);
-        let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
-        tracing::info!(
-            candidates = static_f32_warmup.candidates,
-            loaded = static_f32_warmup.loaded,
-            resident_bytes = static_f32_warmup.resident_bytes,
-            already_resident = static_f32_warmup.already_resident,
-            "native Qwen static f32 tensor cache warm-up complete"
-        );
-        let matvec = NativeTextMatvecBackend::system_default(
-            native_qwen_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
-            &cache_namespace,
-        );
-        if options.warm_metal_weight_cache {
-            let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
-                anyhow::anyhow!("native Qwen Metal weight cache warm-up failed: {err}")
-            })?;
-            tracing::info!(
-                candidates = warmup.candidates,
-                warmed = warmup.warmed,
-                already_resident = warmup.already_resident,
-                skipped_budget = warmup.skipped_budget,
-                skipped_non_metal = warmup.skipped_non_metal,
-                "native Qwen Metal BF16 weight cache warm-up complete"
-            );
-        }
-        let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
+        let NativeTextSnapshotOpen {
+            model_id,
+            metadata,
+            spec,
+            store,
+            matvec,
+            tokenizer,
+            prefix_cache_bytes,
+        } = open_native_text_snapshot(
+            model_id,
+            snapshot_path,
+            options,
+            metadata,
+            NativeTextSnapshotOpenFamily {
+                display_name: "Qwen",
+                parse_spec: parse_native_qwen_spec,
+                validate_text_weights: validate_native_qwen_text_weights,
+                static_f32_tensors_for_spec: qwen_static_f32_tensors_for_spec,
+            },
+        )
+        .await?;
         let adapter = NativeQwenAdapter {
             model_id: model_id.clone(),
             metadata: metadata.clone(),
@@ -201,9 +180,7 @@ impl NativeQwenBackend {
             top_k: 16,
             chunk_rows: 2048,
             prefix_cache: Arc::new(NativeQwenPrefixCache::new(
-                options
-                    .prefix_cache_bytes
-                    .unwrap_or(DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES),
+                prefix_cache_bytes.unwrap_or(DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES),
             )),
         };
         Ok(Self {
@@ -502,8 +479,20 @@ fn native_qwen_metadata(
     Ok(identity.backend_metadata(model_id.to_owned(), "native-qwen", Some(ModelFamily::Qwen)))
 }
 
+fn parse_native_qwen_spec(config_json: &str) -> anyhow::Result<QwenModelSpec> {
+    Ok(QwenModelSpec::from_config_json(config_json)?)
+}
+
+fn validate_native_qwen_text_weights(
+    spec: &QwenModelSpec,
+    index: &SafetensorsIndex,
+) -> anyhow::Result<()> {
+    Ok(spec.validate_text_weights(index)?)
+}
+
+#[cfg(test)]
 fn native_qwen_metal_weight_cache_bytes(configured: Option<u64>) -> u64 {
-    native_text_metal_weight_cache_bytes(configured)
+    crate::native_matvec::native_text_metal_weight_cache_bytes(configured)
 }
 
 #[cfg(test)]

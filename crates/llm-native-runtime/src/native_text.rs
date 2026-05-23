@@ -1,18 +1,22 @@
 #[cfg(feature = "native-gemma")]
-use crate::native_gemma::{NativeGemmaAdapter, NativeGemmaBackend, NativeGemmaLoadOptions};
+use crate::native_gemma::{NativeGemmaAdapter, NativeGemmaBackend};
 #[cfg(feature = "native-qwen")]
-use crate::native_qwen::{NativeQwenAdapter, NativeQwenBackend, NativeQwenLoadOptions};
-use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
+use crate::native_qwen::{NativeQwenAdapter, NativeQwenBackend};
+use crate::{
+    ResolvedSnapshotBackend, SnapshotBackendLoader,
+    native_matvec::{NativeTextMatvecBackend, native_text_metal_weight_cache_bytes},
+};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
-use llm_backend::native::InferenceScratchpad;
+use llm_backend::native::{InferenceScratchpad, SafeTensorShardStore};
 #[allow(unused_imports)]
 use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
     BackendStreamChunk, ModelBackend,
 };
-use llm_models::{ModelFamily, NativeTextModelSpec};
+use llm_models::{ModelFamily, NativeTextModelSpec, SafetensorsIndex};
+use llm_tokenizer::HuggingFaceTokenizer;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
@@ -49,15 +53,6 @@ pub const DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 2048;
 pub const DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NativeTextLoadOptions {
-    pub family: Option<ModelFamily>,
-    #[cfg(feature = "native-qwen")]
-    pub qwen: NativeQwenLoadOptions,
-    #[cfg(feature = "native-gemma")]
-    pub gemma: NativeGemmaLoadOptions,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeTextRuntimeOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
@@ -65,60 +60,121 @@ pub struct NativeTextRuntimeOptions {
     pub warm_metal_weight_cache: bool,
 }
 
-#[cfg(feature = "native-qwen")]
-impl From<NativeTextRuntimeOptions> for NativeQwenLoadOptions {
-    fn from(value: NativeTextRuntimeOptions) -> Self {
-        Self {
-            eager_materialize_shards: value.eager_materialize_shards,
-            metal_weight_cache_bytes: value.metal_weight_cache_bytes,
-            prefix_cache_bytes: value.prefix_cache_bytes,
-            warm_metal_weight_cache: value.warm_metal_weight_cache,
-        }
-    }
-}
-
-#[cfg(feature = "native-gemma")]
-impl From<NativeTextRuntimeOptions> for NativeGemmaLoadOptions {
-    fn from(value: NativeTextRuntimeOptions) -> Self {
-        Self {
-            eager_materialize_shards: value.eager_materialize_shards,
-            metal_weight_cache_bytes: value.metal_weight_cache_bytes,
-            prefix_cache_bytes: value.prefix_cache_bytes,
-            warm_metal_weight_cache: value.warm_metal_weight_cache,
-        }
-    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeTextLoadOptions {
+    pub family: Option<ModelFamily>,
+    pub runtime: NativeTextRuntimeOptions,
 }
 
 impl NativeTextLoadOptions {
     pub fn with_runtime_options(runtime: NativeTextRuntimeOptions) -> Self {
         Self {
             family: None,
-            #[cfg(feature = "native-qwen")]
-            qwen: runtime.into(),
-            #[cfg(feature = "native-gemma")]
-            gemma: runtime.into(),
+            runtime,
         }
     }
 
     #[cfg(feature = "native-qwen")]
-    pub fn with_qwen_options(qwen: NativeQwenLoadOptions) -> Self {
-        Self {
-            family: None,
-            #[cfg(feature = "native-gemma")]
-            gemma: NativeGemmaLoadOptions {
-                eager_materialize_shards: qwen.eager_materialize_shards,
-                metal_weight_cache_bytes: qwen.metal_weight_cache_bytes,
-                prefix_cache_bytes: qwen.prefix_cache_bytes,
-                warm_metal_weight_cache: qwen.warm_metal_weight_cache,
-            },
-            qwen,
-        }
+    pub fn with_qwen_options(qwen: crate::native_qwen::NativeQwenLoadOptions) -> Self {
+        Self::with_runtime_options(qwen)
+    }
+
+    #[cfg(feature = "native-gemma")]
+    pub fn with_gemma_options(gemma: crate::native_gemma::NativeGemmaLoadOptions) -> Self {
+        Self::with_runtime_options(gemma)
     }
 
     pub fn with_family(mut self, family: ModelFamily) -> Self {
         self.family = Some(family);
         self
     }
+}
+
+pub(crate) struct NativeTextSnapshotOpen<S> {
+    pub(crate) model_id: String,
+    pub(crate) metadata: BackendModelMetadata,
+    pub(crate) spec: S,
+    pub(crate) store: SafeTensorShardStore,
+    pub(crate) matvec: NativeTextMatvecBackend,
+    pub(crate) tokenizer: HuggingFaceTokenizer,
+    pub(crate) prefix_cache_bytes: Option<u64>,
+}
+
+pub(crate) struct NativeTextSnapshotOpenFamily<S> {
+    pub(crate) display_name: &'static str,
+    pub(crate) parse_spec: fn(&str) -> anyhow::Result<S>,
+    pub(crate) validate_text_weights: fn(&S, &SafetensorsIndex) -> anyhow::Result<()>,
+    pub(crate) static_f32_tensors_for_spec: fn(&S) -> Vec<String>,
+}
+
+pub(crate) async fn open_native_text_snapshot<S>(
+    model_id: impl Into<String>,
+    snapshot_path: impl AsRef<Path>,
+    options: NativeTextRuntimeOptions,
+    metadata: BackendModelMetadata,
+    family: NativeTextSnapshotOpenFamily<S>,
+) -> anyhow::Result<NativeTextSnapshotOpen<S>> {
+    let model_id = model_id.into();
+    let snapshot_path = snapshot_path.as_ref();
+    let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
+    let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
+    let spec = (family.parse_spec)(&config_json)?;
+    let store = SafeTensorShardStore::open(snapshot_path)?;
+    (family.validate_text_weights)(&spec, store.index())?;
+    if options.eager_materialize_shards {
+        let materialized_bytes = store.materialize_all_shards().map_err(|err| {
+            anyhow::anyhow!(
+                "native {} safetensors materialization failed: {err}",
+                family.display_name
+            )
+        })?;
+        tracing::info!(
+            family = family.display_name,
+            materialized_bytes,
+            "materialized native text safetensors shards"
+        );
+    }
+    let static_f32_tensors = (family.static_f32_tensors_for_spec)(&spec);
+    let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
+    tracing::info!(
+        family = family.display_name,
+        candidates = static_f32_warmup.candidates,
+        loaded = static_f32_warmup.loaded,
+        resident_bytes = static_f32_warmup.resident_bytes,
+        already_resident = static_f32_warmup.already_resident,
+        "native text static f32 tensor cache warm-up complete"
+    );
+    let matvec = NativeTextMatvecBackend::system_default(
+        native_text_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
+        &cache_namespace,
+    );
+    if options.warm_metal_weight_cache {
+        let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
+            anyhow::anyhow!(
+                "native {} Metal weight cache warm-up failed: {err}",
+                family.display_name
+            )
+        })?;
+        tracing::info!(
+            family = family.display_name,
+            candidates = warmup.candidates,
+            warmed = warmup.warmed,
+            already_resident = warmup.already_resident,
+            skipped_budget = warmup.skipped_budget,
+            skipped_non_metal = warmup.skipped_non_metal,
+            "native text Metal BF16 weight cache warm-up complete"
+        );
+    }
+    let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
+    Ok(NativeTextSnapshotOpen {
+        model_id,
+        metadata,
+        spec,
+        store,
+        matvec,
+        tokenizer,
+        prefix_cache_bytes: options.prefix_cache_bytes,
+    })
 }
 
 pub fn native_text_metal_metrics_snapshot() -> serde_json::Value {
@@ -199,7 +255,7 @@ impl NativeTextBackend {
                     let driver = NativeGemmaBackend::open_with_snapshot_identity(
                         model_id,
                         snapshot_path,
-                        options.gemma,
+                        options.runtime,
                         identity,
                     )
                     .await?
@@ -231,7 +287,7 @@ impl NativeTextBackend {
                     let driver = NativeQwenBackend::open_with_snapshot_identity(
                         model_id,
                         snapshot_path,
-                        options.qwen,
+                        options.runtime,
                         identity,
                     )
                     .await?
@@ -983,22 +1039,24 @@ mod tests {
     }
 
     #[test]
-    fn runtime_options_apply_to_supported_native_text_families() {
-        let options = NativeTextLoadOptions::with_runtime_options(NativeTextRuntimeOptions {
+    fn native_text_load_options_store_runtime_options_once() {
+        let runtime = NativeTextRuntimeOptions {
             eager_materialize_shards: true,
             metal_weight_cache_bytes: Some(4096),
             prefix_cache_bytes: Some(17),
             warm_metal_weight_cache: true,
-        });
+        };
+        let options = NativeTextLoadOptions::with_runtime_options(runtime);
 
-        assert!(options.qwen.eager_materialize_shards);
-        assert_eq!(options.qwen.metal_weight_cache_bytes, Some(4096));
-        assert_eq!(options.qwen.prefix_cache_bytes, Some(17));
-        assert!(options.qwen.warm_metal_weight_cache);
-        assert!(options.gemma.eager_materialize_shards);
-        assert_eq!(options.gemma.metal_weight_cache_bytes, Some(4096));
-        assert_eq!(options.gemma.prefix_cache_bytes, Some(17));
-        assert!(options.gemma.warm_metal_weight_cache);
+        assert_eq!(options.runtime, runtime);
+    }
+
+    #[test]
+    fn family_load_options_use_shared_runtime_options() {
+        #[cfg(feature = "native-qwen")]
+        let _: NativeTextRuntimeOptions = crate::native_qwen::NativeQwenLoadOptions::default();
+        #[cfg(feature = "native-gemma")]
+        let _: NativeTextRuntimeOptions = crate::native_gemma::NativeGemmaLoadOptions::default();
     }
 
     #[test]
