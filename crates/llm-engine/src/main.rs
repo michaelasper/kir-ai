@@ -30,6 +30,9 @@ use llm_models::QwenModelSpec;
 use llm_tokenizer::HuggingFaceTokenizer;
 use std::net::SocketAddr;
 
+#[cfg(feature = "bench")]
+mod bench_compat;
+
 const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
 const DETERMINISTIC_TEST_BACKEND_FLAG: &str = "--deterministic-test-backend";
 const PROTOCOL_TEST_BACKEND_ACK_FLAG: &str = "--i-understand-this-is-not-real-inference";
@@ -292,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         #[cfg(feature = "bench")]
-        "bench" => llm_bench::run_bench_command(std::env::args().skip(2).collect()).await?,
+        "bench" => bench_compat::run(std::env::args().skip(2).collect())?,
         #[cfg(not(feature = "bench"))]
         "bench" => anyhow::bail!(
             "the bench command requires the llm-engine `bench` feature; rebuild with --features bench"

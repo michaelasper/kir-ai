@@ -1,15 +1,19 @@
 # CLI Reference
 
-The `llm-engine` binary is the HTTP server and model tooling CLI. Argument
-parsing is manual. Flags use `--flag value`; boolean flags are present or absent.
+The `llm-engine` binary is the HTTP server and model tooling CLI. The
+`llm-bench` binary owns benchmark commands, with `llm-engine bench` kept as a
+compatibility launcher. Argument parsing is manual. Flags use `--flag value`;
+boolean flags are present or absent.
 
 ## Synopsis
 
 ```sh
 llm-engine [serve]
 llm-engine serve [--addr <host:port>] [--tls-cert <path> --tls-key <path>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--max-public-inference-requests-per-second <n>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
-llm-engine bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
-llm-engine bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
+llm-bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
+llm-bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
+llm-engine bench qwen-long-context [compatibility launcher]
+llm-engine bench qwen-mlx-tool-normalized [compatibility launcher]
 llm-engine model <subcommand> ...
 ```
 
@@ -22,6 +26,7 @@ When running through Cargo:
 cargo run -p llm-engine --features test-utils -- serve \
   --protocol-test-backend \
   --i-understand-this-is-not-real-inference
+cargo run -p llm-bench -- qwen-long-context --dry-run --profile all
 cargo run -p llm-engine -- model list
 ```
 
@@ -117,14 +122,16 @@ such as `qwen`, `deep_seek`, `gemma`, or `llama` so family metadata and parser
 policy are explicit. `--loader mlx` without a family fails at startup for raw
 snapshots.
 
-## `bench qwen-long-context`
+## `llm-bench qwen-long-context`
 
 Runs or plans the Qwen long-context promotion and characterization benchmark.
+`llm-engine bench qwen-long-context` remains available as a compatibility
+launcher and delegates to the `llm-bench` binary.
 
 Single-lane usage keeps the original flags:
 
 ```sh
-llm-engine bench qwen-long-context \
+llm-bench qwen-long-context \
   --profile 135k \
   --endpoint http://127.0.0.1:3000 \
   --model local-qwen36 \
@@ -135,7 +142,7 @@ Named lanes run the same profile and cases against multiple backends and emit
 side-by-side comparison metadata:
 
 ```sh
-llm-engine bench qwen-long-context \
+llm-bench qwen-long-context \
   --profile 135k \
   --lane name=native-metal,endpoint=http://127.0.0.1:3000,snapshot="$NATIVE_SNAPSHOT",model=local-native \
   --lane name=mlx,endpoint=http://127.0.0.1:3001,snapshot="$MLX_SNAPSHOT",model=local-mlx
@@ -179,7 +186,7 @@ fails the promotion gate and is emitted as
 recall cases validate the full benchmark contract: `marker`, `profile`, `case`,
 and `finish_reason: "tool_calls"` for tool responses.
 
-## `bench qwen-mlx-tool-normalized`
+## `llm-bench qwen-mlx-tool-normalized`
 
 Runs direct Qwen tool/JSON probes across comparable OpenAI-compatible lanes
 without changing the `qwen-long-context` promotion gate. The command does not
@@ -188,6 +195,8 @@ launch model identity, model addressing mode, template/thinking assumption,
 optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
 measured cache phase, aggregate summary rows, and the structured
 `prefill_sweep` and `stable_prefix` ranking reports.
+`llm-engine bench qwen-mlx-tool-normalized` remains available as a compatibility
+launcher and delegates to the `llm-bench` binary.
 
 Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
 disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an
@@ -260,7 +269,7 @@ cargo run -p llm-engine -- serve \
 ```
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-cache-prefill \
   --snapshot "$SNAPSHOT" \
   --warmups 1 \
@@ -306,7 +315,7 @@ cargo run -p llm-engine -- serve --addr 127.0.0.1:3005 --snapshot "$SNAPSHOT" --
 Run the repeatable prefill sweep with:
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-prefill-135k \
   --snapshot "$SNAPSHOT" \
   --samples 3 \
@@ -333,7 +342,7 @@ cargo run -p llm-engine -- serve --addr 127.0.0.1:3003 --snapshot "$SNAPSHOT" --
 ```
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-prefill-135k-experimental \
   --snapshot "$SNAPSHOT" \
   --samples 1 \
@@ -368,7 +377,7 @@ cargo run -p llm-engine -- serve \
 Run the stable prefix probes with:
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-stable-prefix \
   --snapshot "$SNAPSHOT" \
   --samples 3 \
@@ -380,7 +389,7 @@ For routine cache regression smoke checks, run only the stable warm-prefix probe
 and one warm cache phase:
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --sweep-profile qwen-mlx-stable-prefix \
   --snapshot "$SNAPSHOT" \
   --probe-suite stable-prefix-smoke \
@@ -399,7 +408,7 @@ For required-tool TTFT parser experiments, run the bounded matrix against
 separate Kir proxy lanes configured with the MLX tool parser modes under test:
 
 ```sh
-llm-engine bench qwen-mlx-tool-normalized \
+llm-bench qwen-mlx-tool-normalized \
   --probe-suite required-tool-ttft-matrix \
   --lane name=kir-auto,endpoint=http://127.0.0.1:3000,model=local-qwen36-mlx,kind=kir_ai_proxy,tool_parser=auto \
   --lane name=kir-json,endpoint=http://127.0.0.1:3001,model=local-qwen36-mlx,kind=kir_ai_proxy,tool_parser=json \

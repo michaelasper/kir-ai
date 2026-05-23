@@ -14,7 +14,7 @@ default = [
   "tool-calls",
   "bench",
 ]
-bench = ["dep:llm-bench"]
+bench = []
 diagnostics = ["dep:llm-tokenizer"]
 metal = ["llm-native-runtime/metal"]
 mlx = ["dep:reqwest", "dep:sha2", "dep:url"]
@@ -34,7 +34,6 @@ getrandom.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-backend-contracts = { path = "../llm-backend-contracts" }
-llm-bench = { path = "../llm-bench", optional = true }
 llm-hub = { path = "../llm-hub" }
 llm-models = { path = "../llm-models" }
 llm-native-runtime = { path = "../llm-native-runtime", default-features = false }

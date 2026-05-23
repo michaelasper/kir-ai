@@ -1109,7 +1109,6 @@ dependencies = [
  "llm-api",
  "llm-backend",
  "llm-backend-contracts",
- "llm-bench",
  "llm-hub",
  "llm-models",
  "llm-native-runtime",

@@ -2,7 +2,7 @@
 
 Use `scripts/agentic_overnight_benchmark.py` for long, externally managed
 agentic runs that are too broad for the focused Rust benchmark profiles. Unlike
-`llm-engine bench qwen-mlx-tool-normalized`, this script launches one MLX
+`llm-bench qwen-mlx-tool-normalized`, this script launches one MLX
 sidecar and one Kir proxy per lane, rotates models sequentially to avoid memory
 contention, and writes artifacts under `target/agentic-bench-runs`.
 

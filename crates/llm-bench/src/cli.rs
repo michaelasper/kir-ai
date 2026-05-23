@@ -2,6 +2,8 @@ pub(super) fn print_bench_help() {
     println!(
         "\
 Usage:
+  llm-bench qwen-long-context [OPTIONS]
+  llm-bench qwen-mlx-tool-normalized [OPTIONS]
   llm-engine bench qwen-long-context [OPTIONS]
   llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 

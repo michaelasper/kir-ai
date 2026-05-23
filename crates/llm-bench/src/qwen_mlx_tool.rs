@@ -242,7 +242,9 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
 fn print_help() {
     println!(
         "\
-Usage: llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
+Usage:
+  llm-bench qwen-mlx-tool-normalized [OPTIONS]
+  llm-engine bench qwen-mlx-tool-normalized [OPTIONS]
 
 Options:
   --sweep-profile <name>        Built-in lane matrix: qwen-mlx-cache-prefill, qwen-mlx-prefill-135k, qwen-mlx-prefill-135k-experimental, or qwen-mlx-stable-prefix (requires --snapshot)
