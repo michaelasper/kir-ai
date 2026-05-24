@@ -434,6 +434,20 @@ async fn admin_metrics_response(state: &AppState) -> Result<AdminMetricsResponse
         scheduler_prefill_yield_reacquire_wait_ms_max: nanos_to_millis(
             scheduler.prefill_yield_reacquire_wait_nanos_max,
         ),
+        scheduler_prefill_chunk_latency_ms: LatencySummary::from_nanos(
+            scheduler.prefill_chunk_latency_count,
+            scheduler.prefill_chunk_latency_nanos_total,
+            scheduler.prefill_chunk_latency_nanos_min,
+            scheduler.prefill_chunk_latency_nanos_max,
+        ),
+        scheduler_decode_starvation_events: scheduler.decode_starvation_events,
+        scheduler_decode_starvation_waits: scheduler.decode_starvation_waits,
+        scheduler_decode_starvation_wait_ms_total: nanos_to_millis(
+            scheduler.decode_starvation_wait_nanos_total,
+        ),
+        scheduler_decode_starvation_wait_ms_max: nanos_to_millis(
+            scheduler.decode_starvation_wait_nanos_max,
+        ),
         cancelled_requests: metrics.cancelled_requests(),
         no_progress_failures: metrics.no_progress_failures(),
         model_pull_operations: metrics.model_pull_operations(),
@@ -616,6 +630,11 @@ pub(super) struct AdminMetricsResponse {
     scheduler_prefill_yield_reacquire_waits: u64,
     scheduler_prefill_yield_reacquire_wait_ms_total: f64,
     scheduler_prefill_yield_reacquire_wait_ms_max: f64,
+    scheduler_prefill_chunk_latency_ms: LatencySummary,
+    scheduler_decode_starvation_events: u64,
+    scheduler_decode_starvation_waits: u64,
+    scheduler_decode_starvation_wait_ms_total: f64,
+    scheduler_decode_starvation_wait_ms_max: f64,
     cancelled_requests: u64,
     no_progress_failures: u64,
     model_pull_operations: u64,
@@ -668,6 +687,16 @@ impl LatencySummary {
             min: metrics.min_ms(),
             max: metrics.max_ms(),
             avg: metrics.avg_ms(),
+        }
+    }
+
+    fn from_nanos(count: u64, total_nanos: u64, min_nanos: u64, max_nanos: u64) -> Self {
+        let avg_nanos = total_nanos.checked_div(count).unwrap_or(0);
+        Self {
+            count,
+            min: nanos_to_millis(min_nanos),
+            max: nanos_to_millis(max_nanos),
+            avg: nanos_to_millis(avg_nanos),
         }
     }
 }

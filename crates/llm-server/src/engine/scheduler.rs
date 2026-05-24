@@ -133,6 +133,14 @@ struct ModelSchedulerState {
     prefill_yield_reacquire_waits: u64,
     prefill_yield_reacquire_wait_nanos_total: u64,
     prefill_yield_reacquire_wait_nanos_max: u64,
+    prefill_chunk_latency_count: u64,
+    prefill_chunk_latency_nanos_total: u64,
+    prefill_chunk_latency_nanos_min: u64,
+    prefill_chunk_latency_nanos_max: u64,
+    decode_starvation_events: u64,
+    decode_starvation_waits: u64,
+    decode_starvation_wait_nanos_total: u64,
+    decode_starvation_wait_nanos_max: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,6 +232,40 @@ impl ModelSchedulerState {
             .saturating_add(wait_nanos);
         self.prefill_yield_reacquire_wait_nanos_max =
             self.prefill_yield_reacquire_wait_nanos_max.max(wait_nanos);
+    }
+
+    fn record_prefill_chunk_latency(&mut self, latency: Duration) {
+        let latency_nanos = duration_nanos_u64(latency);
+        if self.prefill_chunk_latency_count == 0 {
+            self.prefill_chunk_latency_nanos_min = latency_nanos;
+        } else {
+            self.prefill_chunk_latency_nanos_min =
+                self.prefill_chunk_latency_nanos_min.min(latency_nanos);
+        }
+        self.prefill_chunk_latency_count = self.prefill_chunk_latency_count.saturating_add(1);
+        self.prefill_chunk_latency_nanos_total = self
+            .prefill_chunk_latency_nanos_total
+            .saturating_add(latency_nanos);
+        self.prefill_chunk_latency_nanos_max =
+            self.prefill_chunk_latency_nanos_max.max(latency_nanos);
+    }
+
+    fn record_decode_starvation_wait(&mut self, wait: Duration) {
+        let wait_nanos = duration_nanos_u64(wait);
+        self.decode_starvation_waits = self.decode_starvation_waits.saturating_add(1);
+        self.decode_starvation_wait_nanos_total = self
+            .decode_starvation_wait_nanos_total
+            .saturating_add(wait_nanos);
+        self.decode_starvation_wait_nanos_max =
+            self.decode_starvation_wait_nanos_max.max(wait_nanos);
+    }
+
+    fn record_decode_starvation_event(&mut self) {
+        self.decode_starvation_events = self.decode_starvation_events.saturating_add(1);
+    }
+
+    fn has_prefill_pressure(&self) -> bool {
+        self.active_prefill > 0 || !self.queued_prefill.is_empty()
     }
 
     fn next_admissible_class(&self, prefill_burst: usize) -> Option<SchedulerClass> {
@@ -380,6 +422,17 @@ impl SharedSchedulerPermit {
         }
     }
 
+    pub(super) fn record_prefill_chunk_latency(&self, latency: Duration) {
+        let scheduler = self
+            .inner
+            .lock_or_panic("scheduler permit")
+            .as_ref()
+            .map(|permit| Arc::clone(&permit.scheduler));
+        if let Some(scheduler) = scheduler {
+            scheduler.record_prefill_chunk_latency(latency);
+        }
+    }
+
     pub(super) async fn yield_prefill_chunk(
         &self,
         cancellation: &CancellationToken,
@@ -416,6 +469,8 @@ struct QueuedSchedulerTicket {
     class: SchedulerClass,
     admitted: bool,
     timeout: bool,
+    queued_at: Instant,
+    decode_starvation: bool,
 }
 
 impl QueuedSchedulerTicket {
@@ -425,6 +480,10 @@ impl QueuedSchedulerTicket {
 
     fn timed_out(&mut self) {
         self.timeout = true;
+    }
+
+    fn decode_starvation_wait(&self) -> Option<Duration> {
+        self.decode_starvation.then(|| self.queued_at.elapsed())
     }
 }
 
@@ -466,6 +525,14 @@ pub(super) struct ModelSchedulerSnapshot {
     pub(super) prefill_yield_reacquire_waits: u64,
     pub(super) prefill_yield_reacquire_wait_nanos_total: u64,
     pub(super) prefill_yield_reacquire_wait_nanos_max: u64,
+    pub(super) prefill_chunk_latency_count: u64,
+    pub(super) prefill_chunk_latency_nanos_total: u64,
+    pub(super) prefill_chunk_latency_nanos_min: u64,
+    pub(super) prefill_chunk_latency_nanos_max: u64,
+    pub(super) decode_starvation_events: u64,
+    pub(super) decode_starvation_waits: u64,
+    pub(super) decode_starvation_wait_nanos_total: u64,
+    pub(super) decode_starvation_wait_nanos_max: u64,
 }
 
 impl ModelSchedulerSnapshot {
@@ -533,6 +600,9 @@ impl ModelScheduler {
             let notified = self.notify.notified();
             tokio::pin!(notified);
             if let Some(permit) = self.try_admit_queued(ticket.id, admission_class, initial_phase) {
+                if let Some(wait) = ticket.decode_starvation_wait() {
+                    self.record_decode_starvation_wait(wait);
+                }
                 ticket.admitted();
                 return Self::admit_unless_cancelled(permit, cancellation);
             }
@@ -596,6 +666,10 @@ impl ModelScheduler {
         if state.queued_total() >= self.options.queue_limit {
             return Err(SchedulerAcquireError::QueueFull);
         }
+        let decode_starvation = class == SchedulerClass::Decode && state.has_prefill_pressure();
+        if decode_starvation {
+            state.record_decode_starvation_event();
+        }
         state.next_ticket += 1;
         let id = state.next_ticket;
         state.queue_mut(class).push_back(id);
@@ -607,6 +681,8 @@ impl ModelScheduler {
             class,
             admitted: false,
             timeout: false,
+            queued_at: Instant::now(),
+            decode_starvation,
         })
     }
 
@@ -657,7 +733,27 @@ impl ModelScheduler {
             prefill_yield_reacquire_wait_nanos_total: state
                 .prefill_yield_reacquire_wait_nanos_total,
             prefill_yield_reacquire_wait_nanos_max: state.prefill_yield_reacquire_wait_nanos_max,
+            prefill_chunk_latency_count: state.prefill_chunk_latency_count,
+            prefill_chunk_latency_nanos_total: state.prefill_chunk_latency_nanos_total,
+            prefill_chunk_latency_nanos_min: state.prefill_chunk_latency_nanos_min,
+            prefill_chunk_latency_nanos_max: state.prefill_chunk_latency_nanos_max,
+            decode_starvation_events: state.decode_starvation_events,
+            decode_starvation_waits: state.decode_starvation_waits,
+            decode_starvation_wait_nanos_total: state.decode_starvation_wait_nanos_total,
+            decode_starvation_wait_nanos_max: state.decode_starvation_wait_nanos_max,
         }
+    }
+
+    fn record_prefill_chunk_latency(&self, latency: Duration) {
+        self.state
+            .lock_or_panic("scheduler")
+            .record_prefill_chunk_latency(latency);
+    }
+
+    fn record_decode_starvation_wait(&self, wait: Duration) {
+        self.state
+            .lock_or_panic("scheduler")
+            .record_decode_starvation_wait(wait);
     }
 }
 
@@ -901,6 +997,9 @@ mod tests {
         })
         .await
         .expect("decode queues behind active prefill");
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.decode_starvation_events, 1);
+        assert_eq!(snapshot.decode_starvation_waits, 0);
 
         let mut yield_prefill = Box::pin(prefill.yield_prefill_chunk(&prefill_cancellation));
         let decode_permit = tokio::select! {
@@ -930,6 +1029,26 @@ mod tests {
         assert_eq!(snapshot.prefill_yields, 1);
         assert_eq!(snapshot.prefill_yields_to_decode, 1);
         assert_eq!(snapshot.prefill_yield_reacquire_waits, 1);
+        assert_eq!(snapshot.decode_starvation_events, 1);
+        assert_eq!(snapshot.decode_starvation_waits, 1);
+        assert!(
+            snapshot.decode_starvation_wait_nanos_total
+                >= snapshot.decode_starvation_wait_nanos_max
+        );
+    }
+
+    #[test]
+    fn prefill_chunk_latency_snapshot_tracks_count_and_bounds() {
+        let scheduler = ModelScheduler::new(test_options());
+
+        scheduler.record_prefill_chunk_latency(Duration::from_millis(5));
+        scheduler.record_prefill_chunk_latency(Duration::from_millis(2));
+
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.prefill_chunk_latency_count, 2);
+        assert_eq!(snapshot.prefill_chunk_latency_nanos_min, 2_000_000);
+        assert_eq!(snapshot.prefill_chunk_latency_nanos_max, 5_000_000);
+        assert_eq!(snapshot.prefill_chunk_latency_nanos_total, 7_000_000);
     }
 
     #[tokio::test]

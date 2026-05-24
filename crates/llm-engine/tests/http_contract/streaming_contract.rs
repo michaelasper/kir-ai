@@ -639,6 +639,25 @@ async fn chat_stream_prefill_progress_yields_scheduler_slot_to_decode_request() 
     .await;
     assert_eq!(metrics["scheduler_failed_requests"], 0);
     assert_eq!(metrics["scheduler_cancelled_requests"], 0);
+    assert_eq!(metrics["scheduler_prefill_chunk_latency_ms"]["count"], 1);
+    assert!(
+        metrics["scheduler_prefill_chunk_latency_ms"]["max"]
+            .as_f64()
+            .expect("prefill chunk max latency is numeric")
+            >= metrics["scheduler_prefill_chunk_latency_ms"]["min"]
+                .as_f64()
+                .expect("prefill chunk min latency is numeric")
+    );
+    assert_eq!(metrics["scheduler_decode_starvation_events"], 1);
+    assert_eq!(metrics["scheduler_decode_starvation_waits"], 1);
+    assert!(
+        metrics["scheduler_decode_starvation_wait_ms_total"]
+            .as_f64()
+            .expect("decode starvation total wait is numeric")
+            >= metrics["scheduler_decode_starvation_wait_ms_max"]
+                .as_f64()
+                .expect("decode starvation max wait is numeric")
+    );
 }
 
 #[tokio::test]

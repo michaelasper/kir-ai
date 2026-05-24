@@ -181,6 +181,11 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `scheduler_prefill_yield_reacquire_waits`: Successful prefill yield reacquisitions.
 - `scheduler_prefill_yield_reacquire_wait_ms_total`: Total scheduler wait time, in milliseconds, for successful prefill yield reacquisitions.
 - `scheduler_prefill_yield_reacquire_wait_ms_max`: Maximum scheduler wait time, in milliseconds, for a successful prefill yield reacquisition.
+- `scheduler_prefill_chunk_latency_ms`: Summary of server-observed latency for streamed prefill progress chunks.
+- `scheduler_decode_starvation_events`: Decode requests that entered the scheduler queue behind active or queued prefill work.
+- `scheduler_decode_starvation_waits`: Starved decode requests that were eventually admitted.
+- `scheduler_decode_starvation_wait_ms_total`: Total scheduler wait time, in milliseconds, for starved decode requests that were admitted.
+- `scheduler_decode_starvation_wait_ms_max`: Maximum scheduler wait time, in milliseconds, for a starved decode request that was admitted.
 - `cancelled_requests`: Cumulative admin-triggered cancellations.
 - `no_progress_failures`: Cumulative failures due to lack of progress.
 - `model_pull_operations`: Total model pull attempts.

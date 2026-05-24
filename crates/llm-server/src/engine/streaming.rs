@@ -127,6 +127,7 @@ where
                             }
                             return;
                         }
+                        lifecycle.record_prefill_progress(&progress);
                         yield sse_json_event(progress);
                     }
                     EngineStreamStep::InternalProgress { bytes } => {
@@ -315,6 +316,7 @@ pub(super) struct StreamRunLifecycle {
     scheduler_slot: SharedSchedulerPermit,
     phase: GenerationPhaseGuard,
     request_started: Instant,
+    prefill_chunk_started: Instant,
     cache_identity: Option<RequestCacheIdentity>,
     tool_stream: PendingToolStreamObservation,
     terminal: Option<StreamTerminalOutcome>,
@@ -339,6 +341,7 @@ impl StreamRunLifecycle {
             scheduler_slot,
             phase,
             request_started,
+            prefill_chunk_started: Instant::now(),
             cache_identity: None,
             tool_stream,
             terminal: None,
@@ -367,6 +370,16 @@ impl StreamRunLifecycle {
     fn transition_to_decode(&mut self) {
         self.phase.transition_to_decode();
         self.scheduler_slot.transition_to_decode();
+    }
+
+    fn record_prefill_progress(&mut self, progress: &BackendStreamProgress) {
+        if !matches!(progress, BackendStreamProgress::PrefillProgress { .. }) {
+            return;
+        }
+        let now = Instant::now();
+        self.scheduler_slot
+            .record_prefill_chunk_latency(now.duration_since(self.prefill_chunk_started));
+        self.prefill_chunk_started = now;
     }
 
     fn finish_success(
