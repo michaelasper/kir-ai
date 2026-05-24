@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.49.0](https://github.com/michaelasper/kir-ai/compare/v1.48.0...v1.49.0) (2026-05-24)
+
+### Features
+
+* **COR-309:** add agentic benchmark diagnostics ([b6d1c02](https://github.com/michaelasper/kir-ai/commit/b6d1c0248d7107fc713129af414d6e71d1daf146))
+
 ## [1.48.0](https://github.com/michaelasper/kir-ai/compare/v1.47.0...v1.48.0) (2026-05-24)
 
 ### Features
