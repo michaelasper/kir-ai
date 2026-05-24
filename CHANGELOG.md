@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.7](https://github.com/michaelasper/kir-ai/compare/v1.46.6...v1.46.7) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-256:** stream native tokenizer deltas incrementally ([59426b4](https://github.com/michaelasper/kir-ai/commit/59426b41ddce53c0aeb671a2368ebdc5533b1c62))
+
 ## [1.46.6](https://github.com/michaelasper/kir-ai/compare/v1.46.5...v1.46.6) (2026-05-24)
 
 ### Performance Improvements
