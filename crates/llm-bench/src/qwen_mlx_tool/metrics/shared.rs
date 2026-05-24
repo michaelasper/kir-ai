@@ -89,24 +89,6 @@ pub(in crate::qwen_mlx_tool) fn average_f64(values: impl Iterator<Item = f64>) -
     (count > 0).then_some(total / count as f64)
 }
 
-pub(in crate::qwen_mlx_tool) fn probe_case_names(
-    probes: &[NormalizedProbePlan],
-) -> Vec<&'static str> {
-    unique_probe_names(probes.iter().map(|probe| probe.case.name()))
-}
-
-pub(in crate::qwen_mlx_tool) fn probe_schema_variant_names(
-    probes: &[NormalizedProbePlan],
-) -> Vec<&'static str> {
-    unique_probe_names(probes.iter().map(|probe| probe.schema_variant.name()))
-}
-
-pub(in crate::qwen_mlx_tool) fn probe_tool_choice_variant_names(
-    probes: &[NormalizedProbePlan],
-) -> Vec<&'static str> {
-    unique_probe_names(probes.iter().map(|probe| probe.tool_choice_variant.name()))
-}
-
 #[cfg(test)]
 pub(in crate::qwen_mlx_tool) fn unique_probe_max_tokens(
     probes: &[NormalizedProbePlan],
@@ -115,18 +97,6 @@ pub(in crate::qwen_mlx_tool) fn unique_probe_max_tokens(
     for max_tokens in probes.iter().map(|probe| probe.max_tokens) {
         if !unique.contains(&max_tokens) {
             unique.push(max_tokens);
-        }
-    }
-    unique
-}
-
-pub(in crate::qwen_mlx_tool) fn unique_probe_names(
-    names: impl Iterator<Item = &'static str>,
-) -> Vec<&'static str> {
-    let mut unique = Vec::new();
-    for name in names {
-        if !unique.contains(&name) {
-            unique.push(name);
         }
     }
     unique
