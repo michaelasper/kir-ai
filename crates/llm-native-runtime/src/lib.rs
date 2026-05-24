@@ -1,5 +1,7 @@
 #[cfg(feature = "native-gemma")]
 mod fs_util;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+mod kv_sync;
 #[cfg(feature = "native-gemma")]
 mod native_gemma;
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
