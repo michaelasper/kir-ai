@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.1](https://github.com/michaelasper/kir-ai/compare/v1.46.0...v1.46.1) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-364:** add structured server access logs ([8b0d177](https://github.com/michaelasper/kir-ai/commit/8b0d177d1f1eaf38e6e93404e38f7e02145a234c))
+
 ## [1.46.0](https://github.com/michaelasper/kir-ai/compare/v1.45.0...v1.46.0) (2026-05-24)
 
 ### Features
