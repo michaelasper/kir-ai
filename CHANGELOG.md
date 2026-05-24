@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.2](https://github.com/michaelasper/kir-ai/compare/v1.56.1...v1.56.2) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-288:** isolate native startup cache identity IO ([50234fb](https://github.com/michaelasper/kir-ai/commit/50234fbf6c4f170cd191aaf49a1ec1fbe2be5310))
+
 ## [1.56.1](https://github.com/michaelasper/kir-ai/compare/v1.56.0...v1.56.1) (2026-05-24)
 
 ### Bug Fixes
