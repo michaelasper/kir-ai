@@ -1,62 +1,102 @@
 use crate::{ModelFamily, ModelSpec, ModelSpecError, SafetensorsIndex};
 use serde::{Deserialize, Serialize};
 
+/// Attention implementation used by a Gemma decoder layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GemmaAttentionKind {
+    /// Sliding-window local attention.
     SlidingAttention,
+    /// Full self-attention.
     FullAttention,
 }
 
+/// Safetensors naming/layout flavor for Gemma artifacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GemmaWeightLayout {
+    /// Conditional generation model with a nested text model.
     ConditionalLanguageModel,
+    /// Text-only model layout.
     TextOnly,
 }
 
+/// Normalized Gemma text model configuration for native loaders.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GemmaModelSpec {
+    /// Model family, always Gemma.
     pub family: ModelFamily,
+    /// Hugging Face architecture name.
     pub architecture: String,
+    /// Top-level model type.
     pub model_type: String,
+    /// Text submodel type.
     pub text_model_type: String,
+    /// Weight naming/layout flavor.
     pub weight_layout: GemmaWeightLayout,
+    /// Decoder hidden size.
     pub hidden_size: u32,
+    /// Hidden size used by per-layer input embeddings.
     pub hidden_size_per_layer_input: u32,
+    /// RMS normalization epsilon.
     pub rms_norm_eps: f32,
+    /// Whether input embeddings are tied to the output projection.
     pub tie_word_embeddings: bool,
+    /// Rotary base theta for full attention layers.
     pub full_rope_theta: f32,
+    /// Fraction of full-attention heads using rotary embeddings.
     pub full_partial_rotary_factor: f32,
+    /// Rotary base theta for sliding attention layers.
     pub sliding_rope_theta: f32,
+    /// Sliding-window attention width.
     pub sliding_window: u32,
+    /// Number of decoder layers.
     pub num_hidden_layers: u32,
+    /// Number of attention query heads.
     pub num_attention_heads: u32,
+    /// Number of key/value heads for local layers.
     pub num_key_value_heads: u32,
+    /// Optional number of key/value heads for global attention layers.
     pub num_global_key_value_heads: Option<u32>,
+    /// Number of layers that share key/value tensors.
     pub num_kv_shared_layers: u32,
+    /// Local attention head dimension.
     pub head_dim: u32,
+    /// Optional global attention head dimension.
     pub global_head_dim: Option<u32>,
+    /// MLP intermediate size.
     pub intermediate_size: u32,
+    /// Maximum supported context length.
     pub max_position_embeddings: u32,
+    /// Vocabulary size.
     pub vocab_size: u32,
+    /// Vocabulary size for per-layer input embeddings.
     pub vocab_size_per_layer_input: u32,
+    /// Whether attention key and value projections share weights.
     pub attention_k_eq_v: bool,
+    /// Whether MoE blocks are enabled.
     pub enable_moe_block: bool,
+    /// Optional number of routed experts.
     pub num_experts: Option<u32>,
+    /// Optional number of experts selected per token.
     pub top_k_experts: Option<u32>,
+    /// Optional MoE intermediate size.
     pub moe_intermediate_size: Option<u32>,
+    /// Whether the MLP uses double-wide projection tensors.
     pub use_double_wide_mlp: bool,
+    /// Attention kind for each decoder layer.
     pub layer_kinds: Vec<GemmaAttentionKind>,
 }
 
 impl GemmaModelSpec {
+    /// Parses a Gemma config JSON document.
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
         Self::from_config_value(value)
     }
 
+    /// Parses a Gemma config JSON value.
     pub fn from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
         let model_type = value
             .get("model_type")

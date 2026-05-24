@@ -2,10 +2,12 @@ use crate::{ParsedAssistant, ParserError};
 use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
+/// Parser for Gemma text output with reasoning channels and `<|tool_call>` blocks.
 #[derive(Debug, Default, Clone)]
 pub struct GemmaParser;
 
 impl GemmaParser {
+    /// Parses one complete assistant output into reasoning, content, and tool calls.
     pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
         reject_gemma_multimodal_markers(text)?;
         let text = trim_gemma_after_stop_control(text);

@@ -1,3 +1,10 @@
+//! Backend contract types shared by the runtime and backend implementations.
+//!
+//! This crate defines the narrow interface a model backend must implement:
+//! accept validated/rendered prompts, advertise capabilities, report health,
+//! stream progress, and return structured failures that the runtime can map to
+//! API-visible errors.
+
 use async_trait::async_trait;
 use futures::{
     StreamExt,
@@ -9,16 +16,28 @@ use std::{fmt, sync::Arc};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+/// Rendered generation request sent from the runtime to a backend.
+///
+/// API request validation and prompt rendering have already happened when this
+/// type is created. Backends should treat `kind` as the semantic request shape
+/// and should reject unsupported fields with `BackendError::unsupported_request`
+/// rather than silently ignoring them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendRequest {
+    /// Model identifier selected by the original API request.
     pub model: String,
+    /// Optional maximum number of generated tokens.
     pub max_tokens: Option<u32>,
+    /// Sampling configuration normalized from OpenAI controls.
     pub sampling: SamplingConfig,
+    /// Rendered request payload.
     pub kind: BackendRequestKind,
+    /// Optional hook used to coordinate streaming prefill admission.
     pub prefill_chunk_admission: Option<BackendPrefillChunkAdmissionHook>,
 }
 
 impl BackendRequest {
+    /// Builds a raw completion request with a default raw-prompt cache context.
     pub fn raw_completion(
         model: impl Into<String>,
         prompt: impl Into<String>,
@@ -34,6 +53,7 @@ impl BackendRequest {
         )
     }
 
+    /// Builds a raw completion request with an explicit cache context.
     pub fn raw_completion_with_cache_context(
         model: impl Into<String>,
         prompt: impl Into<String>,
@@ -53,6 +73,7 @@ impl BackendRequest {
         }
     }
 
+    /// Builds a chat completion request after chat-template rendering.
     #[allow(clippy::too_many_arguments)]
     pub fn chat_completion(
         model: impl Into<String>,
@@ -79,6 +100,7 @@ impl BackendRequest {
         }
     }
 
+    /// Returns the rendered prompt text regardless of request kind.
     pub fn prompt(&self) -> &str {
         match &self.kind {
             BackendRequestKind::RawCompletion(request) => &request.prompt,
@@ -86,6 +108,7 @@ impl BackendRequest {
         }
     }
 
+    /// Returns immutable cache context for the rendered prompt.
     pub fn cache_context(&self) -> &BackendCacheContext {
         match &self.kind {
             BackendRequestKind::RawCompletion(request) => &request.cache_context,
@@ -93,6 +116,7 @@ impl BackendRequest {
         }
     }
 
+    /// Returns mutable cache context for request staging and tests.
     pub fn cache_context_mut(&mut self) -> &mut BackendCacheContext {
         match &mut self.kind {
             BackendRequestKind::RawCompletion(request) => &mut request.cache_context,
@@ -100,6 +124,7 @@ impl BackendRequest {
         }
     }
 
+    /// Returns the raw completion payload when this is a raw request.
     pub fn as_raw_completion(&self) -> Option<&BackendCompletionRequest> {
         match &self.kind {
             BackendRequestKind::RawCompletion(request) => Some(request),
@@ -107,6 +132,7 @@ impl BackendRequest {
         }
     }
 
+    /// Returns the chat payload when this is a chat request.
     pub fn as_chat(&self) -> Option<&BackendChatRequest> {
         match &self.kind {
             BackendRequestKind::RawCompletion(_) => None,
@@ -114,6 +140,7 @@ impl BackendRequest {
         }
     }
 
+    /// Attaches a prefill admission hook to this request.
     pub fn with_prefill_chunk_admission(
         mut self,
         admission: BackendPrefillChunkAdmissionHook,
@@ -122,25 +149,32 @@ impl BackendRequest {
         self
     }
 
+    /// Returns the optional prefill admission hook.
     pub fn prefill_chunk_admission(&self) -> Option<&BackendPrefillChunkAdmissionHook> {
         self.prefill_chunk_admission.as_ref()
     }
 }
 
+/// Async hook invoked by streaming backends between prefill chunks.
+///
+/// Implementations may block to enforce scheduler or test admission ordering.
 #[async_trait]
 pub trait BackendPrefillChunkAdmission: fmt::Debug + Send + Sync + 'static {
+    /// Waits until the next prefill chunk may continue.
     async fn wait_for_next_chunk(
         &self,
         progress: BackendStreamProgress,
     ) -> Result<(), BackendError>;
 }
 
+/// Cloneable dynamic wrapper for a prefill admission hook.
 #[derive(Clone)]
 pub struct BackendPrefillChunkAdmissionHook {
     inner: Arc<dyn BackendPrefillChunkAdmission>,
 }
 
 impl BackendPrefillChunkAdmissionHook {
+    /// Wraps an admission hook for storage on backend requests.
     pub fn new<T>(admission: Arc<T>) -> Self
     where
         T: BackendPrefillChunkAdmission,
@@ -149,6 +183,7 @@ impl BackendPrefillChunkAdmissionHook {
         Self { inner }
     }
 
+    /// Waits until the next prefill chunk may continue.
     pub async fn wait_for_next_chunk(
         &self,
         progress: BackendStreamProgress,
@@ -171,84 +206,125 @@ impl PartialEq for BackendPrefillChunkAdmissionHook {
     }
 }
 
+/// Backend request payload variants.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendRequestKind {
+    /// Raw text prompt without chat semantics.
     RawCompletion(BackendCompletionRequest),
+    /// Chat prompt rendered from messages and tools.
     Chat(BackendChatRequest),
 }
 
+/// Backend payload for a legacy raw completion request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendCompletionRequest {
+    /// Rendered raw prompt text.
     pub prompt: String,
+    /// Cache identity for the prompt.
     pub cache_context: BackendCacheContext,
 }
 
+/// Backend payload for a chat completion request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendChatRequest {
+    /// Rendered chat prompt text.
     pub prompt: String,
+    /// Structured chat context retained for backends that need message/tool metadata.
     pub chat_context: BackendChatContext,
+    /// Required tool choice, if the API request forced a tool.
     pub required_tool_choice: Option<BackendToolChoice>,
+    /// Whether the runtime requires assistant content to parse as a JSON object.
     pub json_object_mode: bool,
+    /// Cache identity for the rendered prompt and tool schema.
     pub cache_context: BackendCacheContext,
 }
 
+/// Structured chat metadata passed alongside a rendered prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendChatContext {
+    /// Original conversation messages after API validation.
     pub messages: Vec<BackendChatMessage>,
+    /// Declared function tools after API validation.
     pub tools: Vec<BackendToolDefinition>,
 }
 
+/// Chat message representation available to backend implementations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackendChatMessage {
+    /// Message role.
     pub role: BackendChatRole,
+    /// Optional text content.
     pub content: Option<String>,
+    /// Optional participant name.
     pub name: Option<String>,
+    /// Tool call identifier answered by a tool result message.
     pub tool_call_id: Option<String>,
+    /// Assistant tool calls on this message.
     pub tool_calls: Vec<BackendToolCall>,
 }
 
+/// Chat message role in backend context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendChatRole {
+    /// System instruction message.
     System,
+    /// User message.
     User,
+    /// Assistant message.
     Assistant,
+    /// Tool result message.
     Tool,
 }
 
+/// Tool call included in backend chat context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackendToolCall {
+    /// Tool call identifier.
     pub id: String,
+    /// Tool call type.
     pub call_type: BackendToolCallType,
+    /// Function payload.
     pub function: BackendToolCallFunction,
 }
 
+/// Tool call type supported by backends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendToolCallType {
+    /// Function call.
     Function,
 }
 
+/// Function call payload in backend chat context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackendToolCallFunction {
+    /// Function name.
     pub name: String,
+    /// Parsed JSON arguments.
     pub arguments: serde_json::Value,
 }
 
+/// Tool definition kind supported by backends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendToolType {
+    /// Function tool.
     Function,
 }
 
+/// Tool declaration passed to a backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackendToolDefinition {
+    /// Tool kind.
     #[serde(rename = "type")]
     pub tool_type: BackendToolType,
+    /// Function schema and metadata.
     pub function: BackendToolFunctionDefinition,
 }
 
 impl BackendToolDefinition {
+    /// Builds a function tool declaration.
     pub fn function(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -265,11 +341,15 @@ impl BackendToolDefinition {
     }
 }
 
+/// Backend-facing function tool definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackendToolFunctionDefinition {
+    /// Function name.
     pub name: String,
+    /// Optional model-facing description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// JSON schema object for function arguments.
     #[serde(default = "empty_backend_tool_parameters")]
     pub parameters: serde_json::Value,
 }
@@ -278,20 +358,30 @@ fn empty_backend_tool_parameters() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// Prompt cache identity attached to backend requests.
+///
+/// The key is derived from the template ID, canonical tool schema, and
+/// family-specific template kwargs rather than from transient request fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {
+    /// Stable hash key for this prompt/cache context.
     pub key: BackendCacheKey,
+    /// Prompt template identifier.
     pub cache_template_id: String,
+    /// Optional canonical tool schema JSON.
     pub tool_schema: Option<String>,
+    /// Optional family-specific chat template kwargs JSON.
     pub chat_template_kwargs: Option<String>,
 }
 
+/// Stable cache key for a rendered prompt context.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheKey {
     value: String,
 }
 
 impl BackendCacheKey {
+    /// Returns the key string, currently prefixed with `sha256:`.
     pub fn as_str(&self) -> &str {
         &self.value
     }
@@ -317,6 +407,7 @@ impl BackendCacheKey {
 }
 
 impl BackendCacheContext {
+    /// Cache context for raw prompt completions.
     pub fn raw_prompt() -> Self {
         let prompt_template = "raw-prompt/v1";
         Self {
@@ -327,10 +418,12 @@ impl BackendCacheContext {
         }
     }
 
+    /// Cache context for a chat template and optional canonical tool schema.
     pub fn chat_template(template_id: impl Into<String>, tool_schema: Option<String>) -> Self {
         Self::chat_template_with_kwargs(template_id, tool_schema, None)
     }
 
+    /// Cache context for a chat template, optional tool schema, and template kwargs.
     pub fn chat_template_with_kwargs(
         template_id: impl Into<String>,
         tool_schema: Option<String>,
@@ -370,19 +463,28 @@ fn update_cache_key_component(hasher: &mut Sha256, name: &str, value: Option<&st
     }
 }
 
+/// Required tool-call policy after runtime request validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendToolChoice {
+    /// At least one declared tool must be called.
     RequiredAny,
+    /// A specific declared function must be called.
     RequiredFunction(String),
 }
 
+/// Backend stop reason normalized for runtime response mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendFinishReason {
+    /// Generation stopped naturally.
     Stop,
+    /// Token limit reached.
     Length,
+    /// Model generated tool calls.
     ToolCalls,
+    /// Content filter stopped generation.
     ContentFilter,
+    /// Backend reported an error finish.
     Error,
 }
 
@@ -395,16 +497,24 @@ pub enum BackendFinishReason {
 /// before generation begins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendCapabilities {
+    /// Backend can handle raw completion requests.
     pub raw_completions: bool,
+    /// Backend can handle chat completion requests.
     pub chat_completions: bool,
+    /// Backend can produce streaming chunks.
     pub streaming: bool,
+    /// Backend can produce or honor tool-call requests.
     pub tool_calls: bool,
+    /// Backend can support JSON-object response mode.
     pub json_object_mode: bool,
+    /// Backend can run deterministic greedy decoding.
     pub sampling_greedy: bool,
+    /// Backend can run top-p sampling.
     pub sampling_top_p: bool,
 }
 
 impl BackendCapabilities {
+    /// Returns the fully capable default contract.
     pub const fn all() -> Self {
         Self {
             raw_completions: true,
@@ -424,12 +534,17 @@ impl Default for BackendCapabilities {
     }
 }
 
+/// Sampling strategy normalized from API controls.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SamplingConfig {
+    /// Deterministic greedy decoding.
     #[default]
     Greedy,
+    /// Temperature/top-p multinomial sampling.
     TopP {
+        /// Sampling temperature.
         temperature: f32,
+        /// Nucleus sampling probability.
         top_p: f32,
     },
 }
@@ -443,6 +558,7 @@ impl SamplingConfig {
         }
     }
 
+    /// Converts OpenAI sampling controls into a backend sampling configuration.
     pub fn from_openai_controls(
         temperature: Option<f32>,
         top_p: Option<f32>,
@@ -461,86 +577,134 @@ impl SamplingConfig {
         })
     }
 
+    /// Returns true for deterministic greedy decoding.
     pub fn is_greedy(self) -> bool {
         matches!(self, Self::Greedy)
     }
 
+    /// Returns true for the default non-greedy OpenAI sampling controls.
     pub fn is_standard(self) -> bool {
         self == Self::standard()
     }
 }
 
+/// Non-streaming backend generation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendOutput {
+    /// Generated text payload.
     pub text: String,
+    /// Prompt tokens consumed.
     pub prompt_tokens: u64,
+    /// Prompt tokens served from cache, if known.
     pub prompt_cached_tokens: Option<u64>,
+    /// Completion tokens generated.
     pub completion_tokens: u64,
+    /// Backend stop reason.
     pub finish_reason: BackendFinishReason,
 }
 
+/// Streaming backend generation chunk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendStreamChunk {
+    /// Text delta from the backend.
     pub text: String,
+    /// Structured tool-call deltas from backends that support native tool streaming.
     pub tool_call_deltas: Vec<BackendToolCallDelta>,
+    /// Highest prompt token count observed so far.
     pub prompt_tokens: u64,
+    /// Highest cached prompt token count observed so far, if known.
     pub prompt_cached_tokens: Option<u64>,
+    /// Completion tokens represented by this chunk.
     pub completion_tokens: u64,
+    /// Optional terminal finish reason.
     pub finish_reason: Option<BackendFinishReason>,
+    /// Optional progress or timing metadata.
     pub progress: Option<BackendStreamProgress>,
 }
 
+/// Backend progress event carried alongside streaming chunks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendStreamProgress {
+    /// Prefill progress for prompt ingestion.
     PrefillProgress {
+        /// Current prefill chunk index.
         chunk: u64,
+        /// Total prefill chunks.
         total: u64,
+        /// Tokens processed in the current progress update.
         tokens: u64,
+        /// Total tokens expected for prefill.
         total_tokens: u64,
     },
+    /// Timing milestone emitted by upstream MLX streaming.
     MlxStreamTiming {
+        /// Milestone reached.
         milestone: BackendStreamTimingMilestone,
+        /// Latency from request start in milliseconds.
         latency_ms: u64,
     },
 }
 
+/// Timing milestone names emitted by streaming backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendStreamTimingMilestone {
+    /// Response headers have been produced.
     ResponseHeaders,
+    /// First upstream byte was received.
     FirstUpstreamByte,
+    /// First parseable chunk was received.
     FirstParsedChunk,
+    /// First tool delta was received.
     FirstToolDelta,
+    /// Upstream stream completed.
     UpstreamComplete,
 }
 
+/// Structured tool-call delta emitted directly by a backend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendToolCallDelta {
+    /// Tool call index.
     pub index: u32,
+    /// Optional tool call identifier.
     pub id: Option<String>,
+    /// Optional tool call type.
     pub call_type: Option<BackendToolCallType>,
+    /// Optional function delta.
     pub function: Option<BackendToolCallFunctionDelta>,
 }
 
+/// Structured function delta emitted directly by a backend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendToolCallFunctionDelta {
+    /// Function name or name fragment.
     pub name: Option<String>,
+    /// JSON argument string or fragment.
     pub arguments: Option<String>,
 }
 
+/// Metadata describing the loaded backend model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendModelMetadata {
+    /// Model identifier served by the backend.
     pub id: String,
+    /// Backend implementation name.
     pub backend: String,
+    /// Optional model family slug.
     pub family: Option<String>,
+    /// Optional quantization label.
     pub quantization: Option<String>,
+    /// Optional source repository ID.
     pub repo_id: Option<String>,
+    /// Optional resolved source commit.
     pub resolved_commit: Option<String>,
+    /// Optional model profile name.
     pub profile: Option<String>,
 }
 
 impl BackendModelMetadata {
+    /// Creates metadata with an ID and backend name.
     pub fn new(id: impl Into<String>, backend: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -553,19 +717,24 @@ impl BackendModelMetadata {
         }
     }
 
+    /// Adds a model family slug to metadata.
     pub fn with_family(mut self, family: impl Into<String>) -> Self {
         self.family = Some(family.into());
         self
     }
 }
 
+/// Readiness state reported by a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendHealthStatus {
+    /// Backend is ready to accept generation requests.
     Ready,
+    /// Backend is not currently able to accept generation requests.
     Unavailable,
 }
 
 impl BackendHealthStatus {
+    /// Stable lowercase status string.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -574,6 +743,7 @@ impl BackendHealthStatus {
     }
 }
 
+/// Backend readiness response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendHealth {
     status: BackendHealthStatus,
@@ -581,6 +751,7 @@ pub struct BackendHealth {
 }
 
 impl BackendHealth {
+    /// Builds a ready health response.
     pub fn ready() -> Self {
         Self {
             status: BackendHealthStatus::Ready,
@@ -588,6 +759,7 @@ impl BackendHealth {
         }
     }
 
+    /// Builds an unavailable health response with a reason.
     pub fn unavailable(reason: impl Into<String>) -> Self {
         Self {
             status: BackendHealthStatus::Unavailable,
@@ -595,31 +767,45 @@ impl BackendHealth {
         }
     }
 
+    /// Returns true when the backend is ready.
     pub fn is_ready(&self) -> bool {
         self.status == BackendHealthStatus::Ready
     }
 
+    /// Returns the backend health status.
     pub fn status(&self) -> BackendHealthStatus {
         self.status
     }
 
+    /// Returns the unavailability reason, if any.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
 }
 
+/// Trait implemented by local model backends.
+///
+/// The runtime calls this trait only after API validation and prompt rendering.
+/// Implementations must preserve cancellation semantics, return structured
+/// `BackendError` values for unsupported or invalid requests, and advertise
+/// narrower capabilities through `capabilities` so the runtime can reject
+/// incompatible OpenAI requests before generation begins.
 #[async_trait]
 pub trait ModelBackend: Send + Sync + 'static {
+    /// Stable model identifier served by this backend.
     fn model_id(&self) -> &str;
 
+    /// Metadata used by model listing, prompt adapter selection, and diagnostics.
     fn model_metadata(&self) -> BackendModelMetadata {
         BackendModelMetadata::new(self.model_id(), "unknown")
     }
 
+    /// Runtime-visible capabilities supported by this backend.
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::all()
     }
 
+    /// Current backend health.
     async fn health(&self) -> BackendHealth {
         BackendHealth::ready()
     }
@@ -637,6 +823,9 @@ pub trait ModelBackend: Send + Sync + 'static {
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError>;
 
+    /// Streaming generation entry point for direct backend callers.
+    ///
+    /// The default adapter wraps `generate` into a single terminal chunk.
     fn generate_stream<'a>(
         &'a self,
         request: BackendRequest,
@@ -657,6 +846,9 @@ pub trait ModelBackend: Send + Sync + 'static {
         .boxed()
     }
 
+    /// Cancellable streaming generation entry point used by the production runtime.
+    ///
+    /// The default adapter wraps `generate_with_cancel` into a single terminal chunk.
     fn generate_stream_with_cancel<'a>(
         &'a self,
         request: BackendRequest,
@@ -736,19 +928,29 @@ const BACKEND_CONFIG_FAILED_CODE: &str = "backend_config_failed";
 const BACKEND_INVARIANT_FAILED_CODE: &str = "backend_invariant_failed";
 const SCHEDULER_OVERLOADED_CODE: &str = "model_overloaded";
 
+/// Coarse failure class for backend errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendFailureClass {
+    /// Generic backend execution failure.
     BackendExecution,
+    /// Scheduler/admission failure.
     Scheduler,
+    /// Tensor loading or tensor metadata failure.
     TensorLoad,
+    /// Tokenizer failure.
     Tokenizer,
+    /// Sampler failure.
     Sampler,
+    /// Metal execution failure.
     Metal,
+    /// Backend configuration failure.
     Config,
+    /// Internal invariant violation.
     InternalInvariant,
 }
 
 impl BackendFailureClass {
+    /// Stable class string for logs and error metadata.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BackendExecution => "backend_execution",
@@ -763,6 +965,11 @@ impl BackendFailureClass {
     }
 }
 
+/// Structured backend error.
+///
+/// Runtime mapping preserves model-not-found, invalid-request, cancellation, and
+/// backend-failure domains so API handlers can return stable phase/error
+/// metadata without parsing display strings.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(transparent)]
 pub struct BackendError {
@@ -800,20 +1007,29 @@ pub(crate) enum BackendErrorKind {
     InternalInvariant(String),
 }
 
+/// Domain projection used by the runtime when mapping backend errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendErrorDomain {
+    /// Requested model is not the backend's loaded model.
     ModelNotFound {
+        /// Requested model ID.
         requested: String,
+        /// Available model ID.
         available: String,
     },
+    /// Request was invalid for backend capabilities or sampling rules.
     InvalidRequest {
+        /// Stable human-readable reason.
         reason: String,
     },
+    /// Backend observed cancellation.
     Cancelled,
+    /// Backend failed during execution.
     BackendFailure(BackendError),
 }
 
 impl BackendError {
+    /// Builds a model-not-found error.
     pub fn model_not_found(requested: impl Into<String>, available: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::ModelNotFound {
@@ -823,28 +1039,33 @@ impl BackendError {
         }
     }
 
+    /// Builds an unsupported backend request error.
     pub fn unsupported_request(message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::UnsupportedRequest(message.into()),
         }
     }
 
+    /// Builds an invalid sampling configuration error.
     pub fn invalid_sampling_config(message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::InvalidSamplingConfig(message.into()),
         }
     }
 
+    /// Builds a cancellation error.
     pub fn cancelled() -> Self {
         Self {
             kind: BackendErrorKind::Cancelled,
         }
     }
 
+    /// Builds a generic backend execution failure.
     pub fn other(message: impl Into<String>) -> Self {
         Self::backend_failure(BACKEND_EXECUTION_FAILED_CODE, message)
     }
 
+    /// Builds a backend execution failure with a stable code.
     pub fn backend_failure(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::BackendFailure {
@@ -854,12 +1075,14 @@ impl BackendError {
         }
     }
 
+    /// Builds a scheduler overload error.
     pub fn scheduler_overloaded(message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::SchedulerOverloaded(message.into()),
         }
     }
 
+    /// Builds a tensor load failure.
     pub fn tensor_load(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::TensorLoad {

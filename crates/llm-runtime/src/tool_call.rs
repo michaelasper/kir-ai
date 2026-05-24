@@ -7,10 +7,13 @@ use llm_api::{
 use llm_backend_contracts::BackendToolChoice;
 use llm_tool_parser::{ParsedAssistant, split_reasoning};
 
+/// Controls how declared tool schemas are serialized for prompt/cache use.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ToolSchemaNormalization {
+    /// Preserve caller-provided JSON member ordering.
     #[default]
     Preserve,
+    /// Canonicalize nested JSON values before rendering/cache identity.
     Canonical,
 }
 

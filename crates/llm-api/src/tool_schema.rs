@@ -2,27 +2,40 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Function tool call emitted by an assistant message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// OpenAI tool call identifier used by later `tool` role messages.
     pub id: String,
+    /// Tool call kind; only function calls are supported.
     #[serde(rename = "type")]
     pub call_type: ToolCallType,
+    /// Function name and parsed arguments.
     pub function: ToolCallFunction,
 }
 
+/// Generates an OpenAI-style opaque tool call identifier.
 pub fn generated_tool_call_id() -> String {
     format!("call_{}", Uuid::new_v4().simple())
 }
 
+/// Supported OpenAI tool call type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallType {
+    /// Function call tool.
     Function,
 }
 
+/// Function payload inside an assistant tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallFunction {
+    /// Function name selected by the model.
     pub name: String,
+    /// Parsed JSON arguments.
+    ///
+    /// On the wire OpenAI encodes tool call arguments as a JSON string; this
+    /// field stores the parsed value so runtime validation can inspect it.
     #[serde(
         serialize_with = "serialize_tool_call_arguments",
         deserialize_with = "deserialize_tool_call_arguments"
@@ -30,14 +43,18 @@ pub struct ToolCallFunction {
     pub arguments: Value,
 }
 
+/// Function tool declaration supplied on a chat completion request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
+    /// Tool kind; only function tools are supported.
     #[serde(rename = "type")]
     pub tool_type: ToolCallType,
+    /// Function schema and metadata.
     pub function: FunctionDefinition,
 }
 
 impl ToolDefinition {
+    /// Builds a function tool declaration with a description and JSON schema parameters.
     pub fn function(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -54,6 +71,10 @@ impl ToolDefinition {
     }
 }
 
+/// Returns tool declarations with deterministic JSON schema member ordering.
+///
+/// The runtime uses this when prompt/cache identity depends on a schema. It
+/// does not validate schema support; request validation is responsible for that.
 pub fn canonicalize_tool_schemas(tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
     tools
         .iter()
@@ -65,11 +86,13 @@ pub fn canonicalize_tool_schemas(tools: &[ToolDefinition]) -> Vec<ToolDefinition
         .collect()
 }
 
+/// Serializes tool declarations after canonicalizing nested JSON values.
 pub fn canonical_tool_schema_json(tools: &[ToolDefinition]) -> serde_json::Result<String> {
     let value = serde_json::to_value(tools)?;
     serde_json::to_string(&canonicalize_json_value(&value))
 }
 
+/// Recursively sorts object members and `required` arrays in a JSON value.
 pub fn canonicalize_json_value(value: &Value) -> Value {
     canonicalize_json_member(None, value)
 }
@@ -102,22 +125,32 @@ fn canonicalize_json_member(key: Option<&str>, value: &Value) -> Value {
     }
 }
 
+/// OpenAI-compatible function tool definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FunctionDefinition {
+    /// Function name exposed to the model.
     pub name: String,
+    /// Optional model-facing description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// JSON schema object for function arguments.
     #[serde(default = "empty_object")]
     pub parameters: Value,
 }
 
+/// Client policy for whether and which tool the assistant should call.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ToolChoice {
+    /// Let the model decide whether to call a tool.
     #[default]
     Auto,
+    /// Require the model to answer without a tool call.
     None,
+    /// Require at least one declared tool call.
     Required,
+    /// Require a specific declared function tool.
     Function {
+        /// Required function name.
         name: String,
     },
 }

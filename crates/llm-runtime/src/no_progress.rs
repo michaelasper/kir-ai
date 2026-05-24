@@ -10,19 +10,32 @@ use std::collections::BTreeSet;
 use crate::adapters::ToolMarkupPolicy;
 use crate::response_validation::schema_requires_string_intent_argument;
 
+/// Runtime classification for generations that produced no useful assistant progress.
+///
+/// These classes are observable through runtime errors and server error codes,
+/// so new variants should represent distinct client-actionable failure modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoProgressClass {
+    /// The backend returned no visible content.
     EmptyCompletion,
+    /// The backend spent many tokens while still returning no visible content.
     EmptyHighOutputCompletion,
+    /// The model produced hidden reasoning only.
     HiddenOnlyOutput,
+    /// A required tool call was pending but the model produced plain text.
     TextFallbackRequiredTool,
+    /// The model repeated an invalid failed tool call exactly.
     RepeatedInvalidToolCall,
+    /// The model repeated an invalid failed tool call with the same argument shape.
     FuzzyRepeatedInvalidToolCall,
+    /// The assistant repeated earlier assistant content.
     RepeatedAssistantContent,
+    /// The assistant produced content that appears to continue a stalled turn.
     StalledAssistantTurn,
 }
 
 impl NoProgressClass {
+    /// Stable machine-readable code used in API error metadata.
     pub fn code(self) -> &'static str {
         match self {
             Self::EmptyCompletion => "no_progress_empty_completion",
@@ -37,6 +50,7 @@ impl NoProgressClass {
     }
 }
 
+/// Classifies raw text completions that produced no visible content.
 pub fn classify_no_progress(content: &str, completion_tokens: u64) -> Option<NoProgressClass> {
     if content.trim().is_empty() && completion_tokens >= 1024 {
         return Some(NoProgressClass::EmptyHighOutputCompletion);

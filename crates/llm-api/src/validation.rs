@@ -13,6 +13,11 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+/// A request value that has passed API validation with a specific limit set.
+///
+/// Runtime paths accept this wrapper when they need to prove validation already
+/// happened before acquiring backend resources. The stored `RequestLimits`
+/// lets the runtime revalidate if its configured limits differ from the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validated<T> {
     inner: T,
@@ -20,10 +25,12 @@ pub struct Validated<T> {
 }
 
 impl<T> Validated<T> {
+    /// Returns the limit profile used for validation.
     pub fn request_limits(&self) -> RequestLimits {
         self.request_limits
     }
 
+    /// Consumes the wrapper and returns the validated request value.
     pub fn into_inner(self) -> T {
         self.inner
     }
@@ -35,11 +42,18 @@ impl<T> AsRef<T> for Validated<T> {
     }
 }
 
+/// Validation contract implemented by public API request types.
+///
+/// Implementations should reject unsupported OpenAI features explicitly instead
+/// of silently ignoring them, preserving the local runtime's fail-closed
+/// behavior before prompt rendering and backend dispatch.
 pub trait ValidateRequest {
+    /// Validates with the crate default request limits.
     fn validate(&self) -> Result<(), ApiError> {
         self.validate_with_limits(RequestLimits::default())
     }
 
+    /// Validates and wraps the request with the default limit profile.
     fn into_validated(self) -> Result<Validated<Self>, ApiError>
     where
         Self: Sized,
@@ -47,6 +61,7 @@ pub trait ValidateRequest {
         self.into_validated_with_limits(RequestLimits::default())
     }
 
+    /// Validates and wraps the request with caller-provided limits.
     fn into_validated_with_limits(self, limits: RequestLimits) -> Result<Validated<Self>, ApiError>
     where
         Self: Sized,
@@ -58,6 +73,7 @@ pub trait ValidateRequest {
         })
     }
 
+    /// Validates with caller-provided size and body limits.
     fn validate_with_limits(&self, limits: RequestLimits) -> Result<(), ApiError>;
 }
 
@@ -195,6 +211,7 @@ impl ValidateRequest for CompletionRequest {
     }
 }
 
+/// Deserializes OpenAI `stop` from either a single string, array of strings, or null.
 pub fn deserialize_stop_sequences<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,

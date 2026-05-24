@@ -2,49 +2,80 @@ use crate::{ModelFamily, ModelSpec, SafetensorsIndex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Attention implementation used by a Qwen decoder layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionKind {
+    /// Linear attention layer.
     LinearAttention,
+    /// Full self-attention layer.
     FullAttention,
 }
 
+/// Normalized Qwen text model configuration for native loaders.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QwenModelSpec {
+    /// Model family, always Qwen.
     pub family: ModelFamily,
+    /// Hugging Face architecture name.
     pub architecture: String,
+    /// Top-level model type.
     pub model_type: String,
+    /// Text submodel type.
     pub text_model_type: String,
+    /// Decoder hidden size.
     pub hidden_size: u32,
+    /// RMS normalization epsilon.
     pub rms_norm_eps: f32,
+    /// Whether input embeddings are tied to the output projection.
     pub tie_word_embeddings: bool,
+    /// Rotary embedding base theta.
     pub rope_theta: f32,
+    /// Fraction of each attention head that uses rotary embeddings.
     pub partial_rotary_factor: f32,
+    /// Number of decoder layers.
     pub num_hidden_layers: u32,
+    /// Number of attention query heads.
     pub num_attention_heads: u32,
+    /// Number of key/value heads for full attention.
     pub num_key_value_heads: u32,
+    /// Dimension of each attention head.
     pub head_dim: u32,
+    /// Number of key heads for linear attention layers.
     pub linear_num_key_heads: u32,
+    /// Number of value heads for linear attention layers.
     pub linear_num_value_heads: u32,
+    /// Key head dimension for linear attention layers.
     pub linear_key_head_dim: u32,
+    /// Value head dimension for linear attention layers.
     pub linear_value_head_dim: u32,
+    /// Convolution kernel width for linear attention layers.
     pub linear_conv_kernel_dim: u32,
+    /// Number of routed experts.
     pub num_experts: u32,
+    /// Experts selected per token.
     pub num_experts_per_tok: u32,
+    /// Intermediate size for routed experts.
     pub moe_intermediate_size: u32,
+    /// Intermediate size for the shared expert.
     pub shared_expert_intermediate_size: u32,
+    /// Maximum supported context length.
     pub max_position_embeddings: u32,
+    /// Vocabulary size.
     pub vocab_size: u32,
+    /// Attention kind for each decoder layer.
     pub layer_kinds: Vec<AttentionKind>,
 }
 
 impl QwenModelSpec {
+    /// Parses a Qwen config JSON document.
     pub fn from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let config: RawQwenConfig = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
         Self::from_raw_config(config)
     }
 
+    /// Parses a Qwen config JSON value.
     pub fn from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
         let config: RawQwenConfig = serde_json::from_value(value)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
@@ -394,6 +425,10 @@ struct RawRopeParameters {
     partial_rotary_factor: Option<f32>,
 }
 
+/// Error returned while parsing or validating model configuration.
+///
+/// The code mirrors API error categories so callers can distinguish unsupported
+/// model capabilities from malformed model artifacts.
 #[derive(Debug, Error)]
 #[error("{code}: {message}")]
 pub struct ModelSpecError {
@@ -402,6 +437,7 @@ pub struct ModelSpecError {
 }
 
 impl ModelSpecError {
+    /// Stable machine-readable error code.
     pub fn code(&self) -> &'static str {
         self.code
     }

@@ -28,6 +28,12 @@ impl<B> Runtime<B>
 where
     B: ModelBackend,
 {
+    /// Runs a non-streaming chat completion request to completion.
+    ///
+    /// This entry point validates the request with the runtime's limits, rejects
+    /// `stream: true`, renders the family-specific chat prompt, dispatches the
+    /// backend, then parses and validates the assistant message before returning
+    /// the OpenAI-compatible response.
     pub async fn chat(
         &self,
         request: ChatCompletionRequest,
@@ -36,6 +42,10 @@ where
             .await
     }
 
+    /// Runs a non-streaming chat completion request with caller-controlled cancellation.
+    ///
+    /// A pre-cancelled token is forwarded to the backend after request validation;
+    /// validation errors are returned before generation is attempted.
     pub async fn chat_with_cancel(
         &self,
         request: ChatCompletionRequest,
@@ -45,6 +55,7 @@ where
         self.chat_validated_with_cancel(request, cancellation).await
     }
 
+    /// Runs a chat request that a caller has already validated.
     #[doc(hidden)]
     pub async fn chat_validated_with_cancel(
         &self,
@@ -81,6 +92,12 @@ where
         })
     }
 
+    /// Starts a streaming chat completion request.
+    ///
+    /// The returned stream emits runtime events that can be translated to SSE
+    /// chunks and a terminal `[DONE]`. Content may be buffered until stop
+    /// sequence, JSON-object, or tool-call validation can prove it is safe to
+    /// expose as successful deltas.
     pub async fn chat_stream(
         &self,
         request: ChatCompletionRequest,
@@ -89,6 +106,7 @@ where
             .await
     }
 
+    /// Starts a streaming chat completion request with caller-controlled cancellation.
     pub async fn chat_stream_with_cancel(
         &self,
         request: ChatCompletionRequest,
@@ -99,6 +117,7 @@ where
             .await
     }
 
+    /// Starts a streaming chat request that a caller has already validated.
     #[doc(hidden)]
     pub async fn chat_stream_validated_with_cancel(
         &self,
@@ -109,6 +128,11 @@ where
             .await
     }
 
+    /// Starts a validated streaming chat request with an optional prefill admission hook.
+    ///
+    /// The hook is used by scheduler tests and production admission control to
+    /// serialize backend prefill progress without changing the public request
+    /// type.
     #[doc(hidden)]
     pub async fn chat_stream_validated_with_cancel_and_prefill_admission(
         &self,

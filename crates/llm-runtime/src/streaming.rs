@@ -29,6 +29,12 @@ use llm_tool_parser::ParsedAssistant;
 use std::{fmt, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+/// Runtime-owned stream for chat completion events.
+///
+/// Consumers should drain this into SSE chunks and emit exactly one terminal
+/// `[DONE]` after the event stream ends. Dropping the stream cancels the
+/// underlying backend generation through the cancellation token supplied at
+/// creation.
 pub struct ChatCompletionStream<'a> {
     events: BoxStream<'a, Result<ChatCompletionStreamEvent, RuntimeError>>,
 }
@@ -46,10 +52,15 @@ impl<'a> ChatCompletionStream<'a> {
         Self { events }
     }
 
+    /// Consumes the wrapper and returns the underlying event stream.
     pub fn into_events(self) -> BoxStream<'a, Result<ChatCompletionStreamEvent, RuntimeError>> {
         self.events
     }
 
+    /// Collects public chunks and final usage for tests and in-process callers.
+    ///
+    /// Progress and internal stage events are intentionally ignored because they
+    /// are observability signals rather than OpenAI response chunks.
     pub async fn collect_chunks(
         self,
     ) -> Result<(Vec<ChatCompletionStreamResponse>, Usage), RuntimeError> {
@@ -69,6 +80,7 @@ impl<'a> ChatCompletionStream<'a> {
     }
 }
 
+/// Runtime-owned stream for legacy completion events.
 pub struct CompletionStream<'a> {
     events: BoxStream<'a, Result<CompletionStreamEvent, RuntimeError>>,
 }
@@ -84,10 +96,12 @@ impl<'a> CompletionStream<'a> {
         Self { events }
     }
 
+    /// Consumes the wrapper and returns the underlying event stream.
     pub fn into_events(self) -> BoxStream<'a, Result<CompletionStreamEvent, RuntimeError>> {
         self.events
     }
 
+    /// Collects public chunks and final usage for tests and in-process callers.
     pub async fn collect_chunks(
         self,
     ) -> Result<(Vec<CompletionStreamResponse>, Usage), RuntimeError> {
@@ -105,16 +119,23 @@ impl<'a> CompletionStream<'a> {
     }
 }
 
+/// Event emitted while producing a streaming chat completion.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatCompletionStreamEvent {
+    /// OpenAI-compatible chunk safe to send to the client.
     Chunk(ChatCompletionStreamResponse),
+    /// Backend progress signal, such as prefill progress or upstream timing.
     Progress(BackendStreamProgress),
+    /// Internal forward-progress signal when bytes were consumed but no public delta is safe yet.
     InternalProgress { bytes: usize },
+    /// Runtime validation stage marker for tool-call streaming observability.
     Stage(ChatCompletionStreamStage),
+    /// Final usage emitted after all chunks have been produced.
     Complete(Usage),
 }
 
 impl ChatCompletionStreamEvent {
+    /// Summarizes whether this event advanced visible stream progress.
     pub fn progress_metadata(&self) -> StreamProgressMetadata {
         match self {
             Self::Chunk(chunk) => chat_stream_progress_metadata(chunk),
@@ -126,21 +147,30 @@ impl ChatCompletionStreamEvent {
     }
 }
 
+/// Observable validation milestones for streaming chat tool calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatCompletionStreamStage {
+    /// Tool arguments have been assembled into complete JSON values.
     ToolArgumentAssemblyComplete,
+    /// Missing runtime-managed tool intent arguments have been filled.
     ToolIntentFillComplete,
+    /// Tool calls have passed schema and request compatibility validation.
     ToolSchemaValidationComplete,
 }
 
+/// Event emitted while producing a streaming legacy text completion.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionStreamEvent {
+    /// OpenAI-compatible chunk safe to send to the client.
     Chunk(CompletionStreamResponse),
+    /// Backend progress signal, such as prefill progress or upstream timing.
     Progress(BackendStreamProgress),
+    /// Final usage emitted after all chunks have been produced.
     Complete(Usage),
 }
 
 impl CompletionStreamEvent {
+    /// Summarizes whether this event advanced visible stream progress.
     pub fn progress_metadata(&self) -> StreamProgressMetadata {
         match self {
             Self::Chunk(chunk) => completion_stream_progress_metadata(chunk),
@@ -149,6 +179,7 @@ impl CompletionStreamEvent {
     }
 }
 
+/// Compact progress summary used by no-progress and stalled-stream observers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamProgressMetadata {
     real_delta_bytes: usize,
@@ -157,18 +188,22 @@ pub struct StreamProgressMetadata {
 }
 
 impl StreamProgressMetadata {
+    /// Returns true when the event exposed non-empty content or tool-call bytes.
     pub const fn has_real_delta(self) -> bool {
         self.real_delta_bytes > 0
     }
 
+    /// Returns true when the event included a tool-call delta.
     pub const fn has_tool_delta(self) -> bool {
         self.has_tool_delta
     }
 
+    /// Returns true when the event completed with a tool-call finish reason.
     pub const fn has_tool_call_finish(self) -> bool {
         self.has_tool_call_finish
     }
 
+    /// Number of bytes counted as externally visible progress.
     pub const fn real_delta_bytes(self) -> usize {
         self.real_delta_bytes
     }

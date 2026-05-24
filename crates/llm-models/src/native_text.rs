@@ -2,13 +2,21 @@ use crate::{
     GemmaModelSpec, ModelFamily, ModelSpec, ModelSpecError, QwenModelSpec, SafetensorsIndex,
 };
 
+/// Family-dispatched native text model spec.
+///
+/// Native backends use this enum when they need one validated configuration
+/// value but still must dispatch to family-specific tensor naming and shape
+/// rules.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NativeTextModelSpec {
+    /// Qwen native text spec.
     Qwen(QwenModelSpec),
+    /// Gemma native text spec.
     Gemma(GemmaModelSpec),
 }
 
 impl NativeTextModelSpec {
+    /// Parses config JSON as the provided family.
     pub fn from_config_json(family: ModelFamily, json: &str) -> Result<Self, ModelSpecError> {
         match family {
             ModelFamily::Qwen => Ok(Self::Qwen(QwenModelSpec::from_config_json(json)?)),
@@ -20,6 +28,7 @@ impl NativeTextModelSpec {
         }
     }
 
+    /// Parses a config value as the provided family.
     pub fn from_config_value(
         family: ModelFamily,
         value: serde_json::Value,
@@ -34,12 +43,14 @@ impl NativeTextModelSpec {
         }
     }
 
+    /// Infers family support from config JSON and parses the matching spec.
     pub fn infer_from_config_json(json: &str) -> Result<Self, ModelSpecError> {
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid JSON: {err}")))?;
         Self::infer_from_config_value(value)
     }
 
+    /// Infers family support from a config value and parses the matching spec.
     pub fn infer_from_config_value(value: serde_json::Value) -> Result<Self, ModelSpecError> {
         let model_type = value
             .get("model_type")
@@ -55,26 +66,32 @@ impl NativeTextModelSpec {
         }
     }
 
+    /// Returns the model family.
     pub fn family(&self) -> ModelFamily {
         <Self as ModelSpec>::family(self)
     }
 
+    /// Returns the maximum supported context length.
     pub fn max_position_embeddings(&self) -> u32 {
         <Self as ModelSpec>::max_position_embeddings(self)
     }
 
+    /// Returns the number of decoder layers.
     pub fn num_hidden_layers(&self) -> u32 {
         <Self as ModelSpec>::num_hidden_layers(self)
     }
 
+    /// Returns the decoder hidden size.
     pub fn hidden_size(&self) -> u32 {
         <Self as ModelSpec>::hidden_size(self)
     }
 
+    /// Validates required text inference tensors against a safetensors index.
     pub fn validate_text_weights(&self, index: &SafetensorsIndex) -> Result<(), ModelSpecError> {
         <Self as ModelSpec>::validate_text_weights(self, index)
     }
 
+    /// Returns true for dense Qwen3 configs handled by the native dense path.
     pub fn is_qwen3_dense(&self) -> bool {
         match self {
             Self::Qwen(spec) => spec.is_qwen3_dense(),

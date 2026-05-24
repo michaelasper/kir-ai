@@ -4,10 +4,12 @@ use crate::{
     json::parse_json_tool_output_if_tool_like,
 };
 
+/// Parser for Llama-style assistant output and JSON-like function calls.
 #[derive(Debug, Default, Clone)]
 pub struct LlamaParser;
 
 impl LlamaParser {
+    /// Parses one complete assistant output into reasoning, content, and tool calls.
     pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
         let (reasoning, rest) = split_reasoning(text)?;
         let rest = trim_llama_after_stop_control(&rest);

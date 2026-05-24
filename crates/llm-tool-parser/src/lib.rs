@@ -1,3 +1,10 @@
+//! Family-specific assistant output parsers.
+//!
+//! The runtime calls this crate after backend generation and before emitting a
+//! successful assistant message. Parsers split hidden reasoning, user-visible
+//! content, and function tool calls for model families whose prompt templates
+//! encode tools differently.
+
 mod common;
 mod deepseek;
 mod gemma;
@@ -14,6 +21,7 @@ pub use types::{ParsedAssistant, ParserError, ToolParserFamily};
 
 use llm_models::ModelFamily;
 
+/// Parses a complete assistant output using the parser implied by a model family.
 pub fn parse_assistant_for_family(
     family: ModelFamily,
     text: &str,
@@ -36,6 +44,9 @@ pub fn parse_assistant_for_family(
     Ok(parsed)
 }
 
+/// Parses a complete assistant output using an explicit parser family.
+///
+/// `Auto` detects known tool markers and falls back to plain assistant content.
 pub fn parse_assistant_for_parser_family(
     family: ToolParserFamily,
     text: &str,
@@ -61,6 +72,7 @@ pub fn parse_assistant_for_parser_family(
     Ok(parsed)
 }
 
+/// Splits hidden reasoning markers from visible assistant content.
 pub fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {
     common::split_reasoning(text)
 }

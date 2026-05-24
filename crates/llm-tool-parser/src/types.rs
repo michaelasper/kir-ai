@@ -3,14 +3,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+/// Parsed assistant turn after family-specific tool markup has been interpreted.
+///
+/// Runtime validation consumes this structure before building API responses so
+/// malformed tool calls or invalid JSON-object output never leak as successful
+/// assistant deltas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedAssistant {
+    /// Hidden reasoning text, when the family exposes a distinct reasoning channel.
     pub reasoning: Option<String>,
+    /// User-visible assistant text after tool markup is removed.
     pub content: String,
+    /// Function tool calls parsed from the assistant output.
     pub tool_calls: Vec<ToolCall>,
 }
 
 impl ParsedAssistant {
+    /// Builds a parsed assistant containing only visible text content.
     pub fn content(content: impl Into<String>) -> Self {
         Self {
             reasoning: None,
@@ -19,6 +28,7 @@ impl ParsedAssistant {
         }
     }
 
+    /// Builds a parsed assistant containing one function tool call.
     pub fn single_tool(name: impl Into<String>, arguments: Value) -> Self {
         Self {
             reasoning: None,
@@ -35,6 +45,7 @@ impl ParsedAssistant {
     }
 }
 
+/// Parser failure with a stable machine-readable code.
 #[derive(Debug, Error)]
 #[error("{code}: {message}")]
 pub struct ParserError {
@@ -43,6 +54,7 @@ pub struct ParserError {
 }
 
 impl ParserError {
+    /// Stable parser error code.
     pub fn code(&self) -> &'static str {
         self.code
     }
@@ -62,20 +74,30 @@ impl ParserError {
     }
 }
 
+/// Parser dialect selection compatible with vLLM tool parser names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolParserFamily {
+    /// Detect parser from known output markers.
     Auto,
+    /// Hermes/Qwen XML-style parser route.
     Hermes,
+    /// Qwen XML-style parser route.
     Qwen,
+    /// DeepSeek native or DSML parser route.
     DeepSeek,
+    /// Gemma reasoning/tool-channel parser route.
     Gemma,
+    /// Llama parser route.
     Llama,
+    /// Generic JSON function-call parser route.
     Json,
+    /// xLAM tool-call parser route.
     Xlam,
 }
 
 impl ToolParserFamily {
+    /// Maps a vLLM parser name or suffixed parser name to this crate's family.
     pub fn from_vllm_name(name: &str) -> Option<Self> {
         let normalized = normalize_parser_name(name);
         VLLM_TOOL_PARSER_ROUTES
@@ -83,6 +105,7 @@ impl ToolParserFamily {
             .find_map(|(candidate, family)| (normalized == *candidate).then_some(*family))
     }
 
+    /// Returns the vLLM parser names accepted by `from_vllm_name`.
     pub fn supported_vllm_names() -> &'static [(&'static str, Self)] {
         VLLM_TOOL_PARSER_ROUTES
     }

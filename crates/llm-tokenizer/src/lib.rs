@@ -1,3 +1,9 @@
+//! Tokenizer and chat-template helpers used by local text inference.
+//!
+//! The crate wraps Hugging Face `tokenizer.json` files with stable identity
+//! metadata for cache keys and re-exports family chat-template renderers used by
+//! the runtime prompt adapters.
+
 pub use llm_chat_template::{
     DeepSeekPromptOptions, GemmaPromptOptions, LlamaPromptOptions, QwenPromptOptions,
     TemplateError, render_deepseek_chat_template, render_family_chat_template,
@@ -13,20 +19,30 @@ use tokenizers::{
 const HUGGINGFACE_TOKENIZER_KIND: &str = "huggingface-tokenizer-json";
 const HUGGINGFACE_TOKENIZER_NORMALIZATION: &str = "llm-tokenizer/hf-json/v1";
 
+/// Loaded Hugging Face tokenizer with stable content identity.
 #[derive(Clone)]
 pub struct HuggingFaceTokenizer {
     inner: Tokenizer,
     identity: HuggingFaceTokenizerIdentity,
 }
 
+/// Stable identity for a tokenizer file and normalization contract.
+///
+/// Cache users should include all fields. `content_hash` changes with the
+/// tokenizer JSON bytes, while `normalization` changes if this wrapper changes
+/// how the tokenizer is interpreted.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HuggingFaceTokenizerIdentity {
+    /// Tokenizer source kind.
     pub kind: String,
+    /// SHA-256 hash of the loaded tokenizer JSON bytes.
     pub content_hash: String,
+    /// Version string for this wrapper's interpretation of Hugging Face JSON.
     pub normalization: String,
 }
 
 impl HuggingFaceTokenizer {
+    /// Loads a Hugging Face `tokenizer.json` from disk and records its content hash.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, TokenizerError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|err| {
@@ -44,6 +60,10 @@ impl HuggingFaceTokenizer {
         })
     }
 
+    /// Encodes text into token IDs.
+    ///
+    /// `add_special_tokens` is passed through to the underlying tokenizer so
+    /// prompt renderers can decide whether the template already supplied them.
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>, TokenizerError> {
         let encoding = self
             .inner
@@ -60,6 +80,7 @@ impl HuggingFaceTokenizer {
         Ok(ids)
     }
 
+    /// Decodes token IDs into text.
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String, TokenizerError> {
         let decoded = self
             .inner
@@ -75,16 +96,22 @@ impl HuggingFaceTokenizer {
         Ok(decoded)
     }
 
+    /// Creates an incremental decode stream for token-by-token generation.
+    ///
+    /// The stream may withhold bytes until a token boundary can be decoded into
+    /// valid UTF-8 text.
     pub fn decode_stream(&self, skip_special_tokens: bool) -> HuggingFaceDecodeStream<'_> {
         HuggingFaceDecodeStream {
             inner: self.inner.decode_stream(skip_special_tokens),
         }
     }
 
+    /// Resolves a token string to its token ID if it exists in the vocabulary.
     pub fn token_to_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
     }
 
+    /// Returns the stable tokenizer identity captured at load time.
     pub fn identity(&self) -> &HuggingFaceTokenizerIdentity {
         &self.identity
     }
@@ -97,6 +124,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
+/// Incremental decoder for streaming generated token IDs.
 pub struct HuggingFaceDecodeStream<'tokenizer> {
     inner: tokenizers::tokenizer::DecodeStream<
         'tokenizer,
@@ -109,6 +137,7 @@ pub struct HuggingFaceDecodeStream<'tokenizer> {
 }
 
 impl HuggingFaceDecodeStream<'_> {
+    /// Pushes one token ID and returns newly decodable text, if any.
     pub fn step(&mut self, id: u32) -> Result<Option<String>, TokenizerError> {
         self.inner
             .step(id)
@@ -116,12 +145,16 @@ impl HuggingFaceDecodeStream<'_> {
     }
 }
 
+/// Error returned while loading, encoding, or decoding tokenizer data.
 #[derive(Debug, Error)]
 pub enum TokenizerError {
+    /// Tokenizer JSON could not be read or parsed.
     #[error("failed to load tokenizer: {0}")]
     Load(String),
+    /// Text could not be encoded.
     #[error("failed to encode text: {0}")]
     Encode(String),
+    /// Token IDs could not be decoded.
     #[error("failed to decode tokens: {0}")]
     Decode(String),
 }

@@ -19,6 +19,11 @@ impl<B> Runtime<B>
 where
     B: ModelBackend,
 {
+    /// Runs a non-streaming legacy text completion request.
+    ///
+    /// The prompt is sent as raw backend input without chat-template rendering.
+    /// Stop sequences and no-progress checks are applied before the response is
+    /// returned to the API layer.
     pub async fn completion(
         &self,
         request: CompletionRequest,
@@ -27,6 +32,7 @@ where
             .await
     }
 
+    /// Runs a non-streaming text completion request with caller-controlled cancellation.
     pub async fn completion_with_cancel(
         &self,
         request: CompletionRequest,
@@ -37,6 +43,7 @@ where
             .await
     }
 
+    /// Runs a text completion request that a caller has already validated.
     #[doc(hidden)]
     pub async fn completion_validated_with_cancel(
         &self,
@@ -66,6 +73,10 @@ where
         })
     }
 
+    /// Starts a streaming legacy text completion request.
+    ///
+    /// Returned events preserve OpenAI-compatible chunk shape and apply stop
+    /// sequence withholding so stop text is not emitted as a successful delta.
     pub async fn completion_stream(
         &self,
         request: CompletionRequest,
@@ -74,6 +85,7 @@ where
             .await
     }
 
+    /// Starts a streaming text completion request with caller-controlled cancellation.
     pub async fn completion_stream_with_cancel(
         &self,
         request: CompletionRequest,
@@ -84,6 +96,7 @@ where
             .await
     }
 
+    /// Starts a streaming text completion request that a caller has already validated.
     #[doc(hidden)]
     pub async fn completion_stream_validated_with_cancel(
         &self,
@@ -98,6 +111,7 @@ where
         .await
     }
 
+    /// Starts a validated streaming completion with an optional prefill admission hook.
     #[doc(hidden)]
     pub async fn completion_stream_validated_with_cancel_and_prefill_admission(
         &self,

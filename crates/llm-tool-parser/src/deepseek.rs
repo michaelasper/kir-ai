@@ -5,10 +5,12 @@ use crate::{
 use llm_api::{ToolCall, ToolCallFunction, ToolCallType, generated_tool_call_id};
 use serde_json::Value;
 
+/// Parser for DeepSeek native, DSML, and Qwen-compatible tool-call markup.
 #[derive(Debug, Default, Clone)]
 pub struct DeepSeekParser;
 
 impl DeepSeekParser {
+    /// Parses one complete assistant output into reasoning, content, and tool calls.
     pub fn parse_complete(&self, text: &str) -> Result<ParsedAssistant, ParserError> {
         let (reasoning, rest) = split_reasoning(text)?;
         let rest = trim_deepseek_after_stop_control(strip_deepseek_assistant_prefix(&rest));

@@ -1,3 +1,9 @@
+//! OpenAI-compatible API shapes shared by the server, runtime, and tests.
+//!
+//! This crate intentionally contains protocol data and validation rules only.
+//! Runtime code consumes `Validated<T>` requests from here so unsupported or
+//! malformed OpenAI fields fail before prompt rendering or backend scheduling.
+
 pub mod error;
 pub mod limits;
 pub mod request;

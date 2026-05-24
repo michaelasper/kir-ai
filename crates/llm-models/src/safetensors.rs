@@ -3,13 +3,19 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Parsed Hugging Face safetensors index with path-safety validation.
+///
+/// The index records tensor-to-shard mappings without reading shard payloads so
+/// model admission can validate required tensors before expensive native loads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetensorsIndex {
+    /// Total artifact size reported by the index metadata.
     pub total_size_bytes: u64,
     weight_map: BTreeMap<String, String>,
 }
 
 impl SafetensorsIndex {
+    /// Parses a `model.safetensors.index.json` document.
     pub fn from_json(json: &str) -> Result<Self, ModelSpecError> {
         let raw: RawSafetensorsIndex = serde_json::from_str(json)
             .map_err(|err| ModelSpecError::invalid_request(format!("invalid index JSON: {err}")))?;
@@ -23,6 +29,7 @@ impl SafetensorsIndex {
         })
     }
 
+    /// Builds an index for a single safetensors file.
     pub fn single_file(
         total_size_bytes: u64,
         shard_path: impl Into<String>,
@@ -45,14 +52,17 @@ impl SafetensorsIndex {
         })
     }
 
+    /// Number of tensors mapped by the index.
     pub fn tensor_count(&self) -> usize {
         self.weight_map.len()
     }
 
+    /// Number of unique shard paths referenced by the index.
     pub fn shard_count(&self) -> usize {
         self.weight_map.values().collect::<BTreeSet<_>>().len()
     }
 
+    /// Sorted unique shard paths referenced by the index.
     pub fn shard_paths(&self) -> Vec<&str> {
         self.weight_map
             .values()
@@ -62,14 +72,17 @@ impl SafetensorsIndex {
             .collect()
     }
 
+    /// Iterator over tensor names in sorted map order.
     pub fn tensor_names(&self) -> impl Iterator<Item = &str> {
         self.weight_map.keys().map(String::as_str)
     }
 
+    /// Returns true when the index contains a tensor name.
     pub fn contains(&self, tensor: &str) -> bool {
         self.weight_map.contains_key(tensor)
     }
 
+    /// Returns the relative shard path that stores a tensor.
     pub fn shard_for(&self, tensor: &str) -> Option<&str> {
         self.weight_map.get(tensor).map(String::as_str)
     }

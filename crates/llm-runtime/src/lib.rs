@@ -1,3 +1,11 @@
+//! Protocol runtime that connects validated OpenAI requests to local model backends.
+//!
+//! The runtime owns request lifecycle ordering: validate API shape, render prompts,
+//! enforce backend capability gates, dispatch generation, parse assistant output,
+//! validate tool and JSON-mode responses, apply stop sequences, classify
+//! no-progress output, and finally emit OpenAI-compatible responses or stream
+//! events.
+
 mod adapters;
 mod backend_request;
 mod cache_identity;

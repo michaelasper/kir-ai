@@ -5,15 +5,28 @@ use llm_backend_contracts::{BackendCacheContext, ModelBackend};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+/// Stable identity components for a prompt/cache lookup derived from a request.
+///
+/// The runtime computes these values from the rendered prompt and cache context
+/// rather than raw request JSON so semantically equivalent tool schema ordering
+/// and template metadata produce deterministic cache keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestCacheIdentity {
+    /// Hash of the rendered prompt text.
     pub prompt_hash: String,
+    /// Backend cache key for the exact prompt/template/tool schema context.
     pub cache_key: String,
+    /// Template identifier used to render the prompt.
     pub cache_template_id: String,
+    /// Optional model family slug used for chat template selection.
     pub model_family: Option<String>,
+    /// Optional hash of canonical tool schema JSON.
     pub tool_schema_hash: Option<String>,
+    /// Optional hash of system messages that form a reusable prefix.
     pub system_prompt_hash: Option<String>,
+    /// Optional hash of family-specific chat template keyword arguments.
     pub chat_template_kwargs_hash: Option<String>,
+    /// Prefix cache key stable across requests that share reusable prompt prefix components.
     pub stable_prefix_key: Option<String>,
 }
 
@@ -70,6 +83,10 @@ impl<B> Runtime<B>
 where
     B: ModelBackend,
 {
+    /// Computes cache identity for a chat request using the runtime's prompt adapter.
+    ///
+    /// This validates prompt rendering compatibility but does not dispatch a
+    /// backend generation request.
     pub fn chat_request_cache_identity(
         &self,
         request: &ChatCompletionRequest,
@@ -85,6 +102,7 @@ where
         ))
     }
 
+    /// Computes cache identity for a raw text completion request.
     pub fn completion_request_cache_identity(
         &self,
         request: &CompletionRequest,

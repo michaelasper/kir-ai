@@ -1,6 +1,11 @@
 use schemars::JsonSchema;
 use thiserror::Error;
 
+/// Stable API error returned by request validation and protocol handling.
+///
+/// The `code` value is part of the HTTP-visible contract. Constructors keep the
+/// set small and intentional so unsupported capabilities and malformed requests
+/// are distinguishable without leaking backend-specific details.
 #[derive(Debug, Clone, PartialEq, Eq, Error, JsonSchema)]
 #[error("{code}: {message}")]
 pub struct ApiError {
@@ -9,6 +14,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// Builds an error for malformed or semantically invalid request input.
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self {
             code: "invalid_request",
@@ -16,6 +22,7 @@ impl ApiError {
         }
     }
 
+    /// Builds an error for valid OpenAI fields that the local runtime does not support.
     pub fn unsupported_capability(message: impl Into<String>) -> Self {
         Self {
             code: "unsupported_capability",
@@ -23,10 +30,12 @@ impl ApiError {
         }
     }
 
+    /// Stable machine-readable error code.
     pub fn code(&self) -> &'static str {
         self.code
     }
 
+    /// Human-readable error message suitable for response bodies.
     pub fn message(&self) -> &str {
         &self.message
     }
