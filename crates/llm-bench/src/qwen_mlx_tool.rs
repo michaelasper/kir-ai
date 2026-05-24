@@ -163,6 +163,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
         agentic_streaming_fast_path_ab: NormalizedAgenticStreamingFastPathAbReport::dry_run(
             ab_baseline_path.as_deref(),
         ),
+        prefill_concurrency: NormalizedPrefillConcurrencyReport::dry_run(),
         prefill_sweep: NormalizedPrefillSweepReport::dry_run(),
         stable_prefix: NormalizedStablePrefixReport::dry_run(),
         latest_performance_comparison,
@@ -217,6 +218,7 @@ pub(super) async fn run_qwen_mlx_tool_normalized_bench(args: &[String]) -> anyho
     report.agentic_streaming_fast_path_ab =
         load_agentic_streaming_fast_path_ab_report(ab_baseline_path.as_deref(), &report.lanes)
             .await?;
+    report.prefill_concurrency = prefill_concurrency_report(&report.lanes, &probes);
     report.prefill_sweep =
         prefill_sweep_report_for_phases(&report.lanes, &probes, &run_config.cache_phases);
     report.stable_prefix =
@@ -2763,6 +2765,147 @@ fn increment_count(counts: &mut BTreeMap<String, usize>, value: &str) {
     *counts.entry(value.to_owned()).or_insert(0) += 1;
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PrefillConcurrencyScenario {
+    scenario: &'static str,
+    objective: &'static str,
+    phase: CachePhase,
+    run_mode: RunMode,
+}
+
+fn prefill_concurrency_scenarios() -> [PrefillConcurrencyScenario; 3] {
+    [
+        PrefillConcurrencyScenario {
+            scenario: "cold_long_context_prefill",
+            objective: "cold long-context prefill latency and scheduler counter baseline",
+            phase: CachePhase::Cold,
+            run_mode: RunMode::Sequential,
+        },
+        PrefillConcurrencyScenario {
+            scenario: "warm_checkpoint_reuse",
+            objective: "warm prefix or checkpoint reuse after a compatible long-context prefill",
+            phase: CachePhase::WarmSamePrompt,
+            run_mode: RunMode::Sequential,
+        },
+        PrefillConcurrencyScenario {
+            scenario: "mixed_long_prefill_short_decode_concurrency",
+            objective: "concurrent long-prefill pressure with decode admission interleaving",
+            phase: CachePhase::Cold,
+            run_mode: RunMode::Concurrent,
+        },
+    ]
+}
+
+fn prefill_concurrency_report(
+    lanes: &[NormalizedLaneReport],
+    probes: &[NormalizedProbePlan],
+) -> NormalizedPrefillConcurrencyReport {
+    let scenarios = prefill_concurrency_scenarios()
+        .into_iter()
+        .map(|scenario| {
+            let mut lane_metrics = lanes
+                .iter()
+                .filter_map(|lane| prefill_concurrency_lane_metric(lane, probes, scenario))
+                .collect::<Vec<_>>();
+            lane_metrics.sort_by(|left, right| {
+                prefill_concurrency_metric_sort_key(left)
+                    .cmp(&prefill_concurrency_metric_sort_key(right))
+            });
+            NormalizedPrefillConcurrencyScenarioReport {
+                scenario: scenario.scenario,
+                objective: scenario.objective,
+                cache_phase: scenario.phase.name(),
+                run_mode: scenario.run_mode.name(),
+                lanes: lane_metrics,
+            }
+        })
+        .collect::<Vec<_>>();
+    let status = if scenarios.iter().any(|scenario| !scenario.lanes.is_empty()) {
+        "reported"
+    } else {
+        "no_samples"
+    };
+    NormalizedPrefillConcurrencyReport {
+        status: status.to_owned(),
+        scenarios,
+    }
+}
+
+fn prefill_concurrency_lane_metric(
+    lane: &NormalizedLaneReport,
+    probes: &[NormalizedProbePlan],
+    scenario: PrefillConcurrencyScenario,
+) -> Option<NormalizedPrefillConcurrencyLaneMetric> {
+    let samples = lane_samples(lane)
+        .filter(|sample| {
+            sample.cache_phase == scenario.phase.name()
+                && sample.run_mode == scenario.run_mode.name()
+                && probes
+                    .iter()
+                    .any(|probe| sample_matches_probe(sample, *probe))
+        })
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return None;
+    }
+    let passed = samples
+        .iter()
+        .copied()
+        .filter(|sample| sample.status == "passed")
+        .collect::<Vec<_>>();
+    Some(NormalizedPrefillConcurrencyLaneMetric {
+        lane: lane.name.clone(),
+        lane_kind: lane.kind,
+        experimental: lane.experimental,
+        prefill_step_size: lane.mlx_lm_settings.prefill_step_size,
+        cache_phase: scenario.phase.name(),
+        run_mode: scenario.run_mode.name(),
+        sample_count: samples.len(),
+        request_count: sample_request_count(&samples),
+        pass_count: passed.len(),
+        fail_count: samples
+            .iter()
+            .filter(|sample| sample.status == "failed")
+            .count(),
+        p50_first_semantic_delta_latency_ms: percentile_for_samples(&passed, |sample| {
+            sample.stream_timing.first_semantic_delta_latency_ms
+        }),
+        p50_elapsed_latency_ms: percentile_for_samples(&passed, |sample| sample.latency_ms),
+        avg_prompt_tokens: average_u64(passed.iter().filter_map(|sample| sample.prompt_tokens)),
+        avg_cached_tokens: average_u64(passed.iter().filter_map(|sample| sample.cached_tokens)),
+        avg_uncached_tokens: average_u64(
+            passed
+                .iter()
+                .filter_map(|sample| sample_direct_uncached_tokens(sample)),
+        ),
+        scheduler_prefill: scheduler_prefill_counters(&lane.admin_metrics),
+        checkpoint_reuse: checkpoint_reuse_counters(&lane.admin_metrics),
+    })
+}
+
+fn sample_request_count(samples: &[&NormalizedSampleReport]) -> usize {
+    let request_indexes = samples
+        .iter()
+        .filter_map(|sample| sample.request_index)
+        .collect::<BTreeSet<_>>();
+    if request_indexes.is_empty() {
+        samples.len()
+    } else {
+        request_indexes.len()
+    }
+}
+
+fn prefill_concurrency_metric_sort_key(
+    metric: &NormalizedPrefillConcurrencyLaneMetric,
+) -> (u128, String) {
+    (
+        metric
+            .p50_first_semantic_delta_latency_ms
+            .unwrap_or(u128::MAX),
+        metric.lane.clone(),
+    )
+}
+
 #[cfg(test)]
 fn prefill_sweep_report(
     lanes: &[NormalizedLaneReport],
@@ -3507,6 +3650,117 @@ fn admin_counter_after(capture: &NormalizedAdminMetricsCapture, path: &[&str]) -
         .as_ref()
         .and_then(|value| value_path(value, path))
         .and_then(Value::as_u64)
+}
+
+fn admin_number_delta(capture: &NormalizedAdminMetricsCapture, path: &[&str]) -> Option<f64> {
+    let before = capture
+        .before
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(Value::as_f64);
+    let after = capture
+        .after
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(Value::as_f64);
+    Some(after? - before?)
+}
+
+fn admin_number_after(capture: &NormalizedAdminMetricsCapture, path: &[&str]) -> Option<f64> {
+    capture
+        .after
+        .as_ref()
+        .and_then(|value| value_path(value, path))
+        .and_then(Value::as_f64)
+}
+
+fn scheduler_prefill_counters(
+    capture: &NormalizedAdminMetricsCapture,
+) -> NormalizedSchedulerPrefillCountersReport {
+    NormalizedSchedulerPrefillCountersReport {
+        prefill_yields_delta: admin_counter_delta(capture, &["scheduler_prefill_yields"]),
+        prefill_yields_after: admin_counter_after(capture, &["scheduler_prefill_yields"]),
+        prefill_yields_to_decode_delta: admin_counter_delta(
+            capture,
+            &["scheduler_prefill_yields_to_decode"],
+        ),
+        prefill_yields_to_decode_after: admin_counter_after(
+            capture,
+            &["scheduler_prefill_yields_to_decode"],
+        ),
+        prefill_yield_reacquire_waits_delta: admin_counter_delta(
+            capture,
+            &["scheduler_prefill_yield_reacquire_waits"],
+        ),
+        prefill_yield_reacquire_waits_after: admin_counter_after(
+            capture,
+            &["scheduler_prefill_yield_reacquire_waits"],
+        ),
+        prefill_yield_reacquire_wait_ms_total_delta: admin_number_delta(
+            capture,
+            &["scheduler_prefill_yield_reacquire_wait_ms_total"],
+        ),
+        prefill_yield_reacquire_wait_ms_total_after: admin_number_after(
+            capture,
+            &["scheduler_prefill_yield_reacquire_wait_ms_total"],
+        ),
+        prefill_yield_reacquire_wait_ms_max_after: admin_number_after(
+            capture,
+            &["scheduler_prefill_yield_reacquire_wait_ms_max"],
+        ),
+    }
+}
+
+fn checkpoint_reuse_counters(
+    capture: &NormalizedAdminMetricsCapture,
+) -> NormalizedCheckpointReuseCountersReport {
+    NormalizedCheckpointReuseCountersReport {
+        checkpoint_reuse_hits_delta: prefix_cache_counter_delta(capture, "checkpoint_reuse_hits"),
+        checkpoint_reuse_hits_after: prefix_cache_counter_after(capture, "checkpoint_reuse_hits"),
+        checkpoint_reused_tokens_delta: prefix_cache_counter_delta(
+            capture,
+            "checkpoint_reused_tokens",
+        ),
+        checkpoint_reused_tokens_after: prefix_cache_counter_after(
+            capture,
+            "checkpoint_reused_tokens",
+        ),
+        avoided_prefill_tokens_delta: prefix_cache_counter_delta(capture, "avoided_prefill_tokens"),
+        avoided_prefill_tokens_after: prefix_cache_counter_after(capture, "avoided_prefill_tokens"),
+    }
+}
+
+fn prefix_cache_counter_delta(capture: &NormalizedAdminMetricsCapture, field: &str) -> Option<i64> {
+    let before = capture
+        .before
+        .as_ref()
+        .and_then(prefix_cache_metrics_value)
+        .and_then(|value| value.get(field))
+        .and_then(value_i64);
+    let after = capture
+        .after
+        .as_ref()
+        .and_then(prefix_cache_metrics_value)
+        .and_then(|value| value.get(field))
+        .and_then(value_i64);
+    Some(after? - before?)
+}
+
+fn prefix_cache_counter_after(capture: &NormalizedAdminMetricsCapture, field: &str) -> Option<u64> {
+    capture
+        .after
+        .as_ref()
+        .and_then(prefix_cache_metrics_value)
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_u64)
+}
+
+fn prefix_cache_metrics_value(metrics: &Value) -> Option<&Value> {
+    let backend_metrics = metrics.get("backend_metrics").unwrap_or(metrics);
+    backend_metrics
+        .get("native_text_prefix_cache")
+        .and_then(|native_text| native_text.get("qwen"))
+        .or_else(|| backend_metrics.get("native_qwen_prefix_cache"))
 }
 
 fn value_i64(value: &Value) -> Option<i64> {
@@ -5648,6 +5902,7 @@ struct NormalizedBenchReport {
     comparison: NormalizedComparisonReport,
     agentic_gate: NormalizedAgenticGateReport,
     agentic_streaming_fast_path_ab: NormalizedAgenticStreamingFastPathAbReport,
+    prefill_concurrency: NormalizedPrefillConcurrencyReport,
     prefill_sweep: NormalizedPrefillSweepReport,
     stable_prefix: NormalizedStablePrefixReport,
     latest_performance_comparison: NormalizedLatestPerformanceComparisonReport,
@@ -6195,6 +6450,83 @@ struct NormalizedAgenticStreamingFastPathAbRow {
     final_validation_unchanged: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     failure_reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillConcurrencyReport {
+    status: String,
+    scenarios: Vec<NormalizedPrefillConcurrencyScenarioReport>,
+}
+
+impl NormalizedPrefillConcurrencyReport {
+    fn dry_run() -> Self {
+        Self {
+            status: "dry_run".to_owned(),
+            scenarios: prefill_concurrency_scenarios()
+                .into_iter()
+                .map(|scenario| NormalizedPrefillConcurrencyScenarioReport {
+                    scenario: scenario.scenario,
+                    objective: scenario.objective,
+                    cache_phase: scenario.phase.name(),
+                    run_mode: scenario.run_mode.name(),
+                    lanes: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillConcurrencyScenarioReport {
+    scenario: &'static str,
+    objective: &'static str,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    lanes: Vec<NormalizedPrefillConcurrencyLaneMetric>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedPrefillConcurrencyLaneMetric {
+    lane: String,
+    lane_kind: &'static str,
+    experimental: bool,
+    prefill_step_size: DefaultOrU64,
+    cache_phase: &'static str,
+    run_mode: &'static str,
+    sample_count: usize,
+    request_count: usize,
+    pass_count: usize,
+    fail_count: usize,
+    p50_first_semantic_delta_latency_ms: Option<u128>,
+    p50_elapsed_latency_ms: Option<u128>,
+    avg_prompt_tokens: Option<f64>,
+    avg_cached_tokens: Option<f64>,
+    avg_uncached_tokens: Option<f64>,
+    scheduler_prefill: NormalizedSchedulerPrefillCountersReport,
+    checkpoint_reuse: NormalizedCheckpointReuseCountersReport,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedSchedulerPrefillCountersReport {
+    prefill_yields_delta: Option<i64>,
+    prefill_yields_after: Option<u64>,
+    prefill_yields_to_decode_delta: Option<i64>,
+    prefill_yields_to_decode_after: Option<u64>,
+    prefill_yield_reacquire_waits_delta: Option<i64>,
+    prefill_yield_reacquire_waits_after: Option<u64>,
+    prefill_yield_reacquire_wait_ms_total_delta: Option<f64>,
+    prefill_yield_reacquire_wait_ms_total_after: Option<f64>,
+    prefill_yield_reacquire_wait_ms_max_after: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct NormalizedCheckpointReuseCountersReport {
+    checkpoint_reuse_hits_delta: Option<i64>,
+    checkpoint_reuse_hits_after: Option<u64>,
+    checkpoint_reused_tokens_delta: Option<i64>,
+    checkpoint_reused_tokens_after: Option<u64>,
+    avoided_prefill_tokens_delta: Option<i64>,
+    avoided_prefill_tokens_after: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

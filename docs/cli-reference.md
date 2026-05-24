@@ -210,7 +210,7 @@ start MLX sidecars; each lane records the endpoint, request model, optional
 launch model identity, model addressing mode, template/thinking assumption,
 optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
 measured cache phase, aggregate summary rows, and the structured
-`prefill_sweep` and `stable_prefix` ranking reports.
+`prefill_concurrency`, `prefill_sweep`, and `stable_prefix` ranking reports.
 `llm-engine bench qwen-mlx-tool-normalized` remains available as a compatibility
 launcher and delegates to the `llm-bench` binary.
 
@@ -553,6 +553,15 @@ deltas, no-progress deltas, and failure-classification counts. Runs are flagged
 invalid when samples fail, TTFT or required stream/tool deltas are missing, OOM
 or Metal failures are classified, resource limits are exceeded, progress
 validation fails, or Kir admin metrics report stalled/no-progress deltas.
+The top-level `prefill_concurrency` report keeps the COR-441 acceptance matrix
+visible in every trace. Its `scenarios` array always names
+`cold_long_context_prefill`, `warm_checkpoint_reuse`, and
+`mixed_long_prefill_short_decode_concurrency`. Dry runs emit the scenario shape
+without HTTP requests; live runs fill lane metrics from existing sample arrays
+and `/admin/metrics` snapshots. When available, each lane includes scheduler
+prefill yield, yield-to-decode, and reacquire counters plus native prefix-cache
+checkpoint reuse and avoided-prefill counters. Missing admin or native-counter
+sources are serialized as `null` fields instead of failing the benchmark.
 The top-level `tool_required_stream` report separates client-observed first
 byte, first SSE data, first tool delta, tool finish, and first semantic delta
 from Kir admin timing, including `first_tool_delta_after_ttft_ms` to separate

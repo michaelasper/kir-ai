@@ -2084,6 +2084,156 @@ fn qwen_mlx_tool_normalized_prefill_sweep_report_ranks_and_flags_invalid_lanes()
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_prefill_concurrency_report_covers_acceptance_matrix() {
+    let lane_config = lane(
+        "name=kir-prefill,endpoint=http://127.0.0.1:3000,model=local-qwen36-mlx,kind=kir_ai_proxy,mlx_prefill_step_size=2048",
+    );
+    let mut lane_report = NormalizedLaneReport::planned(&lane_config, 0, 0, None);
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::ChatStream,
+        SchemaVariant::None,
+        ToolChoiceVariant::None,
+    );
+    let mut cold = prefill_sweep_sample(
+        NormalizedCaseKind::ChatStream,
+        CachePhase::Cold,
+        RunMode::Sequential,
+        180,
+    );
+    cold.cached_tokens = Some(0);
+    cold.cached_tokens_status = "present";
+    let mut warm = prefill_sweep_sample(
+        NormalizedCaseKind::ChatStream,
+        CachePhase::WarmSamePrompt,
+        RunMode::Sequential,
+        75,
+    );
+    warm.cached_tokens = Some(128_000);
+    warm.cached_tokens_status = "present";
+    let mut mixed = prefill_sweep_sample(
+        NormalizedCaseKind::ChatStream,
+        CachePhase::Cold,
+        RunMode::Concurrent,
+        210,
+    );
+    mixed.request_index = Some(1);
+    mixed.cached_tokens = Some(0);
+    mixed.cached_tokens_status = "present";
+    lane_report.samples = vec![cold, warm];
+    lane_report.concurrent_samples = vec![mixed];
+    lane_report.admin_metrics = NormalizedAdminMetricsCapture {
+        before: Some(json!({
+            "scheduler_prefill_yields": 2,
+            "scheduler_prefill_yields_to_decode": 1,
+            "scheduler_prefill_yield_reacquire_waits": 2,
+            "scheduler_prefill_yield_reacquire_wait_ms_total": 10.5,
+            "scheduler_prefill_yield_reacquire_wait_ms_max": 8.0,
+            "backend_metrics": {
+                "native_text_prefix_cache": {
+                    "qwen": {
+                        "checkpoint_reuse_hits": 1,
+                        "checkpoint_reused_tokens": 2048,
+                        "avoided_prefill_tokens": 4096
+                    }
+                }
+            }
+        })),
+        after: Some(json!({
+            "scheduler_prefill_yields": 5,
+            "scheduler_prefill_yields_to_decode": 3,
+            "scheduler_prefill_yield_reacquire_waits": 5,
+            "scheduler_prefill_yield_reacquire_wait_ms_total": 28.5,
+            "scheduler_prefill_yield_reacquire_wait_ms_max": 12.0,
+            "backend_metrics": {
+                "native_text_prefix_cache": {
+                    "qwen": {
+                        "checkpoint_reuse_hits": 4,
+                        "checkpoint_reused_tokens": 8192,
+                        "avoided_prefill_tokens": 12000
+                    }
+                }
+            }
+        })),
+        error: None,
+    };
+
+    let report = prefill_concurrency_report(&[lane_report], &[probe]);
+
+    assert_eq!(report.status, "reported");
+    assert_eq!(
+        report
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.scenario)
+            .collect::<Vec<_>>(),
+        [
+            "cold_long_context_prefill",
+            "warm_checkpoint_reuse",
+            "mixed_long_prefill_short_decode_concurrency",
+        ]
+    );
+
+    let cold = &report.scenarios[0].lanes[0];
+    assert_eq!(cold.lane, "kir-prefill");
+    assert_eq!(cold.sample_count, 1);
+    assert_eq!(cold.p50_first_semantic_delta_latency_ms, Some(180));
+    assert_eq!(cold.avg_cached_tokens, Some(0.0));
+    assert_eq!(cold.scheduler_prefill.prefill_yields_delta, Some(3));
+    assert_eq!(
+        cold.scheduler_prefill.prefill_yields_to_decode_delta,
+        Some(2)
+    );
+    assert_eq!(
+        cold.scheduler_prefill.prefill_yield_reacquire_waits_delta,
+        Some(3)
+    );
+    assert_eq!(cold.checkpoint_reuse.checkpoint_reuse_hits_delta, Some(3));
+    assert_eq!(
+        cold.checkpoint_reuse.checkpoint_reused_tokens_delta,
+        Some(6144)
+    );
+
+    let warm = &report.scenarios[1].lanes[0];
+    assert_eq!(warm.p50_first_semantic_delta_latency_ms, Some(75));
+    assert_eq!(warm.avg_cached_tokens, Some(128_000.0));
+    assert_eq!(
+        warm.checkpoint_reuse.avoided_prefill_tokens_delta,
+        Some(7904)
+    );
+
+    let mixed = &report.scenarios[2].lanes[0];
+    assert_eq!(mixed.run_mode, "concurrent");
+    assert_eq!(mixed.request_count, 1);
+    assert_eq!(mixed.p50_first_semantic_delta_latency_ms, Some(210));
+}
+
+#[test]
+fn qwen_mlx_tool_normalized_prefill_concurrency_report_keeps_missing_counters_null() {
+    let lane_config =
+        lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
+    let mut lane_report = NormalizedLaneReport::planned(&lane_config, 0, 0, None);
+    let probe = NormalizedProbePlan::new(
+        NormalizedCaseKind::ChatStream,
+        SchemaVariant::None,
+        ToolChoiceVariant::None,
+    );
+    lane_report.samples = vec![prefill_sweep_sample(
+        NormalizedCaseKind::ChatStream,
+        CachePhase::Cold,
+        RunMode::Sequential,
+        120,
+    )];
+
+    let report = prefill_concurrency_report(&[lane_report], &[probe]);
+    let metric = &report.scenarios[0].lanes[0];
+
+    assert_eq!(metric.scheduler_prefill.prefill_yields_delta, None);
+    assert_eq!(metric.scheduler_prefill.prefill_yields_after, None);
+    assert_eq!(metric.checkpoint_reuse.checkpoint_reuse_hits_delta, None);
+    assert_eq!(metric.checkpoint_reuse.checkpoint_reused_tokens_delta, None);
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_failed_samples_classify_safety_failures() {
     let probe = NormalizedProbePlan::new(
         NormalizedCaseKind::ContextRecallStream135k,
