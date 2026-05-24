@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.0](https://github.com/michaelasper/kir-ai/compare/v1.45.0...v1.46.0) (2026-05-24)
+
+### Features
+
+* **COR-332:** add library tracing instrumentation ([1783013](https://github.com/michaelasper/kir-ai/commit/1783013084c59550114e02840d43466c39aad927))
+
 ## [1.45.0](https://github.com/michaelasper/kir-ai/compare/v1.44.0...v1.45.0) (2026-05-23)
 
 ### Features
