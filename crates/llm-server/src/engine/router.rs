@@ -32,7 +32,7 @@ use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;
 use std::{
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
 
@@ -238,7 +238,7 @@ fn router_for_state(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(json_body_limit))
         .layer(middleware::from_fn_with_state(
             request_id_state,
-            attach_request_id_header,
+            log_http_request,
         ))
 }
 
@@ -269,18 +269,70 @@ fn retry_after_seconds(duration: Duration) -> u64 {
         .max(1)
 }
 
-async fn attach_request_id_header(
+async fn log_http_request(
     State(state): State<AppState>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let request_id = lifecycle::response_request_id(&state, request.headers());
+    let request_started = Instant::now();
+    let request_id = lifecycle::ensure_request_id_header(&state, request.headers_mut());
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    tracing::debug!(
+        target: "llm_server::http_access",
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        "http request started"
+    );
     let mut response = next.run(request).await;
     let header_name = HeaderName::from_static("x-request-id");
     if !response.headers().contains_key(&header_name) {
         lifecycle::insert_request_id_header(&mut response, &request_id);
     }
+    log_http_request_completed(
+        &request_id,
+        &method,
+        &path,
+        response.status(),
+        request_started,
+    );
     response
+}
+
+fn log_http_request_completed(
+    request_id: &str,
+    method: &axum::http::Method,
+    path: &str,
+    status: axum::http::StatusCode,
+    request_started: Instant,
+) {
+    let latency_ms = duration_millis_u64(request_started.elapsed());
+    if status.is_server_error() {
+        tracing::warn!(
+            target: "llm_server::http_access",
+            request_id = %request_id,
+            method = %method,
+            path = %path,
+            status = status.as_u16(),
+            latency_ms,
+            "http request completed"
+        );
+    } else {
+        tracing::info!(
+            target: "llm_server::http_access",
+            request_id = %request_id,
+            method = %method,
+            path = %path,
+            status = status.as_u16(),
+            latency_ms,
+            "http request completed"
+        );
+    }
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn engine_state(

@@ -1,4 +1,143 @@
 #[cfg(feature = "test-utils")]
+use std::{
+    fmt,
+    sync::{Arc, Mutex, OnceLock},
+};
+#[cfg(feature = "test-utils")]
+use tracing::{
+    Event, Id, Metadata, Subscriber,
+    field::{Field, Visit},
+    span,
+};
+
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Debug)]
+struct RecordedEvent {
+    fields: Vec<(String, String)>,
+}
+
+#[cfg(feature = "test-utils")]
+impl RecordedEvent {
+    fn field_contains(&self, name: &str, value: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|(field, recorded)| field == name && recorded.contains(value))
+    }
+}
+
+#[cfg(feature = "test-utils")]
+static TRACE_EVENTS: OnceLock<Arc<Mutex<Vec<RecordedEvent>>>> = OnceLock::new();
+
+#[cfg(feature = "test-utils")]
+struct TraceCapture {
+    events: Arc<Mutex<Vec<RecordedEvent>>>,
+}
+
+#[cfg(feature = "test-utils")]
+impl TraceCapture {
+    fn start() -> Self {
+        let events = Arc::clone(TRACE_EVENTS.get_or_init(|| {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = RecordingSubscriber {
+                events: Arc::clone(&events),
+            };
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("trace test subscriber installs once");
+            events
+        }));
+        events.lock().expect("recorded events lock").clear();
+        tracing::callsite::rebuild_interest_cache();
+        Self { events }
+    }
+
+    fn events(&self) -> Vec<RecordedEvent> {
+        self.events.lock().expect("recorded events lock").clone()
+    }
+}
+
+#[cfg(feature = "test-utils")]
+struct RecordingSubscriber {
+    events: Arc<Mutex<Vec<RecordedEvent>>>,
+}
+
+#[cfg(feature = "test-utils")]
+impl Subscriber for RecordingSubscriber {
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn register_callsite(
+        &self,
+        _metadata: &'static Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+
+    fn new_span(&self, _span: &span::Attributes<'_>) -> Id {
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut visitor = FieldRecorder::default();
+        event.record(&mut visitor);
+        self.events
+            .lock()
+            .expect("recorded events lock")
+            .push(RecordedEvent {
+                fields: visitor.fields,
+            });
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+#[cfg(feature = "test-utils")]
+#[derive(Default)]
+struct FieldRecorder {
+    fields: Vec<(String, String)>,
+}
+
+#[cfg(feature = "test-utils")]
+impl FieldRecorder {
+    fn record_value(&mut self, field: &Field, value: String) {
+        self.fields.push((field.name().to_owned(), value));
+    }
+}
+
+#[cfg(feature = "test-utils")]
+impl Visit for FieldRecorder {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_value(field, value.to_owned());
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        self.record_value(field, format!("{value:?}"));
+    }
+}
+
+#[cfg(feature = "test-utils")]
 #[tokio::test]
 async fn protocol_router_serves_chat_without_engine_crate() {
     use axum::{
@@ -34,6 +173,51 @@ async fn protocol_router_serves_chat_without_engine_crate() {
     assert_eq!(
         body["choices"][0]["message"]["content"],
         "hello from rust native backend"
+    );
+}
+
+#[cfg(feature = "test-utils")]
+#[tokio::test]
+async fn protocol_router_emits_structured_access_logs_with_request_id() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let trace = TraceCapture::start();
+    let response = llm_server::build_router_with_protocol_test_backend()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("x-request-id", "access-log-health")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("health request reaches router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = trace.events();
+    assert!(
+        events.iter().any(|event| {
+            event.field_contains("message", "http request started")
+                && event.field_contains("request_id", "access-log-health")
+                && event.field_contains("method", "GET")
+                && event.field_contains("path", "/health")
+        }),
+        "expected structured request-start access log, got {events:#?}"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.field_contains("message", "http request completed")
+                && event.field_contains("request_id", "access-log-health")
+                && event.field_contains("method", "GET")
+                && event.field_contains("path", "/health")
+                && event.field_contains("status", "200")
+                && event.fields.iter().any(|(field, _)| field == "latency_ms")
+        }),
+        "expected structured request-completion access log, got {events:#?}"
     );
 }
 

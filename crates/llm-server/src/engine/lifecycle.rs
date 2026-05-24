@@ -357,13 +357,24 @@ pub(super) fn request_id_from_headers(
     Ok(request_id.to_owned())
 }
 
-pub(super) fn response_request_id(state: &AppState, headers: &HeaderMap) -> String {
-    request_id_from_headers(state, headers)
-        .unwrap_or_else(|_| state.active_requests.next_request_id())
+pub(super) fn ensure_request_id_header(state: &AppState, headers: &mut HeaderMap) -> String {
+    match request_id_from_headers(state, headers) {
+        Ok(request_id) => {
+            if !headers.contains_key("x-request-id") {
+                let value = request_id_header_value(&request_id);
+                headers.insert("x-request-id", value);
+            }
+            request_id
+        }
+        Err(_) => state.active_requests.next_request_id(),
+    }
 }
 
 pub(super) fn insert_request_id_header(response: &mut Response, request_id: &str) {
-    let value =
-        HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("unknown"));
+    let value = request_id_header_value(request_id);
     response.headers_mut().insert("x-request-id", value);
+}
+
+fn request_id_header_value(request_id: &str) -> HeaderValue {
+    HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("unknown"))
 }
