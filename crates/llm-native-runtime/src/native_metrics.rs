@@ -53,6 +53,7 @@ struct MetalCacheCounters {
     int8_resident_buffers: u64,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 #[derive(Debug, Default)]
 pub(crate) struct MetalBackendMetrics {
     counters: Mutex<HashMap<&'static str, MetalKernelCounters>>,
@@ -62,6 +63,7 @@ pub(crate) struct MetalBackendMetrics {
     warned_fallbacks: Mutex<HashSet<String>>,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 impl MetalBackendMetrics {
     pub(crate) fn record_attempt(&self, kernel: &'static str) {
         self.update_counter(kernel, |counters| counters.attempts += 1);
@@ -325,18 +327,21 @@ impl MetalBackendMetrics {
     }
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 enum CacheMetricKind {
     Kv,
     Linear,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 enum CachePrecisionMetric {
     F16,
     Int8,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 impl MetalCacheCounters {
     fn record_upload(&mut self, precision: CachePrecisionMetric, byte_len: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(byte_len);

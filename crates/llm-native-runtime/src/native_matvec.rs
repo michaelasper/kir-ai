@@ -1,3 +1,4 @@
+#[cfg(feature = "metal")]
 use crate::kv_sync::{
     MetalBlockCopy, MetalBlockInt8Copy, MetalBlockInt8KvMirror, MetalBlockKvMirror,
     MetalLayerInt8KvStageMirror, MetalLayerKvStageMirror, MetalStageSyncPlan, f16_stage_copy_bytes,
@@ -7,24 +8,35 @@ use crate::kv_sync::{
     kv_cache_shape_error, kv_cache_stage_element_len, kv_stage_sync_plan,
     kv_stage_writes_from_active_blocks,
 };
+#[cfg(feature = "metal")]
 use crate::native_metrics::native_text_metal_metrics;
+#[cfg(feature = "metal")]
 use crate::sync_ext::FailPoisonedMutex;
 use crate::warm_order::native_text_warmable_bf16_matrix_tensors;
 use llm_backend::native::{
-    BlockId, CpuNativeMatvecBackend, KvCacheFormat, LayerKvCache, LayerKvCacheBlock,
-    LayerKvCacheInt8Block, LinearAttentionCache, MathError, NativeBatchedMatvecInputBuffer,
-    NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError, TopKLogit, TopKWeight,
+    BlockId, CpuNativeMatvecBackend, LayerKvCache, MathError, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
+#[cfg(feature = "metal")]
+use llm_backend::native::{
+    KvCacheFormat, LayerKvCacheBlock, LayerKvCacheInt8Block, LinearAttentionCache,
+    NativeBatchedMatvecInputBuffer, NativeBatchedMatvecOutput, NativeKvCacheTensor, TopKLogit,
+    TopKWeight,
+};
+#[cfg(any(feature = "metal", test))]
+use std::collections::HashMap;
+use std::sync::Arc;
+#[cfg(feature = "metal")]
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
 };
 
 pub(crate) const DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-#[cfg(test)]
+#[cfg(all(test, feature = "metal"))]
 const METAL_KV_CACHE_MIRROR_BLOCK_TOKENS: usize = 256;
 
+#[cfg(feature = "metal")]
 pub(crate) struct NativeTextMetalState {
     pub(crate) device: llm_metal::MetalDevice,
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
@@ -35,6 +47,7 @@ pub(crate) struct NativeTextMetalState {
     linear_caches: Mutex<HashMap<u64, MetalLinearAttentionCacheMirror>>,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 #[derive(Debug, Default)]
 pub(crate) struct NativeTextCacheMirrorIds {
     kv: Vec<BlockId>,
@@ -42,6 +55,7 @@ pub(crate) struct NativeTextCacheMirrorIds {
     linear: Vec<u64>,
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 impl NativeTextCacheMirrorIds {
     pub(crate) fn push_kv_cache(&mut self, cache: &LayerKvCache) {
         if !self.kv_layers.contains(&cache.id()) {
@@ -60,6 +74,7 @@ impl NativeTextCacheMirrorIds {
     }
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 pub(crate) trait NativeTextCacheMirrorSource {
     fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds);
 }
@@ -71,6 +86,7 @@ where
     fn cleanup_cache_mirrors(&self, caches: &[C]);
 }
 
+#[cfg(feature = "metal")]
 impl<C> NativeTextCacheMirrorCleaner<C> for NativeTextMetalState
 where
     C: NativeTextCacheMirrorSource,
@@ -83,24 +99,29 @@ where
 #[derive(Clone)]
 pub(crate) enum NativeTextMatvecBackend {
     Cpu,
+    #[cfg(feature = "metal")]
     Metal(Arc<NativeTextMetalState>),
 }
 
+#[cfg(feature = "metal")]
 #[derive(Debug)]
 struct MetalLinearAttentionCacheMirror {
     recurrent_state: llm_metal::F32Buffer,
     revision: u64,
 }
 
+#[cfg(feature = "metal")]
 type NativeTextMetalStateRegistry =
     Mutex<HashMap<NativeTextMetalStateKey, Arc<NativeTextMetalState>>>;
 
+#[cfg(feature = "metal")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NativeTextMetalStateKey {
     cache_namespace: String,
     weight_cache_bytes: u64,
 }
 
+#[cfg(any(feature = "metal", test))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Bf16MatrixCacheKey {
     pub(crate) tensor: String,
@@ -118,6 +139,7 @@ pub(crate) struct NativeTextMetalWarmup {
     pub(crate) skipped_non_metal: u64,
 }
 
+#[cfg(any(feature = "metal", test))]
 #[derive(Debug)]
 pub(crate) struct Bf16MatrixBufferCache<T> {
     max_bytes: u64,
@@ -126,6 +148,7 @@ pub(crate) struct Bf16MatrixBufferCache<T> {
     entries: HashMap<Bf16MatrixCacheKey, CachedBf16MatrixBuffer<T>>,
 }
 
+#[cfg(any(feature = "metal", test))]
 #[derive(Debug)]
 struct CachedBf16MatrixBuffer<T> {
     value: T,
@@ -133,6 +156,7 @@ struct CachedBf16MatrixBuffer<T> {
     last_used: u64,
 }
 
+#[cfg(any(feature = "metal", test))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Bf16MatrixBufferCacheInsert {
     pub(crate) inserted: bool,
@@ -140,6 +164,7 @@ pub(crate) struct Bf16MatrixBufferCacheInsert {
     pub(crate) evicted_bytes: u64,
 }
 
+#[cfg(any(feature = "metal", test))]
 impl<T: Clone> Bf16MatrixBufferCache<T> {
     pub(crate) fn new(max_bytes: u64) -> Self {
         Self {
@@ -206,18 +231,22 @@ impl<T: Clone> Bf16MatrixBufferCache<T> {
         self.used_bytes
     }
 
+    #[cfg(feature = "metal")]
     fn resident_bytes(&self) -> u64 {
         self.used_bytes
     }
 
+    #[cfg(feature = "metal")]
     fn resident_buffers(&self) -> u64 {
         self.entries.len() as u64
     }
 
+    #[cfg(feature = "metal")]
     fn max_bytes(&self) -> u64 {
         self.max_bytes
     }
 
+    #[cfg(feature = "metal")]
     fn can_insert_without_eviction(&self, byte_len: u64) -> bool {
         byte_len <= self.max_bytes && self.used_bytes.saturating_add(byte_len) <= self.max_bytes
     }
@@ -229,10 +258,12 @@ impl<T: Clone> Bf16MatrixBufferCache<T> {
     }
 }
 
+#[cfg_attr(not(feature = "metal"), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) enum NativeTextMetalBufferError {
     Shape(String),
     Tensor(TensorLoadError),
+    #[cfg(feature = "metal")]
     Metal(llm_metal::MetalError),
 }
 
@@ -241,11 +272,13 @@ impl std::fmt::Display for NativeTextMetalBufferError {
         match self {
             Self::Shape(message) => formatter.write_str(message),
             Self::Tensor(err) => write!(formatter, "{err}"),
+            #[cfg(feature = "metal")]
             Self::Metal(err) => write!(formatter, "{err}"),
         }
     }
 }
 
+#[cfg(feature = "metal")]
 impl NativeTextMetalState {
     fn new(device: llm_metal::MetalDevice, weight_cache_bytes: u64) -> Self {
         native_text_metal_metrics().record_bf16_matrix_cache_residency(0, 0, weight_cache_bytes);
@@ -1495,6 +1528,7 @@ impl NativeTextMetalState {
     }
 }
 
+#[cfg(feature = "metal")]
 fn cache_resident_byte_len_for<T>(elements: usize) -> Result<u64, llm_metal::MetalError> {
     elements
         .checked_mul(std::mem::size_of::<T>())
@@ -1506,11 +1540,12 @@ fn cache_resident_byte_len_for<T>(elements: usize) -> Result<u64, llm_metal::Met
         })
 }
 
+#[cfg(feature = "metal")]
 fn cache_resident_byte_len(elements: usize) -> Result<u64, llm_metal::MetalError> {
     cache_resident_byte_len_for::<f32>(elements)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "metal"))]
 mod kv_cache_sync_tests {
     use super::*;
 
@@ -1951,11 +1986,13 @@ mod kv_cache_sync_tests {
     }
 }
 
+#[cfg(feature = "metal")]
 fn native_text_metal_state_registry() -> &'static NativeTextMetalStateRegistry {
     static REGISTRY: OnceLock<NativeTextMetalStateRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(feature = "metal")]
 fn native_text_shared_metal_state(
     weight_cache_bytes: u64,
     cache_namespace: &str,
@@ -1985,6 +2022,7 @@ fn native_text_shared_metal_state(
 }
 
 impl NativeTextMatvecBackend {
+    #[cfg(feature = "metal")]
     pub(crate) fn system_default(weight_cache_bytes: u64, cache_namespace: &str) -> Self {
         match native_text_shared_metal_state(weight_cache_bytes, cache_namespace) {
             Ok(Some(state)) => Self::Metal(state),
@@ -1996,10 +2034,16 @@ impl NativeTextMatvecBackend {
         }
     }
 
+    #[cfg(not(feature = "metal"))]
+    pub(crate) fn system_default(_weight_cache_bytes: u64, _cache_namespace: &str) -> Self {
+        Self::Cpu
+    }
+
     fn cpu() -> CpuNativeMatvecBackend {
         CpuNativeMatvecBackend
     }
 
+    #[cfg(feature = "metal")]
     pub(crate) fn metal_state(&self) -> Option<Arc<NativeTextMetalState>> {
         match self {
             Self::Cpu => None,
@@ -2011,10 +2055,18 @@ impl NativeTextMatvecBackend {
     where
         C: NativeTextCacheMirrorSource + 'static,
     {
-        self.metal_state().map(|state| {
-            let cleaner: Arc<dyn NativeTextCacheMirrorCleaner<C>> = state;
-            cleaner
-        })
+        #[cfg(feature = "metal")]
+        {
+            self.metal_state().map(|state| {
+                let cleaner: Arc<dyn NativeTextCacheMirrorCleaner<C>> = state;
+                cleaner
+            })
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            let _ = self;
+            None
+        }
     }
 
     pub(crate) fn warm_bf16_matrix_cache(
@@ -2030,10 +2082,12 @@ impl NativeTextMatvecBackend {
                 skipped_non_metal: candidates,
                 ..NativeTextMetalWarmup::default()
             }),
+            #[cfg(feature = "metal")]
             Self::Metal(metal) => metal.warm_bf16_matrix_cache(store),
         }
     }
 
+    #[cfg(feature = "metal")]
     fn bf16_matrix_shape(
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -2043,6 +2097,7 @@ impl NativeTextMatvecBackend {
         (input.len() == columns).then_some((rows, columns))
     }
 
+    #[cfg(feature = "metal")]
     fn bf16_matrix_shape_for_tensor(
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -2056,6 +2111,7 @@ impl NativeTextMatvecBackend {
         Some((rows, columns))
     }
 
+    #[cfg(feature = "metal")]
     fn bf16_matrix_shape_for_flat_inputs(
         store: &SafeTensorShardStore,
         tensor: &str,
@@ -2067,6 +2123,7 @@ impl NativeTextMatvecBackend {
         (inputs.len() == expected_len).then_some((rows, columns))
     }
 
+    #[cfg(feature = "metal")]
     fn record_metal_fallback(
         kernel: &'static str,
         bucket: impl Into<String>,
@@ -2075,6 +2132,7 @@ impl NativeTextMatvecBackend {
         native_text_metal_metrics().record_fallback(kernel, bucket, error);
     }
 
+    #[cfg(feature = "metal")]
     async fn run_metal_math<Fut, T>(
         kernel: &'static str,
         bucket: impl Into<String>,
@@ -2097,6 +2155,7 @@ impl NativeTextMatvecBackend {
         }
     }
 
+    #[cfg(feature = "metal")]
     async fn run_metal_tensor<Fut, T>(
         kernel: &'static str,
         bucket: impl Into<String>,
@@ -2119,6 +2178,7 @@ impl NativeTextMatvecBackend {
         }
     }
 
+    #[cfg(feature = "metal")]
     async fn run_metal_math_in_place<Fut>(
         kernel: &'static str,
         bucket: impl Into<String>,
@@ -2141,6 +2201,7 @@ impl NativeTextMatvecBackend {
         }
     }
 
+    #[cfg(feature = "metal")]
     async fn run_metal_tensor_in_place<Fut>(
         kernel: &'static str,
         bucket: impl Into<String>,
@@ -2164,6 +2225,7 @@ impl NativeTextMatvecBackend {
     }
 }
 
+#[cfg(feature = "metal")]
 impl NativeMatvecBackend for NativeTextMatvecBackend {
     async fn bf16_matvec_row_major_f32_in_place(
         &self,
@@ -3607,6 +3669,141 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
     }
 }
 
+#[cfg(not(feature = "metal"))]
+impl NativeMatvecBackend for NativeTextMatvecBackend {
+    async fn bf16_matvec_row_major_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        Self::cpu()
+            .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+            .await
+    }
+
+    async fn bf16_matvec_rows_f32_in_place(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        input: &[f32],
+        chunk_rows: usize,
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        Self::cpu()
+            .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+            .await
+    }
+
+    async fn matvec_row_major_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: &[f32],
+        rows: usize,
+        columns: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+            .await
+    }
+
+    async fn rms_norm_one_centered_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+            .await
+    }
+
+    async fn softmax_f32_in_place(
+        &self,
+        scores: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu().softmax_f32_in_place(scores, output).await
+    }
+
+    async fn linear_attention_conv1d_silu_f32_in_place(
+        &self,
+        window: &[f32],
+        weights: &[f32],
+        conv_dim: usize,
+        kernel_size: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .linear_attention_conv1d_silu_f32_in_place(
+                window,
+                weights,
+                conv_dim,
+                kernel_size,
+                output,
+            )
+            .await
+    }
+
+    async fn weighted_sum_f32_in_place(
+        &self,
+        values: &[f32],
+        weights: &[f32],
+        vector_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .weighted_sum_f32_in_place(values, weights, vector_len, output)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn linear_attention_recurrent_update_f32_in_place(
+        &self,
+        state: &[f32],
+        key: &[f32],
+        value: &[f32],
+        memory: &[f32],
+        beta: f32,
+        decay: f32,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .linear_attention_recurrent_update_f32_in_place(
+                state,
+                key,
+                value,
+                memory,
+                beta,
+                decay,
+                key_head_dim,
+                value_head_dim,
+                output,
+            )
+            .await
+    }
+
+    async fn select_head_rows_f32_in_place(
+        &self,
+        values: &[f32],
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        Self::cpu()
+            .select_head_rows_f32_in_place(values, row_count, row_len, head_start, head_len, output)
+            .await
+    }
+}
+
+#[cfg(feature = "metal")]
 fn softmax_metal_top_k(top: Vec<llm_metal::TopKResult>) -> Result<Vec<TopKWeight>, ()> {
     let max = top
         .iter()

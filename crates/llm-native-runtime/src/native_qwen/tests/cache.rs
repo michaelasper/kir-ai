@@ -443,6 +443,7 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
     std::fs::remove_dir_all(snapshot).ok();
 }
 
+#[cfg(feature = "metal")]
 #[test]
 fn native_qwen_system_default_reuses_shared_metal_state_for_same_model_budget() {
     let first = NativeTextMatvecBackend::system_default(1_234_567, "test-shared-model");
@@ -467,4 +468,12 @@ fn native_qwen_system_default_reuses_shared_metal_state_for_same_model_budget() 
         }
         _ => panic!("Metal backend availability changed between calls"),
     }
+}
+
+#[cfg(not(feature = "metal"))]
+#[test]
+fn native_qwen_system_default_uses_cpu_when_metal_feature_is_disabled() {
+    let backend = NativeTextMatvecBackend::system_default(1_234_567, "test-no-metal-feature");
+
+    assert!(matches!(backend, NativeTextMatvecBackend::Cpu));
 }
