@@ -279,9 +279,10 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
   }' | jq
 ```
 
-The request `model` must match `--model-id`. `temperature: 0` selects greedy
-decode. Non-greedy native text sampling accepts finite `temperature` in
-`[0, 2]` and `top_p` in `(0, 1]`.
+The request `model` must match `--model-id`. Request validation accepts finite
+`temperature` in `[0, 2]` and `top_p` in `(0, 1]`. `temperature: 0` selects
+greedy decode; non-greedy native top-p sampling uses positive `temperature`
+values up to `2`.
 
 ## Call Text Completions
 
