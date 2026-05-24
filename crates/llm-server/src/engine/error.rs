@@ -1,4 +1,5 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
+use llm_backend_contracts::{BackendError, BackendFailureClass};
 use llm_hub::HubError;
 use llm_runtime::RuntimeError;
 use serde::Serialize;
@@ -165,12 +166,7 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
             "request_validation",
             false,
         ),
-        RuntimeError::BackendFailed { .. } => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "backend_execution_failed",
-            "decode",
-            true,
-        ),
+        RuntimeError::BackendFailed { source } => backend_failure_metadata(source),
         RuntimeError::Template(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "chat_template_failed",
@@ -207,6 +203,47 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
         code,
         phase,
         retryable,
+    }
+}
+
+fn backend_failure_metadata(
+    source: &BackendError,
+) -> (StatusCode, &'static str, &'static str, bool) {
+    let code = source
+        .backend_failure_code()
+        .unwrap_or("backend_execution_failed");
+    match source.backend_failure_class() {
+        Some(BackendFailureClass::TensorLoad) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            code,
+            "model_artifact_verification",
+            false,
+        ),
+        Some(BackendFailureClass::Tokenizer) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            code,
+            "tokenization",
+            false,
+        ),
+        Some(BackendFailureClass::Sampler) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, code, "decode", false)
+        }
+        Some(BackendFailureClass::Metal) => (StatusCode::SERVICE_UNAVAILABLE, code, "decode", true),
+        Some(BackendFailureClass::Config) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            code,
+            "model_configuration",
+            false,
+        ),
+        Some(BackendFailureClass::InternalInvariant) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, code, "decode", false)
+        }
+        Some(BackendFailureClass::BackendExecution) | None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "backend_execution_failed",
+            "decode",
+            true,
+        ),
     }
 }
 
@@ -333,6 +370,10 @@ fn log_runtime_error_response(err: &RuntimeError, metadata: RuntimeErrorMetadata
         error = %err,
         code = metadata.code,
         backend_failure_code = source.backend_failure_code().unwrap_or("unknown"),
+        backend_failure_class = source
+            .backend_failure_class()
+            .map(BackendFailureClass::as_str)
+            .unwrap_or("unknown"),
         phase = metadata.phase,
         retryable = metadata.retryable,
         status = metadata.status.as_u16(),
@@ -354,6 +395,13 @@ mod tests {
         "rate_limited",
         "model_overloaded",
         "backend_execution_failed",
+        "model_integrity_failed",
+        "model_artifact_missing",
+        "tokenizer_failed",
+        "sampler_failed",
+        "metal_backend_failed",
+        "backend_config_failed",
+        "backend_invariant_failed",
         "cancelled",
         "request_not_found",
         "request_id_conflict",
@@ -450,9 +498,67 @@ mod tests {
             value["error"]["message"]
                 .as_str()
                 .expect("error message is string")
-                .contains("model_integrity_failed: bad tensor header"),
+                .contains("bad tensor header"),
             "server body should retain source failure message while keeping stable metadata: {value}"
         );
+    }
+
+    #[test]
+    fn typed_backend_failures_drive_server_error_metadata() {
+        let cases = [
+            (
+                BackendError::tensor_load("model_integrity_failed", "bad tensor header"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "model_integrity_failed",
+                "model_artifact_verification",
+                false,
+            ),
+            (
+                BackendError::tokenizer("tokenizer decode failed"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "tokenizer_failed",
+                "tokenization",
+                false,
+            ),
+            (
+                BackendError::sampler("empty logits"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "sampler_failed",
+                "decode",
+                false,
+            ),
+            (
+                BackendError::metal("command buffer failed"),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "metal_backend_failed",
+                "decode",
+                true,
+            ),
+            (
+                BackendError::config("invalid model config"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "backend_config_failed",
+                "model_configuration",
+                false,
+            ),
+            (
+                BackendError::internal_invariant("prefill returned no hidden states"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "backend_invariant_failed",
+                "decode",
+                false,
+            ),
+        ];
+
+        for (backend, status, code, phase, retryable) in cases {
+            let err = RuntimeError::from(backend);
+            let metadata = runtime_error_metadata(&err);
+
+            assert_eq!(metadata.status, status);
+            assert_eq!(metadata.code, code);
+            assert_eq!(metadata.phase, phase);
+            assert_eq!(metadata.retryable, retryable);
+        }
     }
 
     #[test]

@@ -22,7 +22,7 @@ impl NativeTextStreamDecoder for NativeTokenizerStreamDecoder<'_> {
     fn step(&mut self, token_id: u32) -> Result<Option<String>, BackendError> {
         self.inner
             .step(token_id)
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(|err| BackendError::tokenizer(err.to_string()))
     }
 }
 
@@ -109,7 +109,7 @@ fn common_prefix_len(left: &str, right: &str) -> usize {
 
 #[cfg(test)]
 fn non_prefix_stream_error() -> BackendError {
-    BackendError::other(
+    BackendError::internal_invariant(
         "native tokenizer streaming decode became non-prefix after emitted delta".to_owned(),
     )
 }

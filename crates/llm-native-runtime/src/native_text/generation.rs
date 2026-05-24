@@ -39,17 +39,17 @@ pub(crate) fn native_text_cache_token_capacity(
     family_display_name: &str,
 ) -> Result<usize, BackendError> {
     let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
-        BackendError::other(format!(
+        BackendError::config(format!(
             "native {family_display_name} max_position_embeddings does not fit usize: {err}"
         ))
     })?;
     if max_position_embeddings == 0 {
-        return Err(BackendError::unsupported_request(format!(
+        return Err(BackendError::config(format!(
             "native {family_display_name} model declares zero max_position_embeddings"
         )));
     }
     let max_new_tokens = usize::try_from(max_new_tokens).map_err(|err| {
-        BackendError::other(format!(
+        BackendError::config(format!(
             "native {family_display_name} max_new_tokens does not fit usize: {err}"
         ))
     })?;
@@ -73,7 +73,7 @@ pub(crate) fn native_text_cache_namespace_token_bucket(
     family_display_name: &str,
 ) -> Result<usize, BackendError> {
     let max_position_embeddings = usize::try_from(max_position_embeddings).map_err(|err| {
-        BackendError::other(format!(
+        BackendError::config(format!(
             "native {family_display_name} max_position_embeddings does not fit usize: {err}"
         ))
     })?;
@@ -114,7 +114,7 @@ where
         hidden = hidden_states.last().cloned();
     }
     hidden.ok_or_else(|| {
-        BackendError::other(format!(
+        BackendError::internal_invariant(format!(
             "{family_display_name} prefill returned no hidden states"
         ))
     })
@@ -145,18 +145,18 @@ pub(crate) fn sample_token_id_with_draw_with_scratch(
     top_p_scratch: &mut TopPSamplerScratch,
 ) -> Result<usize, BackendError> {
     if logits.is_empty() {
-        return Err(BackendError::other(format!(
+        return Err(BackendError::sampler(format!(
             "{family_display_name} lm head returned no logits"
         )));
     }
     match sampling {
         SamplingConfig::Greedy => llm_sampler::GreedySampler
             .sample(logits)
-            .map_err(|err| BackendError::other(err.to_string())),
+            .map_err(|err| BackendError::sampler(err.to_string())),
         SamplingConfig::TopP { temperature, top_p } => {
             llm_sampler::TopPSampler { temperature, top_p }
                 .sample_with_scratch(logits, draw, top_p_scratch)
-                .map_err(|err| BackendError::other(err.to_string()))
+                .map_err(|err| BackendError::sampler(err.to_string()))
         }
     }
 }
@@ -192,7 +192,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
             .await
             .map_err(BackendError::from)?;
             let sampling_draw = sampling_draw.ok_or_else(|| {
-                BackendError::other(format!(
+                BackendError::sampler(format!(
                     "{} non-greedy sampling requires an RNG draw",
                     self.family_display_name
                 ))
@@ -220,7 +220,7 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         .await
         .map_err(BackendError::from)?;
         let item = top_logits.into_iter().next().ok_or_else(|| {
-            BackendError::other(format!(
+            BackendError::sampler(format!(
                 "{} lm head returned no logits",
                 self.family_display_name
             ))
@@ -235,7 +235,7 @@ fn ensure_token_id_fits_u32(
     family_display_name: &str,
 ) -> Result<(), BackendError> {
     u32::try_from(token_id).map_err(|err| {
-        BackendError::other(format!(
+        BackendError::internal_invariant(format!(
             "{family_display_name} token id does not fit u32: {err}"
         ))
     })?;

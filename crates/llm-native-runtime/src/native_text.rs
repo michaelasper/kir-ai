@@ -505,8 +505,8 @@ mod tests {
     use super::*;
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
     use llm_backend_contracts::{
-        BackendChatContext, BackendChatMessage, BackendChatRole, BackendStreamProgress,
-        BackendToolChoice, SamplingConfig,
+        BackendChatContext, BackendChatMessage, BackendChatRole, BackendFailureClass,
+        BackendStreamProgress, BackendToolChoice, SamplingConfig,
     };
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
@@ -2207,7 +2207,11 @@ mod tests {
         let err = native_text_cache_token_capacity(0, 1, 1, 0, "Test")
             .expect_err("zero position limit fails closed");
 
-        assert!(err.is_unsupported_request());
+        assert_eq!(
+            err.backend_failure_class(),
+            Some(BackendFailureClass::Config)
+        );
+        assert_eq!(err.backend_failure_code(), Some("backend_config_failed"));
         assert!(
             err.to_string()
                 .contains("native Test model declares zero max_position_embeddings"),

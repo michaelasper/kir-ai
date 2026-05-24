@@ -347,6 +347,48 @@ async fn backend_execution_errors_are_not_reported_as_missing_model() {
     assert_eq!(body["error"]["retryable"], true);
 }
 
+struct TensorLoadFailureBackend;
+
+#[async_trait]
+impl ModelBackend for TensorLoadFailureBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "tensor-load-failure")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::tensor_load(
+            "model_integrity_failed",
+            "bad tensor header",
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+}
+
+#[tokio::test]
+async fn tensor_load_failures_are_non_retryable_model_artifact_errors() {
+    let response = build_router_with_backend(Box::new(TensorLoadFailureBackend))
+        .oneshot(chat_request_body("hello"))
+        .await
+        .expect("chat response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response.into_body()).await;
+    assert_eq!(body["error"]["code"], "model_integrity_failed");
+    assert_eq!(body["error"]["phase"], "model_artifact_verification");
+    assert_eq!(body["error"]["retryable"], false);
+}
+
 #[tokio::test]
 async fn backend_execution_errors_do_not_expose_internal_paths() {
     let response = build_router_with_backend(Box::new(PathLeakingBackend))

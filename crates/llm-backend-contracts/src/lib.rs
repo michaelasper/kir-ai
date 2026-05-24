@@ -669,6 +669,36 @@ where
 }
 
 const BACKEND_EXECUTION_FAILED_CODE: &str = "backend_execution_failed";
+const TOKENIZER_FAILED_CODE: &str = "tokenizer_failed";
+const SAMPLER_FAILED_CODE: &str = "sampler_failed";
+const METAL_BACKEND_FAILED_CODE: &str = "metal_backend_failed";
+const BACKEND_CONFIG_FAILED_CODE: &str = "backend_config_failed";
+const BACKEND_INVARIANT_FAILED_CODE: &str = "backend_invariant_failed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendFailureClass {
+    BackendExecution,
+    TensorLoad,
+    Tokenizer,
+    Sampler,
+    Metal,
+    Config,
+    InternalInvariant,
+}
+
+impl BackendFailureClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BackendExecution => "backend_execution",
+            Self::TensorLoad => "tensor_load",
+            Self::Tokenizer => "tokenizer",
+            Self::Sampler => "sampler",
+            Self::Metal => "metal",
+            Self::Config => "config",
+            Self::InternalInvariant => "internal_invariant",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(transparent)]
@@ -691,6 +721,18 @@ pub(crate) enum BackendErrorKind {
     Cancelled,
     #[error("backend error: {message}")]
     BackendFailure { code: &'static str, message: String },
+    #[error("backend tensor load failed: {message}")]
+    TensorLoad { code: &'static str, message: String },
+    #[error("backend tokenizer failed: {0}")]
+    Tokenizer(String),
+    #[error("backend sampler failed: {0}")]
+    Sampler(String),
+    #[error("backend Metal failed: {0}")]
+    Metal(String),
+    #[error("backend config failed: {0}")]
+    Config(String),
+    #[error("backend invariant failed: {0}")]
+    InternalInvariant(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -747,6 +789,45 @@ impl BackendError {
         }
     }
 
+    pub fn tensor_load(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::TensorLoad {
+                code,
+                message: message.into(),
+            },
+        }
+    }
+
+    pub fn tokenizer(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::Tokenizer(message.into()),
+        }
+    }
+
+    pub fn sampler(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::Sampler(message.into()),
+        }
+    }
+
+    pub fn metal(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::Metal(message.into()),
+        }
+    }
+
+    pub fn config(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::Config(message.into()),
+        }
+    }
+
+    pub fn internal_invariant(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::InternalInvariant(message.into()),
+        }
+    }
+
     pub fn is_model_not_found(&self) -> bool {
         matches!(self.kind, BackendErrorKind::ModelNotFound { .. })
     }
@@ -766,6 +847,12 @@ impl BackendError {
     pub fn other_message(&self) -> Option<&str> {
         match &self.kind {
             BackendErrorKind::BackendFailure { message, .. } => Some(message.as_str()),
+            BackendErrorKind::TensorLoad { message, .. } => Some(message.as_str()),
+            BackendErrorKind::Tokenizer(message)
+            | BackendErrorKind::Sampler(message)
+            | BackendErrorKind::Metal(message)
+            | BackendErrorKind::Config(message)
+            | BackendErrorKind::InternalInvariant(message) => Some(message.as_str()),
             _ => None,
         }
     }
@@ -773,6 +860,25 @@ impl BackendError {
     pub fn backend_failure_code(&self) -> Option<&'static str> {
         match &self.kind {
             BackendErrorKind::BackendFailure { code, .. } => Some(*code),
+            BackendErrorKind::TensorLoad { code, .. } => Some(*code),
+            BackendErrorKind::Tokenizer(_) => Some(TOKENIZER_FAILED_CODE),
+            BackendErrorKind::Sampler(_) => Some(SAMPLER_FAILED_CODE),
+            BackendErrorKind::Metal(_) => Some(METAL_BACKEND_FAILED_CODE),
+            BackendErrorKind::Config(_) => Some(BACKEND_CONFIG_FAILED_CODE),
+            BackendErrorKind::InternalInvariant(_) => Some(BACKEND_INVARIANT_FAILED_CODE),
+            _ => None,
+        }
+    }
+
+    pub fn backend_failure_class(&self) -> Option<BackendFailureClass> {
+        match &self.kind {
+            BackendErrorKind::BackendFailure { .. } => Some(BackendFailureClass::BackendExecution),
+            BackendErrorKind::TensorLoad { .. } => Some(BackendFailureClass::TensorLoad),
+            BackendErrorKind::Tokenizer(_) => Some(BackendFailureClass::Tokenizer),
+            BackendErrorKind::Sampler(_) => Some(BackendFailureClass::Sampler),
+            BackendErrorKind::Metal(_) => Some(BackendFailureClass::Metal),
+            BackendErrorKind::Config(_) => Some(BackendFailureClass::Config),
+            BackendErrorKind::InternalInvariant(_) => Some(BackendFailureClass::InternalInvariant),
             _ => None,
         }
     }
@@ -791,8 +897,14 @@ impl BackendError {
                 BackendErrorDomain::InvalidRequest { reason }
             }
             BackendErrorKind::Cancelled => BackendErrorDomain::Cancelled,
-            BackendErrorKind::BackendFailure { code, message } => {
-                BackendErrorDomain::BackendFailure(BackendError::backend_failure(code, message))
+            kind @ (BackendErrorKind::BackendFailure { .. }
+            | BackendErrorKind::TensorLoad { .. }
+            | BackendErrorKind::Tokenizer(_)
+            | BackendErrorKind::Sampler(_)
+            | BackendErrorKind::Metal(_)
+            | BackendErrorKind::Config(_)
+            | BackendErrorKind::InternalInvariant(_)) => {
+                BackendErrorDomain::BackendFailure(BackendError { kind })
             }
         }
     }
@@ -885,6 +997,54 @@ mod tests {
         expected.streaming = false;
 
         assert_eq!(backend.capabilities(), expected);
+    }
+
+    #[test]
+    fn typed_backend_failures_expose_stable_codes_and_classes() {
+        let cases = [
+            (
+                BackendError::tensor_load("model_integrity_failed", "bad tensor header"),
+                BackendFailureClass::TensorLoad,
+                "model_integrity_failed",
+                "bad tensor header",
+            ),
+            (
+                BackendError::tokenizer("tokenizer decode failed"),
+                BackendFailureClass::Tokenizer,
+                "tokenizer_failed",
+                "tokenizer decode failed",
+            ),
+            (
+                BackendError::sampler("empty logits"),
+                BackendFailureClass::Sampler,
+                "sampler_failed",
+                "empty logits",
+            ),
+            (
+                BackendError::metal("command buffer failed"),
+                BackendFailureClass::Metal,
+                "metal_backend_failed",
+                "command buffer failed",
+            ),
+            (
+                BackendError::config("invalid model config"),
+                BackendFailureClass::Config,
+                "backend_config_failed",
+                "invalid model config",
+            ),
+            (
+                BackendError::internal_invariant("prefill returned no hidden states"),
+                BackendFailureClass::InternalInvariant,
+                "backend_invariant_failed",
+                "prefill returned no hidden states",
+            ),
+        ];
+
+        for (err, class, code, message) in cases {
+            assert_eq!(err.backend_failure_class(), Some(class));
+            assert_eq!(err.backend_failure_code(), Some(code));
+            assert_eq!(err.other_message(), Some(message));
+        }
     }
 
     #[test]

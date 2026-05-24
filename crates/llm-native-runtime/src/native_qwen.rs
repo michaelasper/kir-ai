@@ -233,7 +233,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
     ) -> Result<Vec<u32>, BackendError> {
         tokenizer
             .encode(request.prompt(), false)
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(|err| BackendError::tokenizer(err.to_string()))
     }
 
     fn decode_output(
@@ -243,7 +243,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
     ) -> Result<String, BackendError> {
         tokenizer
             .decode(output_ids, false)
-            .map_err(|err| BackendError::other(err.to_string()))
+            .map_err(|err| BackendError::tokenizer(err.to_string()))
     }
 
     fn stop_tokens(&self) -> NativeTextStopTokens {

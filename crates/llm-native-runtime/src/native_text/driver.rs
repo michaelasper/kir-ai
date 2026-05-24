@@ -382,7 +382,7 @@ where
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
         if context_tokens.is_empty() {
-            return Err(BackendError::other(format!(
+            return Err(BackendError::internal_invariant(format!(
                 "{} prompt encoded to zero tokens",
                 self.adapter.family_display_name()
             )));
@@ -441,7 +441,7 @@ where
                     }
                 };
             output_ids.push(u32::try_from(token_id).map_err(|err| {
-                BackendError::other(format!(
+                BackendError::internal_invariant(format!(
                     "{} token id does not fit u32: {err}",
                     self.adapter.family_display_name()
                 ))
@@ -482,7 +482,7 @@ where
             .map(|token| *token as usize)
             .collect::<Vec<_>>();
         if context_tokens.is_empty() {
-            return Err(BackendError::other(format!(
+            return Err(BackendError::internal_invariant(format!(
                 "{} prompt encoded to zero tokens",
                 self.adapter.family_display_name()
             )));
@@ -550,7 +550,7 @@ where
                     }
                 };
             let output_id = u32::try_from(token_id).map_err(|err| {
-                BackendError::other(format!(
+                BackendError::internal_invariant(format!(
                     "{} token id does not fit u32: {err}",
                     self.adapter.family_display_name()
                 ))
@@ -677,7 +677,7 @@ where
                 },
             ) {
             if hit.caches.len() != layer_count {
-                return Err(BackendError::other(format!(
+                return Err(BackendError::internal_invariant(format!(
                     "native {} prefix cache entry had {} layers, expected {layer_count}",
                     self.adapter.family_display_name(),
                     hit.caches.len()
@@ -752,7 +752,7 @@ where
             }
             hidden = Some(prefill_hidden.ok_or_else(|| {
                 cache_cleanup.cleanup(&caches);
-                BackendError::other(format!(
+                BackendError::internal_invariant(format!(
                     "{} prefill returned no hidden states",
                     self.adapter.family_display_name()
                 ))
@@ -762,7 +762,7 @@ where
             Some(hidden) => hidden,
             None => {
                 cache_cleanup.cleanup(&caches);
-                return Err(BackendError::other(format!(
+                return Err(BackendError::internal_invariant(format!(
                     "{} prefill returned no hidden states",
                     self.adapter.family_display_name()
                 )));
@@ -797,7 +797,7 @@ where
         }
         let runtime = runtime.borrow();
         let Some(runtime) = runtime.as_ref() else {
-            return Err(BackendError::other(
+            return Err(BackendError::internal_invariant(
                 "native text worker runtime was not initialized".to_owned(),
             ));
         };
@@ -810,7 +810,9 @@ fn build_native_text_worker_runtime() -> Result<tokio::runtime::Runtime, Backend
         .enable_all()
         .build()
         .map_err(|err| {
-            BackendError::other(format!("native text worker runtime build failed: {err}"))
+            BackendError::internal_invariant(format!(
+                "native text worker runtime build failed: {err}"
+            ))
         })
 }
 

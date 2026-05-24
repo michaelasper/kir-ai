@@ -1537,6 +1537,10 @@ impl TensorLoadError {
         self.code
     }
 
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn integrity(message: impl Into<String>) -> Self {
         Self {
             code: "model_integrity_failed",

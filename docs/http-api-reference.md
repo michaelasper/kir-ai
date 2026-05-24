@@ -739,6 +739,13 @@ Known codes:
 | `rate_limited` | `429` | `rate_limit` | `true` |
 | `model_overloaded` | `429` | `scheduler` | `true` |
 | `backend_execution_failed` | `500` | `decode` | `true` |
+| `model_integrity_failed` | `422` | `model_artifact_verification` | `false` |
+| `model_artifact_missing` | `422` | `model_artifact_verification` | `false` |
+| `tokenizer_failed` | `422` | `tokenization` | `false` |
+| `sampler_failed` | `422` | `decode` | `false` |
+| `metal_backend_failed` | `503` | `decode` | `true` |
+| `backend_config_failed` | `422` | `model_configuration` | `false` |
+| `backend_invariant_failed` | `500` | `decode` | `false` |
 | `cancelled` | `408` | `decode` | `false` |
 | `request_not_found` | `404` | `cancellation` | `false` |
 | `request_id_conflict` | `409` | `request_validation` | `false` |
