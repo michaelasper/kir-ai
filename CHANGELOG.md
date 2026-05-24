@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.9](https://github.com/michaelasper/kir-ai/compare/v1.46.8...v1.46.9) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-258:** isolate native snapshot open blocking work ([cb333f2](https://github.com/michaelasper/kir-ai/commit/cb333f205cf7a699cee8dbbe38cec4ca15ac7a52))
+
 ## [1.46.8](https://github.com/michaelasper/kir-ai/compare/v1.46.7...v1.46.8) (2026-05-24)
 
 ### Bug Fixes
