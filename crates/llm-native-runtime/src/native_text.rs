@@ -527,7 +527,7 @@ mod tests {
         BackendPrefillChunkAdmission, BackendPrefillChunkAdmissionHook, BackendStreamProgress,
         BackendToolChoice, SamplingConfig,
     };
-    use llm_tokenizer::HuggingFaceTokenizer;
+    use llm_tokenizer::{HuggingFaceTokenizer, HuggingFaceTokenizerIdentity};
     use std::{
         sync::{
             Arc, Mutex, Weak,
@@ -946,13 +946,22 @@ mod tests {
 
         fn prefix_cache_namespace(
             &self,
+            tokenizer_identity: &HuggingFaceTokenizerIdentity,
             _request: &BackendRequest,
             cache_tokens: usize,
         ) -> NativeTextPrefixCacheNamespace {
             NativeTextPrefixCacheNamespace {
                 cache_tokens,
+                tokenizer_kind: tokenizer_identity.kind.clone(),
+                tokenizer_hash: tokenizer_identity.content_hash.clone(),
+                tokenizer_normalization: tokenizer_identity.normalization.clone(),
+                adapter_settings: self.prefix_cache_adapter_settings().to_owned(),
                 ..namespace("driver-test")
             }
+        }
+
+        fn prefix_cache_adapter_settings(&self) -> &'static str {
+            "native-test-adapter/v1"
         }
 
         fn layer_count(&self) -> usize {
@@ -1129,10 +1138,16 @@ mod tests {
 
         fn prefix_cache_namespace(
             &self,
+            tokenizer_identity: &HuggingFaceTokenizerIdentity,
             request: &BackendRequest,
             cache_tokens: usize,
         ) -> NativeTextPrefixCacheNamespace {
-            self.base.prefix_cache_namespace(request, cache_tokens)
+            self.base
+                .prefix_cache_namespace(tokenizer_identity, request, cache_tokens)
+        }
+
+        fn prefix_cache_adapter_settings(&self) -> &'static str {
+            self.base.prefix_cache_adapter_settings()
         }
 
         fn layer_count(&self) -> usize {
@@ -1204,6 +1219,12 @@ mod tests {
             repo_id: Some("org/model".to_owned()),
             resolved_commit: Some("abc123".to_owned()),
             profile: Some(label.to_owned()),
+            tokenizer_kind: "huggingface-tokenizer-json".to_owned(),
+            tokenizer_hash: format!("sha256:tokenizer-{label}"),
+            tokenizer_normalization: "llm-tokenizer/hf-json/v1".to_owned(),
+            cache_template_id: format!("template-{label}/v1"),
+            chat_template_kwargs_hash: None,
+            adapter_settings: format!("native-test-adapter-{label}/v1"),
             cache_key: format!("cache-key-{label}"),
             tool_schema: None,
             request_mode: "conversation=false,json_object=false,required_tool=None".to_owned(),
@@ -1217,6 +1238,10 @@ mod tests {
         let tokenizer_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/qwen36/tokenizer.json");
         HuggingFaceTokenizer::from_file(tokenizer_path).expect("tokenizer loads")
+    }
+
+    fn driver_test_tokenizer_identity() -> HuggingFaceTokenizerIdentity {
+        driver_test_tokenizer().identity().clone()
     }
 
     fn driver_test_request(max_tokens: u32) -> BackendRequest {
@@ -1284,7 +1309,9 @@ mod tests {
             adapter.family_display_name(),
         )
         .expect("test namespace cache token bucket is valid");
-        let namespace = adapter.prefix_cache_namespace(request, namespace_cache_tokens);
+        let tokenizer = driver_test_tokenizer();
+        let namespace =
+            adapter.prefix_cache_namespace(tokenizer.identity(), request, namespace_cache_tokens);
         let hidden = [0.25_f32];
         let caches = [cache];
         let byte_len = TestCache::prefix_cache_entry_bytes(&hidden, &caches);
@@ -1320,7 +1347,8 @@ mod tests {
             adapter.family_display_name(),
         )
         .expect("test namespace cache token bucket is valid");
-        adapter.prefix_cache_namespace(request, namespace_cache_tokens)
+        let tokenizer = driver_test_tokenizer();
+        adapter.prefix_cache_namespace(tokenizer.identity(), request, namespace_cache_tokens)
     }
 
     fn assert_prefix_cache_entry(
@@ -1473,10 +1501,13 @@ mod tests {
             ),
         );
         let expected_cache_key = request.cache_context().key.as_str().to_owned();
+        let tokenizer_identity = driver_test_tokenizer_identity();
 
         let namespace = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
             metadata: &metadata,
+            tokenizer_identity: &tokenizer_identity,
+            adapter_settings: "native-test-adapter/v1",
             request: &request,
             cache_layout_version: 7,
             cache_tokens: 64,
@@ -1490,6 +1521,20 @@ mod tests {
         assert_eq!(namespace.repo_id.as_deref(), Some("org/model"));
         assert_eq!(namespace.resolved_commit.as_deref(), Some("abc123"));
         assert_eq!(namespace.profile.as_deref(), Some("profile-a"));
+        assert_eq!(namespace.tokenizer_kind, "huggingface-tokenizer-json");
+        assert!(namespace.tokenizer_hash.starts_with("sha256:"));
+        assert_eq!(
+            namespace.tokenizer_normalization,
+            "llm-tokenizer/hf-json/v1"
+        );
+        assert_eq!(namespace.cache_template_id, "chatml/qwen/v1");
+        assert!(
+            namespace
+                .chat_template_kwargs_hash
+                .as_deref()
+                .is_some_and(|hash| hash.starts_with("sha256:"))
+        );
+        assert_eq!(namespace.adapter_settings, "native-test-adapter/v1");
         assert_eq!(namespace.cache_key, expected_cache_key);
         assert_eq!(namespace.tool_schema.as_deref(), Some("schema-a"));
         assert_eq!(
@@ -1520,10 +1565,13 @@ mod tests {
             temperature: 0.7,
             top_p: 0.8,
         };
+        let tokenizer_identity = driver_test_tokenizer_identity();
         let namespace_for = |request: &BackendRequest| {
             native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
                 model_id: "model-a",
                 metadata: &metadata,
+                tokenizer_identity: &tokenizer_identity,
+                adapter_settings: "native-test-adapter/v1",
                 request,
                 cache_layout_version: 1,
                 cache_tokens: 16,
@@ -1628,6 +1676,62 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_namespace_separates_tokenizer_template_adapter_and_bucket_identity() {
+        let cache = NativeTextPrefixCache::new(1024);
+        let metrics = NativeTextPrefixCacheMetrics::default();
+        let namespace = namespace("shared-route");
+        let mismatches = [
+            NativeTextPrefixCacheNamespace {
+                tokenizer_kind: "different-tokenizer-kind".to_owned(),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                tokenizer_hash: "sha256:different-tokenizer".to_owned(),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                tokenizer_normalization: "llm-tokenizer/hf-json/v2".to_owned(),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                cache_template_id: "template/shared-route/v2".to_owned(),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                chat_template_kwargs_hash: Some("sha256:different-template-kwargs".to_owned()),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                adapter_settings: "native-test-adapter/shared-route/v2".to_owned(),
+                ..namespace.clone()
+            },
+            NativeTextPrefixCacheNamespace {
+                cache_tokens: namespace.cache_tokens * 2,
+                ..namespace.clone()
+            },
+        ];
+
+        cache.store(
+            namespace.clone(),
+            &[1, 2],
+            &[0.25, 0.75],
+            &[TestCache {
+                bytes: 8,
+                marker: 1,
+            }],
+            &metrics,
+        );
+
+        assert!(cache.lookup(&namespace, &[1, 2, 3], &metrics).is_some());
+        for mismatch in mismatches {
+            assert!(
+                cache.lookup(&mismatch, &[1, 2, 3], &metrics).is_none(),
+                "incompatible shared-prefix identity must miss: {mismatch:?}"
+            );
+        }
+    }
+
+    #[test]
     fn prefix_namespace_identity_changes_with_chat_template_kwargs() {
         let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
         let mut request = driver_test_request(1);
@@ -1637,10 +1741,13 @@ mod tests {
                 None,
                 Some(r#"{"enable_thinking":false}"#.to_owned()),
             );
+        let tokenizer_identity = driver_test_tokenizer_identity();
 
         let no_thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
             metadata: &metadata,
+            tokenizer_identity: &tokenizer_identity,
+            adapter_settings: "native-test-adapter/v1",
             request: &request,
             cache_layout_version: 1,
             cache_tokens: 16,
@@ -1655,6 +1762,8 @@ mod tests {
         let thinking = native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: "model-a",
             metadata: &metadata,
+            tokenizer_identity: &tokenizer_identity,
+            adapter_settings: "native-test-adapter/v1",
             request: &request,
             cache_layout_version: 1,
             cache_tokens: 16,
@@ -1704,11 +1813,14 @@ mod tests {
             Some(BackendToolChoice::RequiredFunction("lookup".to_owned())),
             false,
         );
+        let tokenizer_identity = driver_test_tokenizer_identity();
 
         let namespace_for = |request: &BackendRequest| {
             native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
                 model_id: "model-a",
                 metadata: &metadata,
+                tokenizer_identity: &tokenizer_identity,
+                adapter_settings: "native-test-adapter/v1",
                 request,
                 cache_layout_version: 1,
                 cache_tokens: 16,
@@ -1758,10 +1870,13 @@ mod tests {
         let metadata = BackendModelMetadata::new("model-a", "native-test").with_family("qwen");
         let lookup_request = chat_request("lookup");
         let search_request = chat_request("search");
+        let tokenizer_identity = driver_test_tokenizer_identity();
         let namespace_for = |request: &BackendRequest| {
             native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
                 model_id: "model-a",
                 metadata: &metadata,
+                tokenizer_identity: &tokenizer_identity,
+                adapter_settings: "native-test-adapter/v1",
                 request,
                 cache_layout_version: 1,
                 cache_tokens: 16,
@@ -2051,6 +2166,35 @@ mod tests {
         assert_eq!(snapshot["hit_tokens"], 5);
         assert_eq!(snapshot["miss_tokens"], 5);
         assert_eq!(snapshot["avoided_prefill_tokens"], 5);
+    }
+
+    #[test]
+    fn driver_records_shared_prefix_reuse_without_exposing_state() {
+        let request = driver_test_request(1);
+        let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11, 12, 13]);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        store_driver_prefix_hit(
+            &adapter,
+            &request,
+            4,
+            1,
+            &[10, 11],
+            TestCache {
+                bytes: 8,
+                marker: 77,
+            },
+        );
+        let driver = driver_for_test(adapter).with_max_prefill_tokens(2);
+
+        let output = driver
+            .generate_blocking(request, CancellationToken::new())
+            .expect("generation reuses compatible shared prefix");
+
+        assert_eq!(output.prompt_cached_tokens, Some(2));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["shared_prefix_hits"], 1);
+        assert_eq!(snapshot["shared_prefix_reused_tokens"], 2);
+        assert_eq!(snapshot.get("shared_prefix_states"), None);
     }
 
     #[test]

@@ -205,11 +205,16 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   duration by kir-ai blocking versus streaming generation path. Native text
   prefix-cache objects include cache counters plus `prefill_chunks`,
   `prefill_tokens`, `checkpoint_stores`, `checkpoint_store_tokens`,
-  `checkpoint_reuse_hits`, `checkpoint_reused_tokens`, `hit_tokens`, `miss_tokens`, and
-  `avoided_prefill_tokens` so warm-prefix runs can distinguish hit rate from
-  avoided prefill work. Native text Metal KV cache metrics include resident
-  bytes/buffers, allocations, syncs, skipped syncs, bytes uploaded, evictions,
-  and bytes evicted when Metal support is compiled in, plus
+  `checkpoint_reuse_hits`, `checkpoint_reused_tokens`, `shared_prefix_hits`,
+  `shared_prefix_reused_tokens`, `hit_tokens`, `miss_tokens`, and
+  `avoided_prefill_tokens` so warm-prefix runs can distinguish full hits,
+  shared agent-prefix reuse, checkpoint reuse, and avoided prefill work. Native
+  text prefix-cache routing keys are fail-closed across model/backend/family,
+  repo/commit/profile, tokenizer kind, tokenizer hash and normalization version,
+  chat-template id and kwargs hash, adapter settings, request mode, cache layout, and
+  cache-token bucket before KV state is reused. Native text Metal KV cache
+  metrics include resident bytes/buffers, allocations, syncs, skipped syncs,
+  bytes uploaded, evictions, and bytes evicted when Metal support is compiled in, plus
   `f32_*`, `f16_*`, and `int8_*` uploaded/resident byte breakdowns for cache
   precision comparisons.
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`

@@ -2001,6 +2001,14 @@ fn native_qwen_test_prefix_namespace(label: &str) -> NativeQwenPrefixCacheNamesp
         repo_id: Some("local/test".to_owned()),
         resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
         profile: Some("qwen-test".to_owned()),
+        tokenizer_kind: "huggingface-tokenizer-json".to_owned(),
+        tokenizer_hash: format!("sha256:qwen-test-tokenizer-{label}"),
+        tokenizer_normalization: "llm-tokenizer/hf-json/v1".to_owned(),
+        cache_template_id: QwenFamilyAdapter.cache_template_id().to_owned(),
+        chat_template_kwargs_hash: Some(
+            "sha256:09f707b4df24814500e39b767df141317a1b87a1378d75246164c5a77adce367".to_owned(),
+        ),
+        adapter_settings: super::NATIVE_QWEN_PREFIX_ADAPTER_SETTINGS.to_owned(),
         cache_key: BackendCacheContext::chat_template_with_kwargs(
             QwenFamilyAdapter.cache_template_id(),
             Some("tool-schema-v1".to_owned()),

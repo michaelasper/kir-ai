@@ -602,6 +602,16 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         "native text Qwen prefix cache checkpoint reuse metrics are exposed"
     );
     assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["shared_prefix_hits"]
+            .is_number(),
+        "native text Qwen shared-prefix hit metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["shared_prefix_reused_tokens"]
+            .is_number(),
+        "native text Qwen shared-prefix token metrics are exposed"
+    );
+    assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hit_tokens"].is_number(),
         "native text Qwen prefix cache hit token metrics are exposed"
     );
@@ -648,6 +658,16 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["checkpoint_reuse_hits"]
             .is_number(),
         "native text Gemma prefix cache checkpoint reuse metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["shared_prefix_hits"]
+            .is_number(),
+        "native text Gemma shared-prefix hit metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["shared_prefix_reused_tokens"]
+            .is_number(),
+        "native text Gemma shared-prefix token metrics are exposed"
     );
     assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hit_tokens"].is_number(),
@@ -777,6 +797,15 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["checkpoint_reuse_hits"].is_number(),
         "native Qwen prefix cache checkpoint reuse metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["shared_prefix_hits"].is_number(),
+        "native Qwen shared-prefix hit metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["shared_prefix_reused_tokens"]
+            .is_number(),
+        "native Qwen shared-prefix token metrics are exposed through the legacy object"
     );
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["hit_tokens"].is_number(),

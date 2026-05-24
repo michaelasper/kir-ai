@@ -1,5 +1,7 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
+use llm_tokenizer::HuggingFaceTokenizerIdentity;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -51,6 +53,12 @@ pub(crate) struct NativeTextPrefixCacheNamespace {
     pub(crate) repo_id: Option<String>,
     pub(crate) resolved_commit: Option<String>,
     pub(crate) profile: Option<String>,
+    pub(crate) tokenizer_kind: String,
+    pub(crate) tokenizer_hash: String,
+    pub(crate) tokenizer_normalization: String,
+    pub(crate) cache_template_id: String,
+    pub(crate) chat_template_kwargs_hash: Option<String>,
+    pub(crate) adapter_settings: String,
     pub(crate) cache_key: String,
     pub(crate) tool_schema: Option<String>,
     pub(crate) request_mode: String,
@@ -62,6 +70,8 @@ pub(crate) struct NativeTextPrefixCacheNamespace {
 pub(crate) struct NativeTextPrefixNamespaceContext<'a> {
     pub(crate) model_id: &'a str,
     pub(crate) metadata: &'a BackendModelMetadata,
+    pub(crate) tokenizer_identity: &'a HuggingFaceTokenizerIdentity,
+    pub(crate) adapter_settings: &'a str,
     pub(crate) request: &'a BackendRequest,
     pub(crate) cache_layout_version: u32,
     pub(crate) cache_tokens: usize,
@@ -79,6 +89,17 @@ pub(crate) fn native_text_prefix_namespace(
         repo_id: context.metadata.repo_id.clone(),
         resolved_commit: context.metadata.resolved_commit.clone(),
         profile: context.metadata.profile.clone(),
+        tokenizer_kind: context.tokenizer_identity.kind.clone(),
+        tokenizer_hash: context.tokenizer_identity.content_hash.clone(),
+        tokenizer_normalization: context.tokenizer_identity.normalization.clone(),
+        cache_template_id: context.request.cache_context().cache_template_id.clone(),
+        chat_template_kwargs_hash: context
+            .request
+            .cache_context()
+            .chat_template_kwargs
+            .as_deref()
+            .map(hash_str),
+        adapter_settings: context.adapter_settings.to_owned(),
         cache_key: context.request.cache_context().key.as_str().to_owned(),
         tool_schema: context.request.cache_context().tool_schema.clone(),
         request_mode: native_text_prefix_request_mode(context.request),
@@ -96,6 +117,11 @@ pub(crate) fn native_text_prefix_request_mode(request: &BackendRequest) -> Strin
         ),
         None => "raw_completion".to_owned(),
     }
+}
+
+fn hash_str(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!("sha256:{digest:x}")
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +158,8 @@ pub(crate) struct NativeTextPrefixCacheCounters {
     pub(crate) checkpoint_store_tokens: u64,
     pub(crate) checkpoint_reuse_hits: u64,
     pub(crate) checkpoint_reused_tokens: u64,
+    pub(crate) shared_prefix_hits: u64,
+    pub(crate) shared_prefix_reused_tokens: u64,
     pub(crate) hit_tokens: u64,
     pub(crate) miss_tokens: u64,
     pub(crate) avoided_prefill_tokens: u64,
@@ -389,6 +417,14 @@ impl NativeTextPrefixCacheMetrics {
         });
     }
 
+    pub(crate) fn record_shared_prefix_reuse(&self, tokens: u64) {
+        self.update(|counters| {
+            counters.shared_prefix_hits += 1;
+            counters.shared_prefix_reused_tokens =
+                counters.shared_prefix_reused_tokens.saturating_add(tokens);
+        });
+    }
+
     pub(crate) fn record_lookup_scan(&self, entries_scanned: u64, namespace_entries_scanned: u64) {
         self.update(|counters| {
             counters.entries_scanned = counters.entries_scanned.saturating_add(entries_scanned);
@@ -446,6 +482,8 @@ impl NativeTextPrefixCacheMetrics {
             "checkpoint_store_tokens": counters.checkpoint_store_tokens,
             "checkpoint_reuse_hits": counters.checkpoint_reuse_hits,
             "checkpoint_reused_tokens": counters.checkpoint_reused_tokens,
+            "shared_prefix_hits": counters.shared_prefix_hits,
+            "shared_prefix_reused_tokens": counters.shared_prefix_reused_tokens,
             "hit_tokens": counters.hit_tokens,
             "miss_tokens": counters.miss_tokens,
             "avoided_prefill_tokens": counters.avoided_prefill_tokens,
@@ -483,6 +521,8 @@ mod tests {
         metrics.record_checkpoint_store(5);
         metrics.record_checkpoint_reuse(u64::MAX - 5);
         metrics.record_checkpoint_reuse(6);
+        metrics.record_shared_prefix_reuse(u64::MAX - 6);
+        metrics.record_shared_prefix_reuse(7);
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot["reused_tokens"], u64::MAX);
@@ -494,5 +534,7 @@ mod tests {
         assert_eq!(snapshot["checkpoint_store_tokens"], u64::MAX);
         assert_eq!(snapshot["checkpoint_reuse_hits"], 2);
         assert_eq!(snapshot["checkpoint_reused_tokens"], u64::MAX);
+        assert_eq!(snapshot["shared_prefix_hits"], 2);
+        assert_eq!(snapshot["shared_prefix_reused_tokens"], u64::MAX);
     }
 }

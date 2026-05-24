@@ -28,7 +28,7 @@ use llm_backend_contracts::{
     ModelBackend, SamplingConfig,
 };
 use llm_models::{GemmaModelSpec, ModelFamily, SafetensorsIndex};
-use llm_tokenizer::HuggingFaceTokenizer;
+use llm_tokenizer::{HuggingFaceTokenizer, HuggingFaceTokenizerIdentity};
 use serde_json::Value;
 use std::{
     path::Path,
@@ -38,6 +38,7 @@ use tokio_util::sync::CancellationToken;
 
 const DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES: u64 = DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES;
 const NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
+const NATIVE_GEMMA_PREFIX_ADAPTER_SETTINGS: &str = "native-gemma-prefix-adapter/v1";
 
 #[derive(Clone)]
 pub struct NativeGemmaBackend {
@@ -332,17 +333,24 @@ impl NativeTextAdapter for NativeGemmaAdapter {
 
     fn prefix_cache_namespace(
         &self,
+        tokenizer_identity: &HuggingFaceTokenizerIdentity,
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace {
         native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: &self.model_id,
             metadata: &self.metadata,
+            tokenizer_identity,
+            adapter_settings: self.prefix_cache_adapter_settings(),
             request,
             cache_layout_version: NATIVE_GEMMA_PREFIX_CACHE_LAYOUT_VERSION,
             cache_tokens,
             max_prefill_tokens: self.max_prefill_tokens,
         })
+    }
+
+    fn prefix_cache_adapter_settings(&self) -> &'static str {
+        NATIVE_GEMMA_PREFIX_ADAPTER_SETTINGS
     }
 
     fn prefix_cache_hit_is_compatible(
@@ -1070,6 +1078,15 @@ mod tests {
             repo_id: Some("local/test".to_owned()),
             resolved_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             profile: Some("gemma-test".to_owned()),
+            tokenizer_kind: "huggingface-tokenizer-json".to_owned(),
+            tokenizer_hash: format!("sha256:gemma-test-tokenizer-{label}"),
+            tokenizer_normalization: "llm-tokenizer/hf-json/v1".to_owned(),
+            cache_template_id: GemmaFamilyAdapter.cache_template_id().to_owned(),
+            chat_template_kwargs_hash: Some(
+                "sha256:09f707b4df24814500e39b767df141317a1b87a1378d75246164c5a77adce367"
+                    .to_owned(),
+            ),
+            adapter_settings: NATIVE_GEMMA_PREFIX_ADAPTER_SETTINGS.to_owned(),
             cache_key: BackendCacheContext::chat_template_with_kwargs(
                 GemmaFamilyAdapter.cache_template_id(),
                 Some("tool-schema-v1".to_owned()),

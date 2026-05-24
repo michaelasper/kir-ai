@@ -10,16 +10,38 @@ use tokenizers::{
     Tokenizer,
 };
 
+const HUGGINGFACE_TOKENIZER_KIND: &str = "huggingface-tokenizer-json";
+const HUGGINGFACE_TOKENIZER_NORMALIZATION: &str = "llm-tokenizer/hf-json/v1";
+
 #[derive(Clone)]
 pub struct HuggingFaceTokenizer {
     inner: Tokenizer,
+    identity: HuggingFaceTokenizerIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HuggingFaceTokenizerIdentity {
+    pub kind: String,
+    pub content_hash: String,
+    pub normalization: String,
 }
 
 impl HuggingFaceTokenizer {
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, TokenizerError> {
-        let inner = Tokenizer::from_file(path.as_ref())
-            .map_err(|err| TokenizerError::Load(err.to_string()))?;
-        Ok(Self { inner })
+        let path = path.as_ref();
+        let bytes = std::fs::read(path).map_err(|err| {
+            TokenizerError::Load(format!("failed to read `{}`: {err}", path.display()))
+        })?;
+        let inner =
+            Tokenizer::from_file(path).map_err(|err| TokenizerError::Load(err.to_string()))?;
+        Ok(Self {
+            inner,
+            identity: HuggingFaceTokenizerIdentity {
+                kind: HUGGINGFACE_TOKENIZER_KIND.to_owned(),
+                content_hash: hash_bytes(&bytes),
+                normalization: HUGGINGFACE_TOKENIZER_NORMALIZATION.to_owned(),
+            },
+        })
     }
 
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>, TokenizerError> {
@@ -62,6 +84,17 @@ impl HuggingFaceTokenizer {
     pub fn token_to_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
     }
+
+    pub fn identity(&self) -> &HuggingFaceTokenizerIdentity {
+        &self.identity
+    }
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(bytes);
+    format!("sha256:{digest:x}")
 }
 
 pub struct HuggingFaceDecodeStream<'tokenizer> {
@@ -121,5 +154,18 @@ mod tests {
 
         assert_eq!(decoded, "삥뽕빵");
         assert!(withheld_steps > 0);
+    }
+
+    #[test]
+    fn tokenizer_identity_hashes_loaded_json_content() {
+        let tokenizer_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36/tokenizer.json");
+        let first = HuggingFaceTokenizer::from_file(&tokenizer_path).expect("tokenizer loads");
+        let second = HuggingFaceTokenizer::from_file(tokenizer_path).expect("tokenizer reloads");
+
+        assert_eq!(first.identity(), second.identity());
+        assert_eq!(first.identity().kind, "huggingface-tokenizer-json");
+        assert!(first.identity().content_hash.starts_with("sha256:"));
+        assert_eq!(first.identity().normalization, "llm-tokenizer/hf-json/v1");
     }
 }

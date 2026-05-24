@@ -14,7 +14,7 @@ use llm_backend_contracts::{
     BackendStreamChunk, BackendStreamProgress, ModelBackend, SamplingConfig,
 };
 use llm_sampler::TopPSamplerScratch;
-use llm_tokenizer::HuggingFaceTokenizer;
+use llm_tokenizer::{HuggingFaceTokenizer, HuggingFaceTokenizerIdentity};
 use std::{
     cell::RefCell,
     collections::HashSet,
@@ -76,9 +76,11 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     }
     fn prefix_cache_namespace(
         &self,
+        tokenizer_identity: &HuggingFaceTokenizerIdentity,
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace;
+    fn prefix_cache_adapter_settings(&self) -> &'static str;
     fn prefix_cache_hit_is_compatible(
         &self,
         _states: &[<Self::LayerCache as NativeTextPrefixCacheValue>::PrefixCacheState],
@@ -682,9 +684,11 @@ where
             self.adapter.max_position_embeddings(),
             self.adapter.family_display_name(),
         )?;
-        let namespace = self
-            .adapter
-            .prefix_cache_namespace(request, namespace_cache_tokens);
+        let namespace = self.adapter.prefix_cache_namespace(
+            self.tokenizer.identity(),
+            request,
+            namespace_cache_tokens,
+        );
         let layer_count = self.adapter.layer_count();
         let mut cached_prefix_len = 0_usize;
         let mut cache_report = NativeTextRequestCacheReport::miss(context_tokens.len());
@@ -710,6 +714,9 @@ where
                 self.adapter
                     .prefix_cache_metrics()
                     .record_checkpoint_reuse(cached_prefix_len as u64);
+                self.adapter
+                    .prefix_cache_metrics()
+                    .record_shared_prefix_reuse(cached_prefix_len as u64);
             }
             cache_report = NativeTextRequestCacheReport::hit(
                 context_tokens.len(),
@@ -738,6 +745,9 @@ where
                         self.adapter
                             .prefix_cache_metrics()
                             .record_checkpoint_reuse(cached_prefix_len as u64);
+                        self.adapter
+                            .prefix_cache_metrics()
+                            .record_shared_prefix_reuse(cached_prefix_len as u64);
                     }
                     cache_report = NativeTextRequestCacheReport::hit(
                         context_tokens.len(),

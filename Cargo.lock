@@ -1289,6 +1289,7 @@ dependencies = [
  "llm-chat-template",
  "llm-models",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokenizers",
  "tracing",

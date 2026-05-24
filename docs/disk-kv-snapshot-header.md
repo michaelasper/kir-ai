@@ -148,6 +148,11 @@ compatibility key because it affects how native prefill state is produced and
 observed. Implementations must not silently reuse a snapshot written for a
 different bucket or prefill chunk size.
 
+Native text also includes the adapter settings identity in the namespace. Today
+that value is a versioned family adapter string, and future settings that change
+KV layout or prompt interpretation must either be encoded there or bump the
+adapter identity so old entries miss.
+
 `cache.prefix_token_hash` is a hash of the exact token ids covered by the
 payload, encoded with an explicit length prefix per token. It is not a prompt
 hash and must not store prompt text.
@@ -224,8 +229,9 @@ request may continue as a cold miss, but the rejection must be reported.
 | Payload length or payload hash | Hard reject |
 | `model.manifest_digest` or `model.artifact_fingerprint` | Recoverable miss |
 | `model.family`, `model.loader`, `model.quantization`, `profile`, `repo_id`, `resolved_commit` | Recoverable miss |
-| `tokenizer.hash` or tokenizer normalisation version | Recoverable miss |
+| Tokenizer kind, `tokenizer.hash`, or tokenizer normalisation version | Recoverable miss |
 | `chat_template.cache_template_id`, source hash, runtime template version, kwargs hash | Recoverable miss |
+| Adapter settings identity | Recoverable miss |
 | `request.cache_key`, `stable_prefix_key`, mode, JSON-object flag, required tool, tool schema hash, system prompt hash | Recoverable miss |
 | `cache.cache_tokens`, `cache.max_prefill_tokens`, `model_context_length` | Recoverable miss |
 | `created_at`, `snapshot_id`, diagnostic duplicate fields | Not compatibility-bearing |

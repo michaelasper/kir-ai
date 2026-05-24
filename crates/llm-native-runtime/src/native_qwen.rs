@@ -28,7 +28,7 @@ use llm_backend_contracts::{
     ModelBackend, SamplingConfig,
 };
 use llm_models::{ModelFamily, QwenModelSpec, SafetensorsIndex};
-use llm_tokenizer::HuggingFaceTokenizer;
+use llm_tokenizer::{HuggingFaceTokenizer, HuggingFaceTokenizerIdentity};
 use serde_json::Value;
 use std::{
     path::Path,
@@ -59,6 +59,7 @@ pub(crate) struct NativeQwenAdapter {
 
 const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES;
 const NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION: u32 = 1;
+const NATIVE_QWEN_PREFIX_ADAPTER_SETTINGS: &str = "native-qwen-prefix-adapter/v1";
 
 type NativeQwenPrefixCache = NativeTextPrefixCache<QwenLayerCache>;
 #[cfg(test)]
@@ -300,17 +301,24 @@ impl NativeTextAdapter for NativeQwenAdapter {
 
     fn prefix_cache_namespace(
         &self,
+        tokenizer_identity: &HuggingFaceTokenizerIdentity,
         request: &BackendRequest,
         cache_tokens: usize,
     ) -> NativeTextPrefixCacheNamespace {
         native_text_prefix_namespace(NativeTextPrefixNamespaceContext {
             model_id: &self.model_id,
             metadata: &self.metadata,
+            tokenizer_identity,
+            adapter_settings: self.prefix_cache_adapter_settings(),
             request,
             cache_layout_version: NATIVE_QWEN_PREFIX_CACHE_LAYOUT_VERSION,
             cache_tokens,
             max_prefill_tokens: self.max_prefill_tokens,
         })
+    }
+
+    fn prefix_cache_adapter_settings(&self) -> &'static str {
+        NATIVE_QWEN_PREFIX_ADAPTER_SETTINGS
     }
 
     fn prefix_cache_hit_is_compatible(

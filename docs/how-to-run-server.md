@@ -192,13 +192,28 @@ budget. It defaults to `536870912` bytes. Set `0` to reject prefix-cache stores
 while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES`
 provides the same setting when the flag is omitted.
 
+Native text prefix-cache entries are routed by an explicit compatibility
+identity before any KV state is cloned. The identity includes model/backend/family
+metadata, repo/commit/profile, tokenizer content hash and normalization version,
+tokenizer kind, chat-template id and kwargs hash, adapter settings, request mode,
+cache layout, cache-token bucket, and max prefill chunk size. Any mismatch is a
+cache miss and falls back to cold prefill. The hot in-memory tier is a
+byte-budgeted LRU across all namespace buckets: replacing an entry first removes
+the old bytes, then the least-recently-used entries are evicted until the new
+entry fits. Admin metrics report `resident_bytes`, `resident_entries`,
+`evictions`, `bytes_evicted`, `shared_prefix_hits`, and
+`shared_prefix_reused_tokens` without exposing cached KV payloads.
+
 `--native-prefix-cache-ssd` enables the opt-in native Qwen/Gemma SSD
 prefix-cache tier. It writes block-aligned safetensors-compatible cache entries
 under `~/.cache/kir-ai/kv-cache` by default, or under
 `--native-prefix-cache-ssd-path`. Disk hits are validated against the model and
 cache namespace before promotion into the hot in-memory prefix cache. The tier is
-disabled by default while disk pressure and eviction policy are still being
-proven.
+disabled by default while disk pressure policy is still being proven. The SSD
+tier does not enforce a byte-residency budget or evict block files today; it uses
+a bounded writer queue, skips invalid or incompatible blocks during lookup and
+startup reindex, and relies on the in-memory tier for resident hot-prefix
+eviction.
 
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
