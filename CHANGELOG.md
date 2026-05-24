@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.0](https://github.com/michaelasper/kir-ai/compare/v1.55.0...v1.56.0) (2026-05-24)
+
+### Features
+
+* **COR-442:** expose prefill chunk and starvation metrics ([dfd63fc](https://github.com/michaelasper/kir-ai/commit/dfd63fca573358e867c7b53c2eebe5dfc7d60077))
+
 ## [1.55.0](https://github.com/michaelasper/kir-ai/compare/v1.54.0...v1.55.0) (2026-05-24)
 
 ### Features
