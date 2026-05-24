@@ -360,15 +360,17 @@ fn empty_backend_tool_parameters() -> serde_json::Value {
 
 /// Prompt cache identity attached to backend requests.
 ///
-/// The key is derived from the template ID, canonical tool schema, and
+/// The key is derived from the template ID, serialized tool schema JSON, and
 /// family-specific template kwargs rather than from transient request fields.
+/// Tool schema JSON is order-insensitive only when the caller applies canonical
+/// normalization; the default runtime serialization preserves caller JSON order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendCacheContext {
     /// Stable hash key for this prompt/cache context.
     pub key: BackendCacheKey,
     /// Prompt template identifier.
     pub cache_template_id: String,
-    /// Optional canonical tool schema JSON.
+    /// Optional serialized tool schema JSON used in the cache key.
     pub tool_schema: Option<String>,
     /// Optional family-specific chat template kwargs JSON.
     pub chat_template_kwargs: Option<String>,
@@ -418,7 +420,7 @@ impl BackendCacheContext {
         }
     }
 
-    /// Cache context for a chat template and optional canonical tool schema.
+    /// Cache context for a chat template and optional serialized tool schema.
     pub fn chat_template(template_id: impl Into<String>, tool_schema: Option<String>) -> Self {
         Self::chat_template_with_kwargs(template_id, tool_schema, None)
     }

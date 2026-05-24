@@ -8,8 +8,10 @@ use sha2::{Digest, Sha256};
 /// Stable identity components for a prompt/cache lookup derived from a request.
 ///
 /// The runtime computes these values from the rendered prompt and cache context
-/// rather than raw request JSON so semantically equivalent tool schema ordering
-/// and template metadata produce deterministic cache keys.
+/// rather than raw request JSON so the selected tool schema serialization mode
+/// and template metadata produce deterministic cache keys. Default tool schema
+/// serialization preserves caller JSON ordering; canonical normalization is
+/// order-insensitive only when explicitly selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestCacheIdentity {
     /// Hash of the rendered prompt text.
@@ -20,7 +22,7 @@ pub struct RequestCacheIdentity {
     pub cache_template_id: String,
     /// Optional model family slug used for chat template selection.
     pub model_family: Option<String>,
-    /// Optional hash of canonical tool schema JSON.
+    /// Optional hash of the serialized tool schema JSON used for this request.
     pub tool_schema_hash: Option<String>,
     /// Optional hash of system messages that form a reusable prefix.
     pub system_prompt_hash: Option<String>,
