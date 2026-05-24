@@ -362,7 +362,7 @@ Scope:
 - Scheduler.
 - SSE and cancellation.
 - Tokenizer and sampler boundaries.
-- MLX C++ bridge.
+- MLX sidecar bootstrap and future bridge decision.
 - Direct Metal layer.
 - KV cache ownership.
 - Crate/module layout.
@@ -371,7 +371,7 @@ Core contribution:
 
 - Treat inference as an explicit, cancellable state machine.
 - Put OpenAI-compatible streaming and agentic invariants in Rust.
-- Use MLX C++ as a bootstrap backend, direct Metal for hot paths, and Rust-owned tokenization/sampling/tool parsing.
+- Use the accepted loopback MLX sidecar as the current bootstrap backend, keep Rust-owned request validation/scheduling/tool parsing in front of it, and evaluate a C++ bridge only after the FFI surface and lifetime rules are proven.
 
 ### Model-Family Support Agent
 
@@ -469,7 +469,7 @@ The engine targets Apple Silicon first. It should exploit:
 - Unified memory.
 - Metal compute.
 - Apple GPU-friendly memory layout.
-- `libmlx.dylib` and MLX C++ APIs where they accelerate bootstrap.
+- Loopback MLX sidecars for the current bootstrap, plus `libmlx.dylib` and MLX C++ APIs only if a future bridge is approved and measurably improves bootstrap.
 - Direct Metal kernels where MLX is insufficient or too opaque.
 
 Production validation must include MLX participation. A native-only profile can be useful for kernel development, but release promotion requires an MLX-backed path to be declared for the family and represented in CI/nightly gate output.
@@ -2457,7 +2457,7 @@ Deliverables:
 
 - Hugging Face profile for Qwen35 MLX artifacts.
 - Qwen3.5/Qwen3.6 template/parser support.
-- Qwen35 MLX C++ backend.
+- Qwen35 MLX sidecar backend, with the C++ bridge decision deferred.
 - KV cache manager.
 - no-progress classifier.
 - OMP transcript summaries.
@@ -2526,7 +2526,7 @@ Deliverables:
 
 Exit criteria:
 
-- selected paths beat MLX bridge on speed or reliability.
+- selected native paths beat the current MLX sidecar or any approved MLX bridge on speed or reliability.
 - no regression in agentic gates.
 
 ## Failure Classes
@@ -2644,7 +2644,7 @@ parser:
   reasoning: qwen3
   tools: qwen3_coder_xml
 backend:
-  type: mlx-cpp
+  type: mlx-sidecar
   direct_metal_kernels:
     - kv_page_copy
     - rope
@@ -2836,7 +2836,8 @@ Writing a full native tensor runtime too early can delay the product goal.
 
 Mitigation:
 
-- MLX C++ bridge first.
+- accepted loopback MLX sidecar bootstrap first.
+- C++ bridge only after the FFI surface, lifetime rules, and feature coverage are proven.
 - direct Metal only for measured hot paths.
 - native runtime expansion after API/scheduler/cache correctness.
 

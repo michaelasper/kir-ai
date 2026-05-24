@@ -165,8 +165,8 @@ cargo run -p llm-engine -- serve \
 
 The MLX endpoint must be loopback. Kir rejects remote MLX endpoints and does
 not fall back to protocol-test mode or native text when an MLX manifest is selected.
-This is a bootstrap comparison path; the no-Python production target remains a
-native MLX bridge.
+This is the accepted M5 bootstrap comparison path. A no-Python MLX bridge
+remains a deferred architecture decision, not a requirement for sidecar mode.
 
 MLX sidecar prompt-cache reuse is controlled at sidecar launch time with
 `--prompt-cache-size` or `--prompt-cache-bytes`. Kir keeps request bodies
