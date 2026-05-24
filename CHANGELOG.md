@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.52.0](https://github.com/michaelasper/kir-ai/compare/v1.51.0...v1.52.0) (2026-05-24)
+
+### Features
+
+* **COR-296:** add int8 kv cache storage and kernels ([f8b6a0c](https://github.com/michaelasper/kir-ai/commit/f8b6a0c53f4ad44e0d23fb24c4aed1029353c138))
+
 ## [1.51.0](https://github.com/michaelasper/kir-ai/compare/v1.50.0...v1.51.0) (2026-05-24)
 
 ### Features
