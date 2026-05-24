@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.8](https://github.com/michaelasper/kir-ai/compare/v1.46.7...v1.46.8) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-257:** make streaming parsing incremental ([1dbc6c5](https://github.com/michaelasper/kir-ai/commit/1dbc6c5e6c0d955cd06bbcf2ef7e1b8001daa06e))
+
 ## [1.46.7](https://github.com/michaelasper/kir-ai/compare/v1.46.6...v1.46.7) (2026-05-24)
 
 ### Bug Fixes
