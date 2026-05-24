@@ -46,7 +46,11 @@ pub(crate) use prefix_cache::{
     NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, NativeTextPrefixNamespaceContext,
     native_text_prefix_namespace, native_text_prefix_request_mode,
 };
-pub(crate) use streaming::{NativeStreamTextDeltas, native_text_worker_stream};
+#[cfg(test)]
+pub(crate) use streaming::NativeStreamTextDeltas;
+pub(crate) use streaming::{
+    NativeTextStreamDecoder, NativeTokenizerStreamDecoder, native_text_worker_stream,
+};
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
 pub const DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 2048;
@@ -511,10 +515,18 @@ mod tests {
     }
 
     #[derive(Clone)]
+    enum TestDecodeOutput {
+        TokenTags,
+        UnicodeBoundary,
+    }
+
+    #[derive(Clone)]
     struct TestAdapter {
         script: std::sync::Arc<[usize]>,
         stop_tokens: NativeTextStopTokens,
         max_prefill_tokens: usize,
+        max_position_embeddings: u32,
+        decode_output: TestDecodeOutput,
         prefix_cache: std::sync::Arc<NativeTextPrefixCache<TestCache>>,
         prefix_cache_metrics: std::sync::Arc<NativeTextPrefixCacheMetrics>,
         cleanup_calls: Arc<AtomicUsize>,
@@ -522,6 +534,7 @@ mod tests {
         next_token_calls: Arc<AtomicUsize>,
         sampling_draws: Arc<Mutex<Vec<Option<f32>>>>,
         decoded_token_total: Arc<AtomicUsize>,
+        stream_decoded_token_total: Arc<AtomicUsize>,
         encoded_prompt: std::sync::Arc<[u32]>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
@@ -534,6 +547,8 @@ mod tests {
                 script: script.into(),
                 stop_tokens: NativeTextStopTokens::default(),
                 max_prefill_tokens: 4,
+                max_position_embeddings: 16,
+                decode_output: TestDecodeOutput::TokenTags,
                 prefix_cache: std::sync::Arc::new(NativeTextPrefixCache::new(1024)),
                 prefix_cache_metrics: std::sync::Arc::new(NativeTextPrefixCacheMetrics::default()),
                 cleanup_calls: Arc::new(AtomicUsize::new(0)),
@@ -541,6 +556,7 @@ mod tests {
                 next_token_calls: Arc::new(AtomicUsize::new(0)),
                 sampling_draws: Arc::new(Mutex::new(Vec::new())),
                 decoded_token_total: Arc::new(AtomicUsize::new(0)),
+                stream_decoded_token_total: Arc::new(AtomicUsize::new(0)),
                 encoded_prompt: std::sync::Arc::from([42_u32]),
                 next_token_delay: None,
                 fail_prefill: false,
@@ -578,6 +594,16 @@ mod tests {
             self
         }
 
+        fn with_unicode_boundary_decode(mut self) -> Self {
+            self.decode_output = TestDecodeOutput::UnicodeBoundary;
+            self
+        }
+
+        fn with_max_position_embeddings(mut self, max_position_embeddings: u32) -> Self {
+            self.max_position_embeddings = max_position_embeddings;
+            self
+        }
+
         fn cleanup_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.cleanup_calls)
         }
@@ -596,6 +622,36 @@ mod tests {
 
         fn decoded_token_total(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.decoded_token_total)
+        }
+
+        fn stream_decoded_token_total(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.stream_decoded_token_total)
+        }
+    }
+
+    struct TestStreamDecoder {
+        decode_output: TestDecodeOutput,
+        decoded_token_total: Arc<AtomicUsize>,
+        unicode_boundary_started: bool,
+    }
+
+    impl NativeTextStreamDecoder for TestStreamDecoder {
+        fn step(&mut self, token_id: u32) -> Result<Option<String>, BackendError> {
+            self.decoded_token_total.fetch_add(1, Ordering::SeqCst);
+            Ok(match self.decode_output {
+                TestDecodeOutput::TokenTags => Some(format!("<{token_id}>")),
+                TestDecodeOutput::UnicodeBoundary => {
+                    if self.unicode_boundary_started && token_id == 2 {
+                        self.unicode_boundary_started = false;
+                        Some("é".to_owned())
+                    } else if token_id == 1 {
+                        self.unicode_boundary_started = true;
+                        None
+                    } else {
+                        Some(format!("<{token_id}>"))
+                    }
+                }
+            })
         }
     }
 
@@ -631,10 +687,31 @@ mod tests {
         ) -> Result<String, BackendError> {
             self.decoded_token_total
                 .fetch_add(output_ids.len(), Ordering::SeqCst);
-            Ok(output_ids
-                .iter()
-                .map(|token_id| format!("<{token_id}>"))
-                .collect::<String>())
+            Ok(match self.decode_output {
+                TestDecodeOutput::TokenTags => output_ids
+                    .iter()
+                    .map(|token_id| format!("<{token_id}>"))
+                    .collect::<String>(),
+                TestDecodeOutput::UnicodeBoundary => match output_ids {
+                    [1] | [2] => "�".to_owned(),
+                    [1, 2] => "é".to_owned(),
+                    _ => output_ids
+                        .iter()
+                        .map(|token_id| format!("<{token_id}>"))
+                        .collect::<String>(),
+                },
+            })
+        }
+
+        fn stream_decoder<'tokenizer>(
+            &self,
+            _tokenizer: &'tokenizer HuggingFaceTokenizer,
+        ) -> Box<dyn NativeTextStreamDecoder + 'tokenizer> {
+            Box::new(TestStreamDecoder {
+                decode_output: self.decode_output.clone(),
+                decoded_token_total: Arc::clone(&self.stream_decoded_token_total),
+                unicode_boundary_started: false,
+            })
         }
 
         fn stop_tokens(&self) -> NativeTextStopTokens {
@@ -642,7 +719,7 @@ mod tests {
         }
 
         fn max_position_embeddings(&self) -> u32 {
-            16
+            self.max_position_embeddings
         }
 
         fn max_prefill_tokens(&self) -> usize {
@@ -1547,7 +1624,8 @@ mod tests {
     #[test]
     fn streaming_generation_decodes_each_output_token_once() {
         let adapter = TestAdapter::new([1_usize, 2, 3, 4]);
-        let decoded_token_total = adapter.decoded_token_total();
+        let full_decode_token_total = adapter.decoded_token_total();
+        let stream_decoded_token_total = adapter.stream_decoded_token_total();
         let driver = driver_for_test(adapter);
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
 
@@ -1562,7 +1640,55 @@ mod tests {
         }
 
         assert_eq!(text, "<1><2><3><4>");
-        assert_eq!(decoded_token_total.load(Ordering::SeqCst), 4);
+        assert_eq!(stream_decoded_token_total.load(Ordering::SeqCst), 4);
+        assert_eq!(full_decode_token_total.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn streaming_generation_preserves_unicode_token_boundaries() {
+        let driver = driver_for_test(TestAdapter::new([1_usize, 2]).with_unicode_boundary_decode());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        driver
+            .generate_blocking_stream(driver_test_request(2), tx, CancellationToken::new())
+            .expect("streaming generation succeeds");
+
+        let mut text = String::new();
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk is ok");
+            text.push_str(&chunk.text);
+        }
+
+        assert_eq!(text, "é");
+    }
+
+    #[test]
+    fn streaming_generation_decode_work_scales_with_output_tokens() {
+        let script = (1_usize..=64).collect::<Vec<_>>();
+        let adapter = TestAdapter::new(std::sync::Arc::<[usize]>::from(script.clone()))
+            .with_max_position_embeddings(128);
+        let stream_decoded_token_total = adapter.stream_decoded_token_total();
+        let full_decode_token_total = adapter.decoded_token_total();
+        let driver = driver_for_test(adapter).with_max_new_tokens(64);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+
+        driver
+            .generate_blocking_stream(driver_test_request(64), tx, CancellationToken::new())
+            .expect("streaming generation succeeds");
+
+        let mut text = String::new();
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk is ok");
+            text.push_str(&chunk.text);
+        }
+
+        let expected = script
+            .iter()
+            .map(|token_id| format!("<{token_id}>"))
+            .collect::<String>();
+        assert_eq!(text, expected);
+        assert_eq!(stream_decoded_token_total.load(Ordering::SeqCst), 64);
+        assert_eq!(full_decode_token_total.load(Ordering::SeqCst), 0);
     }
 
     #[test]

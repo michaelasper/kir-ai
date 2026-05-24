@@ -1,8 +1,8 @@
 use super::{
-    NativeStreamTextDeltas, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-    NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue, NativeTextSamplingRng,
-    native_text_cache_namespace_token_bucket, native_text_cache_token_capacity,
-    native_text_worker_stream, resolve_native_text_max_tokens,
+    NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
+    NativeTextPrefixCacheValue, NativeTextSamplingRng, NativeTextStreamDecoder,
+    NativeTokenizerStreamDecoder, native_text_cache_namespace_token_bucket,
+    native_text_cache_token_capacity, native_text_worker_stream, resolve_native_text_max_tokens,
 };
 use crate::native_matvec::NativeTextCacheMirrorSource;
 use async_trait::async_trait;
@@ -46,6 +46,12 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         tokenizer: &HuggingFaceTokenizer,
         output_ids: &[u32],
     ) -> Result<String, BackendError>;
+    fn stream_decoder<'tokenizer>(
+        &self,
+        tokenizer: &'tokenizer HuggingFaceTokenizer,
+    ) -> Box<dyn NativeTextStreamDecoder + 'tokenizer> {
+        Box::new(NativeTokenizerStreamDecoder::new(tokenizer))
+    }
     fn stop_tokens(&self) -> NativeTextStopTokens {
         NativeTextStopTokens::default()
     }
@@ -482,7 +488,7 @@ where
             )));
         }
         let mut output_ids = Vec::new();
-        let mut text_deltas = NativeStreamTextDeltas::default();
+        let mut text_decoder = self.adapter.stream_decoder(&self.tokenizer);
         let mut unreported_completion_tokens = 0_u64;
         let mut finish_reason = BackendFinishReason::Length;
         let requested = resolve_native_text_max_tokens(
@@ -551,8 +557,7 @@ where
             })?;
             output_ids.push(output_id);
             unreported_completion_tokens = unreported_completion_tokens.saturating_add(1);
-            let token_decoded = self.adapter.decode_output(&self.tokenizer, &[output_id])?;
-            let delta = text_deltas.observe_incremental(token_decoded);
+            let delta = text_decoder.step(output_id)?;
             if cancellation.is_cancelled() {
                 return Err(BackendError::cancelled());
             }
@@ -582,13 +587,8 @@ where
         if cancellation.is_cancelled() {
             return Err(BackendError::cancelled());
         }
-        let final_text = if output_ids.is_empty() {
-            None
-        } else {
-            text_deltas.finish_incremental()
-        };
         tx.send(Ok(BackendStreamChunk {
-            text: final_text.unwrap_or_default(),
+            text: String::new(),
             tool_call_deltas: Vec::new(),
             prompt_tokens: prompt_tokens.len() as u64,
             prompt_cached_tokens: cache_report.prompt_cached_tokens(),

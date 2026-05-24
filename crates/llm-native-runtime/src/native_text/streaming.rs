@@ -1,14 +1,40 @@
 use futures::stream::{BoxStream, StreamExt};
 use llm_backend_contracts::{BackendError, BackendStreamChunk};
+use llm_tokenizer::{HuggingFaceDecodeStream, HuggingFaceTokenizer};
 
+pub(crate) trait NativeTextStreamDecoder {
+    fn step(&mut self, token_id: u32) -> Result<Option<String>, BackendError>;
+}
+
+pub(crate) struct NativeTokenizerStreamDecoder<'tokenizer> {
+    inner: HuggingFaceDecodeStream<'tokenizer>,
+}
+
+impl<'tokenizer> NativeTokenizerStreamDecoder<'tokenizer> {
+    pub(crate) fn new(tokenizer: &'tokenizer HuggingFaceTokenizer) -> Self {
+        Self {
+            inner: tokenizer.decode_stream(false),
+        }
+    }
+}
+
+impl NativeTextStreamDecoder for NativeTokenizerStreamDecoder<'_> {
+    fn step(&mut self, token_id: u32) -> Result<Option<String>, BackendError> {
+        self.inner
+            .step(token_id)
+            .map_err(|err| BackendError::other(err.to_string()))
+    }
+}
+
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct NativeStreamTextDeltas {
     emitted: String,
     pending: Option<String>,
 }
 
+#[cfg(test)]
 impl NativeStreamTextDeltas {
-    #[cfg(test)]
     pub(crate) fn observe(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
         if !decoded.starts_with(&self.emitted) {
             return Err(non_prefix_stream_error());
@@ -33,7 +59,6 @@ impl NativeStreamTextDeltas {
         Ok(delta)
     }
 
-    #[cfg(test)]
     pub(crate) fn finish(&mut self, decoded: String) -> Result<Option<String>, BackendError> {
         self.pending = None;
         if !decoded.starts_with(&self.emitted) {
@@ -61,6 +86,7 @@ impl NativeStreamTextDeltas {
     }
 }
 
+#[cfg(test)]
 fn non_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }

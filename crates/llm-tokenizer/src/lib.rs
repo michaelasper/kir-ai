@@ -5,7 +5,10 @@ pub use llm_chat_template::{
     render_llama3_chat_template, render_qwen_chatml,
 };
 use thiserror::Error;
-use tokenizers::Tokenizer;
+use tokenizers::{
+    DecoderWrapper, ModelWrapper, NormalizerWrapper, PostProcessorWrapper, PreTokenizerWrapper,
+    Tokenizer,
+};
 
 #[derive(Clone)]
 pub struct HuggingFaceTokenizer {
@@ -50,8 +53,33 @@ impl HuggingFaceTokenizer {
         Ok(decoded)
     }
 
+    pub fn decode_stream(&self, skip_special_tokens: bool) -> HuggingFaceDecodeStream<'_> {
+        HuggingFaceDecodeStream {
+            inner: self.inner.decode_stream(skip_special_tokens),
+        }
+    }
+
     pub fn token_to_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
+    }
+}
+
+pub struct HuggingFaceDecodeStream<'tokenizer> {
+    inner: tokenizers::tokenizer::DecodeStream<
+        'tokenizer,
+        ModelWrapper,
+        NormalizerWrapper,
+        PreTokenizerWrapper,
+        PostProcessorWrapper,
+        DecoderWrapper,
+    >,
+}
+
+impl HuggingFaceDecodeStream<'_> {
+    pub fn step(&mut self, id: u32) -> Result<Option<String>, TokenizerError> {
+        self.inner
+            .step(id)
+            .map_err(|err| TokenizerError::Decode(err.to_string()))
     }
 }
 
@@ -63,4 +91,35 @@ pub enum TokenizerError {
     Encode(String),
     #[error("failed to decode tokens: {0}")]
     Decode(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_stream_withholds_partial_utf8_until_token_boundary() {
+        let tokenizer_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/qwen36/tokenizer.json");
+        let tokenizer = HuggingFaceTokenizer::from_file(tokenizer_path).expect("tokenizer loads");
+        let token_ids = tokenizer
+            .encode("삥뽕빵", false)
+            .expect("fixture text encodes");
+        let mut decode_stream = tokenizer.decode_stream(false);
+        let mut decoded = String::new();
+        let mut withheld_steps = 0;
+
+        for token_id in token_ids {
+            match decode_stream
+                .step(token_id)
+                .expect("stream decode succeeds")
+            {
+                Some(piece) => decoded.push_str(&piece),
+                None => withheld_steps += 1,
+            }
+        }
+
+        assert_eq!(decoded, "삥뽕빵");
+        assert!(withheld_steps > 0);
+    }
 }
