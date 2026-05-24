@@ -539,6 +539,37 @@ impl MetalDevice {
         score_scale: f32,
         output: &mut [f32],
     ) -> Result<(), MetalError> {
+        self.full_attention_cache_mix_f16_buffered_at(
+            keys,
+            0,
+            values,
+            0,
+            query,
+            row_count,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            score_scale,
+            output,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn full_attention_cache_mix_f16_buffered_at(
+        &self,
+        keys: &F16Buffer,
+        key_element_offset: usize,
+        values: &F16Buffer,
+        value_element_offset: usize,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if num_attention_heads == 0 || num_key_value_heads == 0 || head_dim == 0 {
             return Err(MetalError::InvalidShape(
                 "full attention dimensions must be non-zero".to_owned(),
@@ -577,11 +608,23 @@ impl MetalDevice {
             output[..attention_dim].fill(0.0);
             return Ok(());
         }
-        if keys.len < used_kv_len || values.len < used_kv_len {
+        let key_end = key_element_offset.checked_add(used_kv_len).ok_or_else(|| {
+            MetalError::InvalidShape("attention key buffer offset overflows usize".to_owned())
+        })?;
+        let value_end = value_element_offset
+            .checked_add(used_kv_len)
+            .ok_or_else(|| {
+                MetalError::InvalidShape("attention value buffer offset overflows usize".to_owned())
+            })?;
+        if keys.len < key_end || values.len < value_end {
             return Err(MetalError::InvalidShape(format!(
-                "KV cache buffers are shorter than row_count {row_count} * vector_len {kv_vector_len}"
+                "KV cache buffers are shorter than requested offsets plus row_count {row_count} * vector_len {kv_vector_len}"
             )));
         }
+        let key_byte_offset =
+            metal_buffer_byte_len::<u16>(key_element_offset, "attention key buffer offset")?;
+        let value_byte_offset =
+            metal_buffer_byte_len::<u16>(value_element_offset, "attention value buffer offset")?;
         let Some(keys_buffer) = keys.buffer.as_ref() else {
             return Err(MetalError::InvalidShape(
                 "non-empty attention requires a key cache buffer".to_owned(),
@@ -630,7 +673,7 @@ impl MetalDevice {
         let score_encoder = command_buffer.new_compute_command_encoder();
         score_encoder.set_compute_pipeline_state(&self.attention_scores_f16.pipeline);
         score_encoder.set_buffer(0, Some(query_buffer), 0);
-        score_encoder.set_buffer(1, Some(keys_buffer), 0);
+        score_encoder.set_buffer(1, Some(keys_buffer), key_byte_offset);
         score_encoder.set_bytes(
             2,
             std::mem::size_of_val(&row_count_u32) as u64,
@@ -725,7 +768,7 @@ impl MetalDevice {
 
         let sum_encoder = command_buffer.new_compute_command_encoder();
         sum_encoder.set_compute_pipeline_state(&self.attention_weighted_sum_f16.pipeline);
-        sum_encoder.set_buffer(0, Some(values_buffer), 0);
+        sum_encoder.set_buffer(0, Some(values_buffer), value_byte_offset);
         sum_encoder.set_buffer(1, Some(&weights_buffer), 0);
         sum_encoder.set_bytes(
             2,
@@ -803,6 +846,45 @@ impl MetalDevice {
         score_scale: f32,
         output: &mut [f32],
     ) -> Result<(), MetalError> {
+        self.full_attention_cache_mix_int8_buffered_at(
+            keys,
+            0,
+            key_scales,
+            0,
+            values,
+            0,
+            value_scales,
+            0,
+            query,
+            row_count,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            score_scale,
+            output,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn full_attention_cache_mix_int8_buffered_at(
+        &self,
+        keys: &I8Buffer,
+        key_element_offset: usize,
+        key_scales: &F32Buffer,
+        key_scale_offset: usize,
+        values: &I8Buffer,
+        value_element_offset: usize,
+        value_scales: &F32Buffer,
+        value_scale_offset: usize,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
         if num_attention_heads == 0 || num_key_value_heads == 0 || head_dim == 0 {
             return Err(MetalError::InvalidShape(
                 "full attention dimensions must be non-zero".to_owned(),
@@ -841,16 +923,46 @@ impl MetalDevice {
             output[..attention_dim].fill(0.0);
             return Ok(());
         }
-        if keys.len < used_kv_len || values.len < used_kv_len {
+        let key_end = key_element_offset.checked_add(used_kv_len).ok_or_else(|| {
+            MetalError::InvalidShape("INT8 attention key buffer offset overflows usize".to_owned())
+        })?;
+        let value_end = value_element_offset
+            .checked_add(used_kv_len)
+            .ok_or_else(|| {
+                MetalError::InvalidShape(
+                    "INT8 attention value buffer offset overflows usize".to_owned(),
+                )
+            })?;
+        let key_scale_end = key_scale_offset.checked_add(row_count).ok_or_else(|| {
+            MetalError::InvalidShape("INT8 attention key scale offset overflows usize".to_owned())
+        })?;
+        let value_scale_end = value_scale_offset.checked_add(row_count).ok_or_else(|| {
+            MetalError::InvalidShape("INT8 attention value scale offset overflows usize".to_owned())
+        })?;
+        if keys.len < key_end || values.len < value_end {
             return Err(MetalError::InvalidShape(format!(
-                "INT8 KV cache buffers are shorter than row_count {row_count} * vector_len {kv_vector_len}"
+                "INT8 KV cache buffers are shorter than requested offsets plus row_count {row_count} * vector_len {kv_vector_len}"
             )));
         }
-        if key_scales.len < row_count || value_scales.len < row_count {
+        if key_scales.len < key_scale_end || value_scales.len < value_scale_end {
             return Err(MetalError::InvalidShape(format!(
-                "INT8 KV scale buffers must have at least row_count {row_count} entries"
+                "INT8 KV scale buffers are shorter than requested offsets plus row_count {row_count}"
             )));
         }
+        let key_byte_offset =
+            metal_buffer_byte_len::<i8>(key_element_offset, "INT8 attention key buffer offset")?;
+        let value_byte_offset = metal_buffer_byte_len::<i8>(
+            value_element_offset,
+            "INT8 attention value buffer offset",
+        )?;
+        let key_scale_byte_offset = metal_buffer_byte_len::<f32>(
+            key_scale_offset,
+            "INT8 attention key scale buffer offset",
+        )?;
+        let value_scale_byte_offset = metal_buffer_byte_len::<f32>(
+            value_scale_offset,
+            "INT8 attention value scale buffer offset",
+        )?;
         let Some(keys_buffer) = keys.buffer.as_ref() else {
             return Err(MetalError::InvalidShape(
                 "non-empty attention requires an INT8 key cache buffer".to_owned(),
@@ -909,8 +1021,8 @@ impl MetalDevice {
         let score_encoder = command_buffer.new_compute_command_encoder();
         score_encoder.set_compute_pipeline_state(&self.attention_scores_int8.pipeline);
         score_encoder.set_buffer(0, Some(query_buffer), 0);
-        score_encoder.set_buffer(1, Some(keys_buffer), 0);
-        score_encoder.set_buffer(2, Some(key_scales_buffer), 0);
+        score_encoder.set_buffer(1, Some(keys_buffer), key_byte_offset);
+        score_encoder.set_buffer(2, Some(key_scales_buffer), key_scale_byte_offset);
         score_encoder.set_bytes(
             3,
             std::mem::size_of_val(&row_count_u32) as u64,
@@ -1005,8 +1117,8 @@ impl MetalDevice {
 
         let sum_encoder = command_buffer.new_compute_command_encoder();
         sum_encoder.set_compute_pipeline_state(&self.attention_weighted_sum_int8.pipeline);
-        sum_encoder.set_buffer(0, Some(values_buffer), 0);
-        sum_encoder.set_buffer(1, Some(value_scales_buffer), 0);
+        sum_encoder.set_buffer(0, Some(values_buffer), value_byte_offset);
+        sum_encoder.set_buffer(1, Some(value_scales_buffer), value_scale_byte_offset);
         sum_encoder.set_buffer(2, Some(&weights_buffer), 0);
         sum_encoder.set_bytes(
             3,
@@ -1601,6 +1713,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_attention_cache_mix_f16_reads_from_nonzero_buffer_offsets() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let keys = device
+            .new_f16_buffer_from_f32(&[99.0, 99.0, 1.0, 0.0, 0.0, 1.0])
+            .expect("key buffer");
+        let values = device
+            .new_f16_buffer_from_f32(&[99.0, 99.0, 10.0, 20.0, 30.0, 40.0])
+            .expect("value buffer");
+        let query = [1.0, 0.0, 0.0, 1.0];
+        let mut output = vec![0.0; 4];
+
+        device
+            .full_attention_cache_mix_f16_buffered_at(
+                &keys,
+                2,
+                &values,
+                2,
+                &query,
+                2,
+                2,
+                1,
+                2,
+                1.0,
+                &mut output,
+            )
+            .await
+            .expect("attention mix succeeds");
+
+        let head0_weight_0 = 1.0_f32.exp() / (1.0_f32.exp() + 0.0_f32.exp());
+        let head0_weight_1 = 1.0 - head0_weight_0;
+        let head1_weight_0 = head0_weight_1;
+        let head1_weight_1 = head0_weight_0;
+        let expected = [
+            10.0 * head0_weight_0 + 30.0 * head0_weight_1,
+            20.0 * head0_weight_0 + 40.0 * head0_weight_1,
+            10.0 * head1_weight_0 + 30.0 * head1_weight_1,
+            20.0 * head1_weight_0 + 40.0 * head1_weight_1,
+        ];
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn full_attention_cache_mix_int8_matches_reference_values() {
         let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
         else {
@@ -1627,6 +1791,68 @@ mod tests {
                 &key_scales,
                 &values,
                 &value_scales,
+                &query,
+                2,
+                2,
+                1,
+                2,
+                1.0,
+                &mut output,
+            )
+            .await
+            .expect("attention mix succeeds");
+
+        let head0_weight_0 = 1.0_f32.exp() / (1.0_f32.exp() + 0.0_f32.exp());
+        let head0_weight_1 = 1.0 - head0_weight_0;
+        let head1_weight_0 = head0_weight_1;
+        let head1_weight_1 = head0_weight_0;
+        let expected = [
+            10.0 * head0_weight_0,
+            10.0 * head0_weight_1,
+            10.0 * head1_weight_0,
+            10.0 * head1_weight_1,
+        ];
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn full_attention_cache_mix_int8_reads_from_nonzero_buffer_offsets() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let keys = device
+            .new_i8_buffer(&[1, 1, 127, 0, 0, 127])
+            .expect("key buffer");
+        let key_scales = device
+            .new_f32_buffer(&[99.0, 1.0 / 127.0, 1.0 / 127.0])
+            .expect("key scale buffer");
+        let values = device
+            .new_i8_buffer(&[1, 1, 127, 0, 0, 127])
+            .expect("value buffer");
+        let value_scales = device
+            .new_f32_buffer(&[99.0, 10.0 / 127.0, 10.0 / 127.0])
+            .expect("value scale buffer");
+        let query = [1.0, 0.0, 0.0, 1.0];
+        let mut output = vec![0.0; 4];
+
+        device
+            .full_attention_cache_mix_int8_buffered_at(
+                &keys,
+                2,
+                &key_scales,
+                1,
+                &values,
+                2,
+                &value_scales,
+                1,
                 &query,
                 2,
                 2,

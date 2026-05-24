@@ -193,6 +193,7 @@ pub struct LayerKvCacheBlock<'a> {
     block_id: BlockId,
     revision: u64,
     logical_token_start: usize,
+    physical_token_start: usize,
     block_token_start: usize,
     token_count: usize,
     vector_len: usize,
@@ -205,6 +206,7 @@ pub struct LayerKvCacheInt8Block<'a> {
     block_id: BlockId,
     revision: u64,
     logical_token_start: usize,
+    physical_token_start: usize,
     block_token_start: usize,
     token_count: usize,
     vector_len: usize,
@@ -225,6 +227,10 @@ impl<'a> LayerKvCacheInt8Block<'a> {
 
     pub fn logical_token_start(&self) -> usize {
         self.logical_token_start
+    }
+
+    pub fn physical_token_start(&self) -> usize {
+        self.physical_token_start
     }
 
     pub fn block_token_start(&self) -> usize {
@@ -267,6 +273,10 @@ impl<'a> LayerKvCacheBlock<'a> {
 
     pub fn logical_token_start(&self) -> usize {
         self.logical_token_start
+    }
+
+    pub fn physical_token_start(&self) -> usize {
+        self.physical_token_start
     }
 
     pub fn block_token_start(&self) -> usize {
@@ -842,8 +852,9 @@ impl LayerKvCache {
     pub fn active_blocks(&self) -> Result<Vec<LayerKvCacheBlock<'_>>, KvCacheError> {
         let mut active_blocks: Vec<LayerKvCacheBlock<'_>> = Vec::new();
         for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
             let (block_index, block_token_index) = self
-                .block_position(logical_token_index)
+                .physical_block_position(physical_token_index)
                 .ok_or(KvCacheError::InvalidShape)?;
             let block_id = self
                 .block_table
@@ -867,6 +878,7 @@ impl LayerKvCache {
                 block_id,
                 revision: block.revision(),
                 logical_token_start: logical_token_index,
+                physical_token_start: physical_token_index,
                 block_token_start: block_token_index,
                 token_count: 1,
                 vector_len: self.vector_len(),
@@ -885,8 +897,9 @@ impl LayerKvCache {
         };
         let mut active_blocks: Vec<LayerKvCacheInt8Block<'_>> = Vec::new();
         for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
             let (block_index, block_token_index) = self
-                .block_position(logical_token_index)
+                .physical_block_position(physical_token_index)
                 .ok_or(KvCacheError::InvalidShape)?;
             let block_id = self
                 .block_table
@@ -911,6 +924,7 @@ impl LayerKvCache {
                 block_id,
                 revision: block.revision(),
                 logical_token_start: logical_token_index,
+                physical_token_start: physical_token_index,
                 block_token_start: block_token_index,
                 token_count: 1,
                 vector_len: self.vector_len(),

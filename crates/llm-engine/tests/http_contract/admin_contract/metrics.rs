@@ -558,6 +558,15 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         "native text Metal int8 KV cache residency is exposed"
     );
     assert!(
+        body["backend_metrics"]["native_text_metal"]["kv_cache"]["stage_resident_bytes"]
+            .is_number(),
+        "native text Metal staged KV cache residency is exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_metal"]["kv_cache"]["stage_bytes_copied"].is_number(),
+        "native text Metal staged KV cache copy metrics are exposed"
+    );
+    assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hits"].is_number(),
         "native text Qwen prefix cache hits are exposed"
     );
@@ -705,6 +714,15 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_qwen_metal"]["kv_cache"]["int8_bytes_uploaded"].is_number(),
         "native Qwen Metal int8 KV cache upload bytes are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_metal"]["kv_cache"]["stage_resident_bytes"]
+            .is_number(),
+        "native Qwen Metal staged KV cache residency is exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_metal"]["kv_cache"]["stage_bytes_copied"].is_number(),
+        "native Qwen Metal staged KV cache copy metrics are exposed"
     );
     assert!(
         body["backend_metrics"]["native_qwen_metal"]["linear_attention_cache"]["resident_bytes"]
