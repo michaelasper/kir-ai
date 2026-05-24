@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.50.0](https://github.com/michaelasper/kir-ai/compare/v1.49.1...v1.50.0) (2026-05-24)
+
+### Features
+
+* **COR-294:** add opt-in native SSD prefix cache tier ([7e2e74c](https://github.com/michaelasper/kir-ai/commit/7e2e74c07d9c56195caca76e338bd26809d87980))
+
+### Bug Fixes
+
+* **COR-294:** chain SSD cache block identity ([50be82f](https://github.com/michaelasper/kir-ai/commit/50be82f73876bdfcceeff8711599c9f4dedd7983))
+* **COR-294:** persist SSD KV cache as snapshot-scoped blocks ([c1db452](https://github.com/michaelasper/kir-ai/commit/c1db452f124a226ecb0fe8d51a751cccf6ced568))
+
 ## [1.49.1](https://github.com/michaelasper/kir-ai/compare/v1.49.0...v1.49.1) (2026-05-24)
 
 ### Bug Fixes
