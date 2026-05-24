@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.6](https://github.com/michaelasper/kir-ai/compare/v1.46.5...v1.46.6) (2026-05-24)
+
+### Performance Improvements
+
+* **COR-255:** reduce batched matvec copy churn ([678b055](https://github.com/michaelasper/kir-ai/commit/678b0559e156bd9035561010083ce30b8d1d8209))
+
 ## [1.46.5](https://github.com/michaelasper/kir-ai/compare/v1.46.4...v1.46.5) (2026-05-24)
 
 ### Performance Improvements
