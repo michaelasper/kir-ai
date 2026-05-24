@@ -503,8 +503,8 @@ Request fields:
 | `response_format` | object | no | `{"type":"text"}` or `{"type":"json_object"}`. `json_schema` is rejected. |
 | `stream` | boolean | no | Defaults to `false`. |
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
-| `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
-| `top_p` | number | no | Must be finite and in `(0, 1]`. |
+| `temperature` | number | no | Must be finite and in `[0, 2]`. `0` selects greedy decode; omitted uses the default `1`. |
+| `top_p` | number | no | Must be finite and in `(0, 1]`. Omitted uses the default `1`. |
 | `max_tokens` | integer | no | Omitted values use the backend default. Native text defaults to `256` and caps requests with `--max-new-tokens`. Must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 
@@ -514,6 +514,11 @@ Supported roles:
 - `user`
 - `assistant`
 - `tool`
+
+Sampling controls are request-level controls. The runtime maps `temperature: 0`
+to greedy backend sampling and otherwise uses top-p sampling with OpenAI defaults
+for omitted controls. Backends that do not advertise the requested sampling
+capability fail closed with `unsupported_capability`.
 
 Example:
 
@@ -657,13 +662,15 @@ SSE chunks use `data:` lines. The stream emits:
 4. An optional usage-only chunk when `include_usage` is true.
 5. Exactly one `data: [DONE]`.
 
-Streaming is response-shape streaming. Text paths can forward backend chunks
-incrementally; tool-call and JSON-object validation paths may buffer before
-emitting deltas to preserve fail-closed semantics. Runtime errors that happen
-after an SSE stream starts are emitted as `data:` error objects with stable
-`code`, `phase`, and `retryable` fields, followed by `[DONE]`. Runtime SSE
-error messages are intentionally generic for clients; detailed diagnostics stay
-in server logs.
+Streaming is response-shape streaming over the backend stream contract. Native
+text paths can forward backend chunks incrementally during decode; the protocol
+test backend and default stream adapter may produce a single backend chunk after
+non-streaming generation. Tool-call and JSON-object validation paths may buffer
+before emitting deltas to preserve fail-closed semantics. Runtime errors that
+happen after an SSE stream starts are emitted as `data:` error objects with
+stable `code`, `phase`, and `retryable` fields, followed by `[DONE]`. Runtime
+SSE error messages are intentionally generic for clients; detailed diagnostics
+stay in server logs.
 
 ## `POST /v1/completions`
 
@@ -675,8 +682,8 @@ Request fields:
 | `prompt` | string | yes | Must not be empty. |
 | `stream` | boolean | no | Defaults to `false`. |
 | `stream_options.include_usage` | boolean | no | Defaults to `false`. |
-| `temperature` | number | no | Must be finite and non-negative. `0` selects greedy decode. |
-| `top_p` | number | no | Must be finite and in `(0, 1]`. |
+| `temperature` | number | no | Must be finite and in `[0, 2]`. `0` selects greedy decode; omitted uses the default `1`. |
+| `top_p` | number | no | Must be finite and in `(0, 1]`. Omitted uses the default `1`. |
 | `max_tokens` | integer | no | Omitted values use the backend default. Native text defaults to `256` and caps requests with `--max-new-tokens`. Must be greater than `0`. |
 | `stop` | string or string array | no | Empty strings are rejected. |
 

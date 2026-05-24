@@ -39,13 +39,14 @@ NativeTextBackend
   -> run family-specific prefill layers
   -> apply final norm
   -> stream LM-head rows in chunks
-  -> choose a decoded top candidate
-  -> return BackendOutput
+  -> choose the next token with greedy or top-p sampling
+  -> non-streaming: collect decoded text into BackendOutput
+  -> streaming: yield BackendStreamChunk text/progress/finish chunks
 ```
 
 The runtime then applies stop sequences, parses family-specific tool calls,
 validates JSON object mode, classifies no-progress completions, and builds
-OpenAI-shaped responses.
+OpenAI-shaped JSON or SSE responses.
 
 ## Crate Map
 
@@ -55,8 +56,9 @@ OpenAI-shaped responses.
 | `llm-server` | HTTP service edge, routing, SSE framing, admin endpoints, request lifecycle, scheduler, and error-to-HTTP mapping. | Owns the OpenAI-compatible and admin routes. It can be tested without depending on `llm-engine`; `llm-engine` supplies backend-specific metrics through a narrow provider. |
 | `llm-engine` | Backend factory, native/MLX backend implementations, and the `llm-engine` CLI facade. | Serving requires an explicit backend: protocol test mode uses `--protocol-test-backend` with the `test-utils` feature and fixture acknowledgement, native Qwen/Gemma use the native text backend, and MLX manifests proxy through the loopback MLX sidecar backend module. The public router helpers delegate to `llm-server` for compatibility. There is intentionally no `llm-backend-mlx` crate yet; a C++ FFI bridge remains a deferred architecture decision. |
 | `llm-bench` | Benchmark CLI, Qwen long-context profiles, prompt builders, HTTP probes, and report shaping. | Owns runnable benchmark commands; `llm-engine bench` remains a process-level compatibility launcher. |
-| `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, streaming chunk assembly, stop truncation, tool parsing, JSON-object validation, and no-progress classification. |
-| `llm-backend` | Backend trait, protocol-test backend, safetensors loading, BF16 tensor access, generic backend cache identity, and native CPU tensor primitives. | Contains the active native inference code: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k. |
+| `llm-runtime` | Semantic orchestration between API and backend. | Handles chat and text completions, adapts backend stream chunks into OpenAI SSE deltas, applies stop truncation, validates tool/JSON output, and classifies no-progress results. |
+| `llm-backend` | Backend trait, protocol-test backend, stream chunk contracts, safetensors loading, BF16 tensor access, generic backend cache identity, and native CPU tensor primitives. | Contains native inference building blocks: embeddings, RMSNorm, linear/full attention paths, MoE, final norm, and LM-head top-k/logits helpers. |
+| `llm-native-runtime` | Native Qwen/Gemma text execution over the backend contracts. | Opens snapshots, renders prompts, manages bounded native decode/cache state, applies greedy or top-p sampling, and emits native backend stream chunks. |
 | `llm-tokenizer` | Hugging Face tokenizer wrapper and family chat-template selection. | Supports Qwen ChatML, DeepSeek chat/tool, Gemma 4 text/tool, and Llama 3 instruct chat templates. |
 | `llm-tool-parser` | Family assistant output parser selection. | Supports Qwen reasoning tags and JSON/XML tool-call forms, DeepSeek DSML/native tool-call blocks, Gemma 4 thought/tool-call channels, and Llama/OpenAI JSON tool calls without breaking JSON-object content. |
 | `llm-models` | Model config, family adapters, production backend declarations, and safetensors index interpretation. | Supports dense Qwen3, Qwen3.5/Qwen3.6 MoE, and Gemma 4 text config; declares Qwen/Gemma native Metal plus MLX serving and DeepSeek/Llama serving through MLX. |
@@ -78,8 +80,10 @@ with fast, stable responses for:
 - error metadata
 - client compatibility tests
 
-It must not grow prompt-specific chat behaviour. Real generation belongs behind
-snapshot-backed native backends.
+It accepts greedy sampling and the OpenAI standard sampling defaults, but custom
+non-greedy sampling is a native-backed behavior. It must not grow
+prompt-specific chat behaviour. Real generation belongs behind snapshot-backed
+native backends.
 
 ## Why Native Text Is Opt-In
 
@@ -101,8 +105,10 @@ can opt into `build_router_with_protocol_test_backend()`.
 The runtime rejects unsupported behaviour instead of accepting and ignoring it.
 Examples:
 
-- `temperature` must be absent or `0`.
-- `top_p` must be absent or `1`.
+- `temperature` must be finite and in `[0, 2]`; `0` selects greedy decode.
+- `top_p` must be finite and in `(0, 1]`.
+- Backend capability metadata is checked before dispatch, so a backend that does
+  not advertise top-p sampling fails closed instead of silently downgrading.
 - `json_schema` response format is rejected.
 - Required function tool choices must name a declared tool.
 - Empty chat requests, empty completion prompts, zero `max_tokens`, and empty
@@ -115,12 +121,15 @@ to diagnose than a clear unsupported-capability error.
 ## Streaming Today
 
 The HTTP stream is OpenAI-compatible SSE, including one `[DONE]` terminator and
-optional usage-only chunks. The runtime currently assembles streaming chunks
-after backend generation completes.
+optional usage-only chunks. For streaming requests, the runtime dispatches to
+`ModelBackend::generate_stream_with_cancel(...)` and translates
+`BackendStreamChunk` values into OpenAI deltas.
 
-That means streaming is correct at the protocol level, but it is not yet
-incremental token streaming from the decoder. Future work needs cancellation,
-stall detection, token-by-token deltas, and long-prefill visibility.
+Native text backends can emit chunks during decode, including progress and final
+finish chunks. The default backend stream implementation still adapts a completed
+`BackendOutput` into one chunk, which keeps protocol-test flows fast and stable.
+The runtime may buffer JSON-object mode, required-tool, or unmarked-tool paths
+until validation can fail closed without leaking invalid successful deltas.
 
 ## Model Acquisition Boundary
 
@@ -138,9 +147,11 @@ runtime cache work.
 
 ## Acceleration Boundary
 
-`llm-backend` currently carries correctness-first CPU BF16 math. `llm-metal`,
-`llm-kv-cache`, and `llm-sampler` indicate the intended acceleration and decode
-boundaries, but they are not yet the serving hot path.
+`llm-backend` carries correctness-first CPU BF16 math and the shared backend
+contracts. `llm-native-runtime` wires Qwen/Gemma serving through those contracts;
+`llm-sampler` is used for native top-p decode, `llm-kv-cache` backs native
+context reuse, and `llm-metal` accelerates supported operations with CPU
+fallbacks.
 
 The current shape makes it possible to promote individual operations from CPU
 probes to Metal kernels without changing API or model-store semantics.
@@ -152,8 +163,13 @@ probes to Metal kernels without changing API or model-store semantics.
   families fail closed until their adapters exist.
 - Native model execution is BF16 safetensors-oriented.
 - Native text uses `--max-prefill-tokens` as a prefill chunk size; the default is sized for long-context prefill throughput, while smaller values are mainly useful for memory-constrained probes. Retained prompt context is sized from the accepted prompt plus generation budget and fails closed at the model context limit.
-- Multi-token decode recomputes bounded context instead of maintaining reusable
-  KV or recurrent state caches.
-- The server does not use downloaded `generation_config.json` sampling settings.
+- Native decode maintains bounded family layer caches and optional prefix-cache
+  reuse within configured memory and disk budgets.
+- The server does not use downloaded `generation_config.json` sampling settings;
+  request `temperature` and `top_p` controls are validated by `llm-api`, mapped
+  to backend `SamplingConfig`, and checked against backend capabilities before
+  dispatch.
 - The downloaded `chat_template.jinja` is a fixture and artefact, not runtime
   template code.
+
+For fast validation guidance, see [Run Targeted Validation](development.md#run-targeted-validation).

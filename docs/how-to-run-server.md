@@ -71,8 +71,9 @@ cargo run -p llm-engine -- serve \
 ```
 
 The native path tokenises the rendered prompt, keeps a bounded tail of prompt
-tokens, runs family-specific prefill, applies final norm and LM-head top-k,
-then returns decoded text.
+tokens, runs family-specific prefill/decode, applies final norm, uses greedy
+top-k or full-vocab top-p sampling, and returns decoded text or emits backend
+stream chunks.
 
 ## Run MLX Sidecar Mode
 
@@ -279,8 +280,8 @@ curl -s http://127.0.0.1:3000/v1/chat/completions \
 ```
 
 The request `model` must match `--model-id`. `temperature: 0` selects greedy
-decode. Non-greedy native text sampling accepts finite non-negative
-`temperature` and `top_p` in `(0, 1]`.
+decode. Non-greedy native text sampling accepts finite `temperature` in
+`[0, 2]` and `top_p` in `(0, 1]`.
 
 ## Call Text Completions
 
@@ -315,8 +316,9 @@ The server emits JSON SSE chunks and then one `data: [DONE]` terminator. When
 `stream_options.include_usage` is `true`, the usage-only chunk appears before
 `[DONE]`.
 
-Streaming is currently assembled after backend generation. It preserves the
-OpenAI-compatible response shape, but it is not token-by-token decode streaming.
+Native text streaming can forward backend chunks during decode. The runtime
+still buffers some JSON-object and tool-call paths until validation can fail
+closed without leaking invalid successful deltas.
 
 ## Inspect Admin Status
 

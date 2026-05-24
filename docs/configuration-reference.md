@@ -386,8 +386,8 @@ Validation rules:
 - `max_tokens` must be greater than `0`.
 - `stop` may be missing, `null`, a string, or an array of strings.
 - Stop strings must not be empty.
-- `temperature` must be absent or exactly `0.0`.
-- `top_p` must be absent or exactly `1.0`.
+- `temperature` must be finite and in `[0, 2]`; `0` selects greedy decode.
+- `top_p` must be finite and in `(0, 1]`.
 - `response_format.type=json_schema` is rejected.
 
 ## Tokenizer And Template Behaviour
@@ -431,9 +431,14 @@ tool markup returns `malformed_tool_call`.
 ## Current Limits
 
 - Dense Qwen3 and Qwen3.5/Qwen3.6 MoE text loading are supported.
-- `generation_config.json` sampling settings are ignored.
-- Non-greedy sampling is not implemented.
-- Streaming chunks are assembled after backend generation.
+- `generation_config.json` sampling settings are ignored; request
+  `temperature` and `top_p` controls drive runtime sampling.
+- Native text supports greedy and top-p sampling where backend capabilities
+  advertise it. The protocol-test backend accepts greedy and default standard
+  controls but rejects custom non-greedy sampling.
+- Native text streaming can emit backend chunks during decode. Runtime
+  validation paths may still buffer JSON-object or tool-call output to preserve
+  fail-closed semantics.
 - Unknown JSON request fields are not denied by the current request structs.
 - The native loader does not validate every required indexed text weight at open
   time; missing tensors fail during execution.

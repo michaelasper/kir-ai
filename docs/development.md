@@ -51,10 +51,11 @@ contract tests when behavior crosses crate boundaries.
 | Broad runtime behavior in `crates/llm-runtime/**` | `mise run test-runtime-contract` | `cargo test -p llm-runtime --test runtime_contract` |
 | Runtime chat request flow, prompt rendering, stop handling | `mise run test-runtime-chat` | `cargo test -p llm-runtime --test runtime_contract chat::` |
 | Runtime text completion flow | `mise run test-runtime-completion` | `cargo test -p llm-runtime --test runtime_contract completion::` |
-| Runtime stream assembly, cancellation, streaming tool deltas | `mise run test-runtime-streaming` | `cargo test -p llm-runtime --test runtime_contract streaming::` |
+| Runtime streaming from backend chunks, cancellation, streaming tool deltas | `mise run test-runtime-streaming` | `cargo test -p llm-runtime --test runtime_contract streaming::` |
 | Runtime tool-choice validation and tool-call retry behavior | `mise run test-runtime-tools` | `cargo test -p llm-runtime --test runtime_contract tool_validation::` |
 | Runtime JSON-object response mode | `mise run test-runtime-json` | `cargo test -p llm-runtime --test runtime_contract json_mode::` |
 | Runtime no-progress classification | `mise run test-runtime-no-progress` | `cargo test -p llm-runtime --test runtime_contract no_progress::` |
+| HTTP protocol-test flow, SSE framing, and wire error shape | none | `cargo test -p llm-engine --test http_contract` |
 | `crates/llm-tool-parser/**` | `mise run test-parser` | `cargo test -p llm-tool-parser` |
 | `crates/llm-tokenizer/**` | `mise run test-tokenizer` | `cargo test -p llm-tokenizer` |
 | Parser and tokenizer family changes together | `mise run test-parser-tokenizer` | `cargo test -p llm-tool-parser` and `cargo test -p llm-tokenizer` |
@@ -65,6 +66,18 @@ contract tests when behavior crosses crate boundaries.
 Metal smoke tests are serialized because they use the host GPU. If they fail
 because Metal or sandbox permissions are unavailable, record the result as
 blocked and rerun on a host with Metal access.
+
+Protocol-test flows cover request validation, runtime orchestration, OpenAI
+response shape, SSE framing, and error metadata without loading a model
+snapshot. They are the right fast checks for `llm-api`, `llm-runtime`, and
+HTTP contract changes.
+
+Native-backed flows cover snapshot loading, tokenizer/template selection,
+prefill/decode work, cache behavior, and sampler behavior. Use the sampler and
+backend CPU lanes above for those components, then add focused native runtime
+tests selected from the changed `crates/llm-native-runtime/**` module. A passing
+protocol-test flow is not evidence that native-backed decode, top-p sampling, or
+backend chunk streaming still works.
 
 ## Common Focused Commands
 
