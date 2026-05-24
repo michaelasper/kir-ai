@@ -20,12 +20,12 @@ const MAX_METAL_TOP_K: usize = 64;
 impl MetalDevice {
     pub async fn argmax_f32(&self, logits: &[f32]) -> Result<ArgmaxResult, MetalError> {
         if logits.is_empty() {
-            return Err(MetalError::InvalidShape(
+            return Err(MetalError::InvalidInput(
                 "argmax input must not be empty".to_owned(),
             ));
         }
         if let Some((index, _)) = logits.iter().enumerate().find(|(_, value)| value.is_nan()) {
-            return Err(MetalError::InvalidShape(format!(
+            return Err(MetalError::InvalidInput(format!(
                 "argmax input contains NaN at index {index}"
             )));
         }
@@ -123,12 +123,12 @@ impl MetalDevice {
             return Ok(());
         }
         if logits.is_empty() {
-            return Err(MetalError::InvalidShape(
+            return Err(MetalError::InvalidInput(
                 "top-k input must not be empty".to_owned(),
             ));
         }
         if k > MAX_METAL_TOP_K {
-            return Err(MetalError::InvalidShape(format!(
+            return Err(MetalError::InvalidInput(format!(
                 "top-k count {k} exceeds maximum {MAX_METAL_TOP_K}"
             )));
         }
@@ -139,7 +139,7 @@ impl MetalDevice {
             )));
         }
         if let Some((index, _)) = logits.iter().enumerate().find(|(_, value)| value.is_nan()) {
-            return Err(MetalError::InvalidShape(format!(
+            return Err(MetalError::InvalidInput(format!(
                 "top-k input contains NaN at index {index}"
             )));
         }

@@ -456,8 +456,84 @@ async fn metal_top_k_f32_matches_cpu_reference_with_stable_ties() {
     assert_eq!(output[2].value, 9.0);
 }
 
+#[tokio::test]
+async fn metal_reductions_classify_value_validation_as_invalid_input() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let err = device
+        .argmax_f32(&[])
+        .await
+        .expect_err("empty argmax input should fail");
+    assert_reduction_invalid_input(err, "argmax input must not be empty");
+
+    let err = device
+        .argmax_f32(&[1.0, f32::NAN])
+        .await
+        .expect_err("NaN argmax input should fail");
+    assert_reduction_invalid_input(err, "argmax input contains NaN at index 1");
+
+    let mut output = vec![
+        llm_metal::TopKResult {
+            index: 0,
+            value: 0.0
+        };
+        65
+    ];
+    let err = device
+        .top_k_f32(&[], 1, &mut output)
+        .await
+        .expect_err("empty top-k input should fail");
+    assert_reduction_invalid_input(err, "top-k input must not be empty");
+
+    let err = device
+        .top_k_f32(&[1.0, f32::NAN], 1, &mut output)
+        .await
+        .expect_err("NaN top-k input should fail");
+    assert_reduction_invalid_input(err, "top-k input contains NaN at index 1");
+
+    let err = device
+        .top_k_f32(&[1.0, 2.0], 65, &mut output)
+        .await
+        .expect_err("oversized top-k count should fail");
+    assert_reduction_invalid_input(err, "top-k count 65 exceeds maximum 64");
+}
+
+#[tokio::test]
+async fn metal_top_k_output_size_mismatch_remains_invalid_shape() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+    let mut output = vec![llm_metal::TopKResult {
+        index: 0,
+        value: 0.0,
+    }];
+
+    let err = device
+        .top_k_f32(&[1.0, 2.0], 2, &mut output)
+        .await
+        .expect_err("undersized top-k output buffer should fail");
+
+    assert!(matches!(err, llm_metal::MetalError::InvalidShape(_)));
+    assert!(err.to_string().contains("output buffer size 1"));
+}
+
 fn f32_to_bf16_bits(value: f32) -> u16 {
     (value.to_bits() >> 16) as u16
+}
+
+fn assert_reduction_invalid_input(err: llm_metal::MetalError, expected: &str) {
+    assert!(matches!(
+        &err,
+        llm_metal::MetalError::InvalidInput(reason) if reason == expected
+    ));
+    assert!(err.to_string().contains("invalid Metal input"));
+    assert!(err.to_string().contains(expected));
 }
 
 fn silu(value: f32) -> f32 {
