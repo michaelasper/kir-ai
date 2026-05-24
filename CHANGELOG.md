@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.48.0](https://github.com/michaelasper/kir-ai/compare/v1.47.0...v1.48.0) (2026-05-24)
+
+### Features
+
+* **COR-293:** add opt-in asymmetric KV cache format ([fc4a7da](https://github.com/michaelasper/kir-ai/commit/fc4a7dacf08aef59f547937183ce28793b128502))
+
+### Bug Fixes
+
+* **COR-293:** gate phase3 upload metrics on sidecar ([7f7d585](https://github.com/michaelasper/kir-ai/commit/7f7d58535072caead0e8fbbb7fe1d14895d13ffa))
+
 ## [1.47.0](https://github.com/michaelasper/kir-ai/compare/v1.46.10...v1.47.0) (2026-05-24)
 
 ### Features
