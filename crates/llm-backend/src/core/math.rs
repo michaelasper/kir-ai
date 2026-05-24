@@ -2,7 +2,10 @@
 // This module intentionally retains CPU reference helpers that are exercised by
 // backend unit tests and parity diagnostics after the public API is narrowed.
 
+use std::cmp::Ordering;
 use thiserror::Error;
+
+const TOP_K_BOUNDED_INSERTION_LIMIT: usize = 16;
 
 #[derive(Debug, Error)]
 pub enum MathError {
@@ -400,26 +403,18 @@ pub(crate) fn softmax_top_k_f32(
             logits.len()
         )));
     }
-    if logits.iter().any(|value| !value.is_finite()) {
-        return Err(MathError::InvalidShape(
-            "router logits must be finite".to_owned(),
-        ));
-    }
-    let mut selected = logits.iter().copied().enumerate().collect::<Vec<_>>();
-    selected.sort_by(|left, right| {
-        right
-            .1
-            .total_cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    selected.truncate(top_k);
+    let selected = if top_k <= TOP_K_BOUNDED_INSERTION_LIMIT {
+        top_logits_bounded_insert(logits, top_k)?
+    } else {
+        top_logits_partial_select(logits, top_k)?
+    };
     let max = selected
         .iter()
-        .map(|(_, value)| *value)
+        .map(|item| item.logit)
         .fold(f32::NEG_INFINITY, f32::max);
     let mut exp_values = selected
         .iter()
-        .map(|(_, value)| (*value - max).exp())
+        .map(|item| (item.logit - max).exp())
         .collect::<Vec<_>>();
     let sum = exp_values.iter().sum::<f32>();
     if sum == 0.0 || !sum.is_finite() {
@@ -430,11 +425,37 @@ pub(crate) fn softmax_top_k_f32(
     Ok(selected
         .iter()
         .zip(exp_values.iter_mut())
-        .map(|((index, _), value)| TopKWeight {
-            index: *index,
+        .map(|(item, value)| TopKWeight {
+            index: item.index,
             weight: *value / sum,
         })
         .collect())
+}
+
+fn top_logits_bounded_insert(logits: &[f32], top_k: usize) -> Result<Vec<TopKLogit>, MathError> {
+    let mut selected = Vec::with_capacity(top_k);
+    for (index, logit) in logits.iter().copied().enumerate() {
+        push_top_logit(&mut selected, TopKLogit { index, logit }, top_k)?;
+    }
+    Ok(selected)
+}
+
+fn top_logits_partial_select(logits: &[f32], top_k: usize) -> Result<Vec<TopKLogit>, MathError> {
+    let mut selected = Vec::with_capacity(logits.len());
+    for (index, logit) in logits.iter().copied().enumerate() {
+        if !logit.is_finite() {
+            return Err(MathError::InvalidShape(
+                "top-k logits must be finite".to_owned(),
+            ));
+        }
+        selected.push(TopKLogit { index, logit });
+    }
+    if top_k < selected.len() {
+        selected.select_nth_unstable_by(top_k, compare_top_logits);
+        selected.truncate(top_k);
+    }
+    selected.sort_by(compare_top_logits);
+    Ok(selected)
 }
 
 pub(crate) fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), MathError> {
@@ -506,15 +527,43 @@ pub(crate) fn apply_rope_to_head(head: &mut [f32], position: usize, rotary_dim: 
     }
 }
 
-pub(crate) fn push_top_logit(top: &mut Vec<TopKLogit>, candidate: TopKLogit, top_k: usize) {
-    top.push(candidate);
-    top.sort_by(|left, right| {
-        right
-            .logit
-            .total_cmp(&left.logit)
-            .then_with(|| left.index.cmp(&right.index))
-    });
-    top.truncate(top_k);
+pub(crate) fn push_top_logit(
+    top: &mut Vec<TopKLogit>,
+    candidate: TopKLogit,
+    top_k: usize,
+) -> Result<(), MathError> {
+    if top_k == 0 {
+        return Err(MathError::InvalidShape(
+            "top_k must be greater than zero".to_owned(),
+        ));
+    }
+    if !candidate.logit.is_finite() {
+        return Err(MathError::InvalidShape(
+            "top-k logits must be finite".to_owned(),
+        ));
+    }
+
+    match top
+        .iter()
+        .position(|existing| compare_top_logits(&candidate, existing).is_lt())
+    {
+        Some(index) if index < top_k => {
+            top.insert(index, candidate);
+            if top.len() > top_k {
+                top.pop();
+            }
+        }
+        None if top.len() < top_k => top.push(candidate),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn compare_top_logits(left: &TopKLogit, right: &TopKLogit) -> Ordering {
+    right
+        .logit
+        .total_cmp(&left.logit)
+        .then_with(|| left.index.cmp(&right.index))
 }
 
 pub(crate) fn bf16_bits_to_f32(bits: u16) -> f32 {

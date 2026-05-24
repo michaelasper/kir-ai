@@ -1,8 +1,8 @@
 use super::super::CpuNativeMatvecBackend;
 use super::super::backend::BackendCacheContext;
 use super::super::math::{
-    matvec_row_major_f32, rms_norm_f32, rms_norm_one_centered_f32, silu_f32, softmax_top_k_f32,
-    swiglu_mlp_f32,
+    TopKLogit, matvec_row_major_f32, push_top_logit, rms_norm_f32, rms_norm_one_centered_f32,
+    silu_f32, softmax_top_k_f32, swiglu_mlp_f32,
 };
 use super::super::native_attention::{NativeF32Rows, NativeOutputProjection};
 use super::super::qwen::ops::{
@@ -968,6 +968,106 @@ fn softmax_top_k_returns_normalized_selected_weights() {
         &[0.7310586, 0.26894143],
         1e-6,
     );
+}
+
+#[test]
+fn softmax_top_k_orders_equal_logits_by_lower_index() {
+    let selected = softmax_top_k_f32(&[1.0, 4.0, 4.0, 3.0, 4.0], 3).expect("top k");
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|weight| weight.index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+}
+
+#[test]
+fn softmax_top_k_large_k_orders_equal_logits_by_lower_index() {
+    let mut logits = vec![0.0; 40];
+    for index in [
+        29, 18, 17, 35, 21, 20, 19, 16, 37, 36, 34, 33, 32, 31, 30, 28, 27, 26, 25, 24,
+    ] {
+        logits[index] = 4.0;
+    }
+
+    let selected = softmax_top_k_f32(&logits, 18).expect("top k");
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|weight| weight.index)
+            .collect::<Vec<_>>(),
+        vec![
+            16, 17, 18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+        ]
+    );
+}
+
+#[test]
+fn softmax_top_k_rejects_non_finite_logits() {
+    let err = softmax_top_k_f32(&[1.0, f32::NAN, 2.0], 2).expect_err("top k rejects NaN");
+
+    assert!(err.to_string().contains("finite"));
+}
+
+#[test]
+fn softmax_top_k_large_k_rejects_non_finite_logits() {
+    let mut logits = vec![1.0; 32];
+    logits[25] = f32::INFINITY;
+
+    let err = softmax_top_k_f32(&logits, 18).expect_err("top k rejects infinity");
+
+    assert!(err.to_string().contains("finite"));
+}
+
+#[test]
+fn push_top_logit_orders_equal_logits_by_lower_index() {
+    let mut top = Vec::new();
+    for (index, logit) in [(4, 9.0), (8, 7.0), (3, 9.0), (1, 8.0), (2, 9.0)] {
+        push_top_logit(&mut top, TopKLogit { index, logit }, 3).expect("candidate accepted");
+    }
+
+    assert_eq!(
+        top,
+        vec![
+            TopKLogit {
+                index: 2,
+                logit: 9.0
+            },
+            TopKLogit {
+                index: 3,
+                logit: 9.0
+            },
+            TopKLogit {
+                index: 4,
+                logit: 9.0
+            },
+        ]
+    );
+}
+
+#[test]
+fn push_top_logit_rejects_non_finite_logits_without_mutating_top() {
+    let mut top = vec![TopKLogit {
+        index: 0,
+        logit: 1.0,
+    }];
+    let before = top.clone();
+
+    let err = push_top_logit(
+        &mut top,
+        TopKLogit {
+            index: 1,
+            logit: f32::NAN,
+        },
+        2,
+    )
+    .expect_err("top logit rejects NaN");
+
+    assert!(err.to_string().contains("finite"));
+    assert_eq!(top, before);
 }
 
 #[test]

@@ -25,3 +25,7 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+[[bench]]
+name = "top_k_selection"
+harness = false

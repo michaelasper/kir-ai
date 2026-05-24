@@ -1039,7 +1039,8 @@ impl SafeTensorShardStore {
                         logit,
                     },
                     top_k,
-                );
+                )
+                .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
             }
         }
         Ok(top)
