@@ -3,7 +3,7 @@ use super::super::{
     usage_from_value,
 };
 use super::*;
-use crate::DEFAULT_MODEL_ID;
+use crate::{DEFAULT_MODEL_ID, MlxToolParserMode};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
