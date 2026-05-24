@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.1](https://github.com/michaelasper/kir-ai/compare/v1.56.0...v1.56.1) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-344:** include kernel names in Metal pipeline errors ([2b5a8a2](https://github.com/michaelasper/kir-ai/commit/2b5a8a2f67db02223239134cd9084dcb5ab4b016))
+
 ## [1.56.0](https://github.com/michaelasper/kir-ai/compare/v1.55.0...v1.56.0) (2026-05-24)
 
 ### Features
