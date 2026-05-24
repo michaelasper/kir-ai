@@ -179,7 +179,8 @@ impl NativeQwenBackend {
                 let snapshot_identity = native_text_disk_cache_snapshot_identity(
                     snapshot_path,
                     identity.manifest_digest(),
-                );
+                )
+                .await;
                 Some(Arc::new(
                     NativeTextDiskCache::open(
                         config,

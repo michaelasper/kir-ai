@@ -367,3 +367,27 @@ fn native_qwen_backend_uses_configured_prefix_cache_budget() {
     assert_eq!(backend.driver.adapter.prefix_cache.max_bytes, 7);
     std::fs::remove_dir_all(snapshot).ok();
 }
+
+#[test]
+fn native_qwen_backend_opens_with_raw_path_prefix_disk_cache() {
+    let snapshot = temp_snapshot_dir("prefix-disk-cache");
+    std::fs::remove_dir_all(&snapshot).ok();
+    std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+    copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+    write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
+    write_tiny_qwen3_dense_model_index(&snapshot);
+
+    let backend = open_qwen_backend_with_options_blocking(
+        crate::DEFAULT_MODEL_ID,
+        &snapshot,
+        NativeQwenLoadOptions {
+            prefix_disk_cache: Some(crate::native_text::NativeTextDiskCacheConfig::for_root(
+                snapshot.join("disk-cache"),
+            )),
+            ..NativeQwenLoadOptions::default()
+        },
+    );
+
+    assert!(backend.driver.adapter.prefix_disk_cache.is_some());
+    std::fs::remove_dir_all(snapshot).ok();
+}

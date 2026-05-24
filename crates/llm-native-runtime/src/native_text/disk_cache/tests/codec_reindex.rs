@@ -167,3 +167,24 @@ async fn snapshot_identity_partitions_model_hash_and_rejects_wrong_snapshot_meta
         "a block encoded for another snapshot must be ignored"
     );
 }
+
+#[tokio::test]
+async fn snapshot_identity_prefers_manifest_digest_without_filesystem_resolution() {
+    let identity = native_text_disk_cache_snapshot_identity(
+        std::path::Path::new("/snapshot/does/not/exist"),
+        Some("sha256:abc123"),
+    )
+    .await;
+
+    assert_eq!(identity, "manifest:sha256:abc123");
+}
+
+#[tokio::test]
+async fn snapshot_identity_uses_async_canonical_raw_path_without_manifest_digest() {
+    let temp = tempfile::tempdir().expect("temp dir exists");
+    let canonical = temp.path().canonicalize().expect("temp dir canonicalizes");
+
+    let identity = native_text_disk_cache_snapshot_identity(temp.path(), None).await;
+
+    assert_eq!(identity, format!("raw-path:{}", canonical.display()));
+}

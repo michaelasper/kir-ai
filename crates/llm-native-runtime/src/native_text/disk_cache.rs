@@ -153,15 +153,16 @@ impl NativeTextDiskCacheIdentity {
     }
 }
 
-pub(crate) fn native_text_disk_cache_snapshot_identity(
+pub(crate) async fn native_text_disk_cache_snapshot_identity(
     snapshot_path: &Path,
     manifest_digest: Option<&str>,
 ) -> String {
     if let Some(manifest_digest) = manifest_digest {
         return format!("manifest:{manifest_digest}");
     }
-    let canonical =
-        std::fs::canonicalize(snapshot_path).unwrap_or_else(|_| snapshot_path.to_path_buf());
+    let canonical = tokio::fs::canonicalize(snapshot_path)
+        .await
+        .unwrap_or_else(|_| snapshot_path.to_path_buf());
     format!("raw-path:{}", canonical.display())
 }
 

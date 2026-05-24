@@ -172,7 +172,8 @@ impl NativeGemmaBackend {
                 let snapshot_identity = native_text_disk_cache_snapshot_identity(
                     snapshot_path,
                     identity.manifest_digest(),
-                );
+                )
+                .await;
                 Some(Arc::new(
                     NativeTextDiskCache::open(
                         config,
@@ -1038,6 +1039,29 @@ mod tests {
         );
 
         assert_eq!(backend.driver.adapter.prefix_cache.max_bytes, 7);
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[test]
+    fn native_gemma_backend_opens_with_raw_path_prefix_disk_cache() {
+        let snapshot = temp_snapshot_dir("native-gemma-prefix-disk-cache");
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        write_tiny_gemma4_decoder_snapshot(&snapshot);
+        copy_qwen_tokenizer(snapshot.join("tokenizer.json"));
+
+        let backend = open_gemma_backend_with_options(
+            "local-gemma",
+            &snapshot,
+            NativeGemmaLoadOptions {
+                prefix_disk_cache: Some(crate::native_text::NativeTextDiskCacheConfig::for_root(
+                    snapshot.join("disk-cache"),
+                )),
+                ..NativeGemmaLoadOptions::default()
+            },
+        );
+
+        assert!(backend.driver.adapter.prefix_disk_cache.is_some());
         std::fs::remove_dir_all(snapshot).ok();
     }
 
