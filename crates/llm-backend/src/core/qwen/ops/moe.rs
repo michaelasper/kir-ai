@@ -1,4 +1,4 @@
-use super::super::super::math::{InferenceScratchpad, TopKWeight, silu_f32};
+use super::super::super::math::{InferenceScratchpad, TopKWeight, sigmoid_f32, silu_f32};
 use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
 use super::tensor_names::qwen_layer_tensor;
 use llm_models::QwenModelSpec;
@@ -339,8 +339,4 @@ pub(super) async fn qwen_layer_shared_expert_forward(
         )
         .await?;
     Ok(())
-}
-
-fn sigmoid_f32(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
 }

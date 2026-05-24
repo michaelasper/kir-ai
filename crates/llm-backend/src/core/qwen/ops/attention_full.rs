@@ -9,6 +9,7 @@ use super::super::super::native_attention::{
     native_full_attention_sequence_from_parts,
     native_full_attention_sequence_with_cache_from_parts,
     native_full_attention_step_with_cache_from_parts, native_output_projection,
+    require_full_attention_cache_shape,
 };
 use super::super::super::{
     CpuNativeMatvecBackend, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore,
@@ -97,22 +98,6 @@ async fn qwen_attention_rms_norm(
     } else {
         rms_norm_f32(input, weight, config.rms_norm_eps, matvec).await
     }
-}
-
-fn require_full_attention_cache_shape(
-    dims: &QwenFullAttentionDims,
-    cache: &LayerKvCache,
-) -> Result<(), MathError> {
-    if cache.key_value_heads() != dims.num_key_value_heads || cache.head_dim() != dims.head_dim {
-        return Err(MathError::InvalidShape(format!(
-            "Qwen full attention cache shape does not match dims: cache key_value_heads={}, head_dim={}; dims key_value_heads={}, head_dim={}",
-            cache.key_value_heads(),
-            cache.head_dim(),
-            dims.num_key_value_heads,
-            dims.head_dim
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) async fn qwen_full_attention_first_token_from_parts(
@@ -223,7 +208,7 @@ pub(crate) async fn qwen_full_attention_step_with_cache_from_parts(
             "Qwen RoPE parameters must be positive".to_owned(),
         ));
     }
-    require_full_attention_cache_shape(dims, cache)?;
+    require_full_attention_cache_shape("Qwen full attention", dims.native(), cache)?;
     let attention_dim = dims.attention_dim()?;
     let key_value_dim = dims.key_value_dim()?;
     let q_projection_width = if config.q_projection_gate {

@@ -178,7 +178,7 @@ pub(crate) async fn native_full_attention_sequence_from_cache_parts(
         return Ok(Vec::new());
     }
     let shape = validate_full_attention_shape(dims)?;
-    require_full_attention_cache_shape(dims, cache)?;
+    require_full_attention_cache_shape("full attention", dims, cache)?;
     let seq_len = parts.queries.len();
     if parts.source_counts.len() != seq_len {
         return Err(MathError::InvalidShape(
@@ -276,7 +276,7 @@ pub(crate) async fn native_full_attention_step_with_cache_from_parts_in_place(
     output: &mut [f32],
 ) -> Result<(), MathError> {
     let shape = validate_full_attention_shape(dims)?;
-    require_full_attention_cache_shape(dims, cache)?;
+    require_full_attention_cache_shape("full attention", dims, cache)?;
     require_full_attention_token_parts(
         dims,
         shape,
@@ -345,7 +345,7 @@ async fn native_full_attention_sequence_impl(
         ));
     }
     if let Some(cache) = cache.as_ref() {
-        require_full_attention_cache_shape(dims, cache)?;
+        require_full_attention_cache_shape("full attention", dims, cache)?;
     }
     require_native_output_projection_shape(
         parts.output_projection,
@@ -568,13 +568,14 @@ fn require_full_attention_token_parts(
     Ok(())
 }
 
-fn require_full_attention_cache_shape(
+pub(crate) fn require_full_attention_cache_shape(
+    context: &str,
     dims: NativeFullAttentionDims,
     cache: &LayerKvCache,
 ) -> Result<(), MathError> {
     if cache.key_value_heads() != dims.num_key_value_heads || cache.head_dim() != dims.head_dim {
         return Err(MathError::InvalidShape(format!(
-            "full attention cache shape does not match dims: cache key_value_heads={}, head_dim={}; dims key_value_heads={}, head_dim={}",
+            "{context} cache shape does not match dims: cache key_value_heads={}, head_dim={}; dims key_value_heads={}, head_dim={}",
             cache.key_value_heads(),
             cache.head_dim(),
             dims.num_key_value_heads,
@@ -733,6 +734,25 @@ mod tests {
         assert!(
             (left - right).abs() < 1e-5,
             "expected {left} to be close to {right}"
+        );
+    }
+
+    #[test]
+    fn full_attention_cache_shape_error_uses_context() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 4,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            head_dim: 4,
+        };
+        let cache = LayerKvCache::new(8, 1, 3).expect("cache shape");
+
+        let err = require_full_attention_cache_shape("Qwen full attention", dims, &cache)
+            .expect_err("shape mismatch should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "invalid math shape: Qwen full attention cache shape does not match dims: cache key_value_heads=1, head_dim=3; dims key_value_heads=2, head_dim=4"
         );
     }
 
