@@ -567,7 +567,6 @@ impl LayerKvCache {
         let f32_uploaded_bytes = uploaded_bytes(active_key_value_elements, 4);
         let f16_uploaded_bytes = uploaded_bytes(active_key_value_elements, 2);
         let int8_uploaded_bytes = uploaded_bytes(active_key_value_elements, 1);
-        let phase3_key_uploaded_bytes = uploaded_bytes(self.keys().len(), 2);
         let (phase3_value_bits, phase3_resident_bytes, phase3_payload_bytes, phase3_metadata_bytes) =
             self.quantized_values
                 .as_ref()
@@ -579,6 +578,13 @@ impl LayerKvCache {
                         quantized_values.metadata_bytes(),
                     )
                 });
+        let phase3_uploaded_bytes = if self.quantized_values.is_some() {
+            uploaded_bytes(self.keys().len(), 2)
+                .saturating_add(phase3_payload_bytes)
+                .saturating_add(phase3_metadata_bytes)
+        } else {
+            0
+        };
         let phase3_reconstruction_error =
             self.phase3_reconstruction_error(phase3_value_bits.is_some())?;
         Ok(KvCacheFormatMetrics::from_parts(KvCacheFormatMetricParts {
@@ -591,9 +597,7 @@ impl LayerKvCache {
             phase3_resident_bytes,
             phase3_value_payload_bytes: phase3_payload_bytes,
             phase3_value_metadata_bytes: phase3_metadata_bytes,
-            phase3_uploaded_bytes: phase3_key_uploaded_bytes
-                .saturating_add(phase3_payload_bytes)
-                .saturating_add(phase3_metadata_bytes),
+            phase3_uploaded_bytes,
             phase3_reconstruction_error,
         }))
     }

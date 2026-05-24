@@ -40,6 +40,42 @@ fn default_layer_kv_cache_uses_f32_format_without_phase3_sidecar() {
 }
 
 #[test]
+fn non_empty_default_layer_kv_cache_reports_no_phase3_metrics() {
+    let mut cache = LayerKvCache::new(2, 1, 4).expect("cache shape is valid");
+
+    cache
+        .append(&[-0.25, 0.25, 0.75, 1.25], &[-1.25, -0.55, 0.31, 1.10])
+        .expect("first token fits");
+    cache
+        .append(&[1.50, 1.75, 2.00, 2.25], &[-1.20, -0.52, 0.33, 1.13])
+        .expect("second token fits");
+
+    assert_eq!(cache.config(), KvCacheConfig::f32());
+    assert_eq!(cache.format(), KvCacheFormat::F32);
+    assert!(
+        cache
+            .phase3_dequantized_values()
+            .expect("phase3 inspection succeeds")
+            .is_none()
+    );
+
+    let metrics = cache
+        .format_metrics()
+        .expect("format metrics are available");
+    assert_eq!(metrics.active_format(), KvCacheFormat::F32);
+    assert_eq!(metrics.phase3_value_bits(), None);
+    assert_eq!(metrics.phase3_value_payload_bytes(), 0);
+    assert_eq!(metrics.phase3_value_metadata_bytes(), 0);
+    assert_eq!(metrics.phase3_resident_bytes(), 0);
+    assert_eq!(metrics.phase3_uploaded_bytes(), 0);
+    assert_eq!(metrics.phase3_reconstruction_error(), None);
+    assert_eq!(metrics.f32_uploaded_bytes(), 64);
+    assert_eq!(metrics.f16_uploaded_bytes(), 32);
+    assert_eq!(metrics.int8_uploaded_bytes(), 16);
+    assert_eq!(metrics.f32_resident_bytes(), cache.resident_bytes());
+}
+
+#[test]
 fn asymmetric_vq_int4_is_opt_in_and_round_trips_values_with_error_metrics() {
     let mut cache = LayerKvCache::new_with_config(
         2,
