@@ -2,6 +2,7 @@ mod block;
 mod block_id;
 mod block_pool;
 mod block_table;
+pub mod prototype_quantization;
 
 pub use block::{CacheBlock, CacheBlockHash, cache_block_chain_hash};
 pub use block_id::BlockId;
