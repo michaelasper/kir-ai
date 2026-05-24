@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{cmp::Ordering, fmt};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GreedySampler;
@@ -15,9 +15,15 @@ pub struct TopPSampler {
     pub top_p: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RankedProbability {
+    index: usize,
+    probability: f32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TopPSamplerScratch {
-    ranked_probabilities: Vec<(usize, f32)>,
+    ranked_probabilities: Vec<RankedProbability>,
 }
 
 impl TopPSamplerScratch {
@@ -64,54 +70,91 @@ impl TopPSampler {
             }
             let value = logit / self.temperature;
             max_scaled = max_scaled.max(value);
-            scratch.ranked_probabilities.push((index, value));
+            scratch.ranked_probabilities.push(RankedProbability {
+                index,
+                probability: value,
+            });
         }
 
         let mut sum = 0.0;
-        for (_, value) in &mut scratch.ranked_probabilities {
-            *value = (*value - max_scaled).exp();
-            sum += *value;
+        for entry in &mut scratch.ranked_probabilities {
+            entry.probability = (entry.probability - max_scaled).exp();
+            sum += entry.probability;
         }
         if !sum.is_finite() || sum <= 0.0 {
             return Err(SamplerError::InvalidDistribution);
         }
-        for (_, probability) in &mut scratch.ranked_probabilities {
-            *probability /= sum;
+        for entry in &mut scratch.ranked_probabilities {
+            entry.probability /= sum;
         }
-        scratch.ranked_probabilities.sort_by(|left, right| {
-            right
-                .1
-                .total_cmp(&left.1)
-                .then_with(|| left.0.cmp(&right.0))
-        });
 
-        let mut nucleus_total = 0.0;
-        let mut nucleus_len = 0;
-        for (_, probability) in &scratch.ranked_probabilities {
-            nucleus_total += *probability;
-            nucleus_len += 1;
-            if nucleus_total >= self.top_p {
-                break;
-            }
-        }
-        if nucleus_len == 0 || !nucleus_total.is_finite() || nucleus_total <= 0.0 {
-            return Err(SamplerError::InvalidDistribution);
-        }
+        let (nucleus_len, nucleus_total) =
+            select_sorted_nucleus_prefix(&mut scratch.ranked_probabilities, self.top_p)?;
 
         let threshold = draw * nucleus_total;
         let mut cumulative = 0.0;
-        for (index, probability) in scratch.ranked_probabilities.iter().take(nucleus_len) {
-            cumulative += *probability;
+        for entry in scratch.ranked_probabilities.iter().take(nucleus_len) {
+            cumulative += entry.probability;
             if threshold <= cumulative {
-                return Ok(*index);
+                return Ok(entry.index);
             }
         }
-        Ok(scratch
+        scratch
             .ranked_probabilities
             .get(nucleus_len - 1)
-            .map(|(index, _)| *index)
-            .expect("nucleus is not empty"))
+            .map(|entry| entry.index)
+            .ok_or(SamplerError::InvalidDistribution)
     }
+}
+
+fn select_sorted_nucleus_prefix(
+    entries: &mut [RankedProbability],
+    top_p: f32,
+) -> Result<(usize, f32), SamplerError> {
+    let len = entries.len();
+    let mut candidate_len = initial_candidate_len(len);
+
+    loop {
+        if candidate_len < len {
+            entries.select_nth_unstable_by(candidate_len - 1, ranked_probability_order);
+        }
+        entries[..candidate_len].sort_by(ranked_probability_order);
+
+        let mut nucleus_total = 0.0;
+        for (offset, entry) in entries[..candidate_len].iter().enumerate() {
+            nucleus_total += entry.probability;
+            if !nucleus_total.is_finite() {
+                return Err(SamplerError::InvalidDistribution);
+            }
+            if nucleus_total >= top_p {
+                return Ok((offset + 1, nucleus_total));
+            }
+        }
+
+        if candidate_len == len {
+            if candidate_len == 0 || nucleus_total <= 0.0 {
+                return Err(SamplerError::InvalidDistribution);
+            }
+            return Ok((candidate_len, nucleus_total));
+        }
+
+        candidate_len = grow_candidate_len(candidate_len, len);
+    }
+}
+
+fn initial_candidate_len(len: usize) -> usize {
+    len.min(4096)
+}
+
+fn grow_candidate_len(current: usize, len: usize) -> usize {
+    current.saturating_mul(4).min(len).max(current + 1)
+}
+
+fn ranked_probability_order(left: &RankedProbability, right: &RankedProbability) -> Ordering {
+    right
+        .probability
+        .total_cmp(&left.probability)
+        .then_with(|| left.index.cmp(&right.index))
 }
 
 pub fn select_argmax(logits: &[f32]) -> Result<usize, SamplerError> {
@@ -229,6 +272,50 @@ mod tests {
     }
 
     #[test]
+    fn top_p_sampler_uses_index_order_for_probability_ties() {
+        let sampler = TopPSampler {
+            temperature: 1.0,
+            top_p: 0.6,
+        };
+
+        assert_eq!(
+            sampler
+                .sample(&[2.0, 2.0, 2.0, 0.0], 0.0)
+                .expect("low draw samples first tied token"),
+            0
+        );
+        assert_eq!(
+            sampler
+                .sample(&[2.0, 2.0, 2.0, 0.0], 0.99)
+                .expect("high draw samples second tied token"),
+            1
+        );
+    }
+
+    #[test]
+    fn top_p_sampler_matches_full_sort_reference_for_representative_draws() {
+        for vocab in [8_usize, 257, 4096] {
+            let logits = make_test_logits(vocab);
+            let mut scratch = TopPSamplerScratch::new();
+            for top_p in [0.05_f32, 0.5, 0.9, 1.0] {
+                let sampler = TopPSampler {
+                    temperature: 0.7,
+                    top_p,
+                };
+                for draw in [0.0_f32, 0.37, 0.999_999] {
+                    let expected = legacy_full_sort_top_p(sampler, &logits, draw)
+                        .expect("legacy sample succeeds");
+                    let actual = sampler
+                        .sample_with_scratch(&logits, draw, &mut scratch)
+                        .expect("optimized sample succeeds");
+
+                    assert_eq!(actual, expected, "vocab={vocab} top_p={top_p} draw={draw}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn top_p_sampler_keeps_at_least_one_token() {
         let sampler = TopPSampler {
             temperature: 1.0,
@@ -294,5 +381,90 @@ mod tests {
         .sample(&[1.0], 1.0)
         .expect_err("draw outside half-open interval fails");
         assert_eq!(err, SamplerError::InvalidDraw);
+    }
+
+    fn legacy_full_sort_top_p(
+        sampler: TopPSampler,
+        logits: &[f32],
+        draw: f32,
+    ) -> Result<usize, SamplerError> {
+        if !sampler.temperature.is_finite() || sampler.temperature <= 0.0 {
+            return Err(SamplerError::InvalidTemperature);
+        }
+        if !sampler.top_p.is_finite() || sampler.top_p <= 0.0 || sampler.top_p > 1.0 {
+            return Err(SamplerError::InvalidTopP);
+        }
+        if !draw.is_finite() || !(0.0..1.0).contains(&draw) {
+            return Err(SamplerError::InvalidDraw);
+        }
+        if logits.is_empty() {
+            return Err(SamplerError::EmptyLogits);
+        }
+
+        let mut ranked_probabilities = Vec::with_capacity(logits.len());
+        let mut max_scaled = f32::NEG_INFINITY;
+        for (index, logit) in logits.iter().copied().enumerate() {
+            if !logit.is_finite() {
+                return Err(SamplerError::NonFiniteLogit { index });
+            }
+            let value = logit / sampler.temperature;
+            max_scaled = max_scaled.max(value);
+            ranked_probabilities.push((index, value));
+        }
+
+        let mut sum = 0.0;
+        for (_, value) in &mut ranked_probabilities {
+            *value = (*value - max_scaled).exp();
+            sum += *value;
+        }
+        if !sum.is_finite() || sum <= 0.0 {
+            return Err(SamplerError::InvalidDistribution);
+        }
+        for (_, probability) in &mut ranked_probabilities {
+            *probability /= sum;
+        }
+        ranked_probabilities.sort_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+
+        let mut nucleus_total = 0.0;
+        let mut nucleus_len = 0;
+        for (_, probability) in &ranked_probabilities {
+            nucleus_total += *probability;
+            nucleus_len += 1;
+            if nucleus_total >= sampler.top_p {
+                break;
+            }
+        }
+        if nucleus_len == 0 || !nucleus_total.is_finite() || nucleus_total <= 0.0 {
+            return Err(SamplerError::InvalidDistribution);
+        }
+
+        let threshold = draw * nucleus_total;
+        let mut cumulative = 0.0;
+        for (index, probability) in ranked_probabilities.iter().take(nucleus_len) {
+            cumulative += *probability;
+            if threshold <= cumulative {
+                return Ok(*index);
+            }
+        }
+        ranked_probabilities
+            .get(nucleus_len - 1)
+            .map(|(index, _)| *index)
+            .ok_or(SamplerError::InvalidDistribution)
+    }
+
+    fn make_test_logits(vocab: usize) -> Vec<f32> {
+        (0..vocab)
+            .map(|index| {
+                let mixed = (index as u32)
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                (mixed % 4096) as f32 / 256.0 - 8.0
+            })
+            .collect()
     }
 }
