@@ -20,6 +20,16 @@ pub(crate) struct ToolMarkupPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct ToolMarkupStreamState {
+    policy: ToolMarkupPolicy,
+    first_start: Option<usize>,
+    completed_prefix_len: Option<usize>,
+    previous_len: usize,
+    max_start_marker_len: usize,
+    max_end_marker_len: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ToolMarkupMarkers {
     pub(crate) start_marker: &'static str,
     pub(crate) end_marker: &'static str,
@@ -59,17 +69,55 @@ impl ToolMarkupPolicy {
         Self { markers }
     }
 
-    pub(crate) fn safe_emit_len(self, content: &str) -> usize {
-        if let Some(start) = self
-            .markers
-            .iter()
-            .filter_map(|markers| content.find(markers.start_marker))
-            .min()
-        {
-            return start;
+    pub(crate) fn stream_state(self) -> ToolMarkupStreamState {
+        ToolMarkupStreamState {
+            policy: self,
+            first_start: None,
+            completed_prefix_len: None,
+            previous_len: 0,
+            max_start_marker_len: self
+                .markers
+                .iter()
+                .map(|markers| markers.start_marker.len())
+                .max()
+                .unwrap_or(0),
+            max_end_marker_len: self
+                .markers
+                .iter()
+                .map(|markers| markers.end_marker.len())
+                .max()
+                .unwrap_or(0),
         }
-        let withheld_prefix_len = self
-            .markers
+    }
+
+    pub(crate) fn contains_start(self, content: &str) -> bool {
+        self.find_start_from(content, 0).is_some()
+    }
+
+    fn find_start_from(self, content: &str, search_start: usize) -> Option<usize> {
+        self.markers
+            .iter()
+            .filter_map(|markers| {
+                content[search_start..]
+                    .find(markers.start_marker)
+                    .map(|start| search_start + start)
+            })
+            .min()
+    }
+
+    fn latest_completed_prefix_from(self, content: &str, search_start: usize) -> Option<usize> {
+        self.markers
+            .iter()
+            .filter_map(|markers| {
+                content[search_start..]
+                    .rfind(markers.end_marker)
+                    .map(|end| search_start + end + markers.end_marker.len())
+            })
+            .max()
+    }
+
+    fn withheld_start_prefix_len(self, content: &str) -> usize {
+        self.markers
             .iter()
             .flat_map(|markers| {
                 (1..markers.start_marker.len()).filter(move |prefix_len| {
@@ -78,26 +126,60 @@ impl ToolMarkupPolicy {
                 })
             })
             .max()
-            .unwrap_or(0);
-        content.len() - withheld_prefix_len
+            .unwrap_or(0)
+    }
+}
+
+impl ToolMarkupStreamState {
+    pub(crate) fn observe(&mut self, content: &str) {
+        if self.first_start.is_none() {
+            let search_start = floor_char_boundary(
+                content,
+                self.previous_len
+                    .saturating_sub(self.max_start_marker_len.saturating_sub(1)),
+            );
+            self.first_start = self.policy.find_start_from(content, search_start);
+        }
+
+        let search_start = floor_char_boundary(
+            content,
+            self.previous_len
+                .saturating_sub(self.max_end_marker_len.saturating_sub(1)),
+        );
+        if let Some(prefix_len) = self
+            .policy
+            .latest_completed_prefix_from(content, search_start)
+        {
+            self.completed_prefix_len = Some(
+                self.completed_prefix_len
+                    .map_or(prefix_len, |current| current.max(prefix_len)),
+            );
+        }
+
+        self.previous_len = content.len();
     }
 
-    pub(crate) fn completed_prefix_len(self, content: &str) -> Option<usize> {
-        self.markers
-            .iter()
-            .filter_map(|markers| {
-                content
-                    .rfind(markers.end_marker)
-                    .map(|end| end + markers.end_marker.len())
-            })
-            .max()
+    pub(crate) fn safe_emit_len(self, content: &str) -> usize {
+        if let Some(start) = self.first_start {
+            return start;
+        }
+        content.len() - self.policy.withheld_start_prefix_len(content)
     }
 
-    pub(crate) fn contains_start(self, content: &str) -> bool {
-        self.markers
-            .iter()
-            .any(|markers| content.contains(markers.start_marker))
+    pub(crate) const fn completed_prefix_len(self) -> Option<usize> {
+        self.completed_prefix_len
     }
+
+    pub(crate) const fn contains_start(self) -> bool {
+        self.first_start.is_some()
+    }
+}
+
+fn floor_char_boundary(content: &str, mut index: usize) -> usize {
+    while !content.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 pub(crate) trait ChatAdapter {
@@ -242,5 +324,44 @@ fn backend_chat_role(role: &llm_api::ChatRole) -> BackendChatRole {
 fn backend_tool_call_type(tool_type: &llm_api::ToolCallType) -> BackendToolCallType {
     match tool_type {
         llm_api::ToolCallType::Function => BackendToolCallType::Function,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_markup_stream_state_withholds_split_start_marker() {
+        let policy = ToolMarkupPolicy::new(&JSON_TOOL_MARKERS);
+        let mut state = policy.stream_state();
+        let mut content = "hello <to".to_owned();
+
+        state.observe(&content);
+        assert!(!state.contains_start());
+        assert_eq!(state.safe_emit_len(&content), "hello ".len());
+
+        content.push_str("ol_call>{\"name\":\"lookup\"}</tool_call> trailing");
+        state.observe(&content);
+        assert!(state.contains_start());
+        assert_eq!(state.safe_emit_len(&content), "hello ".len());
+        assert_eq!(
+            state.completed_prefix_len(),
+            Some("hello <tool_call>{\"name\":\"lookup\"}</tool_call>".len())
+        );
+    }
+
+    #[test]
+    fn tool_markup_stream_state_finds_latest_completed_prefix() {
+        let policy = ToolMarkupPolicy::new(&JSON_TOOL_MARKERS);
+        let mut state = policy.stream_state();
+        let mut content = "<tool_call>{}</tool_call>".to_owned();
+
+        state.observe(&content);
+        assert_eq!(state.completed_prefix_len(), Some(content.len()));
+
+        content.push_str(" text <tool_call>{\"name\":\"second\"}</tool_call>");
+        state.observe(&content);
+        assert_eq!(state.completed_prefix_len(), Some(content.len()));
     }
 }

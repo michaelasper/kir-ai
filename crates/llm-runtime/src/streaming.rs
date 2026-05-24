@@ -1,5 +1,5 @@
 use crate::RuntimeError;
-use crate::adapters::{ChatAdapter, SelectedChatAdapter, ToolMarkupPolicy};
+use crate::adapters::{ChatAdapter, SelectedChatAdapter, ToolMarkupStreamState};
 use crate::json_mode::parse_chat_text;
 use crate::no_progress::{
     classify_chat_no_progress, classify_no_progress,
@@ -9,11 +9,11 @@ use crate::response_validation::{
     validate_json_object_response, validate_tool_call_arguments,
     validate_tool_calls_against_request,
 };
-use crate::stop::{earliest_stop_index, max_stop_sequence_len, safe_stream_emit_len};
+use crate::stop::{IncrementalStopDetector, max_stop_sequence_len, safe_stream_emit_len};
 use crate::tool_call::{
-    StructuredToolDeltaAssembler, fill_missing_tool_intent_arguments,
+    StructuredToolDeltaAssembler, ToolCallDeltaSerializer, fill_missing_tool_intent_arguments,
     request_may_fill_tool_intent_arguments, request_requires_tool_choice,
-    structured_tool_delta_without_arguments, tool_call_arguments_delta, tool_call_delta,
+    structured_tool_delta_without_arguments,
 };
 use futures::{StreamExt, stream::BoxStream};
 use llm_api::{
@@ -353,6 +353,7 @@ pub(crate) fn streaming_completion_stream<'a>(
         let mut completion_tokens = 0_u64;
         let mut finish_reason = llm_api::FinishReason::Length;
         let max_stop_len = max_stop_sequence_len(&stop);
+        let mut stop_detector = IncrementalStopDetector::new(&stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
@@ -363,7 +364,7 @@ pub(crate) fn streaming_completion_stream<'a>(
             }
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
-                if let Some(stop_at) = earliest_stop_index(&raw_text, &stop) {
+                if let Some(stop_at) = stop_detector.observe(&raw_text, &stop) {
                     if stop_at > emitted_len {
                         yield CompletionStreamEvent::Chunk(completion_stream_seed_chunk(
                             &completion,
@@ -457,10 +458,9 @@ fn deferred_emission_strategy(
 
 fn unmarked_tool_buffer_can_stream_text(
     raw_text: &str,
-    tool_markup_policy: ToolMarkupPolicy,
+    tool_markup_state: ToolMarkupStreamState,
 ) -> bool {
-    !tool_markup_policy.contains_start(raw_text)
-        && !looks_like_unmarked_tool_json_candidate(raw_text)
+    !tool_markup_state.contains_start() && !looks_like_unmarked_tool_json_candidate(raw_text)
 }
 
 fn looks_like_unmarked_tool_json_candidate(raw_text: &str) -> bool {
@@ -508,9 +508,13 @@ pub(crate) fn streaming_chat_stream<'a>(
             adapter.parses_unmarked_tool_calls() && !request.tools.is_empty(),
         );
         let mut emitted_tool_calls = 0;
+        let mut parsed_tool_prefix_len = 0;
+        let mut tool_markup_state = tool_markup_policy.stream_state();
+        let mut tool_call_delta_serializer = ToolCallDeltaSerializer::default();
         let mut structured_tool_assembler = StructuredToolDeltaAssembler::default();
         let buffer_structured_tool_arguments = request_may_fill_tool_intent_arguments(&request);
         let max_stop_len = max_stop_sequence_len(&request.stop);
+        let mut stop_detector = IncrementalStopDetector::new(&request.stop);
         while let Some(chunk) = backend_stream.next().await {
             let chunk = chunk?;
             let internal_progress_bytes = internal_progress_bytes(&chunk);
@@ -553,7 +557,8 @@ pub(crate) fn streaming_chat_stream<'a>(
             }
             if !chunk.text.is_empty() {
                 raw_text.push_str(&chunk.text);
-                if let Some(stop_at) = earliest_stop_index(&raw_text, &request.stop) {
+                tool_markup_state.observe(&raw_text);
+                if let Some(stop_at) = stop_detector.observe(&raw_text, &request.stop) {
                     if matches!(deferred, DeferredEmission::None) && stop_at > emitted_len
                     {
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -574,7 +579,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                 }
                 if matches!(deferred, DeferredEmission::None) {
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
-                        .min(tool_markup_policy.safe_emit_len(&raw_text));
+                        .min(tool_markup_state.safe_emit_len(&raw_text));
                     if safe_len > emitted_len {
                         emitted_public_chunk = true;
                         yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
@@ -589,8 +594,8 @@ pub(crate) fn streaming_chat_stream<'a>(
                         emitted_len = safe_len;
                     }
                 }
-                if let Some(tool_prefix_len) = tool_markup_policy.completed_prefix_len(&raw_text)
-                    && tool_prefix_len > emitted_len
+                if let Some(tool_prefix_len) = tool_markup_state.completed_prefix_len()
+                    && tool_prefix_len > parsed_tool_prefix_len
                 {
                     let mut parsed_prefix = adapter.parse_complete(&raw_text[..tool_prefix_len])?;
                     validate_tool_call_arguments(&parsed_prefix)?;
@@ -612,7 +617,8 @@ pub(crate) fn streaming_chat_stream<'a>(
                             .enumerate()
                             .skip(emitted_tool_calls)
                         {
-                            let delta = tool_call_delta(index, tool_call)?;
+                            let delta = tool_call_delta_serializer
+                                .tool_call_delta(index, tool_call)?;
                             emitted_public_chunk = true;
                             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                                 &completion,
@@ -627,12 +633,13 @@ pub(crate) fn streaming_chat_stream<'a>(
                         emitted_tool_calls = parsed_prefix.tool_calls.len();
                         emitted_len = emitted_len.max(tool_prefix_len);
                     }
+                    parsed_tool_prefix_len = tool_prefix_len;
                 }
                 if matches!(deferred, DeferredEmission::UnmarkedToolBuffer)
-                    && unmarked_tool_buffer_can_stream_text(&raw_text, tool_markup_policy)
+                    && unmarked_tool_buffer_can_stream_text(&raw_text, tool_markup_state)
                 {
                     let safe_len = safe_stream_emit_len(&raw_text, max_stop_len)
-                        .min(tool_markup_policy.safe_emit_len(&raw_text));
+                        .min(tool_markup_state.safe_emit_len(&raw_text));
                     if safe_len.saturating_sub(emitted_len)
                         >= UNMARKED_TOOL_BUFFER_FLUSH_THRESHOLD
                     {
@@ -665,7 +672,7 @@ pub(crate) fn streaming_chat_stream<'a>(
         if !stopped_by_sequence
             && emitted_len < visible_len
             && matches!(deferred, DeferredEmission::None)
-            && !tool_markup_policy.contains_start(&raw_text[..visible_len])
+            && !tool_markup_state.contains_start()
         {
             yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                 &completion,
@@ -762,7 +769,8 @@ pub(crate) fn streaming_chat_stream<'a>(
         if structured_tool_deltas_seen {
             if buffer_structured_tool_arguments {
                 for (index, tool_call) in parsed.tool_calls.iter().enumerate() {
-                    let delta = tool_call_arguments_delta(index, tool_call)?;
+                    let delta = tool_call_delta_serializer
+                        .tool_call_arguments_delta(index, tool_call)?;
                     yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                         &completion,
                         ChatCompletionDelta {
@@ -776,7 +784,8 @@ pub(crate) fn streaming_chat_stream<'a>(
             }
         } else {
             for (index, tool_call) in parsed.tool_calls.iter().enumerate().skip(emitted_tool_calls) {
-                let delta = tool_call_delta(index, tool_call)?;
+                let delta = tool_call_delta_serializer
+                    .tool_call_delta(index, tool_call)?;
                 yield ChatCompletionStreamEvent::Chunk(stream_seed_chunk(
                     &completion,
                     ChatCompletionDelta {

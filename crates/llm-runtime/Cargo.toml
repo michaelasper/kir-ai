@@ -31,3 +31,7 @@ uuid.workspace = true
 async-trait.workspace = true
 llm-backend = { path = "../llm-backend", features = ["test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "streaming_parsing"
+harness = false

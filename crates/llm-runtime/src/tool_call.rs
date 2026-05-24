@@ -137,37 +137,72 @@ fn structured_tool_delta_has_progress(delta: &ToolCallDelta) -> bool {
             .is_some_and(|function| function.name.is_some() || function.arguments.is_some())
 }
 
-pub(crate) fn tool_call_delta(
-    index: usize,
-    tool_call: &ToolCall,
-) -> Result<ToolCallDelta, RuntimeError> {
-    Ok(ToolCallDelta {
-        index: u32::try_from(index).map_err(|err| {
-            ApiError::invalid_request(format!("tool call index does not fit u32: {err}"))
-        })?,
-        id: Some(tool_call.id.clone()),
-        call_type: Some(tool_call.call_type.clone()),
-        function: Some(ToolCallFunctionDelta {
-            name: Some(tool_call.function.name.clone()),
-            arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
-        }),
-    })
+#[derive(Debug, Default)]
+pub(crate) struct ToolCallDeltaSerializer {
+    arguments: Vec<Option<String>>,
 }
 
-pub(crate) fn tool_call_arguments_delta(
-    index: usize,
-    tool_call: &ToolCall,
-) -> Result<ToolCallDelta, RuntimeError> {
-    Ok(ToolCallDelta {
-        index: u32::try_from(index).map_err(|err| {
-            ApiError::invalid_request(format!("tool call index does not fit u32: {err}"))
-        })?,
-        id: None,
-        call_type: None,
-        function: Some(ToolCallFunctionDelta {
-            name: None,
-            arguments: Some(serde_json::to_string(&tool_call.function.arguments)?),
-        }),
+impl ToolCallDeltaSerializer {
+    pub(crate) fn tool_call_delta(
+        &mut self,
+        index: usize,
+        tool_call: &ToolCall,
+    ) -> Result<ToolCallDelta, RuntimeError> {
+        Ok(ToolCallDelta {
+            index: api_tool_call_index(index)?,
+            id: Some(tool_call.id.clone()),
+            call_type: Some(tool_call.call_type.clone()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some(tool_call.function.name.clone()),
+                arguments: Some(self.serialized_arguments(index, &tool_call.function.arguments)?),
+            }),
+        })
+    }
+
+    pub(crate) fn tool_call_arguments_delta(
+        &mut self,
+        index: usize,
+        tool_call: &ToolCall,
+    ) -> Result<ToolCallDelta, RuntimeError> {
+        Ok(ToolCallDelta {
+            index: api_tool_call_index(index)?,
+            id: None,
+            call_type: None,
+            function: Some(ToolCallFunctionDelta {
+                name: None,
+                arguments: Some(self.serialized_arguments(index, &tool_call.function.arguments)?),
+            }),
+        })
+    }
+
+    fn serialized_arguments(
+        &mut self,
+        index: usize,
+        arguments: &serde_json::Value,
+    ) -> Result<String, RuntimeError> {
+        if self.arguments.len() <= index {
+            self.arguments.resize_with(index + 1, Option::default);
+        }
+        if let Some(serialized) = &self.arguments[index] {
+            return Ok(serialized.clone());
+        }
+        let serialized = serde_json::to_string(arguments)?;
+        self.arguments[index] = Some(serialized.clone());
+        Ok(serialized)
+    }
+
+    #[cfg(test)]
+    fn cached_argument_count(&self) -> usize {
+        self.arguments
+            .iter()
+            .filter(|arguments| arguments.is_some())
+            .count()
+    }
+}
+
+fn api_tool_call_index(index: usize) -> Result<u32, RuntimeError> {
+    u32::try_from(index).map_err(|err| {
+        ApiError::invalid_request(format!("tool call index does not fit u32: {err}")).into()
     })
 }
 
@@ -246,5 +281,41 @@ mod tests {
         assert_eq!(parsed.content, "");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].function.name, "read_file");
+    }
+
+    #[test]
+    fn tool_call_delta_serializer_reuses_arguments_for_replay_deltas() {
+        let tool_call = ToolCall {
+            id: "call_lookup".to_owned(),
+            call_type: ToolCallType::Function,
+            function: ToolCallFunction {
+                name: "lookup".to_owned(),
+                arguments: serde_json::json!({"query": "rust"}),
+            },
+        };
+        let mut serializer = ToolCallDeltaSerializer::default();
+
+        let full_delta = serializer
+            .tool_call_delta(0, &tool_call)
+            .expect("full delta serializes");
+        let arguments_delta = serializer
+            .tool_call_arguments_delta(0, &tool_call)
+            .expect("arguments delta serializes");
+
+        assert_eq!(
+            full_delta
+                .function
+                .as_ref()
+                .and_then(|function| function.arguments.as_deref()),
+            Some(r#"{"query":"rust"}"#)
+        );
+        assert_eq!(
+            arguments_delta
+                .function
+                .as_ref()
+                .and_then(|function| function.arguments.as_deref()),
+            Some(r#"{"query":"rust"}"#)
+        );
+        assert_eq!(serializer.cached_argument_count(), 1);
     }
 }
