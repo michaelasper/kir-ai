@@ -2202,9 +2202,13 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             }
             Self::Metal(metal) => {
                 if !Self::run_metal_math_in_place(
-                    "qwen_rms_norm",
+                    "rms_norm_one_centered",
                     format!("len={},weight_len={}", input.len(), weight.len()),
-                    || metal.device.qwen_rms_norm_f32(input, weight, eps, output),
+                    || {
+                        metal
+                            .device
+                            .rms_norm_one_centered_f32(input, weight, eps, output)
+                    },
                 )
                 .await?
                 {
@@ -2261,13 +2265,13 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             }
             Self::Metal(metal) => {
                 if let Some(output) = Self::run_metal_math(
-                    "qwen_rms_norm",
+                    "rms_norm_one_centered",
                     format!("len={},weight_len={}", input.len(), weight.len()),
                     || async {
                         let mut output = vec![0.0; input.len()];
                         metal
                             .device
-                            .qwen_rms_norm_f32(input, weight, eps, &mut output)
+                            .rms_norm_one_centered_f32(input, weight, eps, &mut output)
                             .await?;
                         Ok(output)
                     },

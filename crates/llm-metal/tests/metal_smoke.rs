@@ -19,7 +19,7 @@ async fn metal_vector_add_matches_cpu_reference() {
 }
 
 #[tokio::test]
-async fn metal_qwen_rms_norm_matches_cpu_reference() {
+async fn metal_rms_norm_one_centered_matches_cpu_reference() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
         eprintln!("no Metal device available; skipping smoke test");
@@ -28,9 +28,9 @@ async fn metal_qwen_rms_norm_matches_cpu_reference() {
 
     let mut output = vec![0.0; 2];
     device
-        .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut output)
+        .rms_norm_one_centered_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut output)
         .await
-        .expect("metal qwen rms norm succeeds");
+        .expect("metal one-centered rms norm succeeds");
 
     assert_close(&output, &[0.84852815, 2.2627418], 1e-6);
 }

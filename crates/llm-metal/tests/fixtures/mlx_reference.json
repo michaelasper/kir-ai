@@ -13,7 +13,7 @@
       ],
       "mlx_median_us": 206.479
     },
-    "qwen_rms_norm_f32": {
+    "rms_norm_one_centered_f32": {
       "output": [
         0.8485281467437744,
         2.262741804122925

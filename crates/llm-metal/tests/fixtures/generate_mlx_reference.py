@@ -23,7 +23,7 @@ import mlx.core as mx
 def main() -> None:
     cases = {
         "vector_add_f32": output_case(vector_add_f32),
-        "qwen_rms_norm_f32": output_case(qwen_rms_norm_f32),
+        "rms_norm_one_centered_f32": output_case(rms_norm_one_centered_f32),
         "softmax_f32": output_case(softmax_f32),
         "linear_attention_conv1d_silu_f32": output_case(
             linear_attention_conv1d_silu_f32
@@ -112,7 +112,7 @@ def vector_add_f32() -> mx.array:
     return left + right
 
 
-def qwen_rms_norm_f32() -> mx.array:
+def rms_norm_one_centered_f32() -> mx.array:
     values = mx.array([3.0, 4.0], dtype=mx.float32)
     weight = mx.array([0.0, 1.0], dtype=mx.float32)
     mean_square = mx.mean(mx.square(values))

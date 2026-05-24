@@ -41,19 +41,19 @@ async fn metal_kernels_match_mlx_reference_trace() {
 
     let mut rms = vec![0.0; 2];
     device
-        .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut rms)
+        .rms_norm_one_centered_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut rms)
         .await
-        .expect("metal qwen rms norm succeeds");
-    assert_close(&rms, &fixture.cases.qwen_rms_norm_f32.output, 1e-6);
+        .expect("metal one-centered rms norm succeeds");
+    assert_close(&rms, &fixture.cases.rms_norm_one_centered_f32.output, 1e-6);
     assert_latency_delta(
-        "qwen_rms_norm_f32",
-        fixture.cases.qwen_rms_norm_f32.mlx_median_us,
+        "rms_norm_one_centered_f32",
+        fixture.cases.rms_norm_one_centered_f32.mlx_median_us,
         || async {
             let mut output = vec![0.0; 2];
             device
-                .qwen_rms_norm_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut output)
+                .rms_norm_one_centered_f32(&[3.0, 4.0], &[0.0, 1.0], 0.0, &mut output)
                 .await
-                .expect("metal qwen rms norm succeeds")
+                .expect("metal one-centered rms norm succeeds")
         },
     )
     .await;
@@ -340,7 +340,7 @@ struct MlxReferenceFixture {
 #[derive(Debug, Deserialize)]
 struct MlxReferenceCases {
     vector_add_f32: OutputCase,
-    qwen_rms_norm_f32: OutputCase,
+    rms_norm_one_centered_f32: OutputCase,
     softmax_f32: OutputCase,
     linear_attention_conv1d_silu_f32: OutputCase,
     matvec_f32: OutputCase,
@@ -357,7 +357,10 @@ impl MlxReferenceCases {
     fn assert_latency_traces_present(&self) {
         for (name, latency) in [
             ("vector_add_f32", self.vector_add_f32.mlx_median_us),
-            ("qwen_rms_norm_f32", self.qwen_rms_norm_f32.mlx_median_us),
+            (
+                "rms_norm_one_centered_f32",
+                self.rms_norm_one_centered_f32.mlx_median_us,
+            ),
             ("softmax_f32", self.softmax_f32.mlx_median_us),
             (
                 "linear_attention_conv1d_silu_f32",

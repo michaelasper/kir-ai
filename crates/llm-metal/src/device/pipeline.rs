@@ -28,7 +28,7 @@ impl MetalDevice {
             .map_err(MetalError::Compile)?;
         let command_queue = Arc::new(device.new_command_queue());
         let vector_add = Self::kernel(&device, &library, &command_queue, "vector_add")?;
-        let qwen_rms_norm = Self::kernel(&device, &library, &command_queue, "qwen_rms_norm")?;
+        let rms_norm_f32_kernel = Self::kernel(&device, &library, &command_queue, "rms_norm_f32")?;
         let softmax_f32 = Self::kernel(&device, &library, &command_queue, "softmax_f32")?;
         let attention_scores_f32 =
             Self::kernel(&device, &library, &command_queue, "attention_scores_f32")?;
@@ -83,7 +83,7 @@ impl MetalDevice {
                 super::buffers::MetalBufferPool::default(),
             )),
             vector_add,
-            qwen_rms_norm,
+            rms_norm_f32_kernel,
             softmax_f32,
             attention_scores_f32,
             attention_scores_f16,
@@ -136,7 +136,7 @@ mod tests {
         };
 
         let queue = &device.vector_add.queue;
-        assert!(Arc::ptr_eq(queue, &device.qwen_rms_norm.queue));
+        assert!(Arc::ptr_eq(queue, &device.rms_norm_f32_kernel.queue));
         assert!(Arc::ptr_eq(queue, &device.softmax_f32.queue));
         assert!(Arc::ptr_eq(queue, &device.attention_scores_f32.queue));
         assert!(Arc::ptr_eq(queue, &device.attention_scores_f16.queue));

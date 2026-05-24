@@ -15,7 +15,7 @@ impl MetalDevice {
             .await
     }
 
-    pub async fn qwen_rms_norm_f32(
+    pub async fn rms_norm_one_centered_f32(
         &self,
         input: &[f32],
         weight: &[f32],
@@ -63,7 +63,7 @@ impl MetalDevice {
             MetalError::InvalidShape(format!("input length does not fit u32: {err}"))
         })?;
         let max_threads = self
-            .qwen_rms_norm
+            .rms_norm_f32_kernel
             .pipeline
             .max_total_threads_per_threadgroup()
             .max(1);
@@ -88,9 +88,9 @@ impl MetalDevice {
             .device
             .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
 
-        let command_buffer = self.qwen_rms_norm.queue.new_command_buffer();
+        let command_buffer = self.rms_norm_f32_kernel.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.qwen_rms_norm.pipeline);
+        encoder.set_compute_pipeline_state(&self.rms_norm_f32_kernel.pipeline);
         encoder.set_buffer(0, Some(&input_buffer), 0);
         encoder.set_buffer(1, Some(&weight_buffer), 0);
         encoder.set_bytes(
@@ -127,7 +127,7 @@ impl MetalDevice {
         };
         encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "qwen_rms_norm").await?;
+        finish_command_buffer_async(&self.synchronization, command_buffer, "rms_norm_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input slice.
@@ -567,21 +567,27 @@ mod tests {
     use super::super::power_of_two_at_most;
     use super::super::shaders::METAL_SOURCE;
 
-    fn qwen_rms_norm_shader_source() -> &'static str {
+    fn rms_norm_shader_source() -> &'static str {
         let start = METAL_SOURCE
-            .find("kernel void qwen_rms_norm")
-            .expect("qwen rms norm shader exists");
+            .find("kernel void rms_norm_f32")
+            .expect("rms norm shader exists");
         let rest = &METAL_SOURCE[start..];
-        let next_kernel = rest["kernel void qwen_rms_norm".len()..]
+        let next_kernel = rest["kernel void rms_norm_f32".len()..]
             .find("kernel void ")
-            .map(|offset| "kernel void qwen_rms_norm".len() + offset)
+            .map(|offset| "kernel void rms_norm_f32".len() + offset)
             .unwrap_or(rest.len());
         &rest[..next_kernel]
     }
 
     #[test]
-    fn qwen_rms_norm_shader_uses_threadgroup_reduction_instead_of_per_output_full_scan() {
-        let shader = qwen_rms_norm_shader_source();
+    fn rms_norm_shader_uses_family_agnostic_kernel_name() {
+        assert!(METAL_SOURCE.contains("kernel void rms_norm_f32"));
+        assert!(!METAL_SOURCE.contains("kernel void qwen_rms_norm"));
+    }
+
+    #[test]
+    fn rms_norm_shader_uses_threadgroup_reduction_instead_of_per_output_full_scan() {
+        let shader = rms_norm_shader_source();
 
         assert!(
             shader.contains("threadgroup float"),

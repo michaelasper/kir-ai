@@ -7,9 +7,9 @@ mod error;
 mod matvec;
 mod pipeline;
 mod primitives;
-mod qwen;
 mod reductions;
 mod shaders;
+mod transformer;
 
 pub use buffers::{Bf16MatrixBuffer, F16Buffer, F32Buffer};
 pub use error::MetalError;
@@ -42,7 +42,7 @@ pub struct MetalDevice {
     pub(crate) synchronization: Arc<MetalSynchronization>,
     pub(crate) scratch_buffers: Arc<Mutex<MetalBufferPool>>,
     pub(crate) vector_add: Arc<MetalKernel>,
-    pub(crate) qwen_rms_norm: Arc<MetalKernel>,
+    pub(crate) rms_norm_f32_kernel: Arc<MetalKernel>,
     pub(crate) softmax_f32: Arc<MetalKernel>,
     pub(crate) attention_scores_f32: Arc<MetalKernel>,
     pub(crate) attention_scores_f16: Arc<MetalKernel>,

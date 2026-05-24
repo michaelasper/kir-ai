@@ -1,4 +1,4 @@
-kernel void qwen_rms_norm(
+kernel void rms_norm_f32(
     device const float* input [[buffer(0)]],
     device const float* weight [[buffer(1)]],
     constant uint& len [[buffer(2)]],
