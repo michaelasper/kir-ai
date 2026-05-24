@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -128,6 +128,11 @@ struct ModelSchedulerState {
     failed: u64,
     queued_cancelled: u64,
     queue_timeouts: u64,
+    prefill_yields: u64,
+    prefill_yields_to_decode: u64,
+    prefill_yield_reacquire_waits: u64,
+    prefill_yield_reacquire_wait_nanos_total: u64,
+    prefill_yield_reacquire_wait_nanos_max: u64,
 }
 
 impl ModelSchedulerState {
@@ -175,6 +180,10 @@ impl ModelSchedulerState {
             GenerationPhase::Prefill => self.active_prefill = self.active_prefill.saturating_sub(1),
             GenerationPhase::Decode => self.active_decode = self.active_decode.saturating_sub(1),
         }
+        self.finish_inactive(outcome);
+    }
+
+    fn finish_inactive(&mut self, outcome: SchedulerOutcome) {
         match outcome {
             SchedulerOutcome::Completed => self.completed += 1,
             SchedulerOutcome::Cancelled => self.cancelled += 1,
@@ -185,6 +194,24 @@ impl ModelSchedulerState {
     fn transition_to_decode(&mut self) {
         self.active_prefill = self.active_prefill.saturating_sub(1);
         self.active_decode += 1;
+    }
+
+    fn release_prefill_for_yield(&mut self) {
+        self.active_prefill = self.active_prefill.saturating_sub(1);
+        self.prefill_yields += 1;
+        if !self.queued_decode.is_empty() {
+            self.prefill_yields_to_decode += 1;
+        }
+    }
+
+    fn record_prefill_yield_reacquire_wait(&mut self, wait: Duration) {
+        let wait_nanos = duration_nanos_u64(wait);
+        self.prefill_yield_reacquire_waits = self.prefill_yield_reacquire_waits.saturating_add(1);
+        self.prefill_yield_reacquire_wait_nanos_total = self
+            .prefill_yield_reacquire_wait_nanos_total
+            .saturating_add(wait_nanos);
+        self.prefill_yield_reacquire_wait_nanos_max =
+            self.prefill_yield_reacquire_wait_nanos_max.max(wait_nanos);
     }
 
     fn next_admissible_class(&self, prefill_burst: usize) -> Option<SchedulerClass> {
@@ -222,11 +249,13 @@ pub(super) struct SchedulerPermit {
     scheduler: Arc<ModelScheduler>,
     phase: GenerationPhase,
     outcome: SchedulerOutcome,
+    active: bool,
+    terminal_on_drop: bool,
 }
 
 impl SchedulerPermit {
     pub(super) fn transition_to_decode(&mut self) {
-        if self.phase == GenerationPhase::Decode {
+        if self.phase == GenerationPhase::Decode || !self.active {
             return;
         }
         self.scheduler
@@ -234,6 +263,56 @@ impl SchedulerPermit {
             .lock_or_panic("scheduler")
             .transition_to_decode();
         self.phase = GenerationPhase::Decode;
+    }
+
+    pub(super) async fn yield_prefill_chunk(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), SchedulerAcquireError> {
+        if self.phase == GenerationPhase::Decode || !self.active {
+            return Ok(());
+        }
+        if cancellation.is_cancelled() {
+            self.mark_cancelled();
+            return Err(SchedulerAcquireError::Cancelled);
+        }
+        let scheduler = Arc::clone(&self.scheduler);
+        {
+            let mut state = scheduler.state.lock_or_panic("scheduler");
+            state.release_prefill_for_yield();
+        }
+        self.active = false;
+        self.terminal_on_drop = false;
+        scheduler.notify.notify_waiters();
+
+        let wait_started = Instant::now();
+        let permit = match scheduler
+            .clone()
+            .acquire(
+                SchedulerClass::Prefill,
+                GenerationPhase::Prefill,
+                cancellation,
+            )
+            .await
+        {
+            Ok(permit) => permit,
+            Err(err) => {
+                self.outcome = match err {
+                    SchedulerAcquireError::Cancelled => SchedulerOutcome::Cancelled,
+                    SchedulerAcquireError::QueueFull | SchedulerAcquireError::QueueTimedOut => {
+                        SchedulerOutcome::Failed
+                    }
+                };
+                self.terminal_on_drop = true;
+                return Err(err);
+            }
+        };
+        scheduler
+            .state
+            .lock_or_panic("scheduler")
+            .record_prefill_yield_reacquire_wait(wait_started.elapsed());
+        *self = permit;
+        Ok(())
     }
 
     pub(super) fn mark_failed(&mut self) {
@@ -247,10 +326,16 @@ impl SchedulerPermit {
 
 impl Drop for SchedulerPermit {
     fn drop(&mut self) {
-        self.scheduler
-            .state
-            .lock_or_panic("scheduler")
-            .finish_active(self.phase, self.outcome);
+        if !self.terminal_on_drop {
+            return;
+        }
+        let mut state = self.scheduler.state.lock_or_panic("scheduler");
+        if self.active {
+            state.finish_active(self.phase, self.outcome);
+        } else {
+            state.finish_inactive(self.outcome);
+        }
+        drop(state);
         self.scheduler.notify.notify_waiters();
     }
 }
@@ -307,6 +392,11 @@ pub(super) struct ModelSchedulerSnapshot {
     pub(super) failed: u64,
     pub(super) queued_cancelled: u64,
     pub(super) queue_timeouts: u64,
+    pub(super) prefill_yields: u64,
+    pub(super) prefill_yields_to_decode: u64,
+    pub(super) prefill_yield_reacquire_waits: u64,
+    pub(super) prefill_yield_reacquire_wait_nanos_total: u64,
+    pub(super) prefill_yield_reacquire_wait_nanos_max: u64,
 }
 
 impl ModelSchedulerSnapshot {
@@ -423,6 +513,8 @@ impl ModelScheduler {
             scheduler: Arc::clone(self),
             phase: initial_phase,
             outcome: SchedulerOutcome::Completed,
+            active: true,
+            terminal_on_drop: true,
         })
     }
 
@@ -470,6 +562,8 @@ impl ModelScheduler {
             scheduler: Arc::clone(self),
             phase: initial_phase,
             outcome: SchedulerOutcome::Completed,
+            active: true,
+            terminal_on_drop: true,
         })
     }
 
@@ -487,8 +581,18 @@ impl ModelScheduler {
             failed: state.failed,
             queued_cancelled: state.queued_cancelled,
             queue_timeouts: state.queue_timeouts,
+            prefill_yields: state.prefill_yields,
+            prefill_yields_to_decode: state.prefill_yields_to_decode,
+            prefill_yield_reacquire_waits: state.prefill_yield_reacquire_waits,
+            prefill_yield_reacquire_wait_nanos_total: state
+                .prefill_yield_reacquire_wait_nanos_total,
+            prefill_yield_reacquire_wait_nanos_max: state.prefill_yield_reacquire_wait_nanos_max,
         }
     }
+}
+
+fn duration_nanos_u64(duration: Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 fn estimated_chat_tokens(request: &ChatCompletionRequest) -> usize {
@@ -685,6 +789,72 @@ mod tests {
         let snapshot = scheduler.snapshot();
         assert_eq!(snapshot.active_decode, 0);
         assert_eq!(snapshot.cancelled, 1);
+    }
+
+    #[tokio::test]
+    async fn prefill_yield_reacquires_after_queued_decode() {
+        let scheduler = Arc::new(ModelScheduler::new(ModelSchedulerOptions {
+            queue_limit: 2,
+            ..test_options()
+        }));
+        let prefill_cancellation = CancellationToken::new();
+        let decode_cancellation = CancellationToken::new();
+        let mut prefill = scheduler
+            .clone()
+            .acquire(
+                SchedulerClass::Prefill,
+                GenerationPhase::Prefill,
+                &prefill_cancellation,
+            )
+            .await
+            .expect("initial prefill is admitted");
+        let decode_scheduler = Arc::clone(&scheduler);
+        let decode = tokio::spawn(async move {
+            decode_scheduler
+                .clone()
+                .acquire(
+                    SchedulerClass::Decode,
+                    GenerationPhase::Decode,
+                    &decode_cancellation,
+                )
+                .await
+                .expect("queued decode is admitted")
+        });
+
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while scheduler.snapshot().queued_decode != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("decode queues behind active prefill");
+
+        let mut yield_prefill = Box::pin(prefill.yield_prefill_chunk(&prefill_cancellation));
+        let decode_permit = tokio::select! {
+            result = decode => result.expect("decode task completes"),
+            result = &mut yield_prefill => {
+                result.expect("prefill yield should wait for queued decode first");
+                panic!("prefill reacquired before queued decode");
+            }
+        };
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.active_prefill, 0);
+        assert_eq!(snapshot.active_decode, 1);
+        assert_eq!(snapshot.queued_prefill, 1);
+        assert_eq!(snapshot.prefill_yields, 1);
+        assert_eq!(snapshot.prefill_yields_to_decode, 1);
+
+        drop(decode_permit);
+        yield_prefill
+            .await
+            .expect("prefill reacquires after decode finishes");
+
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.active_prefill, 1);
+        assert_eq!(snapshot.active_decode, 0);
+        assert_eq!(snapshot.admitted_prefill, 2);
+        assert_eq!(snapshot.admitted_decode, 1);
+        assert_eq!(snapshot.prefill_yield_reacquire_waits, 1);
     }
 
     #[test]

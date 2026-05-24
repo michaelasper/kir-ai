@@ -425,6 +425,15 @@ async fn admin_metrics_response(state: &AppState) -> Result<AdminMetricsResponse
         scheduler_failed_requests: scheduler.failed,
         scheduler_queued_cancelled_requests: scheduler.queued_cancelled,
         scheduler_queue_timeouts: scheduler.queue_timeouts,
+        scheduler_prefill_yields: scheduler.prefill_yields,
+        scheduler_prefill_yields_to_decode: scheduler.prefill_yields_to_decode,
+        scheduler_prefill_yield_reacquire_waits: scheduler.prefill_yield_reacquire_waits,
+        scheduler_prefill_yield_reacquire_wait_ms_total: nanos_to_millis(
+            scheduler.prefill_yield_reacquire_wait_nanos_total,
+        ),
+        scheduler_prefill_yield_reacquire_wait_ms_max: nanos_to_millis(
+            scheduler.prefill_yield_reacquire_wait_nanos_max,
+        ),
         cancelled_requests: metrics.cancelled_requests(),
         no_progress_failures: metrics.no_progress_failures(),
         model_pull_operations: metrics.model_pull_operations(),
@@ -602,6 +611,11 @@ pub(super) struct AdminMetricsResponse {
     scheduler_failed_requests: u64,
     scheduler_queued_cancelled_requests: u64,
     scheduler_queue_timeouts: u64,
+    scheduler_prefill_yields: u64,
+    scheduler_prefill_yields_to_decode: u64,
+    scheduler_prefill_yield_reacquire_waits: u64,
+    scheduler_prefill_yield_reacquire_wait_ms_total: f64,
+    scheduler_prefill_yield_reacquire_wait_ms_max: f64,
     cancelled_requests: u64,
     no_progress_failures: u64,
     model_pull_operations: u64,
@@ -656,6 +670,10 @@ impl LatencySummary {
             avg: metrics.avg_ms(),
         }
     }
+}
+
+fn nanos_to_millis(nanos: u64) -> f64 {
+    nanos as f64 / 1_000_000.0
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

@@ -1,5 +1,5 @@
 use super::error::runtime_error_metadata;
-use super::scheduler::SchedulerPermit;
+use super::scheduler::{SchedulerAcquireError, SchedulerPermit};
 use super::{
     AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
@@ -122,7 +122,16 @@ where
                             }
                             return;
                         }
+                        let yield_prefill = should_yield_prefill_progress(&progress);
                         yield sse_json_event(progress);
+                        if yield_prefill
+                            && let Err(events) = lifecycle.yield_prefill_chunk().await
+                        {
+                            for event in events {
+                                yield event;
+                            }
+                            return;
+                        }
                     }
                     EngineStreamStep::InternalProgress { bytes } => {
                         if lifecycle.active_request.cancellation.is_cancelled() {
@@ -284,6 +293,22 @@ fn stream_ended_without_completion_events() -> Vec<Result<Event, Infallible>> {
     ))
 }
 
+fn scheduler_overloaded_stream_events(message: &'static str) -> Vec<Result<Event, Infallible>> {
+    engine_error_stream_events(EngineErrorBody::new(
+        message,
+        "model_overloaded",
+        "scheduler",
+        true,
+    ))
+}
+
+fn should_yield_prefill_progress(progress: &BackendStreamProgress) -> bool {
+    matches!(
+        progress,
+        BackendStreamProgress::PrefillProgress { chunk, total, .. } if chunk < total
+    )
+}
+
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     let data = serde_json::to_string(&value).unwrap_or_else(|err| {
         tracing::error!(error = %err, "failed to serialize SSE event");
@@ -355,6 +380,26 @@ impl StreamRunLifecycle {
     fn transition_to_decode(&mut self) {
         self.phase.transition_to_decode();
         self.scheduler_slot.transition_to_decode();
+    }
+
+    async fn yield_prefill_chunk(&mut self) -> Result<(), Vec<Result<Event, Infallible>>> {
+        match self
+            .scheduler_slot
+            .yield_prefill_chunk(&self.active_request.cancellation)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(SchedulerAcquireError::Cancelled) => Err(self.finish_cancellation(
+                "request was cancelled while waiting for prefill scheduler readmission",
+                "prefill",
+            )),
+            Err(SchedulerAcquireError::QueueFull) => Err(self.finish_scheduler_overload(
+                "model scheduler queue is full; retry the request later",
+            )),
+            Err(SchedulerAcquireError::QueueTimedOut) => Err(self.finish_scheduler_overload(
+                "model scheduler queue timed out; retry the request later",
+            )),
+        }
     }
 
     fn finish_success(
@@ -500,6 +545,29 @@ impl StreamRunLifecycle {
                 record_failure_metrics(&self.state);
                 runtime_error_stream_events(RuntimeError::backend_failed(
                     "request lifecycle was missing before stream completion",
+                ))
+            }
+        }
+    }
+
+    fn finish_scheduler_overload(
+        &mut self,
+        message: &'static str,
+    ) -> Vec<Result<Event, Infallible>> {
+        self.terminal = Some(StreamTerminalOutcome::RuntimeError);
+        self.active_request.cancellation.cancel();
+        match self.active_request.mark_finished() {
+            super::requests::RequestFinishResult::Finished
+            | super::requests::RequestFinishResult::Cancelled => {
+                self.scheduler_slot.mark_failed();
+                record_failure_metrics(&self.state);
+                scheduler_overloaded_stream_events(message)
+            }
+            super::requests::RequestFinishResult::Missing => {
+                self.scheduler_slot.mark_failed();
+                record_failure_metrics(&self.state);
+                runtime_error_stream_events(RuntimeError::backend_failed(
+                    "request lifecycle was missing before scheduler readmission failure",
                 ))
             }
         }

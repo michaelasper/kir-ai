@@ -550,6 +550,98 @@ async fn chat_stream_emits_prefill_progress_sse_events() {
 }
 
 #[tokio::test]
+async fn chat_stream_prefill_progress_yields_scheduler_slot_to_decode_request() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let app = build_router_with_unauthenticated_admin_and_options(
+        Box::new(InterleavedPrefillStreamBackend {
+            order: Arc::clone(&order),
+        }),
+        EngineOptions {
+            concurrency_limit: 1,
+            scheduler_queue_limit: 2,
+            scheduler_prefill_threshold_chars: 16,
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": llm_engine::DEFAULT_MODEL_ID,
+                        "messages": [{"role": "user", "content": "long-prefill xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}],
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("long stream response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut head = String::new();
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !head.contains("\"type\":\"prefill_progress\"") {
+            let chunk = body
+                .next()
+                .await
+                .expect("long stream has prefill chunk")
+                .expect("long stream chunk");
+            head.push_str(std::str::from_utf8(&chunk).expect("utf8 long stream head"));
+        }
+    })
+    .await
+    .expect("prefill progress arrives");
+
+    let short = tokio::spawn(app.clone().oneshot(chat_request_body("short-decode")));
+    let long_tail = tokio::spawn(async move {
+        let mut tail = String::new();
+        while let Some(chunk) = body.next().await {
+            tail.push_str(std::str::from_utf8(&chunk.expect("tail chunk")).expect("utf8 tail"));
+        }
+        tail
+    });
+
+    let short_response = tokio::time::timeout(Duration::from_millis(500), short)
+        .await
+        .expect("short decode completes while long prefill is yielded")
+        .expect("short task")
+        .expect("short response");
+    assert_eq!(short_response.status(), StatusCode::OK);
+    let short_body = body_text(short_response.into_body()).await;
+    assert!(short_body.contains("short-decode"), "body: {short_body}");
+
+    let tail = tokio::time::timeout(Duration::from_millis(500), long_tail)
+        .await
+        .expect("long stream resumes after short decode")
+        .expect("long tail task");
+    assert!(
+        tail.contains("\"content\":\"long-finished\""),
+        "tail: {tail}"
+    );
+
+    assert_eq!(
+        order.lock().expect("order lock is not poisoned").as_slice(),
+        ["long-prefill-start", "short-decode", "long-prefill-resume"]
+    );
+    let metrics = wait_for_metrics(&app, |body| {
+        body["scheduler_prefill_yields"] == 1
+            && body["scheduler_prefill_yields_to_decode"] == 1
+            && body["scheduler_completed_requests"] == 2
+    })
+    .await;
+    assert_eq!(metrics["scheduler_failed_requests"], 0);
+    assert_eq!(metrics["scheduler_cancelled_requests"], 0);
+}
+
+#[tokio::test]
 async fn chat_stream_with_tools_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
@@ -1011,6 +1103,101 @@ impl ModelBackend for PrefillProgressStreamBackend {
                 text: "done".to_owned(),
                 tool_call_deltas: Vec::new(),
                 prompt_tokens: 5,
+                prompt_cached_tokens: Some(0),
+                completion_tokens: 1,
+                finish_reason: Some(BackendFinishReason::Stop),
+                progress: None,
+            };
+        }
+        .boxed()
+    }
+}
+
+struct InterleavedPrefillStreamBackend {
+    order: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl ModelBackend for InterleavedPrefillStreamBackend {
+    fn model_id(&self) -> &str {
+        llm_engine::DEFAULT_MODEL_ID
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        qwen_test_metadata(self.model_id(), "interleaved-prefill-stream")
+    }
+
+    async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        if !request.prompt().contains("short-decode") {
+            return Err(BackendError::other(
+                "interleaved prefill test only uses non-streaming generate for short decode"
+                    .to_owned(),
+            ));
+        }
+        self.order
+            .lock()
+            .expect("order lock is not poisoned")
+            .push("short-decode".to_owned());
+        Ok(BackendOutput {
+            text: "short-decode".to_owned(),
+            prompt_tokens: 1,
+            prompt_cached_tokens: None,
+            completion_tokens: 1,
+            finish_reason: BackendFinishReason::Stop,
+        })
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        let order = Arc::clone(&self.order);
+        let prompt = request.prompt().to_owned();
+        async_stream::try_stream! {
+            if !prompt.contains("long-prefill") {
+                Err(BackendError::other(
+                    "interleaved prefill test only uses streaming generate for long prefill"
+                        .to_owned(),
+                ))?;
+            }
+            order
+                .lock()
+                .expect("order lock is not poisoned")
+                .push("long-prefill-start".to_owned());
+            yield BackendStreamChunk {
+                text: String::new(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 4,
+                prompt_cached_tokens: Some(0),
+                completion_tokens: 0,
+                finish_reason: None,
+                progress: Some(BackendStreamProgress::PrefillProgress {
+                    chunk: 1,
+                    total: 2,
+                    tokens: 2,
+                    total_tokens: 4,
+                }),
+            };
+            order
+                .lock()
+                .expect("order lock is not poisoned")
+                .push("long-prefill-resume".to_owned());
+            yield BackendStreamChunk {
+                text: "long-finished".to_owned(),
+                tool_call_deltas: Vec::new(),
+                prompt_tokens: 4,
                 prompt_cached_tokens: Some(0),
                 completion_tokens: 1,
                 finish_reason: Some(BackendFinishReason::Stop),

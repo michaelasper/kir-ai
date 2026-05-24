@@ -686,7 +686,10 @@ mod tests {
         encoded_prompt: std::sync::Arc<[u32]>,
         next_token_delay: Option<Duration>,
         fail_prefill: bool,
+        fail_after_prefill_chunk: Option<usize>,
         cancel_on_prefill: Option<CancellationToken>,
+        cancel_after_prefill_chunk: Option<(CancellationToken, usize)>,
+        prefill_chunk_calls: Arc<AtomicUsize>,
     }
 
     impl TestAdapter {
@@ -708,7 +711,10 @@ mod tests {
                 encoded_prompt: std::sync::Arc::from([42_u32]),
                 next_token_delay: None,
                 fail_prefill: false,
+                fail_after_prefill_chunk: None,
                 cancel_on_prefill: None,
+                cancel_after_prefill_chunk: None,
+                prefill_chunk_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -722,8 +728,22 @@ mod tests {
             self
         }
 
+        fn with_prefill_failure_after_chunk(mut self, chunk: usize) -> Self {
+            self.fail_after_prefill_chunk = Some(chunk);
+            self
+        }
+
         fn with_prefill_cancellation(mut self, cancellation: CancellationToken) -> Self {
             self.cancel_on_prefill = Some(cancellation);
+            self
+        }
+
+        fn with_prefill_cancellation_after_chunk(
+            mut self,
+            cancellation: CancellationToken,
+            chunk: usize,
+        ) -> Self {
+            self.cancel_after_prefill_chunk = Some((cancellation, chunk));
             self
         }
 
@@ -913,10 +933,21 @@ mod tests {
             _caches: &mut [Self::LayerCache],
             _scratch: &mut InferenceScratchpad,
         ) -> Result<Vec<Vec<f32>>, BackendError> {
+            let chunk_call = self.prefill_chunk_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(cancellation) = &self.cancel_on_prefill {
                 cancellation.cancel();
             }
+            if let Some((cancellation, chunk)) = &self.cancel_after_prefill_chunk
+                && chunk_call == *chunk
+            {
+                cancellation.cancel();
+            }
             if self.fail_prefill {
+                return Err(BackendError::other("test prefill failed".to_owned()));
+            }
+            if let Some(chunk) = self.fail_after_prefill_chunk
+                && chunk_call == chunk
+            {
                 return Err(BackendError::other("test prefill failed".to_owned()));
             }
             Ok(token_ids.iter().map(|_| vec![0.0]).collect())
@@ -1225,6 +1256,66 @@ mod tests {
         );
 
         (namespace, byte_len)
+    }
+
+    fn driver_prefix_namespace(
+        adapter: &TestAdapter,
+        request: &BackendRequest,
+        prompt_tokens: usize,
+        max_new_tokens: u32,
+    ) -> NativeTextPrefixCacheNamespace {
+        let cache_tokens = native_text_cache_token_capacity(
+            prompt_tokens,
+            max_new_tokens,
+            adapter.max_prefill_tokens(),
+            adapter.max_position_embeddings(),
+            adapter.family_display_name(),
+        )
+        .expect("test cache token capacity is valid");
+        let namespace_cache_tokens = native_text_cache_namespace_token_bucket(
+            cache_tokens,
+            adapter.max_position_embeddings(),
+            adapter.family_display_name(),
+        )
+        .expect("test namespace cache token bucket is valid");
+        adapter.prefix_cache_namespace(request, namespace_cache_tokens)
+    }
+
+    fn assert_prefix_cache_entry(
+        cache: &NativeTextPrefixCache<TestCache>,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+    ) {
+        let inner = cache
+            .inner
+            .lock()
+            .expect("prefix cache lock is not poisoned");
+        let bucket = inner
+            .entries
+            .get(namespace)
+            .expect("prefix namespace remains resident");
+        assert!(
+            bucket.contains_key(&tokens.to_vec()),
+            "expected checkpoint for tokens {tokens:?}"
+        );
+    }
+
+    fn assert_no_prefix_cache_entry(
+        cache: &NativeTextPrefixCache<TestCache>,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+    ) {
+        let inner = cache
+            .inner
+            .lock()
+            .expect("prefix cache lock is not poisoned");
+        assert!(
+            inner
+                .entries
+                .get(namespace)
+                .is_none_or(|bucket| !bucket.contains_key(&tokens.to_vec())),
+            "did not expect checkpoint for tokens {tokens:?}"
+        );
     }
 
     fn assert_only_prefix_cache_entry(
@@ -1974,6 +2065,68 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn driver_reuses_mid_prefill_checkpoint_after_cancellation() {
+        let request = driver_test_request(1);
+        let cancellation = CancellationToken::new();
+        let adapter = TestAdapter::new([1_usize])
+            .with_encoded_prompt([10_u32, 11, 12, 13, 14])
+            .with_prefill_cancellation_after_chunk(cancellation.clone(), 2);
+        let prefix_cache = Arc::clone(&adapter.prefix_cache);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let namespace = driver_prefix_namespace(&adapter, &request, 5, 1);
+        let driver = driver_for_test(adapter).with_max_prefill_tokens(2);
+
+        let err = driver
+            .generate_blocking(request.clone(), cancellation)
+            .expect_err("prefill cancellation is returned");
+        assert!(err.is_cancelled());
+        assert_prefix_cache_entry(&prefix_cache, &namespace, &[10, 11]);
+        assert_prefix_cache_entry(&prefix_cache, &namespace, &[10, 11, 12, 13]);
+        assert_no_prefix_cache_entry(&prefix_cache, &namespace, &[10, 11, 12, 13, 14]);
+
+        let warm = driver
+            .generate_blocking(request, CancellationToken::new())
+            .expect("warm generation reuses checkpoint and completes suffix");
+
+        assert_eq!(warm.prompt_cached_tokens, Some(4));
+        assert_eq!(warm.text, "<1>");
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["checkpoint_stores"], 2);
+        assert_eq!(snapshot["checkpoint_store_tokens"], 6);
+        assert_eq!(snapshot["checkpoint_reuse_hits"], 1);
+        assert_eq!(snapshot["checkpoint_reused_tokens"], 4);
+    }
+
+    #[test]
+    fn driver_does_not_checkpoint_failed_prefill_chunk() {
+        let request = driver_test_request(1);
+        let adapter = TestAdapter::new([1_usize])
+            .with_encoded_prompt([30_u32, 31, 32, 33, 34])
+            .with_prefill_failure_after_chunk(2);
+        let prefix_cache = Arc::clone(&adapter.prefix_cache);
+        let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+        let namespace = driver_prefix_namespace(&adapter, &request, 5, 1);
+        let driver = driver_for_test(adapter).with_max_prefill_tokens(2);
+
+        let err = driver
+            .generate_blocking(request.clone(), CancellationToken::new())
+            .expect_err("prefill failure is returned");
+        assert!(err.to_string().contains("test prefill failed"));
+        assert_prefix_cache_entry(&prefix_cache, &namespace, &[30, 31]);
+        assert_no_prefix_cache_entry(&prefix_cache, &namespace, &[30, 31, 32, 33]);
+        assert_no_prefix_cache_entry(&prefix_cache, &namespace, &[30, 31, 32, 33, 34]);
+
+        let warm = driver
+            .generate_blocking(request, CancellationToken::new())
+            .expect("warm generation reuses only the successful checkpoint");
+
+        assert_eq!(warm.prompt_cached_tokens, Some(2));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["checkpoint_reuse_hits"], 1);
+        assert_eq!(snapshot["checkpoint_reused_tokens"], 2);
     }
 
     #[test]
