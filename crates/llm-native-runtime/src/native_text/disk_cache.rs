@@ -26,7 +26,9 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 const NATIVE_TEXT_DISK_CACHE_CODEC: &str = "kir-ai-native-text-prefix-block";
-const NATIVE_TEXT_DISK_CACHE_LAYOUT_VERSION: u32 = 1;
+const NATIVE_TEXT_DISK_CACHE_LAYOUT_VERSION: u32 = 2;
+const NATIVE_TEXT_DISK_CACHE_ROOT_BLOCK_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_WRITER_QUEUE_DEPTH: usize = 8;
 const DEFAULT_BLOCK_TOKEN_COUNT: usize = 256;
 const MAX_SAFETENSORS_HEADER_LEN: usize = 64 * 1024 * 1024;
@@ -160,6 +162,7 @@ pub(crate) struct NativeTextDiskCacheBlockDescriptor {
     snapshot_hash: String,
     model_family: String,
     namespace_hash: String,
+    previous_block_hash: String,
     block_hash: String,
     block_start: usize,
     token_count: usize,
@@ -171,24 +174,42 @@ impl NativeTextDiskCacheBlockDescriptor {
         identity: &NativeTextDiskCacheIdentity,
         namespace: &NativeTextPrefixCacheNamespace,
         block_start: usize,
-        tokens: &[usize],
-    ) -> Self {
+        prefix_tokens: &[usize],
+    ) -> Result<Self, NativeTextDiskCacheError> {
         let namespace_hash = native_text_disk_namespace_hash(namespace);
-        Self {
+        let block_tokens = prefix_tokens.get(block_start..).ok_or_else(|| {
+            NativeTextDiskCacheError::integrity("disk cache block start exceeds prefix tokens")
+        })?;
+        if block_tokens.is_empty() {
+            return Err(NativeTextDiskCacheError::integrity(
+                "disk cache block has no tokens",
+            ));
+        }
+        let previous_block_hash = native_text_disk_previous_block_hash(
+            &identity.model_hash,
+            &namespace_hash,
+            block_start,
+            block_tokens.len(),
+            prefix_tokens,
+        )?;
+        let block_hash = native_text_disk_block_hash(
+            &identity.model_hash,
+            &namespace_hash,
+            &previous_block_hash,
+            block_start,
+            block_tokens,
+        );
+        Ok(Self {
             model_hash: identity.model_hash.clone(),
             snapshot_hash: identity.snapshot_hash.clone(),
             model_family: identity.model_family.clone(),
-            block_hash: native_text_disk_block_hash(
-                &identity.model_hash,
-                &namespace_hash,
-                block_start,
-                tokens,
-            ),
             namespace_hash,
+            previous_block_hash,
+            block_hash,
             block_start,
-            token_count: tokens.len(),
+            token_count: block_tokens.len(),
             cache_layout_version: namespace.cache_layout_version,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -363,6 +384,7 @@ struct NativeTextDiskCacheBlockMetadata {
     model_hash: String,
     snapshot_hash: String,
     namespace_hash: String,
+    previous_block_hash: String,
     block_hash: String,
     block_start: usize,
     token_count: usize,
@@ -403,6 +425,7 @@ where
             model_hash: descriptor.model_hash.clone(),
             snapshot_hash: descriptor.snapshot_hash.clone(),
             namespace_hash: descriptor.namespace_hash.clone(),
+            previous_block_hash: descriptor.previous_block_hash.clone(),
             block_hash: descriptor.block_hash.clone(),
             block_start: descriptor.block_start,
             token_count: descriptor.token_count,
@@ -419,6 +442,7 @@ where
     ) -> Result<Self, NativeTextDiskCacheError> {
         let (metadata, archive) = NativeTextDiskCacheTensorArchive::from_bytes(bytes)?;
         if metadata.namespace_hash != descriptor.namespace_hash
+            || metadata.previous_block_hash != descriptor.previous_block_hash
             || metadata.block_hash != descriptor.block_hash
             || metadata.block_start != descriptor.block_start
             || metadata.token_count != descriptor.token_count
@@ -459,6 +483,7 @@ where
             snapshot_hash: metadata.snapshot_hash,
             model_family: metadata.model_family,
             namespace_hash: metadata.namespace_hash,
+            previous_block_hash: metadata.previous_block_hash,
             block_hash: metadata.block_hash,
             block_start: metadata.block_start,
             token_count: metadata.token_count,
@@ -536,12 +561,22 @@ where
         let Some(block_start) = tokens.len().checked_sub(self.config.block_token_count) else {
             return NativeTextDiskCacheStoreStatus::Skipped;
         };
-        let descriptor = NativeTextDiskCacheBlockDescriptor::new(
+        let descriptor = match NativeTextDiskCacheBlockDescriptor::new(
             &self.identity,
             namespace,
             block_start,
-            &tokens[block_start..],
-        );
+            tokens,
+        ) {
+            Ok(descriptor) => descriptor,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    model_hash = %self.identity.model_hash,
+                    "failed to build native text SSD prefix cache block descriptor"
+                );
+                return NativeTextDiskCacheStoreStatus::Dropped;
+            }
+        };
         let Some(permit) = self.writer.try_reserve() else {
             return NativeTextDiskCacheStoreStatus::Dropped;
         };
@@ -552,6 +587,7 @@ where
                     error = %err,
                     model_hash = %descriptor.model_hash,
                     namespace_hash = %descriptor.namespace_hash,
+                    previous_block_hash = %descriptor.previous_block_hash,
                     block_hash = %descriptor.block_hash,
                     "failed to encode native text SSD prefix cache block"
                 );
@@ -601,8 +637,8 @@ where
                     &self.identity,
                     namespace,
                     block_start,
-                    &tokens[block_start..block_end],
-                );
+                    &tokens[..block_end],
+                )?;
                 let key = NativeTextDiskCacheIndexKey::from_descriptor(&descriptor);
                 let Some(entry) = self.index.get(&key) else {
                     continue 'prefixes;
@@ -756,6 +792,7 @@ impl NativeTextDiskCacheIndex {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NativeTextDiskCacheIndexKey {
     namespace_hash: String,
+    previous_block_hash: String,
     block_start: usize,
     block_hash: String,
 }
@@ -764,6 +801,7 @@ impl NativeTextDiskCacheIndexKey {
     fn from_descriptor(descriptor: &NativeTextDiskCacheBlockDescriptor) -> Self {
         Self {
             namespace_hash: descriptor.namespace_hash.clone(),
+            previous_block_hash: descriptor.previous_block_hash.clone(),
             block_start: descriptor.block_start,
             block_hash: descriptor.block_hash.clone(),
         }
@@ -1872,19 +1910,71 @@ fn native_text_disk_namespace_hash(namespace: &NativeTextPrefixCacheNamespace) -
 fn native_text_disk_block_hash(
     model_hash: &str,
     namespace_hash: &str,
+    previous_block_hash: &str,
     block_start: usize,
     tokens: &[usize],
 ) -> String {
     let mut hasher = Sha256::new();
-    update_hash_value(&mut hasher, Some("kir-ai-native-text-disk-block/v1"));
+    update_hash_value(&mut hasher, Some("kir-ai-native-text-disk-block/v2"));
     update_hash_value(&mut hasher, Some(model_hash));
     update_hash_value(&mut hasher, Some(namespace_hash));
+    update_hash_value(&mut hasher, Some(previous_block_hash));
     hasher.update((block_start as u64).to_le_bytes());
     hasher.update((tokens.len() as u64).to_le_bytes());
     for token in tokens {
         hasher.update((*token as u64).to_le_bytes());
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn native_text_disk_previous_block_hash(
+    model_hash: &str,
+    namespace_hash: &str,
+    block_start: usize,
+    block_token_count: usize,
+    prefix_tokens: &[usize],
+) -> Result<String, NativeTextDiskCacheError> {
+    if block_token_count == 0 {
+        return Err(NativeTextDiskCacheError::integrity(
+            "disk cache block token count is zero",
+        ));
+    }
+    if block_start > prefix_tokens.len() {
+        return Err(NativeTextDiskCacheError::integrity(
+            "disk cache block start exceeds prefix tokens",
+        ));
+    }
+    if !block_start.is_multiple_of(block_token_count) {
+        return Err(NativeTextDiskCacheError::integrity(
+            "disk cache block start is not block aligned",
+        ));
+    }
+
+    let mut previous = NATIVE_TEXT_DISK_CACHE_ROOT_BLOCK_HASH.to_owned();
+    let mut current_start = 0_usize;
+    while current_start < block_start {
+        let current_end = current_start
+            .checked_add(block_token_count)
+            .ok_or_else(|| {
+                NativeTextDiskCacheError::integrity("disk cache block range overflow")
+            })?;
+        let block_tokens = prefix_tokens
+            .get(current_start..current_end)
+            .ok_or_else(|| {
+                NativeTextDiskCacheError::integrity(
+                    "disk cache previous block exceeds prefix tokens",
+                )
+            })?;
+        previous = native_text_disk_block_hash(
+            model_hash,
+            namespace_hash,
+            &previous,
+            current_start,
+            block_tokens,
+        );
+        current_start = current_end;
+    }
+    Ok(previous)
 }
 
 fn hash_components<'a>(
@@ -1984,7 +2074,8 @@ mod tests {
         let namespace = namespace("round-trip", family);
         let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, family);
         let descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[11, 12])
+                .expect("descriptor builds");
         let hidden = vec![0.25, 0.5, 0.75];
 
         let encoded = NativeTextDiskCacheBlock::<C>::encode(&descriptor, &hidden, &states)
@@ -2049,7 +2140,8 @@ mod tests {
         cache.flush_for_test().await.expect("queued write flushes");
 
         let valid_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &valid_namespace, 0, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &valid_namespace, 0, &[11, 12])
+                .expect("valid descriptor builds");
         let valid_bytes =
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&valid_descriptor, &hidden, &states)
                 .expect("valid block encodes");
@@ -2059,7 +2151,8 @@ mod tests {
             &wrong_namespace_value,
             0,
             &[11, 12],
-        );
+        )
+        .expect("wrong namespace descriptor builds");
         std::fs::write(
             cache.path_for_descriptor_for_test(&wrong_namespace),
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&wrong_namespace, &hidden, &states)
@@ -2068,7 +2161,8 @@ mod tests {
         .expect("wrong namespace file writes");
         let wrong_model = NativeTextDiskCacheIdentity::for_test("wrong-model", "qwen");
         let wrong_model_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&wrong_model, &valid_namespace, 0, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&wrong_model, &valid_namespace, 0, &[11, 12])
+                .expect("wrong model descriptor builds");
         std::fs::write(
             cache.path_for_descriptor_for_test(&wrong_model_descriptor),
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(
@@ -2154,12 +2248,14 @@ mod tests {
             .expect("first snapshot write flushes");
 
         let wrong_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&first_identity, &namespace, 0, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&first_identity, &namespace, 0, &[11, 12])
+                .expect("wrong snapshot descriptor builds");
         let wrong_bytes =
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&wrong_descriptor, &hidden, &states)
                 .expect("wrong snapshot block encodes");
         let second_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&second_identity, &namespace, 0, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&second_identity, &namespace, 0, &[11, 12])
+                .expect("second snapshot descriptor builds");
         let second_cache =
             NativeTextDiskCache::<QwenLayerCache>::open(config.clone(), second_identity.clone())
                 .await
@@ -2310,7 +2406,8 @@ mod tests {
         let namespace = namespace("nested", "gemma");
         let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "gemma");
         let descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[21, 22]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[21, 22])
+                .expect("descriptor builds");
         let states = vec![GemmaLayerCache::Attention(filled_layer_cache(4)).prefix_cache_state()];
         let hidden = vec![0.25, 0.5];
         let bytes =
@@ -2448,9 +2545,11 @@ mod tests {
         disk.flush_for_test().await.expect("queued writes flush");
 
         let first_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[31, 32]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[31, 32])
+                .expect("first descriptor builds");
         let second_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[33, 34]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[31, 32, 33, 34])
+                .expect("second descriptor builds");
         let first_bytes = std::fs::read(disk.path_for_descriptor_for_test(&first_descriptor))
             .expect("first block exists");
         let second_bytes = std::fs::read(disk.path_for_descriptor_for_test(&second_descriptor))
@@ -2490,9 +2589,11 @@ mod tests {
             .await
             .expect("cache opens");
         let first_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[41, 42]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[41, 42])
+                .expect("first descriptor builds");
         let second_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[43, 44]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[41, 42, 43, 44])
+                .expect("second descriptor builds");
         std::fs::write(
             disk.path_for_descriptor_for_test(&first_descriptor),
             NativeTextDiskCacheBlock::<DummyCache>::encode(
@@ -2539,6 +2640,60 @@ mod tests {
                 DummyCache { marker: 3 },
                 DummyCache { marker: 4 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_does_not_reuse_later_block_from_different_prefix_context() {
+        let temp = tempfile::tempdir().expect("temp dir exists");
+        let config = NativeTextDiskCacheConfig::for_root(temp.path())
+            .with_writer_queue_depth(4)
+            .with_block_token_count(2);
+        let namespace = namespace("cross-prefix", "test");
+        let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "test");
+        let disk = NativeTextDiskCache::<DummyCache>::open(config, identity)
+            .await
+            .expect("cache opens");
+
+        assert_eq!(
+            disk.queue_store(
+                &namespace,
+                &[1, 2, 3, 4],
+                &[4.0],
+                &[
+                    DummyCache { marker: 1 },
+                    DummyCache { marker: 2 },
+                    DummyCache { marker: 3 },
+                    DummyCache { marker: 4 },
+                ],
+            ),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        assert_eq!(
+            disk.queue_store(
+                &namespace,
+                &[9, 9],
+                &[2.0],
+                &[DummyCache { marker: 9 }, DummyCache { marker: 9 }],
+            ),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        disk.flush_for_test().await.expect("queued writes flush");
+
+        let hit = disk
+            .lookup(&namespace, &[9, 9, 3, 4, 5], |_| true)
+            .await
+            .expect("lookup succeeds")
+            .expect("first prefix block still hits");
+
+        assert_eq!(
+            hit.token_count, 2,
+            "lookup must not assemble prefix B with prefix A's contextual second block"
+        );
+        assert_eq!(hit.hidden, vec![2.0]);
+        assert_eq!(
+            hit.caches,
+            vec![DummyCache { marker: 9 }, DummyCache { marker: 9 }]
         );
     }
 
