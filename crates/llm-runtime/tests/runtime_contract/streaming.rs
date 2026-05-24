@@ -54,6 +54,37 @@ async fn runtime_returns_streaming_text_completion_chunks() {
 }
 
 #[tokio::test]
+async fn runtime_completion_stream_chunks_share_stable_identity_fields() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello from completion END ignored");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .completion_stream(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            max_tokens: Some(8),
+            stop: vec![" END".to_owned()],
+            stream: true,
+            stream_options: llm_api::StreamOptions::default(),
+            temperature: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logprobs: None,
+            n: None,
+        })
+        .await
+        .expect("completion stream succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let id = chunks[0].id.clone();
+    let model = chunks[0].model.clone();
+    for chunk in &chunks {
+        assert!(Arc::ptr_eq(&id, &chunk.id));
+        assert!(Arc::ptr_eq(&model, &chunk.model));
+    }
+}
+
+#[tokio::test]
 async fn runtime_completion_stream_applies_stop_across_backend_chunks() {
     let runtime = Runtime::new(StopStreamingBackend);
     let stream = runtime
@@ -312,6 +343,29 @@ async fn runtime_returns_text_stream_chunks() {
     );
     assert_eq!(chunks[1].choices[0].delta.content.as_deref(), Some("hello"));
     assert_eq!(chunks[2].choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
+async fn runtime_chat_stream_chunks_share_stable_identity_fields() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello");
+    let runtime = Runtime::new(backend);
+    let stream = runtime
+        .chat_stream(ChatCompletionRequest {
+            model: "local-qwen36".to_owned(),
+            messages: vec![ChatMessage::user("say hi")],
+            stream: true,
+            ..ChatCompletionRequest::default()
+        })
+        .await
+        .expect("streaming text succeeds");
+    let (chunks, _usage) = stream.collect_chunks().await.expect("collect chunks");
+
+    let id = chunks[0].id.clone();
+    let model = chunks[0].model.clone();
+    for chunk in &chunks {
+        assert!(Arc::ptr_eq(&id, &chunk.id));
+        assert!(Arc::ptr_eq(&model, &chunk.model));
+    }
 }
 
 #[test]
@@ -2130,10 +2184,10 @@ fn chat_stream_event(
     finish_reason: Option<FinishReason>,
 ) -> ChatCompletionStreamEvent {
     ChatCompletionStreamEvent::Chunk(llm_api::ChatCompletionStreamResponse {
-        id: "chatcmpl-test".to_owned(),
+        id: Arc::from("chatcmpl-test"),
         object: "chat.completion.chunk".to_owned(),
         created: 0,
-        model: "local-qwen36".to_owned(),
+        model: Arc::from("local-qwen36"),
         choices: vec![llm_api::ChatCompletionStreamChoice {
             index: 0,
             delta,
@@ -2148,10 +2202,10 @@ fn completion_stream_event(
     finish_reason: Option<FinishReason>,
 ) -> llm_runtime::CompletionStreamEvent {
     llm_runtime::CompletionStreamEvent::Chunk(llm_api::CompletionStreamResponse {
-        id: "cmpl-test".to_owned(),
+        id: Arc::from("cmpl-test"),
         object: "text_completion".to_owned(),
         created: 0,
-        model: "local-qwen36".to_owned(),
+        model: Arc::from("local-qwen36"),
         choices: vec![llm_api::CompletionChoice {
             text: text.to_owned(),
             index: 0,

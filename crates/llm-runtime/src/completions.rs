@@ -95,18 +95,18 @@ where
         self.validate_completion_request_capabilities(request_ref, true)?;
         let include_usage = request_ref.stream_options.include_usage;
         let stop = request_ref.stop.clone();
-        let completion = RuntimeCompletionSeed {
-            id: format!("cmpl-{}", Uuid::now_v7()),
-            created: Utc::now().timestamp(),
-            model: request_ref.model.clone(),
-        };
+        let completion = RuntimeCompletionSeed::new(
+            format!("cmpl-{}", Uuid::now_v7()),
+            Utc::now().timestamp(),
+            &request_ref.model,
+        );
         let request = request.into_inner();
         let backend_request = completion_backend_request(request)?;
         tracing::debug!(
             operation = "runtime_backend_dispatch",
             request_kind = "completion",
             stream = true,
-            model_id = completion.model.as_str(),
+            model_id = completion.model.as_ref(),
             prompt_bytes = backend_request.prompt().len(),
             max_tokens = ?backend_request.max_tokens,
             "dispatching runtime request to backend"

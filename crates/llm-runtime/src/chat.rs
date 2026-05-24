@@ -111,11 +111,11 @@ where
         let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
         let backend_request = self.chat_backend_request(adapter, request_ref)?;
-        let completion = RuntimeCompletionSeed {
-            id: format!("chatcmpl-{}", Uuid::now_v7()),
-            created: Utc::now().timestamp(),
-            model: request_ref.model.clone(),
-        };
+        let completion = RuntimeCompletionSeed::new(
+            format!("chatcmpl-{}", Uuid::now_v7()),
+            Utc::now().timestamp(),
+            &request_ref.model,
+        );
         tracing::debug!(
             operation = "runtime_backend_dispatch",
             request_kind = "chat",

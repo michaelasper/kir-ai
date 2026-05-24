@@ -10,6 +10,7 @@ use llm_api::{
     canonicalize_tool_schemas,
 };
 use serde_json::json;
+use std::sync::Arc;
 
 #[test]
 fn canonical_tool_schema_json_matches_equivalent_property_and_required_order() {
@@ -1439,10 +1440,10 @@ fn streaming_finish_reason_serializes_as_openai_string() {
 #[test]
 fn chat_completion_stream_chunk_serializes_as_openai_delta() {
     let chunk = ChatCompletionStreamResponse {
-        id: "chatcmpl-test".to_owned(),
+        id: Arc::from("chatcmpl-test"),
         object: "chat.completion.chunk".to_owned(),
         created: 1,
-        model: "local-qwen36".to_owned(),
+        model: Arc::from("local-qwen36"),
         choices: vec![ChatCompletionStreamChoice {
             index: 0,
             delta: ChatCompletionDelta {
@@ -1457,10 +1458,17 @@ fn chat_completion_stream_chunk_serializes_as_openai_delta() {
 
     let value = serde_json::to_value(chunk).expect("chunk serializes");
 
+    assert_eq!(value["id"], "chatcmpl-test");
     assert_eq!(value["object"], "chat.completion.chunk");
+    assert_eq!(value["model"], "local-qwen36");
     assert_eq!(value["choices"][0]["delta"]["role"], "assistant");
     assert_eq!(value["choices"][0]["delta"]["content"], "hello");
     assert!(value["choices"][0]["finish_reason"].is_null());
+
+    let parsed: ChatCompletionStreamResponse =
+        serde_json::from_value(value).expect("chunk deserializes");
+    assert_eq!(parsed.id.as_ref(), "chatcmpl-test");
+    assert_eq!(parsed.model.as_ref(), "local-qwen36");
 }
 
 #[test]
@@ -1589,10 +1597,10 @@ fn usage_omits_cached_prompt_token_details_when_missing_and_deserializes_openai_
 #[test]
 fn text_completion_stream_response_serializes_without_usage() {
     let response = CompletionStreamResponse {
-        id: "cmpl-test".to_owned(),
+        id: Arc::from("cmpl-test"),
         object: "text_completion".to_owned(),
         created: 1,
-        model: "local-qwen36".to_owned(),
+        model: Arc::from("local-qwen36"),
         choices: vec![llm_api::CompletionChoice {
             text: "hello".to_owned(),
             index: 0,
@@ -1603,9 +1611,16 @@ fn text_completion_stream_response_serializes_without_usage() {
 
     let value = serde_json::to_value(response).expect("response serializes");
 
+    assert_eq!(value["id"], "cmpl-test");
     assert_eq!(value["object"], "text_completion");
+    assert_eq!(value["model"], "local-qwen36");
     assert_eq!(value["choices"][0]["text"], "hello");
     assert!(value.get("usage").is_none());
+
+    let parsed: CompletionStreamResponse =
+        serde_json::from_value(value).expect("response deserializes");
+    assert_eq!(parsed.id.as_ref(), "cmpl-test");
+    assert_eq!(parsed.model.as_ref(), "local-qwen36");
 }
 
 #[test]

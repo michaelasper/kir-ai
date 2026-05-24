@@ -1,5 +1,6 @@
 use crate::{ChatMessage, ChatRole, FinishReason, ToolCallType, Usage};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionResponse {
@@ -13,10 +14,12 @@ pub struct CompletionResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionStreamResponse {
-    pub id: String,
+    #[serde(with = "arc_str_serde")]
+    pub id: Arc<str>,
     pub object: String,
     pub created: i64,
-    pub model: String,
+    #[serde(with = "arc_str_serde")]
+    pub model: Arc<str>,
     pub choices: Vec<CompletionChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -50,10 +53,12 @@ pub struct ChatCompletionChoice {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatCompletionStreamResponse {
-    pub id: String,
+    #[serde(with = "arc_str_serde")]
+    pub id: Arc<str>,
     pub object: String,
     pub created: i64,
-    pub model: String,
+    #[serde(with = "arc_str_serde")]
+    pub model: Arc<str>,
     pub choices: Vec<ChatCompletionStreamChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -93,4 +98,23 @@ pub struct ToolCallFunctionDelta {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+}
+
+mod arc_str_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::sync::Arc;
+
+    pub(super) fn serialize<S>(value: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(value)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Arc<str>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Arc::from)
+    }
 }

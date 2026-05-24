@@ -26,7 +26,7 @@ use llm_backend_contracts::{
     BackendToolCallDelta, BackendToolCallFunctionDelta, BackendToolCallType,
 };
 use llm_tool_parser::ParsedAssistant;
-use std::fmt;
+use std::{fmt, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 pub struct ChatCompletionStream<'a> {
@@ -231,9 +231,19 @@ impl Drop for CancelOnDrop {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RuntimeCompletionSeed {
-    pub(crate) id: String,
+    pub(crate) id: Arc<str>,
     pub(crate) created: i64,
-    pub(crate) model: String,
+    pub(crate) model: Arc<str>,
+}
+
+impl RuntimeCompletionSeed {
+    pub(crate) fn new(id: String, created: i64, model: &str) -> Self {
+        Self {
+            id: Arc::from(id),
+            created,
+            model: Arc::from(model),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -359,7 +369,7 @@ pub(crate) fn streaming_completion_stream<'a>(
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens = completion_tokens.saturating_add(chunk.completion_tokens);
-            if let Some(progress) = chunk.progress.clone() {
+            if let Some(progress) = chunk.progress {
                 yield CompletionStreamEvent::Progress(progress);
             }
             if !chunk.text.is_empty() {
@@ -522,13 +532,13 @@ pub(crate) fn streaming_chat_stream<'a>(
             prompt_tokens = prompt_tokens.max(chunk.prompt_tokens);
             prompt_cached_tokens = max_optional_u64(prompt_cached_tokens, chunk.prompt_cached_tokens);
             completion_tokens = completion_tokens.saturating_add(chunk.completion_tokens);
-            if let Some(progress) = chunk.progress.clone() {
+            if let Some(progress) = chunk.progress {
                 yield ChatCompletionStreamEvent::Progress(progress);
             }
             if !chunk.tool_call_deltas.is_empty() {
                 let api_tool_call_deltas = chunk
                     .tool_call_deltas
-                    .iter()
+                    .into_iter()
                     .map(api_tool_call_delta)
                     .collect::<Vec<_>>();
                 for delta in &api_tool_call_deltas {
@@ -816,12 +826,12 @@ pub(crate) fn streaming_chat_stream<'a>(
     ChatCompletionStream::new(events.boxed())
 }
 
-fn api_tool_call_delta(delta: &BackendToolCallDelta) -> llm_api::ToolCallDelta {
+fn api_tool_call_delta(delta: BackendToolCallDelta) -> llm_api::ToolCallDelta {
     llm_api::ToolCallDelta {
         index: delta.index,
-        id: delta.id.clone(),
-        call_type: delta.call_type.as_ref().map(api_tool_call_type),
-        function: delta.function.as_ref().map(api_tool_call_function_delta),
+        id: delta.id,
+        call_type: delta.call_type.map(api_tool_call_type),
+        function: delta.function.map(api_tool_call_function_delta),
     }
 }
 
@@ -840,17 +850,17 @@ fn internal_progress_bytes(chunk: &BackendStreamChunk) -> usize {
             .sum::<usize>()
 }
 
-fn api_tool_call_type(call_type: &BackendToolCallType) -> llm_api::ToolCallType {
+fn api_tool_call_type(call_type: BackendToolCallType) -> llm_api::ToolCallType {
     match call_type {
         BackendToolCallType::Function => llm_api::ToolCallType::Function,
     }
 }
 
 fn api_tool_call_function_delta(
-    function: &BackendToolCallFunctionDelta,
+    function: BackendToolCallFunctionDelta,
 ) -> llm_api::ToolCallFunctionDelta {
     llm_api::ToolCallFunctionDelta {
-        name: function.name.clone(),
-        arguments: function.arguments.clone(),
+        name: function.name,
+        arguments: function.arguments,
     }
 }
