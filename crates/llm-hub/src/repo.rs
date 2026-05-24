@@ -1,8 +1,8 @@
 use crate::HubError;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct HubRepoId {
     repo_type: RepoType,
     id: String,
@@ -30,10 +30,39 @@ impl HubRepoId {
         &self.id
     }
 
-    pub(crate) fn components(&self) -> (&str, &str) {
-        self.id
-            .split_once('/')
-            .expect("HubRepoId is validated as two components")
+    pub(crate) fn components(&self) -> Result<(&str, &str), HubError> {
+        let Some((namespace, name)) = self.id.split_once('/') else {
+            return Err(HubError::invalid_request(format!(
+                "repo id `{}` must be org/name",
+                self.id
+            )));
+        };
+        if name.contains('/') || !is_safe_repo_component(namespace) || !is_safe_repo_component(name)
+        {
+            return Err(HubError::invalid_request(format!(
+                "repo id `{}` must be exactly two safe path components",
+                self.id
+            )));
+        }
+        Ok((namespace, name))
+    }
+}
+
+impl<'de> Deserialize<'de> for HubRepoId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawHubRepoId {
+            repo_type: RepoType,
+            id: String,
+        }
+
+        let raw = RawHubRepoId::deserialize(deserializer)?;
+        match raw.repo_type {
+            RepoType::Model => HubRepoId::model(raw.id).map_err(de::Error::custom),
+        }
     }
 }
 

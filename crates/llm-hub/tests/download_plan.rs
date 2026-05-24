@@ -422,6 +422,27 @@ fn repo_id_rejects_ambiguous_or_unsafe_components() {
 }
 
 #[test]
+fn repo_id_deserialization_rejects_ambiguous_or_unsafe_components() {
+    for repo_id in [
+        "Qwen",
+        "Qwen//Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-35B-A3B/extra",
+        "Qwen/Qwen3.6-35B-A3B\n",
+    ] {
+        let err = serde_json::from_value::<HubRepoId>(json!({
+            "repo_type": "model",
+            "id": repo_id,
+        }))
+        .expect_err("unsafe deserialized repo id fails closed");
+
+        assert!(
+            err.to_string().contains("invalid_request"),
+            "error should preserve hub validation code for `{repo_id}`: {err}"
+        );
+    }
+}
+
+#[test]
 fn plan_rejects_mutable_revision_without_resolved_commit() {
     let err = build_download_plan(
         HubRepoId::model("Qwen/Qwen3.6-35B-A3B").expect("repo id"),

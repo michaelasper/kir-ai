@@ -140,7 +140,7 @@ impl HubClient {
         token: Option<&str>,
     ) -> Result<HubModelInfo, HubError> {
         let mut url = self.endpoint.clone();
-        let (namespace, name) = repo_id.components();
+        let (namespace, name) = repo_id.components()?;
         set_hub_path(
             &mut url,
             ["api", "models", namespace, name, "revision", revision],
@@ -227,7 +227,7 @@ impl HubClient {
             Err(err) => return Err(HubError::io(err)),
         };
         let mut url = self.endpoint.clone();
-        let (namespace, name) = repo_id.components();
+        let (namespace, name) = repo_id.components()?;
         {
             let mut segments = url
                 .path_segments_mut()
