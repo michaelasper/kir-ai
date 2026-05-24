@@ -764,7 +764,14 @@ where
         }
         if cached_prefix_len < context_tokens.len() {
             let mut prefill_hidden = None;
-            let prefill_chunk_tokens = self.adapter.max_prefill_tokens();
+            let prefill_chunk_tokens = self.adapter.prefix_disk_cache().map_or(
+                self.adapter.max_prefill_tokens(),
+                |disk_cache| {
+                    self.adapter
+                        .max_prefill_tokens()
+                        .min(disk_cache.block_token_count())
+                },
+            );
             let prefill_chunk_tokens = prefill_chunk_tokens.max(1);
             let uncached_prefill_tokens = context_tokens.len() - cached_prefix_len;
             let total_prefill_chunks = uncached_prefill_tokens.div_ceil(prefill_chunk_tokens);

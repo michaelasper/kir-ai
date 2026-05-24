@@ -10,7 +10,8 @@ use crate::{
         NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
         NativeTextPrefixCacheValue, NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions,
         NativeTextSnapshotOpen, NativeTextSnapshotOpenFamily, NativeTextStopTokens,
-        native_text_prefix_namespace, open_native_text_snapshot,
+        native_text_disk_cache_snapshot_identity, native_text_prefix_namespace,
+        open_native_text_snapshot,
     },
 };
 use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
@@ -166,13 +167,23 @@ impl NativeGemmaBackend {
         )
         .await?;
         let prefix_disk_cache = match prefix_disk_cache {
-            Some(config) => Some(Arc::new(
-                NativeTextDiskCache::open(
-                    config,
-                    NativeTextDiskCacheIdentity::from_model_metadata(&metadata, "gemma"),
-                )
-                .await?,
-            )),
+            Some(config) => {
+                let snapshot_identity = native_text_disk_cache_snapshot_identity(
+                    snapshot_path,
+                    identity.manifest_digest(),
+                );
+                Some(Arc::new(
+                    NativeTextDiskCache::open(
+                        config,
+                        NativeTextDiskCacheIdentity::from_model_metadata(
+                            &metadata,
+                            "gemma",
+                            Some(&snapshot_identity),
+                        ),
+                    )
+                    .await?,
+                ))
+            }
             None => None,
         };
         let adapter = NativeGemmaAdapter {

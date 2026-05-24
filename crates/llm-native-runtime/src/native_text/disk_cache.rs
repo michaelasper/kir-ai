@@ -4,8 +4,9 @@ use super::{
 };
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::native::{
-    GemmaLayerCache, GemmaLayerCachePrefixState, KvCacheError, LayerKvCache, LayerKvCacheSnapshot,
-    LinearAttentionCacheSnapshot, QwenLayerCache, QwenLayerCachePrefixState, TensorLoadError,
+    GemmaLayerCache, GemmaLayerCachePrefixState, KvCacheError, LayerKvCache,
+    LayerKvCachePrefixState, LayerKvCacheSnapshot, LinearAttentionCacheSnapshot, QwenLayerCache,
+    QwenLayerCachePrefixState, TensorLoadError,
 };
 use llm_backend_contracts::BackendModelMetadata;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,7 @@ impl Default for NativeTextDiskCacheConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTextDiskCacheIdentity {
     model_hash: String,
+    snapshot_hash: String,
     model_family: String,
     allowed_namespace_hash: Option<String>,
 }
@@ -91,22 +93,30 @@ impl NativeTextDiskCacheIdentity {
     ) -> Self {
         Self {
             model_hash: native_text_disk_model_hash_from_namespace(namespace),
+            snapshot_hash: native_text_disk_snapshot_hash(Some("test-snapshot")),
             model_family: model_family.to_owned(),
             allowed_namespace_hash: Some(native_text_disk_namespace_hash(namespace)),
         }
     }
 
-    pub(crate) fn from_model_metadata(metadata: &BackendModelMetadata, model_family: &str) -> Self {
+    pub(crate) fn from_model_metadata(
+        metadata: &BackendModelMetadata,
+        model_family: &str,
+        snapshot_identity: Option<&str>,
+    ) -> Self {
+        let snapshot_hash = native_text_disk_snapshot_hash(snapshot_identity);
         Self {
-            model_hash: native_text_disk_model_hash(
-                &metadata.id,
-                &metadata.backend,
-                metadata.family.as_deref(),
-                metadata.quantization.as_deref(),
-                metadata.repo_id.as_deref(),
-                metadata.resolved_commit.as_deref(),
-                metadata.profile.as_deref(),
-            ),
+            model_hash: native_text_disk_model_hash(NativeTextDiskModelHashParts {
+                model_id: &metadata.id,
+                backend: &metadata.backend,
+                family: metadata.family.as_deref(),
+                quantization: metadata.quantization.as_deref(),
+                repo_id: metadata.repo_id.as_deref(),
+                resolved_commit: metadata.resolved_commit.as_deref(),
+                profile: metadata.profile.as_deref(),
+                snapshot_hash: &snapshot_hash,
+            }),
+            snapshot_hash,
             model_family: model_family.to_owned(),
             allowed_namespace_hash: None,
         }
@@ -116,6 +126,7 @@ impl NativeTextDiskCacheIdentity {
     pub(crate) fn for_test(model_hash: &str, model_family: &str) -> Self {
         Self {
             model_hash: model_hash.to_owned(),
+            snapshot_hash: native_text_disk_snapshot_hash(Some("test-snapshot")),
             model_family: model_family.to_owned(),
             allowed_namespace_hash: None,
         }
@@ -124,14 +135,33 @@ impl NativeTextDiskCacheIdentity {
     pub(crate) fn model_hash(&self) -> &str {
         &self.model_hash
     }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot_hash(&self) -> &str {
+        &self.snapshot_hash
+    }
+}
+
+pub(crate) fn native_text_disk_cache_snapshot_identity(
+    snapshot_path: &Path,
+    manifest_digest: Option<&str>,
+) -> String {
+    if let Some(manifest_digest) = manifest_digest {
+        return format!("manifest:{manifest_digest}");
+    }
+    let canonical =
+        std::fs::canonicalize(snapshot_path).unwrap_or_else(|_| snapshot_path.to_path_buf());
+    format!("raw-path:{}", canonical.display())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeTextDiskCacheBlockDescriptor {
     model_hash: String,
+    snapshot_hash: String,
     model_family: String,
     namespace_hash: String,
     block_hash: String,
+    block_start: usize,
     token_count: usize,
     cache_layout_version: u32,
 }
@@ -140,14 +170,22 @@ impl NativeTextDiskCacheBlockDescriptor {
     pub(crate) fn new(
         identity: &NativeTextDiskCacheIdentity,
         namespace: &NativeTextPrefixCacheNamespace,
+        block_start: usize,
         tokens: &[usize],
     ) -> Self {
         let namespace_hash = native_text_disk_namespace_hash(namespace);
         Self {
             model_hash: identity.model_hash.clone(),
+            snapshot_hash: identity.snapshot_hash.clone(),
             model_family: identity.model_family.clone(),
-            block_hash: native_text_disk_block_hash(&identity.model_hash, &namespace_hash, tokens),
+            block_hash: native_text_disk_block_hash(
+                &identity.model_hash,
+                &namespace_hash,
+                block_start,
+                tokens,
+            ),
             namespace_hash,
+            block_start,
             token_count: tokens.len(),
             cache_layout_version: namespace.cache_layout_version,
         }
@@ -168,6 +206,11 @@ impl NativeTextDiskCacheBlockDescriptor {
     ) -> Result<(), NativeTextDiskCacheError> {
         if self.model_hash != identity.model_hash {
             return Err(NativeTextDiskCacheError::integrity("model hash mismatch"));
+        }
+        if self.snapshot_hash != identity.snapshot_hash {
+            return Err(NativeTextDiskCacheError::integrity(
+                "snapshot hash mismatch",
+            ));
         }
         if self.model_family != identity.model_family {
             return Err(NativeTextDiskCacheError::integrity("model family mismatch"));
@@ -227,15 +270,28 @@ impl From<TensorLoadError> for NativeTextDiskCacheError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NativeTextDiskCacheStateBlock<S> {
+    pub(crate) block_start: usize,
+    pub(crate) token_count: usize,
+    pub(crate) states: Vec<S>,
+}
+
 pub(crate) trait NativeTextDiskCacheValue: NativeTextPrefixCacheValue + Sized {
-    fn encode_disk_states(
+    fn encode_disk_block_states(
         states: &[Self::PrefixCacheState],
+        block_start: usize,
+        block_token_count: usize,
         sink: &mut NativeTextDiskCacheTensorSink,
     ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError>;
 
     fn decode_disk_states(
         layouts: &[NativeTextDiskCacheLayerLayout],
         archive: &NativeTextDiskCacheTensorArchive<'_>,
+    ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError>;
+
+    fn assemble_disk_block_states(
+        blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
     ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError>;
 }
 
@@ -305,8 +361,10 @@ struct NativeTextDiskCacheBlockMetadata {
     cache_layout_version: u32,
     model_family: String,
     model_hash: String,
+    snapshot_hash: String,
     namespace_hash: String,
     block_hash: String,
+    block_start: usize,
     token_count: usize,
     hidden_shape: Vec<usize>,
     layers: Vec<NativeTextDiskCacheLayerLayout>,
@@ -314,6 +372,7 @@ struct NativeTextDiskCacheBlockMetadata {
 
 #[derive(Debug)]
 pub(crate) struct NativeTextDiskCacheBlock<C: NativeTextDiskCacheValue> {
+    pub(crate) block_start: usize,
     pub(crate) token_count: usize,
     pub(crate) hidden: Vec<f32>,
     pub(crate) states: Vec<C::PrefixCacheState>,
@@ -330,15 +389,22 @@ where
     ) -> Result<Vec<u8>, NativeTextDiskCacheError> {
         let mut sink = NativeTextDiskCacheTensorSink::default();
         sink.push_f32("hidden", vec![hidden.len()], hidden.to_vec())?;
-        let layers = C::encode_disk_states(states, &mut sink)?;
+        let layers = C::encode_disk_block_states(
+            states,
+            descriptor.block_start,
+            descriptor.token_count,
+            &mut sink,
+        )?;
         let metadata = NativeTextDiskCacheBlockMetadata {
             codec: NATIVE_TEXT_DISK_CACHE_CODEC.to_owned(),
             layout_version: NATIVE_TEXT_DISK_CACHE_LAYOUT_VERSION,
             cache_layout_version: descriptor.cache_layout_version,
             model_family: descriptor.model_family.clone(),
             model_hash: descriptor.model_hash.clone(),
+            snapshot_hash: descriptor.snapshot_hash.clone(),
             namespace_hash: descriptor.namespace_hash.clone(),
             block_hash: descriptor.block_hash.clone(),
+            block_start: descriptor.block_start,
             token_count: descriptor.token_count,
             hidden_shape: vec![hidden.len()],
             layers,
@@ -354,6 +420,7 @@ where
         let (metadata, archive) = NativeTextDiskCacheTensorArchive::from_bytes(bytes)?;
         if metadata.namespace_hash != descriptor.namespace_hash
             || metadata.block_hash != descriptor.block_hash
+            || metadata.block_start != descriptor.block_start
             || metadata.token_count != descriptor.token_count
         {
             return Err(NativeTextDiskCacheError::integrity(
@@ -375,6 +442,7 @@ where
         }
         let states = C::decode_disk_states(&metadata.layers, &archive)?;
         Ok(Self {
+            block_start: metadata.block_start,
             token_count: metadata.token_count,
             hidden,
             states,
@@ -388,9 +456,11 @@ where
         validate_metadata_codec_and_layout(&metadata)?;
         Ok(NativeTextDiskCacheBlockDescriptor {
             model_hash: metadata.model_hash,
+            snapshot_hash: metadata.snapshot_hash,
             model_family: metadata.model_family,
             namespace_hash: metadata.namespace_hash,
             block_hash: metadata.block_hash,
+            block_start: metadata.block_start,
             token_count: metadata.token_count,
             cache_layout_version: metadata.cache_layout_version,
         })
@@ -463,7 +533,18 @@ where
         if tokens.is_empty() || !tokens.len().is_multiple_of(self.config.block_token_count) {
             return NativeTextDiskCacheStoreStatus::Skipped;
         }
-        let descriptor = NativeTextDiskCacheBlockDescriptor::new(&self.identity, namespace, tokens);
+        let Some(block_start) = tokens.len().checked_sub(self.config.block_token_count) else {
+            return NativeTextDiskCacheStoreStatus::Skipped;
+        };
+        let descriptor = NativeTextDiskCacheBlockDescriptor::new(
+            &self.identity,
+            namespace,
+            block_start,
+            &tokens[block_start..],
+        );
+        let Some(permit) = self.writer.try_reserve() else {
+            return NativeTextDiskCacheStoreStatus::Dropped;
+        };
         let bytes = match NativeTextDiskCacheBlock::<C>::encode(&descriptor, hidden, states) {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -480,15 +561,19 @@ where
         let path = self.path_for_descriptor(&descriptor);
         let entry = NativeTextDiskCacheIndexedEntry {
             path: path.clone(),
+            block_start: descriptor.block_start,
             token_count: descriptor.token_count,
         };
-        self.writer.try_enqueue(NativeTextDiskCacheWriteJob {
-            path,
-            bytes,
-            index: Some(self.index.clone()),
-            index_key: Some(NativeTextDiskCacheIndexKey::from_descriptor(&descriptor)),
-            index_entry: Some(entry),
-        })
+        permit.send(NativeTextDiskCacheWriterMessage::Write(
+            NativeTextDiskCacheWriteJob {
+                path,
+                bytes,
+                index: Some(self.index.clone()),
+                index_key: Some(NativeTextDiskCacheIndexKey::from_descriptor(&descriptor)),
+                index_entry: Some(entry),
+            },
+        ));
+        NativeTextDiskCacheStoreStatus::Queued
     }
 
     pub(crate) async fn lookup(
@@ -505,33 +590,40 @@ where
         if max_prefix_len == 0 {
             return Ok(None);
         }
-        for prefix_len in (self.config.block_token_count..=max_prefix_len)
+        'prefixes: for prefix_len in (self.config.block_token_count..=max_prefix_len)
             .rev()
             .step_by(self.config.block_token_count)
         {
-            let descriptor = NativeTextDiskCacheBlockDescriptor::new(
-                &self.identity,
-                namespace,
-                &tokens[..prefix_len],
-            );
-            let key = NativeTextDiskCacheIndexKey::from_descriptor(&descriptor);
-            let Some(entry) = self.index.get(&key) else {
-                continue;
-            };
-            let bytes = match tokio::fs::read(&entry.path).await {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        path = %entry.path.display(),
-                        "native text SSD prefix cache indexed file could not be read"
-                    );
-                    self.index.remove(&key);
-                    continue;
-                }
-            };
-            let block =
-                match NativeTextDiskCacheBlock::<C>::decode(&bytes, &self.identity, &descriptor) {
+            let mut blocks = Vec::new();
+            for block_start in (0..prefix_len).step_by(self.config.block_token_count) {
+                let block_end = block_start + self.config.block_token_count;
+                let descriptor = NativeTextDiskCacheBlockDescriptor::new(
+                    &self.identity,
+                    namespace,
+                    block_start,
+                    &tokens[block_start..block_end],
+                );
+                let key = NativeTextDiskCacheIndexKey::from_descriptor(&descriptor);
+                let Some(entry) = self.index.get(&key) else {
+                    continue 'prefixes;
+                };
+                let bytes = match tokio::fs::read(&entry.path).await {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            path = %entry.path.display(),
+                            "native text SSD prefix cache indexed file could not be read"
+                        );
+                        self.index.remove(&key);
+                        continue 'prefixes;
+                    }
+                };
+                let block = match NativeTextDiskCacheBlock::<C>::decode(
+                    &bytes,
+                    &self.identity,
+                    &descriptor,
+                ) {
                     Ok(block) => block,
                     Err(err) => {
                         tracing::warn!(
@@ -540,18 +632,36 @@ where
                             "native text SSD prefix cache block failed validation"
                         );
                         self.index.remove(&key);
-                        continue;
+                        continue 'prefixes;
                     }
                 };
-            if block.token_count != entry.token_count || !is_compatible(&block.states) {
+                if block.block_start != entry.block_start || block.token_count != entry.token_count
+                {
+                    continue 'prefixes;
+                }
+                blocks.push(block);
+            }
+            let state_blocks = blocks
+                .iter()
+                .map(|block| NativeTextDiskCacheStateBlock {
+                    block_start: block.block_start,
+                    token_count: block.token_count,
+                    states: block.states.clone(),
+                })
+                .collect::<Vec<_>>();
+            let states = C::assemble_disk_block_states(&state_blocks)?;
+            if !is_compatible(&states) {
                 continue;
             }
-            let Some(caches) = C::prefix_cache_from_state(&block.states) else {
+            let Some(caches) = C::prefix_cache_from_state(&states) else {
+                continue;
+            };
+            let Some(last_block) = blocks.last() else {
                 continue;
             };
             return Ok(Some(NativeTextPrefixCacheHit {
-                token_count: block.token_count,
-                hidden: block.hidden,
+                token_count: prefix_len,
+                hidden: last_block.hidden.clone(),
                 caches,
             }));
         }
@@ -646,6 +756,7 @@ impl NativeTextDiskCacheIndex {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct NativeTextDiskCacheIndexKey {
     namespace_hash: String,
+    block_start: usize,
     block_hash: String,
 }
 
@@ -653,6 +764,7 @@ impl NativeTextDiskCacheIndexKey {
     fn from_descriptor(descriptor: &NativeTextDiskCacheBlockDescriptor) -> Self {
         Self {
             namespace_hash: descriptor.namespace_hash.clone(),
+            block_start: descriptor.block_start,
             block_hash: descriptor.block_hash.clone(),
         }
     }
@@ -661,6 +773,7 @@ impl NativeTextDiskCacheIndexKey {
 #[derive(Debug, Clone)]
 struct NativeTextDiskCacheIndexedEntry {
     path: PathBuf,
+    block_start: usize,
     token_count: usize,
 }
 
@@ -676,6 +789,7 @@ impl NativeTextDiskCacheWriter {
         Self { tx }
     }
 
+    #[cfg(test)]
     fn try_enqueue(&self, job: NativeTextDiskCacheWriteJob) -> NativeTextDiskCacheStoreStatus {
         match self
             .tx
@@ -686,6 +800,10 @@ impl NativeTextDiskCacheWriter {
                 NativeTextDiskCacheStoreStatus::Dropped
             }
         }
+    }
+
+    fn try_reserve(&self) -> Option<mpsc::Permit<'_, NativeTextDiskCacheWriterMessage>> {
+        self.tx.try_reserve().ok()
     }
 
     #[cfg(test)]
@@ -1014,26 +1132,159 @@ fn validate_tensor_shape(
     Ok(())
 }
 
+fn encode_layer_kv_block_from_prefix_state(
+    prefix: &str,
+    state: &LayerKvCachePrefixState,
+    block_start: usize,
+    block_token_count: usize,
+    sink: &mut NativeTextDiskCacheTensorSink,
+) -> Result<NativeTextDiskFullAttentionLayout, NativeTextDiskCacheError> {
+    let cache = LayerKvCache::from_prefix_cache_state(state)?;
+    let snapshot = cache.snapshot();
+    let prefix_end = block_start
+        .checked_add(block_token_count)
+        .ok_or_else(|| NativeTextDiskCacheError::integrity("disk cache block range overflow"))?;
+    if prefix_end > snapshot.token_count {
+        return Err(NativeTextDiskCacheError::integrity(
+            "KV block range exceeds retained prefix state",
+        ));
+    }
+    let vector_len = snapshot
+        .key_value_heads
+        .checked_mul(snapshot.head_dim)
+        .ok_or_else(|| NativeTextDiskCacheError::integrity("KV block vector shape overflow"))?;
+    let start = block_start
+        .checked_mul(vector_len)
+        .ok_or_else(|| NativeTextDiskCacheError::integrity("KV block start overflow"))?;
+    let end = prefix_end
+        .checked_mul(vector_len)
+        .ok_or_else(|| NativeTextDiskCacheError::integrity("KV block end overflow"))?;
+    let block_snapshot = LayerKvCacheSnapshot {
+        revision: snapshot.revision,
+        config: snapshot.config,
+        max_tokens: snapshot.max_tokens,
+        key_value_heads: snapshot.key_value_heads,
+        head_dim: snapshot.head_dim,
+        token_count: block_token_count,
+        tokens_seen: prefix_end,
+        keys: snapshot.keys[start..end].to_vec(),
+        values: snapshot.values[start..end].to_vec(),
+    };
+    encode_layer_kv_snapshot(prefix, block_snapshot, sink)
+}
+
+fn assemble_layer_kv_prefix_state_blocks<'a>(
+    states: impl IntoIterator<Item = &'a LayerKvCachePrefixState>,
+) -> Result<LayerKvCachePrefixState, NativeTextDiskCacheError> {
+    let mut snapshots = states
+        .into_iter()
+        .map(|state| LayerKvCache::from_prefix_cache_state(state).map(|cache| cache.snapshot()));
+    let Some(first) = snapshots.next().transpose()? else {
+        return Err(NativeTextDiskCacheError::integrity(
+            "missing KV block state",
+        ));
+    };
+    let mut revision = first.revision;
+    let config = first.config;
+    let max_tokens = first.max_tokens;
+    let key_value_heads = first.key_value_heads;
+    let head_dim = first.head_dim;
+    let mut token_count = first.token_count;
+    let mut keys = first.keys;
+    let mut values = first.values;
+
+    for snapshot in snapshots {
+        let snapshot = snapshot?;
+        if snapshot.config != config
+            || snapshot.max_tokens != max_tokens
+            || snapshot.key_value_heads != key_value_heads
+            || snapshot.head_dim != head_dim
+        {
+            return Err(NativeTextDiskCacheError::integrity(
+                "incompatible KV block shapes",
+            ));
+        }
+        revision = snapshot.revision;
+        token_count = token_count
+            .checked_add(snapshot.token_count)
+            .ok_or_else(|| NativeTextDiskCacheError::integrity("KV block token count overflow"))?;
+        keys.extend_from_slice(&snapshot.keys);
+        values.extend_from_slice(&snapshot.values);
+    }
+    if token_count > max_tokens {
+        return Err(NativeTextDiskCacheError::integrity(
+            "assembled KV prefix exceeds cache capacity",
+        ));
+    }
+    Ok(LayerKvCache::from_snapshot(LayerKvCacheSnapshot {
+        revision,
+        config,
+        max_tokens,
+        key_value_heads,
+        head_dim,
+        token_count,
+        tokens_seen: token_count,
+        keys,
+        values,
+    })?
+    .prefix_cache_state())
+}
+
+fn validate_contiguous_disk_blocks<S>(
+    blocks: &[NativeTextDiskCacheStateBlock<S>],
+) -> Result<(), NativeTextDiskCacheError> {
+    let mut expected_start = 0_usize;
+    for block in blocks {
+        if block.block_start != expected_start {
+            return Err(NativeTextDiskCacheError::integrity(
+                "disk cache blocks are not contiguous",
+            ));
+        }
+        expected_start = expected_start
+            .checked_add(block.token_count)
+            .ok_or_else(|| {
+                NativeTextDiskCacheError::integrity("disk cache block range overflow")
+            })?;
+    }
+    Ok(())
+}
+
 impl NativeTextDiskCacheValue for QwenLayerCache {
-    fn encode_disk_states(
+    fn encode_disk_block_states(
         states: &[Self::PrefixCacheState],
+        block_start: usize,
+        block_token_count: usize,
         sink: &mut NativeTextDiskCacheTensorSink,
     ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
         states
             .iter()
             .enumerate()
             .map(|(layer_idx, state)| match state {
-                QwenLayerCachePrefixState::Full(state) => {
-                    let snapshot = LayerKvCache::from_prefix_cache_state(state)?.snapshot();
-                    encode_layer_kv_snapshot(&format!("layers.{layer_idx}.full"), snapshot, sink)
-                        .map(NativeTextDiskCacheLayerLayout::QwenFull)
-                }
-                QwenLayerCachePrefixState::Linear(snapshot) => encode_linear_attention_snapshot(
-                    &format!("layers.{layer_idx}.linear"),
-                    snapshot.clone(),
+                QwenLayerCachePrefixState::Full(state) => encode_layer_kv_block_from_prefix_state(
+                    &format!("layers.{layer_idx}.full"),
+                    state,
+                    block_start,
+                    block_token_count,
                     sink,
                 )
-                .map(NativeTextDiskCacheLayerLayout::QwenLinear),
+                .map(NativeTextDiskCacheLayerLayout::QwenFull),
+                QwenLayerCachePrefixState::Linear(snapshot) => {
+                    let prefix_end =
+                        block_start.checked_add(block_token_count).ok_or_else(|| {
+                            NativeTextDiskCacheError::integrity("linear block range overflow")
+                        })?;
+                    if snapshot.token_count != prefix_end {
+                        return Err(NativeTextDiskCacheError::integrity(
+                            "linear attention snapshot is not at the block boundary",
+                        ));
+                    }
+                    encode_linear_attention_snapshot(
+                        &format!("layers.{layer_idx}.linear"),
+                        snapshot.clone(),
+                        sink,
+                    )
+                    .map(NativeTextDiskCacheLayerLayout::QwenLinear)
+                }
             })
             .collect()
     }
@@ -1062,11 +1313,62 @@ impl NativeTextDiskCacheValue for QwenLayerCache {
             })
             .collect()
     }
+
+    fn assemble_disk_block_states(
+        blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
+    ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+        validate_contiguous_disk_blocks(blocks)?;
+        let Some(first) = blocks.first() else {
+            return Ok(Vec::new());
+        };
+        let layer_count = first.states.len();
+        let mut assembled = Vec::with_capacity(layer_count);
+        for layer_idx in 0..layer_count {
+            match first.states.get(layer_idx).ok_or_else(|| {
+                NativeTextDiskCacheError::integrity("missing Qwen disk block layer")
+            })? {
+                QwenLayerCachePrefixState::Full(_) => {
+                    let layer_states = blocks
+                        .iter()
+                        .map(|block| {
+                            if block.states.len() != layer_count {
+                                return Err(NativeTextDiskCacheError::integrity(
+                                    "inconsistent Qwen disk block layer count",
+                                ));
+                            }
+                            match block.states.get(layer_idx) {
+                                Some(QwenLayerCachePrefixState::Full(state)) => Ok(state),
+                                _ => Err(NativeTextDiskCacheError::integrity(
+                                    "mixed Qwen disk block layer layout",
+                                )),
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    assembled.push(QwenLayerCachePrefixState::Full(
+                        assemble_layer_kv_prefix_state_blocks(layer_states)?,
+                    ));
+                }
+                QwenLayerCachePrefixState::Linear(_) => {
+                    let Some(QwenLayerCachePrefixState::Linear(snapshot)) =
+                        blocks.last().and_then(|block| block.states.get(layer_idx))
+                    else {
+                        return Err(NativeTextDiskCacheError::integrity(
+                            "missing Qwen linear disk block terminal state",
+                        ));
+                    };
+                    assembled.push(QwenLayerCachePrefixState::Linear(snapshot.clone()));
+                }
+            }
+        }
+        Ok(assembled)
+    }
 }
 
 impl NativeTextDiskCacheValue for GemmaLayerCache {
-    fn encode_disk_states(
+    fn encode_disk_block_states(
         states: &[Self::PrefixCacheState],
+        block_start: usize,
+        block_token_count: usize,
         sink: &mut NativeTextDiskCacheTensorSink,
     ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
         states
@@ -1074,10 +1376,11 @@ impl NativeTextDiskCacheValue for GemmaLayerCache {
             .enumerate()
             .map(|(layer_idx, state)| match state {
                 GemmaLayerCachePrefixState::Attention(state) => {
-                    let snapshot = LayerKvCache::from_prefix_cache_state(state)?.snapshot();
-                    encode_layer_kv_snapshot(
+                    encode_layer_kv_block_from_prefix_state(
                         &format!("layers.{layer_idx}.attention"),
-                        snapshot,
+                        state,
+                        block_start,
+                        block_token_count,
                         sink,
                     )
                     .map(NativeTextDiskCacheLayerLayout::GemmaFull)
@@ -1104,6 +1407,39 @@ impl NativeTextDiskCacheValue for GemmaLayerCache {
                 )),
             })
             .collect()
+    }
+
+    fn assemble_disk_block_states(
+        blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
+    ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+        validate_contiguous_disk_blocks(blocks)?;
+        let Some(first) = blocks.first() else {
+            return Ok(Vec::new());
+        };
+        let layer_count = first.states.len();
+        let mut assembled = Vec::with_capacity(layer_count);
+        for layer_idx in 0..layer_count {
+            let layer_states = blocks
+                .iter()
+                .map(|block| {
+                    if block.states.len() != layer_count {
+                        return Err(NativeTextDiskCacheError::integrity(
+                            "inconsistent Gemma disk block layer count",
+                        ));
+                    }
+                    match block.states.get(layer_idx) {
+                        Some(GemmaLayerCachePrefixState::Attention(state)) => Ok(state),
+                        _ => Err(NativeTextDiskCacheError::integrity(
+                            "mixed Gemma disk block layer layout",
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            assembled.push(GemmaLayerCachePrefixState::Attention(
+                assemble_layer_kv_prefix_state_blocks(layer_states)?,
+            ));
+        }
+        Ok(assembled)
     }
 }
 
@@ -1209,6 +1545,7 @@ async fn reindex_disk_cache_file(
         NativeTextDiskCacheIndexKey::from_descriptor(&descriptor),
         NativeTextDiskCacheIndexedEntry {
             path,
+            block_start: descriptor.block_start,
             token_count: descriptor.token_count,
         },
     );
@@ -1221,6 +1558,11 @@ fn validate_metadata_for_identity(
     validate_metadata_codec_and_layout(metadata)?;
     if metadata.model_hash != identity.model_hash {
         return Err(NativeTextDiskCacheError::integrity("model hash mismatch"));
+    }
+    if metadata.snapshot_hash != identity.snapshot_hash {
+        return Err(NativeTextDiskCacheError::integrity(
+            "snapshot hash mismatch",
+        ));
     }
     if metadata.model_family != identity.model_family {
         return Err(NativeTextDiskCacheError::integrity("model family mismatch"));
@@ -1456,36 +1798,49 @@ fn tensors_from_header(
 fn native_text_disk_model_hash_from_namespace(
     namespace: &NativeTextPrefixCacheNamespace,
 ) -> String {
-    native_text_disk_model_hash(
-        &namespace.model_id,
-        &namespace.backend,
-        namespace.family.as_deref(),
-        namespace.quantization.as_deref(),
-        namespace.repo_id.as_deref(),
-        namespace.resolved_commit.as_deref(),
-        namespace.profile.as_deref(),
+    let snapshot_hash = native_text_disk_snapshot_hash(Some("test-snapshot"));
+    native_text_disk_model_hash(NativeTextDiskModelHashParts {
+        model_id: &namespace.model_id,
+        backend: &namespace.backend,
+        family: namespace.family.as_deref(),
+        quantization: namespace.quantization.as_deref(),
+        repo_id: namespace.repo_id.as_deref(),
+        resolved_commit: namespace.resolved_commit.as_deref(),
+        profile: namespace.profile.as_deref(),
+        snapshot_hash: &snapshot_hash,
+    })
+}
+
+fn native_text_disk_snapshot_hash(snapshot_identity: Option<&str>) -> String {
+    hash_components(
+        "kir-ai-native-text-disk-snapshot/v1",
+        [("snapshot_identity", snapshot_identity)],
     )
 }
 
-fn native_text_disk_model_hash(
-    model_id: &str,
-    backend: &str,
-    family: Option<&str>,
-    quantization: Option<&str>,
-    repo_id: Option<&str>,
-    resolved_commit: Option<&str>,
-    profile: Option<&str>,
-) -> String {
+struct NativeTextDiskModelHashParts<'a> {
+    model_id: &'a str,
+    backend: &'a str,
+    family: Option<&'a str>,
+    quantization: Option<&'a str>,
+    repo_id: Option<&'a str>,
+    resolved_commit: Option<&'a str>,
+    profile: Option<&'a str>,
+    snapshot_hash: &'a str,
+}
+
+fn native_text_disk_model_hash(parts: NativeTextDiskModelHashParts<'_>) -> String {
     hash_components(
         "kir-ai-native-text-disk-model/v1",
         [
-            ("model_id", Some(model_id)),
-            ("backend", Some(backend)),
-            ("family", family),
-            ("quantization", quantization),
-            ("repo_id", repo_id),
-            ("resolved_commit", resolved_commit),
-            ("profile", profile),
+            ("model_id", Some(parts.model_id)),
+            ("backend", Some(parts.backend)),
+            ("family", parts.family),
+            ("quantization", parts.quantization),
+            ("repo_id", parts.repo_id),
+            ("resolved_commit", parts.resolved_commit),
+            ("profile", parts.profile),
+            ("snapshot_hash", Some(parts.snapshot_hash)),
         ],
     )
 }
@@ -1514,11 +1869,17 @@ fn native_text_disk_namespace_hash(namespace: &NativeTextPrefixCacheNamespace) -
     )
 }
 
-fn native_text_disk_block_hash(model_hash: &str, namespace_hash: &str, tokens: &[usize]) -> String {
+fn native_text_disk_block_hash(
+    model_hash: &str,
+    namespace_hash: &str,
+    block_start: usize,
+    tokens: &[usize],
+) -> String {
     let mut hasher = Sha256::new();
     update_hash_value(&mut hasher, Some("kir-ai-native-text-disk-block/v1"));
     update_hash_value(&mut hasher, Some(model_hash));
     update_hash_value(&mut hasher, Some(namespace_hash));
+    hasher.update((block_start as u64).to_le_bytes());
     hasher.update((tokens.len() as u64).to_le_bytes());
     for token in tokens {
         hasher.update((*token as u64).to_le_bytes());
@@ -1560,7 +1921,11 @@ mod tests {
     use llm_backend::native::{
         GemmaLayerCache, LayerKvCache, LinearAttentionCache, QwenLayerCache,
     };
-    use std::time::{Duration, Instant};
+    use llm_backend_contracts::BackendModelMetadata;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{Duration, Instant},
+    };
 
     fn namespace(label: &str, family: &str) -> NativeTextPrefixCacheNamespace {
         NativeTextPrefixCacheNamespace {
@@ -1604,6 +1969,9 @@ mod tests {
             .push_conv_input(&[1.0, 2.0, 3.0])
             .expect("conv input appends");
         cache
+            .push_conv_input(&[4.0, 5.0, 6.0])
+            .expect("second conv input appends");
+        cache
             .replace_recurrent_state(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2])
             .expect("recurrent state matches shape");
         cache
@@ -1615,7 +1983,8 @@ mod tests {
     {
         let namespace = namespace("round-trip", family);
         let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, family);
-        let descriptor = NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, &[11, 12]);
+        let descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[11, 12]);
         let hidden = vec![0.25, 0.5, 0.75];
 
         let encoded = NativeTextDiskCacheBlock::<C>::encode(&descriptor, &hidden, &states)
@@ -1680,13 +2049,17 @@ mod tests {
         cache.flush_for_test().await.expect("queued write flushes");
 
         let valid_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &valid_namespace, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &valid_namespace, 0, &[11, 12]);
         let valid_bytes =
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&valid_descriptor, &hidden, &states)
                 .expect("valid block encodes");
         let wrong_namespace_value = namespace("wrong", "qwen");
-        let wrong_namespace =
-            NativeTextDiskCacheBlockDescriptor::new(&identity, &wrong_namespace_value, &[11, 12]);
+        let wrong_namespace = NativeTextDiskCacheBlockDescriptor::new(
+            &identity,
+            &wrong_namespace_value,
+            0,
+            &[11, 12],
+        );
         std::fs::write(
             cache.path_for_descriptor_for_test(&wrong_namespace),
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&wrong_namespace, &hidden, &states)
@@ -1695,7 +2068,7 @@ mod tests {
         .expect("wrong namespace file writes");
         let wrong_model = NativeTextDiskCacheIdentity::for_test("wrong-model", "qwen");
         let wrong_model_descriptor =
-            NativeTextDiskCacheBlockDescriptor::new(&wrong_model, &valid_namespace, &[11, 12]);
+            NativeTextDiskCacheBlockDescriptor::new(&wrong_model, &valid_namespace, 0, &[11, 12]);
         std::fs::write(
             cache.path_for_descriptor_for_test(&wrong_model_descriptor),
             NativeTextDiskCacheBlock::<QwenLayerCache>::encode(
@@ -1738,6 +2111,81 @@ mod tests {
         assert_eq!(reindexed.indexed_entry_count_for_test(), 1);
     }
 
+    #[tokio::test]
+    async fn snapshot_identity_partitions_model_hash_and_rejects_wrong_snapshot_metadata() {
+        let temp = tempfile::tempdir().expect("temp dir exists");
+        let config = NativeTextDiskCacheConfig::for_root(temp.path()).with_block_token_count(2);
+        let mut metadata =
+            BackendModelMetadata::new("model-shared", "native-test").with_family("qwen");
+        metadata.repo_id = Some("org/model".to_owned());
+        metadata.resolved_commit = Some("abc123".to_owned());
+        metadata.profile = Some("default".to_owned());
+        let first_identity = NativeTextDiskCacheIdentity::from_model_metadata(
+            &metadata,
+            "qwen",
+            Some("manifest:sha256:first"),
+        );
+        let second_identity = NativeTextDiskCacheIdentity::from_model_metadata(
+            &metadata,
+            "qwen",
+            Some("manifest:sha256:second"),
+        );
+        let namespace = namespace("snapshot", "qwen");
+        let hidden = vec![0.25, 0.5];
+        let states = vec![QwenLayerCache::Full(filled_layer_cache(4)).prefix_cache_state()];
+
+        assert_ne!(first_identity.model_hash(), second_identity.model_hash());
+        assert_ne!(
+            first_identity.snapshot_hash(),
+            second_identity.snapshot_hash()
+        );
+
+        let first_cache =
+            NativeTextDiskCache::<QwenLayerCache>::open(config.clone(), first_identity.clone())
+                .await
+                .expect("first snapshot cache opens");
+        assert_eq!(
+            first_cache.queue_store(&namespace, &[11, 12], &hidden, &states),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        first_cache
+            .flush_for_test()
+            .await
+            .expect("first snapshot write flushes");
+
+        let wrong_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&first_identity, &namespace, 0, &[11, 12]);
+        let wrong_bytes =
+            NativeTextDiskCacheBlock::<QwenLayerCache>::encode(&wrong_descriptor, &hidden, &states)
+                .expect("wrong snapshot block encodes");
+        let second_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&second_identity, &namespace, 0, &[11, 12]);
+        let second_cache =
+            NativeTextDiskCache::<QwenLayerCache>::open(config.clone(), second_identity.clone())
+                .await
+                .expect("second snapshot cache opens");
+        std::fs::write(
+            second_cache.path_for_descriptor_for_test(&second_descriptor),
+            wrong_bytes,
+        )
+        .expect("wrong snapshot file writes under second model root");
+        drop(second_cache);
+
+        let reindexed = NativeTextDiskCache::<QwenLayerCache>::open(config, second_identity)
+            .await
+            .expect("wrong snapshot metadata does not fail startup");
+
+        assert_eq!(reindexed.indexed_entry_count_for_test(), 0);
+        assert!(
+            reindexed
+                .lookup(&namespace, &[11, 12, 13], |_| true)
+                .await
+                .expect("lookup succeeds")
+                .is_none(),
+            "a block encoded for another snapshot must be ignored"
+        );
+    }
+
     #[test]
     fn bounded_writer_backpressure_drops_without_blocking_generation() {
         let (writer, _rx) = NativeTextDiskCacheWriter::detached_for_test(1);
@@ -1759,13 +2207,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn queue_store_drops_before_encoding_when_writer_queue_is_full() {
+        static ENCODE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct EncodingProbeCache {
+            marker: u32,
+        }
+
+        impl NativeTextPrefixCacheValue for EncodingProbeCache {
+            type PrefixCacheState = Self;
+
+            fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
+                caches.to_vec()
+            }
+
+            fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
+                Some(states.to_vec())
+            }
+
+            fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
+                std::mem::size_of_val(hidden) as u64
+                    + states.len() as u64 * std::mem::size_of::<Self>() as u64
+            }
+        }
+
+        impl NativeTextDiskCacheValue for EncodingProbeCache {
+            fn encode_disk_block_states(
+                states: &[Self::PrefixCacheState],
+                block_start: usize,
+                block_token_count: usize,
+                sink: &mut NativeTextDiskCacheTensorSink,
+            ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
+                ENCODE_CALLS.fetch_add(1, Ordering::SeqCst);
+                let values = states[block_start..block_start + block_token_count]
+                    .iter()
+                    .map(|state| state.marker as f32)
+                    .collect::<Vec<_>>();
+                sink.push_f32("probe.markers", vec![values.len()], values)?;
+                Ok(vec![NativeTextDiskCacheLayerLayout::test_marker_tensor(
+                    "probe.markers",
+                )])
+            }
+
+            fn decode_disk_states(
+                _layouts: &[NativeTextDiskCacheLayerLayout],
+                _archive: &NativeTextDiskCacheTensorArchive<'_>,
+            ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+                Ok(Vec::new())
+            }
+
+            fn assemble_disk_block_states(
+                blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
+            ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+                Ok(blocks
+                    .iter()
+                    .flat_map(|block| block.states.iter().cloned())
+                    .collect())
+            }
+        }
+
+        ENCODE_CALLS.store(0, Ordering::SeqCst);
+        let (writer, _rx) = NativeTextDiskCacheWriter::detached_for_test(1);
+        let cache = NativeTextDiskCache::<EncodingProbeCache> {
+            config: NativeTextDiskCacheConfig::for_root("unused").with_block_token_count(2),
+            identity: NativeTextDiskCacheIdentity::for_test("model", "test"),
+            index: NativeTextDiskCacheIndex::default(),
+            writer,
+            _cache: PhantomData,
+        };
+        let namespace = namespace("encoding-probe", "test");
+        let hidden = [1.0, 2.0];
+        let states = vec![
+            EncodingProbeCache { marker: 1 },
+            EncodingProbeCache { marker: 2 },
+            EncodingProbeCache { marker: 3 },
+            EncodingProbeCache { marker: 4 },
+        ];
+
+        assert_eq!(
+            cache.queue_store(&namespace, &[1, 2], &hidden, &states[..2]),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        assert_eq!(ENCODE_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            cache.queue_store(&namespace, &[1, 2, 3, 4], &hidden, &states),
+            NativeTextDiskCacheStoreStatus::Dropped
+        );
+        assert_eq!(
+            ENCODE_CALLS.load(Ordering::SeqCst),
+            1,
+            "full queue must be detected before disk payload encoding runs"
+        );
+    }
+
     #[tokio::test]
     async fn startup_reindex_handles_nested_block_dirs_and_stale_files() {
         let temp = tempfile::tempdir().expect("temp dir exists");
         let config = NativeTextDiskCacheConfig::for_root(temp.path()).with_block_token_count(2);
         let namespace = namespace("nested", "gemma");
         let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "gemma");
-        let descriptor = NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, &[21, 22]);
+        let descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[21, 22]);
         let states = vec![GemmaLayerCache::Attention(filled_layer_cache(4)).prefix_cache_state()];
         let hidden = vec![0.25, 0.5];
         let bytes =
@@ -1814,11 +2359,13 @@ mod tests {
     }
 
     impl NativeTextDiskCacheValue for DummyCache {
-        fn encode_disk_states(
+        fn encode_disk_block_states(
             states: &[Self::PrefixCacheState],
+            block_start: usize,
+            block_token_count: usize,
             sink: &mut NativeTextDiskCacheTensorSink,
         ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
-            let values = states
+            let values = states[block_start..block_start + block_token_count]
                 .iter()
                 .map(|state| state.marker as f32)
                 .collect::<Vec<_>>();
@@ -1853,6 +2400,146 @@ mod tests {
                 })
                 .collect()
         }
+
+        fn assemble_disk_block_states(
+            blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
+        ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+            Ok(blocks
+                .iter()
+                .flat_map(|block| block.states.iter().cloned())
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn block_store_writes_only_terminal_block_payload_not_accumulated_prefix() {
+        let temp = tempfile::tempdir().expect("temp dir exists");
+        let config = NativeTextDiskCacheConfig::for_root(temp.path())
+            .with_writer_queue_depth(4)
+            .with_block_token_count(2);
+        let namespace = namespace("block-payload", "test");
+        let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "test");
+        let disk = NativeTextDiskCache::<DummyCache>::open(config, identity.clone())
+            .await
+            .expect("cache opens");
+        let first_hidden = vec![1.0];
+        let second_hidden = vec![2.0];
+        let first_states = vec![DummyCache { marker: 1 }, DummyCache { marker: 2 }];
+        let second_states = vec![
+            DummyCache { marker: 1 },
+            DummyCache { marker: 2 },
+            DummyCache { marker: 3 },
+            DummyCache { marker: 4 },
+        ];
+
+        assert_eq!(
+            disk.queue_store(&namespace, &[31, 32], &first_hidden, &first_states),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        assert_eq!(
+            disk.queue_store(
+                &namespace,
+                &[31, 32, 33, 34],
+                &second_hidden,
+                &second_states
+            ),
+            NativeTextDiskCacheStoreStatus::Queued
+        );
+        disk.flush_for_test().await.expect("queued writes flush");
+
+        let first_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[31, 32]);
+        let second_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[33, 34]);
+        let first_bytes = std::fs::read(disk.path_for_descriptor_for_test(&first_descriptor))
+            .expect("first block exists");
+        let second_bytes = std::fs::read(disk.path_for_descriptor_for_test(&second_descriptor))
+            .expect("second block exists");
+        let first_block = NativeTextDiskCacheBlock::<DummyCache>::decode(
+            &first_bytes,
+            &identity,
+            &first_descriptor,
+        )
+        .expect("first block decodes");
+        let second_block = NativeTextDiskCacheBlock::<DummyCache>::decode(
+            &second_bytes,
+            &identity,
+            &second_descriptor,
+        )
+        .expect("second block decodes");
+
+        assert_eq!(first_block.block_start, 0);
+        assert_eq!(first_block.token_count, 2);
+        assert_eq!(first_block.states, first_states);
+        assert_eq!(second_block.block_start, 2);
+        assert_eq!(second_block.token_count, 2);
+        assert_eq!(
+            second_block.states,
+            vec![DummyCache { marker: 3 }, DummyCache { marker: 4 }],
+            "later block files must not duplicate the earlier prefix payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_assembles_prefix_from_multiple_independent_block_entries() {
+        let temp = tempfile::tempdir().expect("temp dir exists");
+        let config = NativeTextDiskCacheConfig::for_root(temp.path()).with_block_token_count(2);
+        let namespace = namespace("assembled", "test");
+        let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "test");
+        let disk = NativeTextDiskCache::<DummyCache>::open(config.clone(), identity.clone())
+            .await
+            .expect("cache opens");
+        let first_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 0, &[41, 42]);
+        let second_descriptor =
+            NativeTextDiskCacheBlockDescriptor::new(&identity, &namespace, 2, &[43, 44]);
+        std::fs::write(
+            disk.path_for_descriptor_for_test(&first_descriptor),
+            NativeTextDiskCacheBlock::<DummyCache>::encode(
+                &first_descriptor,
+                &[1.0],
+                &[DummyCache { marker: 1 }, DummyCache { marker: 2 }],
+            )
+            .expect("first block encodes"),
+        )
+        .expect("first block writes");
+        std::fs::write(
+            disk.path_for_descriptor_for_test(&second_descriptor),
+            NativeTextDiskCacheBlock::<DummyCache>::encode(
+                &second_descriptor,
+                &[2.0],
+                &[
+                    DummyCache { marker: 1 },
+                    DummyCache { marker: 2 },
+                    DummyCache { marker: 3 },
+                    DummyCache { marker: 4 },
+                ],
+            )
+            .expect("second block encodes"),
+        )
+        .expect("second block writes");
+        drop(disk);
+
+        let reindexed = NativeTextDiskCache::<DummyCache>::open(config, identity)
+            .await
+            .expect("cache reindexes independent blocks");
+        let hit = reindexed
+            .lookup(&namespace, &[41, 42, 43, 44, 45], |_| true)
+            .await
+            .expect("lookup succeeds")
+            .expect("assembled prefix hit exists");
+
+        assert_eq!(hit.token_count, 4);
+        assert_eq!(hit.hidden, vec![2.0]);
+        assert_eq!(
+            hit.caches,
+            vec![
+                DummyCache { marker: 1 },
+                DummyCache { marker: 2 },
+                DummyCache { marker: 3 },
+                DummyCache { marker: 4 },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1867,7 +2554,7 @@ mod tests {
         let metrics = NativeTextPrefixCacheMetrics::default();
         let memory = NativeTextPrefixCache::<DummyCache>::new(1024);
         let hidden = vec![1.0, 2.0];
-        let states = vec![DummyCache { marker: 42 }];
+        let states = vec![DummyCache { marker: 41 }, DummyCache { marker: 42 }];
 
         assert_eq!(
             disk.queue_store(&namespace, &[31, 32], &hidden, &states),

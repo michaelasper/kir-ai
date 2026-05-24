@@ -32,12 +32,12 @@ pub use disk_cache::NativeTextDiskCacheConfig;
 #[allow(unused_imports)]
 pub(crate) use disk_cache::{
     NativeTextDiskCache, NativeTextDiskCacheIdentity, NativeTextDiskCacheStoreStatus,
-    NativeTextDiskCacheValue,
+    NativeTextDiskCacheValue, native_text_disk_cache_snapshot_identity,
 };
 #[cfg(test)]
 pub(crate) use disk_cache::{
-    NativeTextDiskCacheError, NativeTextDiskCacheLayerLayout, NativeTextDiskCacheTensorArchive,
-    NativeTextDiskCacheTensorSink,
+    NativeTextDiskCacheError, NativeTextDiskCacheLayerLayout, NativeTextDiskCacheStateBlock,
+    NativeTextDiskCacheTensorArchive, NativeTextDiskCacheTensorSink,
 };
 #[allow(unused_imports)]
 pub(crate) use driver::{
@@ -559,11 +559,13 @@ mod tests {
     }
 
     impl NativeTextDiskCacheValue for TestCache {
-        fn encode_disk_states(
+        fn encode_disk_block_states(
             states: &[Self::PrefixCacheState],
+            block_start: usize,
+            block_token_count: usize,
             sink: &mut NativeTextDiskCacheTensorSink,
         ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
-            let values = states
+            let values = states[block_start..block_start + block_token_count]
                 .iter()
                 .map(|state| state.marker as f32)
                 .collect::<Vec<_>>();
@@ -600,6 +602,15 @@ mod tests {
                     })
                 })
                 .collect()
+        }
+
+        fn assemble_disk_block_states(
+            blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
+        ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+            Ok(blocks
+                .iter()
+                .flat_map(|block| block.states.iter().cloned())
+                .collect())
         }
     }
 
