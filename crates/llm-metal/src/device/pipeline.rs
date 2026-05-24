@@ -125,10 +125,10 @@ impl MetalDevice {
     ) -> Result<Arc<MetalKernel>, MetalError> {
         let function = library
             .get_function(name, None)
-            .map_err(MetalError::Compile)?;
+            .map_err(|err| kernel_compile_error(name, err))?;
         let pipeline = device
             .new_compute_pipeline_state_with_function(&function)
-            .map_err(|err| MetalError::Pipeline(format!("{err:?}")))?;
+            .map_err(|err| kernel_pipeline_error(name, err))?;
         Ok(Arc::new(MetalKernel {
             pipeline,
             queue: Arc::clone(queue),
@@ -136,9 +136,39 @@ impl MetalDevice {
     }
 }
 
+fn kernel_compile_error(name: &str, err: String) -> MetalError {
+    MetalError::Compile(format!("kernel '{name}': {err}"))
+}
+
+fn kernel_pipeline_error(name: &str, err: impl std::fmt::Debug) -> MetalError {
+    MetalError::Pipeline(format!("kernel '{name}': {err:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_compile_error_includes_kernel_name() {
+        let err = kernel_compile_error("attention_scores_f16", "function missing".to_owned());
+
+        assert!(matches!(&err, MetalError::Compile(_)));
+        assert_eq!(
+            err.to_string(),
+            "Metal compile error: kernel 'attention_scores_f16': function missing"
+        );
+    }
+
+    #[test]
+    fn kernel_pipeline_error_includes_kernel_name() {
+        let err = kernel_pipeline_error("matvec_f32", "pipeline failed");
+
+        assert!(matches!(&err, MetalError::Pipeline(_)));
+        assert_eq!(
+            err.to_string(),
+            "Metal pipeline error: kernel 'matvec_f32': \"pipeline failed\""
+        );
+    }
 
     #[test]
     fn metal_device_uses_one_command_queue_for_all_kernels() {
