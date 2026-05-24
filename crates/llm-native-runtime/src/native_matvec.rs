@@ -325,7 +325,7 @@ impl NativeTextMetalState {
         Ok(buffer)
     }
 
-    async fn warm_bf16_matrix_cache(
+    fn warm_bf16_matrix_cache(
         &self,
         store: &SafeTensorShardStore,
     ) -> Result<NativeTextMetalWarmup, NativeTextMetalBufferError> {
@@ -1292,7 +1292,7 @@ impl NativeTextMatvecBackend {
         })
     }
 
-    pub(crate) async fn warm_bf16_matrix_cache(
+    pub(crate) fn warm_bf16_matrix_cache(
         &self,
         store: &SafeTensorShardStore,
     ) -> Result<NativeTextMetalWarmup, NativeTextMetalBufferError> {
@@ -1305,7 +1305,7 @@ impl NativeTextMatvecBackend {
                 skipped_non_metal: candidates,
                 ..NativeTextMetalWarmup::default()
             }),
-            Self::Metal(metal) => metal.warm_bf16_matrix_cache(store).await,
+            Self::Metal(metal) => metal.warm_bf16_matrix_cache(store),
         }
     }
 

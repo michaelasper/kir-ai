@@ -612,12 +612,8 @@ fn native_qwen_cpu_backend_warmup_reports_non_metal_skip() {
     .expect("write index");
     let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    let warmup = rt
-        .block_on(NativeTextMatvecBackend::Cpu.warm_bf16_matrix_cache(&store))
+    let warmup = NativeTextMatvecBackend::Cpu
+        .warm_bf16_matrix_cache(&store)
         .expect("cpu warmup reports stats");
 
     assert_eq!(

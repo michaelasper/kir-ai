@@ -4,12 +4,14 @@ use crate::native_gemma::{NativeGemmaAdapter, NativeGemmaBackend};
 use crate::native_qwen::{NativeQwenAdapter, NativeQwenBackend};
 use crate::{
     ResolvedSnapshotBackend, SnapshotBackendLoader,
-    native_matvec::{NativeTextMatvecBackend, native_text_metal_weight_cache_bytes},
+    native_matvec::{
+        NativeTextMatvecBackend, NativeTextMetalWarmup, native_text_metal_weight_cache_bytes,
+    },
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 #[allow(unused_imports)]
-use llm_backend::native::{InferenceScratchpad, SafeTensorShardStore};
+use llm_backend::native::{F32TensorCacheWarmup, InferenceScratchpad, SafeTensorShardStore};
 #[allow(unused_imports)]
 use llm_backend_contracts::{
     BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
@@ -17,7 +19,7 @@ use llm_backend_contracts::{
 };
 use llm_models::{ModelFamily, NativeTextModelSpec, SafetensorsIndex};
 use llm_tokenizer::HuggingFaceTokenizer;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 mod driver;
@@ -111,56 +113,66 @@ pub(crate) struct NativeTextSnapshotOpenFamily<S> {
     pub(crate) static_f32_tensors_for_spec: fn(&S) -> Vec<String>,
 }
 
+struct NativeTextSnapshotBlockingOpen<S> {
+    spec: S,
+    store: SafeTensorShardStore,
+    matvec: NativeTextMatvecBackend,
+    tokenizer: HuggingFaceTokenizer,
+    materialized_bytes: Option<usize>,
+    static_f32_warmup: F32TensorCacheWarmup,
+    metal_warmup: Option<NativeTextMetalWarmup>,
+}
+
+// Keep the async open path limited to async filesystem reads and worker
+// handoff. Safetensors store construction, mmap/materialization, static tensor
+// warmup, optional Metal cache warmup, and tokenizer loading are synchronous
+// snapshot-open work and run on Tokio's blocking pool.
 pub(crate) async fn open_native_text_snapshot<S>(
     model_id: impl Into<String>,
     snapshot_path: impl AsRef<Path>,
     options: NativeTextRuntimeOptions,
     metadata: BackendModelMetadata,
     family: NativeTextSnapshotOpenFamily<S>,
-) -> anyhow::Result<NativeTextSnapshotOpen<S>> {
+) -> anyhow::Result<NativeTextSnapshotOpen<S>>
+where
+    S: Send + 'static,
+{
     let model_id = model_id.into();
-    let snapshot_path = snapshot_path.as_ref();
-    let cache_namespace = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
+    let snapshot_path = snapshot_path.as_ref().to_path_buf();
+    let cache_namespace = tokio::fs::canonicalize(&snapshot_path)
+        .await?
+        .to_string_lossy()
+        .into_owned();
     let config_json = tokio::fs::read_to_string(snapshot_path.join("config.json")).await?;
-    let spec = (family.parse_spec)(&config_json)?;
-    let store = SafeTensorShardStore::open(snapshot_path)?;
-    (family.validate_text_weights)(&spec, store.index())?;
-    if options.eager_materialize_shards {
-        let materialized_bytes = store.materialize_all_shards().map_err(|err| {
-            anyhow::anyhow!(
-                "native {} safetensors materialization failed: {err}",
-                family.display_name
-            )
-        })?;
+    let family_display_name = family.display_name;
+    let blocking_open = run_native_text_open_blocking(family_display_name, move || {
+        open_native_text_snapshot_blocking(
+            snapshot_path,
+            config_json,
+            options,
+            family,
+            cache_namespace,
+        )
+    })
+    .await?;
+    if let Some(materialized_bytes) = blocking_open.materialized_bytes {
         tracing::info!(
-            family = family.display_name,
+            family = family_display_name,
             materialized_bytes,
             "materialized native text safetensors shards"
         );
     }
-    let static_f32_tensors = (family.static_f32_tensors_for_spec)(&spec);
-    let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
     tracing::info!(
-        family = family.display_name,
-        candidates = static_f32_warmup.candidates,
-        loaded = static_f32_warmup.loaded,
-        resident_bytes = static_f32_warmup.resident_bytes,
-        already_resident = static_f32_warmup.already_resident,
+        family = family_display_name,
+        candidates = blocking_open.static_f32_warmup.candidates,
+        loaded = blocking_open.static_f32_warmup.loaded,
+        resident_bytes = blocking_open.static_f32_warmup.resident_bytes,
+        already_resident = blocking_open.static_f32_warmup.already_resident,
         "native text static f32 tensor cache warm-up complete"
     );
-    let matvec = NativeTextMatvecBackend::system_default(
-        native_text_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
-        &cache_namespace,
-    );
-    if options.warm_metal_weight_cache {
-        let warmup = matvec.warm_bf16_matrix_cache(&store).await.map_err(|err| {
-            anyhow::anyhow!(
-                "native {} Metal weight cache warm-up failed: {err}",
-                family.display_name
-            )
-        })?;
+    if let Some(warmup) = blocking_open.metal_warmup {
         tracing::info!(
-            family = family.display_name,
+            family = family_display_name,
             candidates = warmup.candidates,
             warmed = warmup.warmed,
             already_resident = warmup.already_resident,
@@ -169,15 +181,77 @@ pub(crate) async fn open_native_text_snapshot<S>(
             "native text Metal BF16 weight cache warm-up complete"
         );
     }
-    let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
     Ok(NativeTextSnapshotOpen {
         model_id,
         metadata,
+        spec: blocking_open.spec,
+        store: blocking_open.store,
+        matvec: blocking_open.matvec,
+        tokenizer: blocking_open.tokenizer,
+        prefix_cache_bytes: options.prefix_cache_bytes,
+    })
+}
+
+async fn run_native_text_open_blocking<T>(
+    family_display_name: &'static str,
+    work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|err| {
+        anyhow::anyhow!("native {family_display_name} snapshot open blocking worker failed: {err}")
+    })?
+}
+
+fn open_native_text_snapshot_blocking<S>(
+    snapshot_path: PathBuf,
+    config_json: String,
+    options: NativeTextRuntimeOptions,
+    family: NativeTextSnapshotOpenFamily<S>,
+    cache_namespace: String,
+) -> anyhow::Result<NativeTextSnapshotBlockingOpen<S>>
+where
+    S: Send + 'static,
+{
+    let spec = (family.parse_spec)(&config_json)?;
+    let store = SafeTensorShardStore::open(&snapshot_path)?;
+    (family.validate_text_weights)(&spec, store.index())?;
+    let materialized_bytes = if options.eager_materialize_shards {
+        Some(store.materialize_all_shards().map_err(|err| {
+            anyhow::anyhow!(
+                "native {} safetensors materialization failed: {err}",
+                family.display_name
+            )
+        })?)
+    } else {
+        None
+    };
+    let static_f32_tensors = (family.static_f32_tensors_for_spec)(&spec);
+    let static_f32_warmup = store.preload_bf16_f32_tensors(&static_f32_tensors)?;
+    let matvec = NativeTextMatvecBackend::system_default(
+        native_text_metal_weight_cache_bytes(options.metal_weight_cache_bytes),
+        &cache_namespace,
+    );
+    let metal_warmup = if options.warm_metal_weight_cache {
+        Some(matvec.warm_bf16_matrix_cache(&store).map_err(|err| {
+            anyhow::anyhow!(
+                "native {} Metal weight cache warm-up failed: {err}",
+                family.display_name
+            )
+        })?)
+    } else {
+        None
+    };
+    let tokenizer = HuggingFaceTokenizer::from_file(snapshot_path.join("tokenizer.json"))?;
+    Ok(NativeTextSnapshotBlockingOpen {
         spec,
         store,
         matvec,
         tokenizer,
-        prefix_cache_bytes: options.prefix_cache_bytes,
+        materialized_bytes,
+        static_f32_warmup,
+        metal_warmup,
     })
 }
 
@@ -1950,6 +2024,38 @@ mod tests {
             .expect("generation succeeds");
 
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_text_open_blocking_work_runs_off_async_runtime() {
+        let work_started = Arc::new(AtomicUsize::new(0));
+        let work_started_for_closure = Arc::clone(&work_started);
+
+        let open = tokio::spawn(async move {
+            run_native_text_open_blocking("Test", move || {
+                work_started_for_closure.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(750));
+                Ok::<_, anyhow::Error>("opened")
+            })
+            .await
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while work_started.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(work_started.load(Ordering::SeqCst), 1);
+        assert!(
+            !open.is_finished(),
+            "native text snapshot open work should not block the async runtime"
+        );
+        assert_eq!(
+            open.await
+                .expect("open task joins")
+                .expect("blocking open work succeeds"),
+            "opened"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
