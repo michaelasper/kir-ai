@@ -176,6 +176,11 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `scheduler_failed_requests`: Requests that failed while active in the scheduler.
 - `scheduler_queued_cancelled_requests`: Requests cancelled while still in the queue.
 - `scheduler_queue_timeouts`: Requests that timed out while in the queue.
+- `scheduler_prefill_yields`: Streaming prefill chunk boundaries where the scheduler successfully released and reacquired prefill admission.
+- `scheduler_prefill_yields_to_decode`: Successful prefill yields where at least one queued decode request was admitted before prefill readmission.
+- `scheduler_prefill_yield_reacquire_waits`: Successful prefill yield reacquisitions.
+- `scheduler_prefill_yield_reacquire_wait_ms_total`: Total scheduler wait time, in milliseconds, for successful prefill yield reacquisitions.
+- `scheduler_prefill_yield_reacquire_wait_ms_max`: Maximum scheduler wait time, in milliseconds, for a successful prefill yield reacquisition.
 - `cancelled_requests`: Cumulative admin-triggered cancellations.
 - `no_progress_failures`: Cumulative failures due to lack of progress.
 - `model_pull_operations`: Total model pull attempts.
@@ -199,7 +204,8 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   `backend_metrics.mlx.streaming_upstream_request_latency_ms` split that
   duration by kir-ai blocking versus streaming generation path. Native text
   prefix-cache objects include cache counters plus `prefill_chunks`,
-  `prefill_tokens`, `hit_tokens`, `miss_tokens`, and
+  `prefill_tokens`, `checkpoint_stores`, `checkpoint_store_tokens`,
+  `checkpoint_reuse_hits`, `checkpoint_reused_tokens`, `hit_tokens`, `miss_tokens`, and
   `avoided_prefill_tokens` so warm-prefix runs can distinguish hit rate from
   avoided prefill work. Native text Metal KV cache metrics include resident
   bytes/buffers, allocations, syncs, skipped syncs, bytes uploaded, evictions,

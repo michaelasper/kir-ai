@@ -128,6 +128,10 @@ pub(crate) struct NativeTextPrefixCacheCounters {
     pub(crate) reused_tokens: u64,
     pub(crate) prefill_chunks: u64,
     pub(crate) prefill_tokens: u64,
+    pub(crate) checkpoint_stores: u64,
+    pub(crate) checkpoint_store_tokens: u64,
+    pub(crate) checkpoint_reuse_hits: u64,
+    pub(crate) checkpoint_reused_tokens: u64,
     pub(crate) hit_tokens: u64,
     pub(crate) miss_tokens: u64,
     pub(crate) avoided_prefill_tokens: u64,
@@ -239,15 +243,15 @@ where
         hidden: &[f32],
         caches: &[C],
         metrics: &NativeTextPrefixCacheMetrics,
-    ) {
+    ) -> bool {
         if tokens.is_empty() {
-            return;
+            return false;
         }
         let states = C::prefix_cache_state(caches);
         let byte_len = C::prefix_cache_entry_bytes(hidden, &states);
         if byte_len > self.max_bytes {
             metrics.record_rejected();
-            return;
+            return false;
         }
         let payload = Arc::new(NativeTextPrefixCacheEntryPayload {
             hidden: hidden.to_vec(),
@@ -289,6 +293,7 @@ where
         }
         metrics.record_store(byte_len);
         metrics.record_residency(resident_bytes, resident_entries);
+        true
     }
 }
 
@@ -368,6 +373,22 @@ impl NativeTextPrefixCacheMetrics {
         });
     }
 
+    pub(crate) fn record_checkpoint_store(&self, tokens: u64) {
+        self.update(|counters| {
+            counters.checkpoint_stores += 1;
+            counters.checkpoint_store_tokens =
+                counters.checkpoint_store_tokens.saturating_add(tokens);
+        });
+    }
+
+    pub(crate) fn record_checkpoint_reuse(&self, tokens: u64) {
+        self.update(|counters| {
+            counters.checkpoint_reuse_hits += 1;
+            counters.checkpoint_reused_tokens =
+                counters.checkpoint_reused_tokens.saturating_add(tokens);
+        });
+    }
+
     pub(crate) fn record_lookup_scan(&self, entries_scanned: u64, namespace_entries_scanned: u64) {
         self.update(|counters| {
             counters.entries_scanned = counters.entries_scanned.saturating_add(entries_scanned);
@@ -421,6 +442,10 @@ impl NativeTextPrefixCacheMetrics {
             "reused_tokens": counters.reused_tokens,
             "prefill_chunks": counters.prefill_chunks,
             "prefill_tokens": counters.prefill_tokens,
+            "checkpoint_stores": counters.checkpoint_stores,
+            "checkpoint_store_tokens": counters.checkpoint_store_tokens,
+            "checkpoint_reuse_hits": counters.checkpoint_reuse_hits,
+            "checkpoint_reused_tokens": counters.checkpoint_reused_tokens,
             "hit_tokens": counters.hit_tokens,
             "miss_tokens": counters.miss_tokens,
             "avoided_prefill_tokens": counters.avoided_prefill_tokens,
@@ -454,6 +479,10 @@ mod tests {
         metrics.record_miss_tokens(3);
         metrics.record_prefill_chunk(u64::MAX - 3);
         metrics.record_prefill_chunk(4);
+        metrics.record_checkpoint_store(u64::MAX - 4);
+        metrics.record_checkpoint_store(5);
+        metrics.record_checkpoint_reuse(u64::MAX - 5);
+        metrics.record_checkpoint_reuse(6);
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot["reused_tokens"], u64::MAX);
@@ -461,5 +490,9 @@ mod tests {
         assert_eq!(snapshot["avoided_prefill_tokens"], u64::MAX);
         assert_eq!(snapshot["miss_tokens"], u64::MAX);
         assert_eq!(snapshot["prefill_tokens"], u64::MAX);
+        assert_eq!(snapshot["checkpoint_stores"], 2);
+        assert_eq!(snapshot["checkpoint_store_tokens"], u64::MAX);
+        assert_eq!(snapshot["checkpoint_reuse_hits"], 2);
+        assert_eq!(snapshot["checkpoint_reused_tokens"], u64::MAX);
     }
 }

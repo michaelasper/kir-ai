@@ -20,7 +20,7 @@ use llm_api::{
     ApiError, ChatCompletionChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
     ChatRole, ToolChoice, ValidateRequest, Validated,
 };
-use llm_backend_contracts::ModelBackend;
+use llm_backend_contracts::{BackendPrefillChunkAdmissionHook, ModelBackend};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -105,12 +105,26 @@ where
         request: Validated<ChatCompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
+        self.chat_stream_validated_with_cancel_and_prefill_admission(request, cancellation, None)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn chat_stream_validated_with_cancel_and_prefill_admission(
+        &self,
+        request: Validated<ChatCompletionRequest>,
+        cancellation: CancellationToken,
+        prefill_chunk_admission: Option<BackendPrefillChunkAdmissionHook>,
+    ) -> Result<ChatCompletionStream<'_>, RuntimeError> {
         let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
         self.validate_chat_request_capabilities(request_ref, true)?;
         let include_usage = request_ref.stream_options.include_usage;
         let adapter = self.chat_adapter()?;
-        let backend_request = self.chat_backend_request(adapter, request_ref)?;
+        let mut backend_request = self.chat_backend_request(adapter, request_ref)?;
+        if let Some(admission) = prefill_chunk_admission {
+            backend_request = backend_request.with_prefill_chunk_admission(admission);
+        }
         let completion = RuntimeCompletionSeed::new(
             format!("chatcmpl-{}", Uuid::now_v7()),
             Utc::now().timestamp(),

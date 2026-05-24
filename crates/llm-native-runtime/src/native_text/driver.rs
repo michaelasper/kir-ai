@@ -706,6 +706,11 @@ where
                 )));
             }
             cached_prefix_len = hit.token_count;
+            if cached_prefix_len < context_tokens.len() {
+                self.adapter
+                    .prefix_cache_metrics()
+                    .record_checkpoint_reuse(cached_prefix_len as u64);
+            }
             cache_report = NativeTextRequestCacheReport::hit(
                 context_tokens.len(),
                 hit.token_count,
@@ -729,6 +734,11 @@ where
                         )));
                     }
                     cached_prefix_len = hit.token_count;
+                    if cached_prefix_len < context_tokens.len() {
+                        self.adapter
+                            .prefix_cache_metrics()
+                            .record_checkpoint_reuse(cached_prefix_len as u64);
+                    }
                     cache_report = NativeTextRequestCacheReport::hit(
                         context_tokens.len(),
                         hit.token_count,
@@ -793,44 +803,63 @@ where
                         return Err(err);
                     }
                 };
-                if cancellation.is_cancelled() {
-                    cache_cleanup.cleanup(&caches);
-                    return Err(BackendError::cancelled());
-                }
                 prefill_hidden = hidden_states.last().cloned();
                 completed_prefill_chunks += 1;
                 completed_prefill_tokens = completed_prefill_tokens.saturating_add(chunk.len());
-                if let Some(disk_cache) = self.adapter.prefix_disk_cache() {
-                    let current_prefix_len = cached_prefix_len + completed_prefill_tokens;
-                    if current_prefix_len.is_multiple_of(disk_cache.block_token_count())
-                        && let Some(hidden) = hidden_states.last()
-                    {
-                        let states =
-                            <A::LayerCache as NativeTextPrefixCacheValue>::prefix_cache_state(
-                                &caches,
+                let current_prefix_len = cached_prefix_len + completed_prefill_tokens;
+                if current_prefix_len < context_tokens.len()
+                    && let Some(hidden) = hidden_states.last()
+                {
+                    let stored = self.adapter.prefix_cache().store(
+                        namespace.clone(),
+                        &context_tokens[..current_prefix_len],
+                        hidden,
+                        &caches,
+                        self.adapter.prefix_cache_metrics(),
+                    );
+                    if stored {
+                        self.adapter
+                            .prefix_cache_metrics()
+                            .record_checkpoint_store(current_prefix_len as u64);
+                    }
+                }
+                if let Some(disk_cache) = self.adapter.prefix_disk_cache()
+                    && current_prefix_len.is_multiple_of(disk_cache.block_token_count())
+                    && let Some(hidden) = hidden_states.last()
+                {
+                    let states =
+                        <A::LayerCache as NativeTextPrefixCacheValue>::prefix_cache_state(&caches);
+                    match disk_cache.queue_store(
+                        &namespace,
+                        &context_tokens[..current_prefix_len],
+                        hidden,
+                        &states,
+                    ) {
+                        NativeTextDiskCacheStoreStatus::Queued
+                        | NativeTextDiskCacheStoreStatus::Skipped => {}
+                        NativeTextDiskCacheStoreStatus::Dropped => {
+                            tracing::debug!(
+                                model_id = %namespace.model_id,
+                                token_count = current_prefix_len,
+                                "native text SSD prefix cache store dropped"
                             );
-                        match disk_cache.queue_store(
-                            &namespace,
-                            &context_tokens[..current_prefix_len],
-                            hidden,
-                            &states,
-                        ) {
-                            NativeTextDiskCacheStoreStatus::Queued
-                            | NativeTextDiskCacheStoreStatus::Skipped => {}
-                            NativeTextDiskCacheStoreStatus::Dropped => {
-                                tracing::debug!(
-                                    model_id = %namespace.model_id,
-                                    token_count = current_prefix_len,
-                                    "native text SSD prefix cache store dropped"
-                                );
-                            }
                         }
                     }
                 }
                 self.adapter
                     .prefix_cache_metrics()
                     .record_prefill_chunk(chunk.len() as u64);
+                if cancellation.is_cancelled() {
+                    cache_cleanup.cleanup(&caches);
+                    return Err(BackendError::cancelled());
+                }
                 if let Some(progress_tx) = progress_tx {
+                    let progress = BackendStreamProgress::PrefillProgress {
+                        chunk: completed_prefill_chunks as u64,
+                        total: total_prefill_chunks as u64,
+                        tokens: completed_prefill_tokens as u64,
+                        total_tokens: uncached_prefill_tokens as u64,
+                    };
                     progress_tx
                         .send(Ok(BackendStreamChunk {
                             text: String::new(),
@@ -839,15 +868,15 @@ where
                             prompt_cached_tokens: cache_report.prompt_cached_tokens(),
                             completion_tokens: 0,
                             finish_reason: None,
-                            progress: Some(BackendStreamProgress::PrefillProgress {
-                                chunk: completed_prefill_chunks as u64,
-                                total: total_prefill_chunks as u64,
-                                tokens: completed_prefill_tokens as u64,
-                                total_tokens: uncached_prefill_tokens as u64,
-                            }),
+                            progress: Some(progress.clone()),
                         }))
                         .await
                         .map_err(|err| BackendError::other(err.to_string()))?;
+                    if completed_prefill_chunks < total_prefill_chunks
+                        && let Some(admission) = request.prefill_chunk_admission()
+                    {
+                        admission.wait_for_next_chunk(progress).await?;
+                    }
                 }
                 tokio::task::yield_now().await;
             }

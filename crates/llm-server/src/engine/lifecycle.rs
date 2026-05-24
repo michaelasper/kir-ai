@@ -4,7 +4,7 @@ use super::{
     requests::{ActiveRequest, RequestFinishResult, RequestRegistrationError, RequestStartResult},
     scheduler::{
         GenerationPhase, GenerationPhaseGuard, SchedulerAcquireError, SchedulerClass,
-        SchedulerPermit,
+        SchedulerPermit, SharedSchedulerPermit,
     },
 };
 use axum::{
@@ -86,7 +86,7 @@ impl GenerationRun {
         StreamingGenerationRun {
             request_id,
             phase,
-            scheduler_slot,
+            scheduler_slot: SharedSchedulerPermit::new(scheduler_slot),
             active_request,
             request_started,
         }
@@ -115,7 +115,7 @@ impl FinishedGenerationRun {
 pub(super) struct StreamingGenerationRun {
     pub(super) request_id: String,
     pub(super) phase: GenerationPhaseGuard,
-    pub(super) scheduler_slot: SchedulerPermit,
+    pub(super) scheduler_slot: SharedSchedulerPermit,
     pub(super) active_request: ActiveRequest,
     pub(super) request_started: Instant,
 }
@@ -190,7 +190,7 @@ async fn acquire_scheduler_slot(
                 "model scheduler queue timed out; retry the request later".to_owned(),
             ))
         }
-        Err(SchedulerAcquireError::Cancelled) => {
+        Err(SchedulerAcquireError::Cancelled | SchedulerAcquireError::CancelledAfterAdmission) => {
             record_failure_metrics(state);
             Err(EngineError::RequestCancelled {
                 phase: "scheduler",

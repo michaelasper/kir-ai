@@ -575,6 +575,16 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
         "native text Qwen prefix cache prefill token metrics are exposed"
     );
     assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["checkpoint_stores"]
+            .is_number(),
+        "native text Qwen prefix cache checkpoint store metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["checkpoint_reuse_hits"]
+            .is_number(),
+        "native text Qwen prefix cache checkpoint reuse metrics are exposed"
+    );
+    assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["qwen"]["hit_tokens"].is_number(),
         "native text Qwen prefix cache hit token metrics are exposed"
     );
@@ -611,6 +621,16 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["prefill_tokens"].is_number(),
         "native text Gemma prefix cache prefill token metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["checkpoint_stores"]
+            .is_number(),
+        "native text Gemma prefix cache checkpoint store metrics are exposed"
+    );
+    assert!(
+        body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["checkpoint_reuse_hits"]
+            .is_number(),
+        "native text Gemma prefix cache checkpoint reuse metrics are exposed"
     );
     assert!(
         body["backend_metrics"]["native_text_prefix_cache"]["gemma"]["hit_tokens"].is_number(),
@@ -711,6 +731,14 @@ async fn admin_metrics_report_inference_counts_and_tokens() {
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["prefill_tokens"].is_number(),
         "native Qwen prefix cache prefill token metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["checkpoint_stores"].is_number(),
+        "native Qwen prefix cache checkpoint store metrics are exposed through the legacy object"
+    );
+    assert!(
+        body["backend_metrics"]["native_qwen_prefix_cache"]["checkpoint_reuse_hits"].is_number(),
+        "native Qwen prefix cache checkpoint reuse metrics are exposed through the legacy object"
     );
     assert!(
         body["backend_metrics"]["native_qwen_prefix_cache"]["hit_tokens"].is_number(),

@@ -1,5 +1,5 @@
 use super::error::runtime_error_metadata;
-use super::scheduler::SchedulerPermit;
+use super::scheduler::{SchedulerAcquireError, SharedSchedulerPermit};
 use super::{
     AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
@@ -14,16 +14,21 @@ use super::{
     },
 };
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
+use async_trait::async_trait;
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::Usage;
-use llm_backend_contracts::BackendStreamProgress;
+use llm_backend_contracts::{
+    BackendError, BackendPrefillChunkAdmission, BackendPrefillChunkAdmissionHook,
+    BackendStreamProgress,
+};
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent,
     RequestCacheIdentity, RuntimeError, StreamProgressMetadata,
 };
 use std::{
     convert::Infallible,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::time::Instant as TokioInstant;
@@ -307,7 +312,7 @@ pub(super) struct StreamRunLifecycle {
     request_id: String,
     model: String,
     active_request: ActiveRequest,
-    scheduler_slot: SchedulerPermit,
+    scheduler_slot: SharedSchedulerPermit,
     phase: GenerationPhaseGuard,
     request_started: Instant,
     cache_identity: Option<RequestCacheIdentity>,
@@ -346,6 +351,13 @@ impl StreamRunLifecycle {
 
     pub(super) fn cancellation(&self) -> tokio_util::sync::CancellationToken {
         self.active_request.cancellation.clone()
+    }
+
+    pub(super) fn prefill_chunk_admission(&self) -> BackendPrefillChunkAdmissionHook {
+        BackendPrefillChunkAdmissionHook::new(Arc::new(SchedulerPrefillChunkAdmission {
+            scheduler_slot: self.scheduler_slot.clone(),
+            cancellation: self.active_request.cancellation.clone(),
+        }))
     }
 
     fn stream_stall_timeout(&self) -> Option<Duration> {
@@ -407,7 +419,11 @@ impl StreamRunLifecycle {
         self.terminal = Some(StreamTerminalOutcome::RuntimeError);
         match self.active_request.mark_finished() {
             super::requests::RequestFinishResult::Finished => {
-                super::lifecycle::mark_scheduler_runtime_error(&mut self.scheduler_slot, &err);
+                if matches!(err, RuntimeError::Cancelled) {
+                    self.scheduler_slot.mark_cancelled();
+                } else {
+                    self.scheduler_slot.mark_failed();
+                }
                 record_runtime_error_metrics(&self.state, &err);
                 runtime_error_stream_events(err)
             }
@@ -503,6 +519,39 @@ impl StreamRunLifecycle {
                 ))
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct SchedulerPrefillChunkAdmission {
+    scheduler_slot: SharedSchedulerPermit,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[async_trait]
+impl BackendPrefillChunkAdmission for SchedulerPrefillChunkAdmission {
+    async fn wait_for_next_chunk(
+        &self,
+        _progress: BackendStreamProgress,
+    ) -> Result<(), BackendError> {
+        self.scheduler_slot
+            .yield_prefill_chunk(&self.cancellation)
+            .await
+            .map_err(prefill_readmission_backend_error)
+    }
+}
+
+fn prefill_readmission_backend_error(err: SchedulerAcquireError) -> BackendError {
+    match err {
+        SchedulerAcquireError::Cancelled | SchedulerAcquireError::CancelledAfterAdmission => {
+            BackendError::cancelled()
+        }
+        SchedulerAcquireError::QueueFull => BackendError::scheduler_overloaded(
+            "model scheduler queue is full; retry the request later",
+        ),
+        SchedulerAcquireError::QueueTimedOut => BackendError::scheduler_overloaded(
+            "model scheduler queue timed out; retry the request later",
+        ),
     }
 }
 

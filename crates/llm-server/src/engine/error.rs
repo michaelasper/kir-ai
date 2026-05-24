@@ -219,6 +219,9 @@ fn backend_failure_metadata(
             "model_artifact_verification",
             false,
         ),
+        Some(BackendFailureClass::Scheduler) => {
+            (StatusCode::TOO_MANY_REQUESTS, code, "scheduler", true)
+        }
         Some(BackendFailureClass::Tokenizer) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             code,
