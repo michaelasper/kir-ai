@@ -42,7 +42,11 @@ pub(super) async fn chat_completions(
             }
             match stream_state
                 .runtime
-                .chat_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
+                .chat_stream_validated_with_cancel_and_prefill_admission(
+                    request,
+                    stream_lifecycle.cancellation(),
+                    Some(stream_lifecycle.prefill_chunk_admission()),
+                )
                 .await
             {
                 Ok(response) => {
@@ -124,7 +128,11 @@ pub(super) async fn completions(
             );
             match stream_state
                 .runtime
-                .completion_stream_validated_with_cancel(request, stream_lifecycle.cancellation())
+                .completion_stream_validated_with_cancel_and_prefill_admission(
+                    request,
+                    stream_lifecycle.cancellation(),
+                    Some(stream_lifecycle.prefill_chunk_admission()),
+                )
                 .await
             {
                 Ok(response) => {

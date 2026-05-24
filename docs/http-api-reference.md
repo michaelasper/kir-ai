@@ -176,11 +176,11 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
 - `scheduler_failed_requests`: Requests that failed while active in the scheduler.
 - `scheduler_queued_cancelled_requests`: Requests cancelled while still in the queue.
 - `scheduler_queue_timeouts`: Requests that timed out while in the queue.
-- `scheduler_prefill_yields`: Streaming prefill chunk boundaries where the scheduler released and reacquired prefill admission.
-- `scheduler_prefill_yields_to_decode`: Prefill yields that found queued decode work and allowed decode admission first.
+- `scheduler_prefill_yields`: Streaming prefill chunk boundaries where the scheduler successfully released and reacquired prefill admission.
+- `scheduler_prefill_yields_to_decode`: Successful prefill yields where at least one queued decode request was admitted before prefill readmission.
 - `scheduler_prefill_yield_reacquire_waits`: Successful prefill yield reacquisitions.
-- `scheduler_prefill_yield_reacquire_wait_ms_total`: Total scheduler wait time, in milliseconds, while prefill chunks were yielded.
-- `scheduler_prefill_yield_reacquire_wait_ms_max`: Maximum scheduler wait time, in milliseconds, for a yielded prefill chunk.
+- `scheduler_prefill_yield_reacquire_wait_ms_total`: Total scheduler wait time, in milliseconds, for successful prefill yield reacquisitions.
+- `scheduler_prefill_yield_reacquire_wait_ms_max`: Maximum scheduler wait time, in milliseconds, for a successful prefill yield reacquisition.
 - `cancelled_requests`: Cumulative admin-triggered cancellations.
 - `no_progress_failures`: Cumulative failures due to lack of progress.
 - `model_pull_operations`: Total model pull attempts.

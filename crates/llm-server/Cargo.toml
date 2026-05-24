@@ -12,6 +12,7 @@ tool-calls = ["llm-telemetry/tool-calls"]
 
 [dependencies]
 async-stream.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 futures.workspace = true
 libc.workspace = true

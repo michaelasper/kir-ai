@@ -5,6 +5,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{fmt, sync::Arc};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,7 @@ pub struct BackendRequest {
     pub max_tokens: Option<u32>,
     pub sampling: SamplingConfig,
     pub kind: BackendRequestKind,
+    pub prefill_chunk_admission: Option<BackendPrefillChunkAdmissionHook>,
 }
 
 impl BackendRequest {
@@ -47,6 +49,7 @@ impl BackendRequest {
                 prompt: prompt.into(),
                 cache_context,
             }),
+            prefill_chunk_admission: None,
         }
     }
 
@@ -72,6 +75,7 @@ impl BackendRequest {
                 json_object_mode,
                 cache_context,
             }),
+            prefill_chunk_admission: None,
         }
     }
 
@@ -108,6 +112,62 @@ impl BackendRequest {
             BackendRequestKind::RawCompletion(_) => None,
             BackendRequestKind::Chat(request) => Some(request),
         }
+    }
+
+    pub fn with_prefill_chunk_admission(
+        mut self,
+        admission: BackendPrefillChunkAdmissionHook,
+    ) -> Self {
+        self.prefill_chunk_admission = Some(admission);
+        self
+    }
+
+    pub fn prefill_chunk_admission(&self) -> Option<&BackendPrefillChunkAdmissionHook> {
+        self.prefill_chunk_admission.as_ref()
+    }
+}
+
+#[async_trait]
+pub trait BackendPrefillChunkAdmission: fmt::Debug + Send + Sync + 'static {
+    async fn wait_for_next_chunk(
+        &self,
+        progress: BackendStreamProgress,
+    ) -> Result<(), BackendError>;
+}
+
+#[derive(Clone)]
+pub struct BackendPrefillChunkAdmissionHook {
+    inner: Arc<dyn BackendPrefillChunkAdmission>,
+}
+
+impl BackendPrefillChunkAdmissionHook {
+    pub fn new<T>(admission: Arc<T>) -> Self
+    where
+        T: BackendPrefillChunkAdmission,
+    {
+        let inner: Arc<dyn BackendPrefillChunkAdmission> = admission;
+        Self { inner }
+    }
+
+    pub async fn wait_for_next_chunk(
+        &self,
+        progress: BackendStreamProgress,
+    ) -> Result<(), BackendError> {
+        self.inner.wait_for_next_chunk(progress).await
+    }
+}
+
+impl fmt::Debug for BackendPrefillChunkAdmissionHook {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackendPrefillChunkAdmissionHook")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for BackendPrefillChunkAdmissionHook {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -674,10 +734,12 @@ const SAMPLER_FAILED_CODE: &str = "sampler_failed";
 const METAL_BACKEND_FAILED_CODE: &str = "metal_backend_failed";
 const BACKEND_CONFIG_FAILED_CODE: &str = "backend_config_failed";
 const BACKEND_INVARIANT_FAILED_CODE: &str = "backend_invariant_failed";
+const SCHEDULER_OVERLOADED_CODE: &str = "model_overloaded";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendFailureClass {
     BackendExecution,
+    Scheduler,
     TensorLoad,
     Tokenizer,
     Sampler,
@@ -690,6 +752,7 @@ impl BackendFailureClass {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BackendExecution => "backend_execution",
+            Self::Scheduler => "scheduler",
             Self::TensorLoad => "tensor_load",
             Self::Tokenizer => "tokenizer",
             Self::Sampler => "sampler",
@@ -721,6 +784,8 @@ pub(crate) enum BackendErrorKind {
     Cancelled,
     #[error("backend error: {message}")]
     BackendFailure { code: &'static str, message: String },
+    #[error("backend scheduler overloaded: {0}")]
+    SchedulerOverloaded(String),
     #[error("backend tensor load failed: {message}")]
     TensorLoad { code: &'static str, message: String },
     #[error("backend tokenizer failed: {0}")]
@@ -789,6 +854,12 @@ impl BackendError {
         }
     }
 
+    pub fn scheduler_overloaded(message: impl Into<String>) -> Self {
+        Self {
+            kind: BackendErrorKind::SchedulerOverloaded(message.into()),
+        }
+    }
+
     pub fn tensor_load(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             kind: BackendErrorKind::TensorLoad {
@@ -847,6 +918,7 @@ impl BackendError {
     pub fn other_message(&self) -> Option<&str> {
         match &self.kind {
             BackendErrorKind::BackendFailure { message, .. } => Some(message.as_str()),
+            BackendErrorKind::SchedulerOverloaded(message) => Some(message.as_str()),
             BackendErrorKind::TensorLoad { message, .. } => Some(message.as_str()),
             BackendErrorKind::Tokenizer(message)
             | BackendErrorKind::Sampler(message)
@@ -860,6 +932,7 @@ impl BackendError {
     pub fn backend_failure_code(&self) -> Option<&'static str> {
         match &self.kind {
             BackendErrorKind::BackendFailure { code, .. } => Some(*code),
+            BackendErrorKind::SchedulerOverloaded(_) => Some(SCHEDULER_OVERLOADED_CODE),
             BackendErrorKind::TensorLoad { code, .. } => Some(*code),
             BackendErrorKind::Tokenizer(_) => Some(TOKENIZER_FAILED_CODE),
             BackendErrorKind::Sampler(_) => Some(SAMPLER_FAILED_CODE),
@@ -873,6 +946,7 @@ impl BackendError {
     pub fn backend_failure_class(&self) -> Option<BackendFailureClass> {
         match &self.kind {
             BackendErrorKind::BackendFailure { .. } => Some(BackendFailureClass::BackendExecution),
+            BackendErrorKind::SchedulerOverloaded(_) => Some(BackendFailureClass::Scheduler),
             BackendErrorKind::TensorLoad { .. } => Some(BackendFailureClass::TensorLoad),
             BackendErrorKind::Tokenizer(_) => Some(BackendFailureClass::Tokenizer),
             BackendErrorKind::Sampler(_) => Some(BackendFailureClass::Sampler),
@@ -898,6 +972,7 @@ impl BackendError {
             }
             BackendErrorKind::Cancelled => BackendErrorDomain::Cancelled,
             kind @ (BackendErrorKind::BackendFailure { .. }
+            | BackendErrorKind::SchedulerOverloaded(_)
             | BackendErrorKind::TensorLoad { .. }
             | BackendErrorKind::Tokenizer(_)
             | BackendErrorKind::Sampler(_)
@@ -1007,6 +1082,12 @@ mod tests {
                 BackendFailureClass::TensorLoad,
                 "model_integrity_failed",
                 "bad tensor header",
+            ),
+            (
+                BackendError::scheduler_overloaded("model scheduler queue is full"),
+                BackendFailureClass::Scheduler,
+                "model_overloaded",
+                "model scheduler queue is full",
             ),
             (
                 BackendError::tokenizer("tokenizer decode failed"),

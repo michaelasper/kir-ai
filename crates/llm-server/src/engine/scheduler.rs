@@ -135,6 +135,11 @@ struct ModelSchedulerState {
     prefill_yield_reacquire_wait_nanos_max: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PrefillYieldRelease {
+    admitted_decode_before: u64,
+}
+
 impl ModelSchedulerState {
     fn active_total(&self) -> usize {
         self.active_prefill + self.active_decode
@@ -196,12 +201,19 @@ impl ModelSchedulerState {
         self.active_decode += 1;
     }
 
-    fn release_prefill_for_yield(&mut self) {
+    fn release_prefill_for_yield(&mut self) -> PrefillYieldRelease {
         self.active_prefill = self.active_prefill.saturating_sub(1);
+        PrefillYieldRelease {
+            admitted_decode_before: self.admitted_decode,
+        }
+    }
+
+    fn record_prefill_yield_success(&mut self, release: PrefillYieldRelease, wait: Duration) {
         self.prefill_yields += 1;
-        if !self.queued_decode.is_empty() {
+        if self.admitted_decode > release.admitted_decode_before {
             self.prefill_yields_to_decode += 1;
         }
+        self.record_prefill_yield_reacquire_wait(wait);
     }
 
     fn record_prefill_yield_reacquire_wait(&mut self, wait: Duration) {
@@ -277,10 +289,10 @@ impl SchedulerPermit {
             return Err(SchedulerAcquireError::Cancelled);
         }
         let scheduler = Arc::clone(&self.scheduler);
-        {
+        let release = {
             let mut state = scheduler.state.lock_or_panic("scheduler");
-            state.release_prefill_for_yield();
-        }
+            state.release_prefill_for_yield()
+        };
         self.active = false;
         self.terminal_on_drop = false;
         scheduler.notify.notify_waiters();
@@ -297,22 +309,32 @@ impl SchedulerPermit {
         {
             Ok(permit) => permit,
             Err(err) => {
-                self.outcome = match err {
-                    SchedulerAcquireError::Cancelled => SchedulerOutcome::Cancelled,
-                    SchedulerAcquireError::QueueFull | SchedulerAcquireError::QueueTimedOut => {
-                        SchedulerOutcome::Failed
-                    }
-                };
-                self.terminal_on_drop = true;
+                self.complete_readmission_error(err);
                 return Err(err);
             }
         };
         scheduler
             .state
             .lock_or_panic("scheduler")
-            .record_prefill_yield_reacquire_wait(wait_started.elapsed());
+            .record_prefill_yield_success(release, wait_started.elapsed());
         *self = permit;
         Ok(())
+    }
+
+    fn complete_readmission_error(&mut self, err: SchedulerAcquireError) {
+        match err {
+            SchedulerAcquireError::Cancelled => {
+                self.outcome = SchedulerOutcome::Cancelled;
+                self.terminal_on_drop = true;
+            }
+            SchedulerAcquireError::CancelledAfterAdmission => {
+                self.terminal_on_drop = false;
+            }
+            SchedulerAcquireError::QueueFull | SchedulerAcquireError::QueueTimedOut => {
+                self.outcome = SchedulerOutcome::Failed;
+                self.terminal_on_drop = true;
+            }
+        }
     }
 
     pub(super) fn mark_failed(&mut self) {
@@ -337,6 +359,53 @@ impl Drop for SchedulerPermit {
         }
         drop(state);
         self.scheduler.notify.notify_waiters();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SharedSchedulerPermit {
+    inner: Arc<Mutex<Option<SchedulerPermit>>>,
+}
+
+impl SharedSchedulerPermit {
+    pub(super) fn new(permit: SchedulerPermit) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(permit))),
+        }
+    }
+
+    pub(super) fn transition_to_decode(&self) {
+        if let Some(permit) = self.inner.lock_or_panic("scheduler permit").as_mut() {
+            permit.transition_to_decode();
+        }
+    }
+
+    pub(super) async fn yield_prefill_chunk(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), SchedulerAcquireError> {
+        let Some(mut permit) = self.inner.lock_or_panic("scheduler permit").take() else {
+            return Ok(());
+        };
+        match permit.yield_prefill_chunk(cancellation).await {
+            Ok(()) => {
+                *self.inner.lock_or_panic("scheduler permit") = Some(permit);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub(super) fn mark_failed(&self) {
+        if let Some(permit) = self.inner.lock_or_panic("scheduler permit").as_mut() {
+            permit.mark_failed();
+        }
+    }
+
+    pub(super) fn mark_cancelled(&self) {
+        if let Some(permit) = self.inner.lock_or_panic("scheduler permit").as_mut() {
+            permit.mark_cancelled();
+        }
     }
 }
 
@@ -410,6 +479,7 @@ pub(super) enum SchedulerAcquireError {
     QueueFull,
     QueueTimedOut,
     Cancelled,
+    CancelledAfterAdmission,
 }
 
 impl ModelScheduler {
@@ -494,7 +564,7 @@ impl ModelScheduler {
     ) -> Result<SchedulerPermit, SchedulerAcquireError> {
         if cancellation.is_cancelled() {
             permit.mark_cancelled();
-            return Err(SchedulerAcquireError::Cancelled);
+            return Err(SchedulerAcquireError::CancelledAfterAdmission);
         }
         Ok(permit)
     }
@@ -785,7 +855,10 @@ mod tests {
         cancellation.cancel();
         let result = ModelScheduler::admit_unless_cancelled(permit, &cancellation);
 
-        assert_eq!(result.unwrap_err(), SchedulerAcquireError::Cancelled);
+        assert_eq!(
+            result.unwrap_err(),
+            SchedulerAcquireError::CancelledAfterAdmission
+        );
         let snapshot = scheduler.snapshot();
         assert_eq!(snapshot.active_decode, 0);
         assert_eq!(snapshot.cancelled, 1);
@@ -841,8 +914,8 @@ mod tests {
         assert_eq!(snapshot.active_prefill, 0);
         assert_eq!(snapshot.active_decode, 1);
         assert_eq!(snapshot.queued_prefill, 1);
-        assert_eq!(snapshot.prefill_yields, 1);
-        assert_eq!(snapshot.prefill_yields_to_decode, 1);
+        assert_eq!(snapshot.prefill_yields, 0);
+        assert_eq!(snapshot.prefill_yields_to_decode, 0);
 
         drop(decode_permit);
         yield_prefill
@@ -854,7 +927,83 @@ mod tests {
         assert_eq!(snapshot.active_decode, 0);
         assert_eq!(snapshot.admitted_prefill, 2);
         assert_eq!(snapshot.admitted_decode, 1);
+        assert_eq!(snapshot.prefill_yields, 1);
+        assert_eq!(snapshot.prefill_yields_to_decode, 1);
         assert_eq!(snapshot.prefill_yield_reacquire_waits, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_prefill_readmission_does_not_count_successful_yield_metrics() {
+        let scheduler = Arc::new(ModelScheduler::new(test_options()));
+        let prefill_cancellation = CancellationToken::new();
+        let decode_cancellation = CancellationToken::new();
+        let mut prefill = scheduler
+            .clone()
+            .acquire(
+                SchedulerClass::Prefill,
+                GenerationPhase::Prefill,
+                &prefill_cancellation,
+            )
+            .await
+            .expect("initial prefill is admitted");
+        let decode_scheduler = Arc::clone(&scheduler);
+        let decode = tokio::spawn(async move {
+            decode_scheduler
+                .clone()
+                .acquire(
+                    SchedulerClass::Decode,
+                    GenerationPhase::Decode,
+                    &decode_cancellation,
+                )
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while scheduler.snapshot().queued_decode != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("decode queues behind active prefill");
+
+        let err = prefill
+            .yield_prefill_chunk(&prefill_cancellation)
+            .await
+            .expect_err("prefill readmission queue is full");
+        assert_eq!(err, SchedulerAcquireError::QueueFull);
+
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.prefill_yields, 0);
+        assert_eq!(snapshot.prefill_yields_to_decode, 0);
+        assert_eq!(snapshot.prefill_yield_reacquire_waits, 0);
+
+        decode.abort();
+    }
+
+    #[test]
+    fn yielded_prefill_cancelled_after_readmission_counts_once() {
+        let scheduler = Arc::new(ModelScheduler::new(test_options()));
+        let cancellation = CancellationToken::new();
+        let mut yielded = SchedulerPermit {
+            scheduler: Arc::clone(&scheduler),
+            phase: GenerationPhase::Prefill,
+            outcome: SchedulerOutcome::Completed,
+            active: false,
+            terminal_on_drop: false,
+        };
+        let readmitted = scheduler
+            .try_acquire_immediate(SchedulerClass::Prefill, GenerationPhase::Prefill)
+            .expect("readmission permit is admitted");
+
+        cancellation.cancel();
+        let err = ModelScheduler::admit_unless_cancelled(readmitted, &cancellation)
+            .expect_err("admitted readmission observes cancellation");
+        yielded.complete_readmission_error(err);
+        drop(yielded);
+
+        let snapshot = scheduler.snapshot();
+        assert_eq!(snapshot.active_prefill, 0);
+        assert_eq!(snapshot.cancelled, 1);
     }
 
     #[test]

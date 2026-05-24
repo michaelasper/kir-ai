@@ -1172,10 +1172,16 @@ impl ModelBackend for InterleavedPrefillStreamBackend {
                         .to_owned(),
                 ))?;
             }
-            order
-                .lock()
-                .expect("order lock is not poisoned")
-                .push("long-prefill-start".to_owned());
+            {
+                let mut order = order.lock().expect("order lock is not poisoned");
+                order.push("long-prefill-start".to_owned());
+            }
+            let progress = BackendStreamProgress::PrefillProgress {
+                chunk: 1,
+                total: 2,
+                tokens: 2,
+                total_tokens: 4,
+            };
             yield BackendStreamChunk {
                 text: String::new(),
                 tool_call_deltas: Vec::new(),
@@ -1183,17 +1189,15 @@ impl ModelBackend for InterleavedPrefillStreamBackend {
                 prompt_cached_tokens: Some(0),
                 completion_tokens: 0,
                 finish_reason: None,
-                progress: Some(BackendStreamProgress::PrefillProgress {
-                    chunk: 1,
-                    total: 2,
-                    tokens: 2,
-                    total_tokens: 4,
-                }),
+                progress: Some(progress.clone()),
             };
-            order
-                .lock()
-                .expect("order lock is not poisoned")
-                .push("long-prefill-resume".to_owned());
+            if let Some(admission) = request.prefill_chunk_admission() {
+                admission.wait_for_next_chunk(progress).await?;
+            }
+            {
+                let mut order = order.lock().expect("order lock is not poisoned");
+                order.push("long-prefill-resume".to_owned());
+            }
             yield BackendStreamChunk {
                 text: "long-finished".to_owned(),
                 tool_call_deltas: Vec::new(),

@@ -524,7 +524,8 @@ mod tests {
     use crate::native_matvec::{NativeTextCacheMirrorIds, NativeTextCacheMirrorSource};
     use llm_backend_contracts::{
         BackendChatContext, BackendChatMessage, BackendChatRole, BackendFailureClass,
-        BackendStreamProgress, BackendToolChoice, SamplingConfig,
+        BackendPrefillChunkAdmission, BackendPrefillChunkAdmissionHook, BackendStreamProgress,
+        BackendToolChoice, SamplingConfig,
     };
     use llm_tokenizer::HuggingFaceTokenizer;
     use std::{
@@ -532,8 +533,9 @@ mod tests {
             Arc, Mutex, Weak,
             atomic::{AtomicUsize, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
+    use tokio::sync::Notify;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestCache {
@@ -794,6 +796,46 @@ mod tests {
 
         fn stream_decoded_token_total(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.stream_decoded_token_total)
+        }
+
+        fn prefill_chunk_calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.prefill_chunk_calls)
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingPrefillAdmission {
+        release: Notify,
+        calls: AtomicUsize,
+    }
+
+    impl BlockingPrefillAdmission {
+        fn new() -> Self {
+            Self {
+                release: Notify::new(),
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl BackendPrefillChunkAdmission for BlockingPrefillAdmission {
+        async fn wait_for_next_chunk(
+            &self,
+            progress: BackendStreamProgress,
+        ) -> Result<(), BackendError> {
+            assert_eq!(
+                progress,
+                BackendStreamProgress::PrefillProgress {
+                    chunk: 1,
+                    total: 2,
+                    tokens: 2,
+                    total_tokens: 4,
+                }
+            );
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.release.notified().await;
+            Ok(())
         }
     }
 
@@ -2065,6 +2107,73 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn streaming_generation_waits_for_prefill_admission_before_next_uncached_chunk() {
+        let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11, 12, 13]);
+        let prefill_chunk_calls = adapter.prefill_chunk_calls();
+        let driver = driver_for_test(adapter).with_max_prefill_tokens(2);
+        let admission = Arc::new(BlockingPrefillAdmission::new());
+        let request = driver_test_request(1).with_prefill_chunk_admission(
+            BackendPrefillChunkAdmissionHook::new(Arc::clone(&admission)),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let worker = std::thread::spawn({
+            let driver = driver.clone();
+            move || {
+                driver
+                    .block_on_worker(driver.generate_stream_async(
+                        request,
+                        tx,
+                        CancellationToken::new(),
+                    ))
+                    .expect("native stream worker runtime succeeds")
+            }
+        });
+
+        let first = rx
+            .blocking_recv()
+            .expect("first prefill progress arrives")
+            .expect("first prefill progress succeeds");
+        assert_eq!(
+            first.progress,
+            Some(BackendStreamProgress::PrefillProgress {
+                chunk: 1,
+                total: 2,
+                tokens: 2,
+                total_tokens: 4,
+            })
+        );
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while admission.calls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(prefill_chunk_calls.load(Ordering::SeqCst), 1);
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            prefill_chunk_calls.load(Ordering::SeqCst),
+            1,
+            "native worker must not start the next prefill chunk before admission"
+        );
+
+        admission.release.notify_waiters();
+        let mut saw_final = false;
+        while let Some(chunk) = rx.blocking_recv() {
+            let chunk = chunk.expect("stream chunk succeeds after readmission");
+            if chunk.finish_reason.is_some() {
+                saw_final = true;
+            }
+        }
+        worker
+            .join()
+            .expect("native stream worker joins")
+            .expect("native stream generation succeeds");
+        assert!(saw_final);
+        assert_eq!(prefill_chunk_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

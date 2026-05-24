@@ -1,5 +1,5 @@
 use super::error::runtime_error_metadata;
-use super::scheduler::{SchedulerAcquireError, SchedulerPermit};
+use super::scheduler::{SchedulerAcquireError, SharedSchedulerPermit};
 use super::{
     AppState, EngineErrorBody,
     lifecycle::StreamingGenerationRun,
@@ -14,16 +14,21 @@ use super::{
     },
 };
 use super::{requests::ActiveRequest, scheduler::GenerationPhaseGuard};
+use async_trait::async_trait;
 use axum::response::sse::{Event, KeepAlive};
 use futures::{Stream, StreamExt};
 use llm_api::Usage;
-use llm_backend_contracts::BackendStreamProgress;
+use llm_backend_contracts::{
+    BackendError, BackendPrefillChunkAdmission, BackendPrefillChunkAdmissionHook,
+    BackendStreamProgress,
+};
 use llm_runtime::{
     ChatCompletionStreamEvent, ChatCompletionStreamStage, CompletionStreamEvent,
     RequestCacheIdentity, RuntimeError, StreamProgressMetadata,
 };
 use std::{
     convert::Infallible,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::time::Instant as TokioInstant;
@@ -122,16 +127,7 @@ where
                             }
                             return;
                         }
-                        let yield_prefill = should_yield_prefill_progress(&progress);
                         yield sse_json_event(progress);
-                        if yield_prefill
-                            && let Err(events) = lifecycle.yield_prefill_chunk().await
-                        {
-                            for event in events {
-                                yield event;
-                            }
-                            return;
-                        }
                     }
                     EngineStreamStep::InternalProgress { bytes } => {
                         if lifecycle.active_request.cancellation.is_cancelled() {
@@ -293,22 +289,6 @@ fn stream_ended_without_completion_events() -> Vec<Result<Event, Infallible>> {
     ))
 }
 
-fn scheduler_overloaded_stream_events(message: &'static str) -> Vec<Result<Event, Infallible>> {
-    engine_error_stream_events(EngineErrorBody::new(
-        message,
-        "model_overloaded",
-        "scheduler",
-        true,
-    ))
-}
-
-fn should_yield_prefill_progress(progress: &BackendStreamProgress) -> bool {
-    matches!(
-        progress,
-        BackendStreamProgress::PrefillProgress { chunk, total, .. } if chunk < total
-    )
-}
-
 fn sse_json_event(value: impl serde::Serialize) -> Result<Event, Infallible> {
     let data = serde_json::to_string(&value).unwrap_or_else(|err| {
         tracing::error!(error = %err, "failed to serialize SSE event");
@@ -332,7 +312,7 @@ pub(super) struct StreamRunLifecycle {
     request_id: String,
     model: String,
     active_request: ActiveRequest,
-    scheduler_slot: SchedulerPermit,
+    scheduler_slot: SharedSchedulerPermit,
     phase: GenerationPhaseGuard,
     request_started: Instant,
     cache_identity: Option<RequestCacheIdentity>,
@@ -373,6 +353,13 @@ impl StreamRunLifecycle {
         self.active_request.cancellation.clone()
     }
 
+    pub(super) fn prefill_chunk_admission(&self) -> BackendPrefillChunkAdmissionHook {
+        BackendPrefillChunkAdmissionHook::new(Arc::new(SchedulerPrefillChunkAdmission {
+            scheduler_slot: self.scheduler_slot.clone(),
+            cancellation: self.active_request.cancellation.clone(),
+        }))
+    }
+
     fn stream_stall_timeout(&self) -> Option<Duration> {
         self.state.stream_stall_timeout
     }
@@ -380,26 +367,6 @@ impl StreamRunLifecycle {
     fn transition_to_decode(&mut self) {
         self.phase.transition_to_decode();
         self.scheduler_slot.transition_to_decode();
-    }
-
-    async fn yield_prefill_chunk(&mut self) -> Result<(), Vec<Result<Event, Infallible>>> {
-        match self
-            .scheduler_slot
-            .yield_prefill_chunk(&self.active_request.cancellation)
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(SchedulerAcquireError::Cancelled) => Err(self.finish_cancellation(
-                "request was cancelled while waiting for prefill scheduler readmission",
-                "prefill",
-            )),
-            Err(SchedulerAcquireError::QueueFull) => Err(self.finish_scheduler_overload(
-                "model scheduler queue is full; retry the request later",
-            )),
-            Err(SchedulerAcquireError::QueueTimedOut) => Err(self.finish_scheduler_overload(
-                "model scheduler queue timed out; retry the request later",
-            )),
-        }
     }
 
     fn finish_success(
@@ -452,7 +419,11 @@ impl StreamRunLifecycle {
         self.terminal = Some(StreamTerminalOutcome::RuntimeError);
         match self.active_request.mark_finished() {
             super::requests::RequestFinishResult::Finished => {
-                super::lifecycle::mark_scheduler_runtime_error(&mut self.scheduler_slot, &err);
+                if matches!(err, RuntimeError::Cancelled) {
+                    self.scheduler_slot.mark_cancelled();
+                } else {
+                    self.scheduler_slot.mark_failed();
+                }
                 record_runtime_error_metrics(&self.state, &err);
                 runtime_error_stream_events(err)
             }
@@ -549,28 +520,38 @@ impl StreamRunLifecycle {
             }
         }
     }
+}
 
-    fn finish_scheduler_overload(
-        &mut self,
-        message: &'static str,
-    ) -> Vec<Result<Event, Infallible>> {
-        self.terminal = Some(StreamTerminalOutcome::RuntimeError);
-        self.active_request.cancellation.cancel();
-        match self.active_request.mark_finished() {
-            super::requests::RequestFinishResult::Finished
-            | super::requests::RequestFinishResult::Cancelled => {
-                self.scheduler_slot.mark_failed();
-                record_failure_metrics(&self.state);
-                scheduler_overloaded_stream_events(message)
-            }
-            super::requests::RequestFinishResult::Missing => {
-                self.scheduler_slot.mark_failed();
-                record_failure_metrics(&self.state);
-                runtime_error_stream_events(RuntimeError::backend_failed(
-                    "request lifecycle was missing before scheduler readmission failure",
-                ))
-            }
+#[derive(Debug)]
+struct SchedulerPrefillChunkAdmission {
+    scheduler_slot: SharedSchedulerPermit,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[async_trait]
+impl BackendPrefillChunkAdmission for SchedulerPrefillChunkAdmission {
+    async fn wait_for_next_chunk(
+        &self,
+        _progress: BackendStreamProgress,
+    ) -> Result<(), BackendError> {
+        self.scheduler_slot
+            .yield_prefill_chunk(&self.cancellation)
+            .await
+            .map_err(prefill_readmission_backend_error)
+    }
+}
+
+fn prefill_readmission_backend_error(err: SchedulerAcquireError) -> BackendError {
+    match err {
+        SchedulerAcquireError::Cancelled | SchedulerAcquireError::CancelledAfterAdmission => {
+            BackendError::cancelled()
         }
+        SchedulerAcquireError::QueueFull => BackendError::scheduler_overloaded(
+            "model scheduler queue is full; retry the request later",
+        ),
+        SchedulerAcquireError::QueueTimedOut => BackendError::scheduler_overloaded(
+            "model scheduler queue timed out; retry the request later",
+        ),
     }
 }
 

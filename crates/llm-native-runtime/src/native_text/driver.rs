@@ -854,6 +854,12 @@ where
                     return Err(BackendError::cancelled());
                 }
                 if let Some(progress_tx) = progress_tx {
+                    let progress = BackendStreamProgress::PrefillProgress {
+                        chunk: completed_prefill_chunks as u64,
+                        total: total_prefill_chunks as u64,
+                        tokens: completed_prefill_tokens as u64,
+                        total_tokens: uncached_prefill_tokens as u64,
+                    };
                     progress_tx
                         .send(Ok(BackendStreamChunk {
                             text: String::new(),
@@ -862,15 +868,15 @@ where
                             prompt_cached_tokens: cache_report.prompt_cached_tokens(),
                             completion_tokens: 0,
                             finish_reason: None,
-                            progress: Some(BackendStreamProgress::PrefillProgress {
-                                chunk: completed_prefill_chunks as u64,
-                                total: total_prefill_chunks as u64,
-                                tokens: completed_prefill_tokens as u64,
-                                total_tokens: uncached_prefill_tokens as u64,
-                            }),
+                            progress: Some(progress.clone()),
                         }))
                         .await
                         .map_err(|err| BackendError::other(err.to_string()))?;
+                    if completed_prefill_chunks < total_prefill_chunks
+                        && let Some(admission) = request.prefill_chunk_admission()
+                    {
+                        admission.wait_for_next_chunk(progress).await?;
+                    }
                 }
                 tokio::task::yield_now().await;
             }

@@ -11,7 +11,7 @@ use chrono::Utc;
 use llm_api::{
     ApiError, CompletionChoice, CompletionRequest, CompletionResponse, ValidateRequest, Validated,
 };
-use llm_backend_contracts::ModelBackend;
+use llm_backend_contracts::{BackendPrefillChunkAdmissionHook, ModelBackend};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -90,6 +90,21 @@ where
         request: Validated<CompletionRequest>,
         cancellation: CancellationToken,
     ) -> Result<CompletionStream<'_>, RuntimeError> {
+        self.completion_stream_validated_with_cancel_and_prefill_admission(
+            request,
+            cancellation,
+            None,
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn completion_stream_validated_with_cancel_and_prefill_admission(
+        &self,
+        request: Validated<CompletionRequest>,
+        cancellation: CancellationToken,
+        prefill_chunk_admission: Option<BackendPrefillChunkAdmissionHook>,
+    ) -> Result<CompletionStream<'_>, RuntimeError> {
         let request = self.ensure_runtime_validated(request)?;
         let request_ref = request.as_ref();
         self.validate_completion_request_capabilities(request_ref, true)?;
@@ -101,7 +116,10 @@ where
             &request_ref.model,
         );
         let request = request.into_inner();
-        let backend_request = completion_backend_request(request)?;
+        let mut backend_request = completion_backend_request(request)?;
+        if let Some(admission) = prefill_chunk_admission {
+            backend_request = backend_request.with_prefill_chunk_admission(admission);
+        }
         tracing::debug!(
             operation = "runtime_backend_dispatch",
             request_kind = "completion",
