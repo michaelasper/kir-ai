@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.4](https://github.com/michaelasper/kir-ai/compare/v1.56.3...v1.56.4) (2026-05-24)
+
+### Performance Improvements
+
+* **COR-314:** add release profile optimization settings ([2030647](https://github.com/michaelasper/kir-ai/commit/20306472106a4d98334f26edd2bcd48bda8465fb))
+
 ## [1.56.3](https://github.com/michaelasper/kir-ai/compare/v1.56.2...v1.56.3) (2026-05-24)
 
 ### Bug Fixes
