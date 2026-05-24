@@ -61,7 +61,7 @@ pub(super) fn normalize_endpoint(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_owned()
 }
 
-pub(super) fn parse_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
+pub(crate) fn parse_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
     flag_value(args, flag)
         .map(str::parse::<u64>)
         .transpose()
@@ -87,7 +87,7 @@ pub(super) fn parse_u32_flag(args: &[String], flag: &str, default: u32) -> anyho
         })
 }
 
-pub(super) fn parse_usize_flag(
+pub(crate) fn parse_usize_flag(
     args: &[String],
     flag: &str,
     default: usize,
