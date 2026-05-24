@@ -223,6 +223,56 @@ fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
     std::fs::remove_dir_all(root).ok();
 }
 
+#[test]
+fn safetensors_bf16_range_into_reuses_caller_decode_buffer() {
+    let root = temp_snapshot_dir("bf16-range-into-buffer");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    let shard_path = root.join("model.safetensors");
+    std::fs::write(
+        &shard_path,
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+    let file = llm_backend::native::SafeTensorFile::open(&shard_path).expect("open shard");
+    file.materialize().expect("materialized shard");
+
+    let mut values = Vec::with_capacity(8);
+    values.extend_from_slice(&[99.0, 100.0]);
+    let original_ptr = values.as_ptr();
+
+    file.bf16_tensor_f32_range_into("embed.weight", 1, 4, &mut values)
+        .expect("range decodes into caller buffer");
+
+    assert_eq!(values, vec![2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(values.as_ptr(), original_ptr);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn safetensors_bf16_row_into_reuses_caller_decode_buffer() {
+    let root = temp_snapshot_dir("bf16-row-into-buffer");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    let shard_path = root.join("model.safetensors");
+    std::fs::write(
+        &shard_path,
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+    let file = llm_backend::native::SafeTensorFile::open(&shard_path).expect("open shard");
+    file.materialize().expect("materialized shard");
+
+    let mut values = Vec::with_capacity(4);
+    values.push(99.0);
+    let original_ptr = values.as_ptr();
+
+    file.bf16_row_f32_into("embed.weight", 1, &mut values)
+        .expect("row decodes into caller buffer");
+
+    assert_eq!(values, vec![4.0, 5.0, 6.0]);
+    assert_eq!(values.as_ptr(), original_ptr);
+    std::fs::remove_dir_all(root).ok();
+}
+
 impl NativeMatvecBackend for RecordingMatvecBackend {
     async fn bf16_matvec_row_major_f32_in_place(
         &self,

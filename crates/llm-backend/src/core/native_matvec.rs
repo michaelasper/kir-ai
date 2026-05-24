@@ -203,13 +203,14 @@ pub trait NativeMatvecBackend {
                 input.len()
             )));
         }
-        let element_count = rows
-            .checked_mul(columns)
-            .ok_or_else(|| TensorLoadError::integrity("BF16 range matvec shape overflow"))?;
-        let weights = store.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-        self.matvec_row_major_f32_in_place(input, &weights, rows, columns, output)
-            .await
-            .map_err(|err| TensorLoadError::integrity(format!("BF16 range matvec failed: {err}")))
+        store.bf16_matvec_range_row_major_f32_in_place(
+            tensor,
+            element_offset,
+            rows,
+            columns,
+            input,
+            output,
+        )
     }
 
     async fn bf16_matvec_top_k_rows_f32(

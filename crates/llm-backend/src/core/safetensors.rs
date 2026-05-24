@@ -287,6 +287,33 @@ impl SafeTensorFile {
             })?;
             return Ok(bytes.to_vec());
         }
+        self.read_tensor_bytes_range(name, file_range, byte_len)
+    }
+
+    pub fn with_tensor_bytes_range<T>(
+        &self,
+        name: &str,
+        tensor_byte_offset: u64,
+        byte_len: usize,
+        read: impl FnOnce(&[u8]) -> Result<T, TensorLoadError>,
+    ) -> Result<T, TensorLoadError> {
+        let file_range = self.tensor_file_byte_range(name, tensor_byte_offset, byte_len)?;
+        if let Some(mapped) = self.materialized_file_if_present()? {
+            let bytes = mapped.get(file_range).ok_or_else(|| {
+                TensorLoadError::integrity(format!("tensor `{name}` mapped range is invalid"))
+            })?;
+            return read(bytes);
+        }
+        let bytes = self.read_tensor_bytes_range(name, file_range, byte_len)?;
+        read(&bytes)
+    }
+
+    fn read_tensor_bytes_range(
+        &self,
+        name: &str,
+        file_range: Range<usize>,
+        byte_len: usize,
+    ) -> Result<Vec<u8>, TensorLoadError> {
         let mut bytes = vec![0_u8; byte_len];
         let mut file = self.file.try_clone().map_err(|err| {
             TensorLoadError::integrity(format!("could not clone safetensors file handle: {err}"))
@@ -307,9 +334,9 @@ impl SafeTensorFile {
         tensor_byte_offset: u64,
         byte_len: usize,
     ) -> Result<Range<usize>, TensorLoadError> {
-        let metadata = self.header.tensor_metadata(name)?;
+        let tensor = self.header.tensor_entry(name)?;
         let tensor_byte_len = u64_from_usize(
-            metadata.byte_len,
+            tensor.byte_len()?,
             "tensor byte length does not fit in u64 for range read",
         )?;
         let requested_end = tensor_byte_offset
@@ -352,7 +379,7 @@ impl SafeTensorFile {
         )?;
         // SAFETY: promoted safetensors snapshots are treated as immutable by the
         // store. This read-only mapping is used only after header/range validation,
-        // and callers copy bytes out before decoding.
+        // and callers borrow or copy validated byte ranges before decoding.
         let mapped = Arc::new(
             unsafe { MmapOptions::new().map(&self.file) }.map_err(|err| {
                 TensorLoadError::integrity(format!("could not mmap safetensors file: {err}"))
@@ -389,11 +416,35 @@ impl SafeTensorFile {
         element_offset: usize,
         element_count: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
-        let metadata = self.header.tensor_metadata(name)?;
-        if metadata.dtype != "BF16" {
+        let mut values = Vec::with_capacity(element_count);
+        self.bf16_tensor_f32_range_into(name, element_offset, element_count, &mut values)?;
+        Ok(values)
+    }
+
+    pub fn bf16_tensor_f32_range_into(
+        &self,
+        name: &str,
+        element_offset: usize,
+        element_count: usize,
+        output: &mut Vec<f32>,
+    ) -> Result<(), TensorLoadError> {
+        self.with_bf16_tensor_bytes_range(name, element_offset, element_count, |bytes| {
+            bf16_bytes_to_f32_into(bytes, output)
+        })
+    }
+
+    fn with_bf16_tensor_bytes_range<T>(
+        &self,
+        name: &str,
+        element_offset: usize,
+        element_count: usize,
+        read: impl FnOnce(&[u8]) -> Result<T, TensorLoadError>,
+    ) -> Result<T, TensorLoadError> {
+        let tensor = self.header.tensor_entry(name)?;
+        if tensor.dtype != "BF16" {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{name}` has dtype {}, expected BF16",
-                metadata.dtype
+                tensor.dtype
             )));
         }
         let byte_offset = u64_from_usize(
@@ -405,8 +456,7 @@ impl SafeTensorFile {
         let byte_len = element_count
             .checked_mul(2)
             .ok_or_else(|| TensorLoadError::integrity("BF16 element count overflow"))?;
-        let bytes = self.tensor_bytes_range(name, byte_offset, byte_len)?;
-        bf16_bytes_to_f32(&bytes)
+        self.with_tensor_bytes_range(name, byte_offset, byte_len, read)
     }
 
     pub fn bf16_tensor_bits_range(
@@ -415,36 +465,44 @@ impl SafeTensorFile {
         element_offset: usize,
         element_count: usize,
     ) -> Result<Vec<u16>, TensorLoadError> {
-        let metadata = self.header.tensor_metadata(name)?;
-        if metadata.dtype != "BF16" {
-            return Err(TensorLoadError::unsupported(format!(
-                "tensor `{name}` has dtype {}, expected BF16",
-                metadata.dtype
-            )));
-        }
-        let byte_offset = u64_from_usize(
-            element_offset
-                .checked_mul(2)
-                .ok_or_else(|| TensorLoadError::integrity("BF16 element offset overflow"))?,
-            "BF16 byte offset does not fit in u64",
-        )?;
-        let byte_len = element_count
-            .checked_mul(2)
-            .ok_or_else(|| TensorLoadError::integrity("BF16 element count overflow"))?;
-        let bytes = self.tensor_bytes_range(name, byte_offset, byte_len)?;
-        bf16_bytes_to_bits(&bytes)
+        self.with_bf16_tensor_bytes_range(name, element_offset, element_count, bf16_bytes_to_bits)
     }
 
     pub fn bf16_row_f32(&self, name: &str, row: usize) -> Result<Vec<f32>, TensorLoadError> {
-        let metadata = self.header.tensor_metadata(name)?;
-        if metadata.shape.len() != 2 {
+        let tensor = self.header.tensor_entry(name)?;
+        if tensor.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{name}` row reader expects rank 2, got rank {}",
-                metadata.shape.len()
+                tensor.shape.len()
             )));
         }
-        let rows = metadata.shape[0];
-        let columns = metadata.shape[1];
+        let rows = tensor.shape[0];
+        let columns = tensor.shape[1];
+        if row >= rows {
+            return Err(TensorLoadError::integrity(format!(
+                "tensor `{name}` row {row} exceeds row count {rows}"
+            )));
+        }
+        let mut values = Vec::with_capacity(columns);
+        self.bf16_row_f32_into(name, row, &mut values)?;
+        Ok(values)
+    }
+
+    pub fn bf16_row_f32_into(
+        &self,
+        name: &str,
+        row: usize,
+        output: &mut Vec<f32>,
+    ) -> Result<(), TensorLoadError> {
+        let tensor = self.header.tensor_entry(name)?;
+        if tensor.shape.len() != 2 {
+            return Err(TensorLoadError::unsupported(format!(
+                "tensor `{name}` row reader expects rank 2, got rank {}",
+                tensor.shape.len()
+            )));
+        }
+        let rows = tensor.shape[0];
+        let columns = tensor.shape[1];
         if row >= rows {
             return Err(TensorLoadError::integrity(format!(
                 "tensor `{name}` row {row} exceeds row count {rows}"
@@ -453,7 +511,7 @@ impl SafeTensorFile {
         let element_offset = row
             .checked_mul(columns)
             .ok_or_else(|| TensorLoadError::integrity("row offset overflow"))?;
-        self.bf16_tensor_f32_range(name, element_offset, columns)
+        self.bf16_tensor_f32_range_into(name, element_offset, columns, output)
     }
 }
 
@@ -574,6 +632,16 @@ impl SafeTensorShardStore {
         self.open_tensor_file(tensor)?.bf16_row_f32(tensor, row)
     }
 
+    pub fn bf16_row_f32_into(
+        &self,
+        tensor: &str,
+        row: usize,
+        output: &mut Vec<f32>,
+    ) -> Result<(), TensorLoadError> {
+        self.open_tensor_file(tensor)?
+            .bf16_row_f32_into(tensor, row, output)
+    }
+
     pub fn bf16_tensor_f32_range(
         &self,
         tensor: &str,
@@ -582,6 +650,21 @@ impl SafeTensorShardStore {
     ) -> Result<Vec<f32>, TensorLoadError> {
         self.open_tensor_file(tensor)?
             .bf16_tensor_f32_range(tensor, element_offset, element_count)
+    }
+
+    pub fn bf16_tensor_f32_range_into(
+        &self,
+        tensor: &str,
+        element_offset: usize,
+        element_count: usize,
+        output: &mut Vec<f32>,
+    ) -> Result<(), TensorLoadError> {
+        self.open_tensor_file(tensor)?.bf16_tensor_f32_range_into(
+            tensor,
+            element_offset,
+            element_count,
+            output,
+        )
     }
 
     pub fn bf16_tensor_bits_range(
@@ -824,15 +907,15 @@ impl SafeTensorShardStore {
         chunk_rows: usize,
     ) -> Result<Vec<f32>, TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
-        let metadata = file.tensor_metadata(tensor)?;
-        if metadata.shape.len() != 2 {
+        let entry = file.header.tensor_entry(tensor)?;
+        if entry.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` matvec expects rank 2, got rank {}",
-                metadata.shape.len()
+                entry.shape.len()
             )));
         }
-        let rows = metadata.shape[0];
-        let columns = metadata.shape[1];
+        let rows = entry.shape[0];
+        let columns = entry.shape[1];
         if input.len() != columns {
             return Err(TensorLoadError::integrity(format!(
                 "input length {} does not match tensor `{tensor}` columns {columns}",
@@ -844,6 +927,7 @@ impl SafeTensorShardStore {
                 "chunk_rows must be greater than zero",
             ));
         }
+        let row_byte_len = bf16_row_byte_len(columns, "matvec")?;
         let mut output = Vec::with_capacity(rows);
         for row_start in (0..rows).step_by(chunk_rows) {
             let rows_in_chunk = chunk_rows.min(rows - row_start);
@@ -853,13 +937,13 @@ impl SafeTensorShardStore {
             let element_count = rows_in_chunk
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("matvec chunk overflow"))?;
-            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-            output.extend(weights.chunks_exact(columns).map(|row| {
-                row.iter()
-                    .zip(input)
-                    .map(|(weight, value)| weight * value)
-                    .sum::<f32>()
-            }));
+            file.with_bf16_tensor_bytes_range(tensor, element_offset, element_count, |weights| {
+                for row_offset in 0..rows_in_chunk {
+                    let row = bf16_row_bytes(weights, row_offset, row_byte_len, "matvec chunk")?;
+                    output.push(bf16_dot_f32(row, input)?);
+                }
+                Ok(())
+            })?;
         }
         Ok(output)
     }
@@ -872,15 +956,15 @@ impl SafeTensorShardStore {
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
-        let metadata = file.tensor_metadata(tensor)?;
-        if metadata.shape.len() != 2 {
+        let entry = file.header.tensor_entry(tensor)?;
+        if entry.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` matvec expects rank 2, got rank {}",
-                metadata.shape.len()
+                entry.shape.len()
             )));
         }
-        let rows = metadata.shape[0];
-        let columns = metadata.shape[1];
+        let rows = entry.shape[0];
+        let columns = entry.shape[1];
         if input.len() != columns {
             return Err(TensorLoadError::integrity(format!(
                 "input length {} does not match tensor `{tensor}` columns {columns}",
@@ -897,6 +981,7 @@ impl SafeTensorShardStore {
                 "chunk_rows must be greater than zero",
             ));
         }
+        let row_byte_len = bf16_row_byte_len(columns, "matvec")?;
         for row_start in (0..rows).step_by(chunk_rows) {
             let rows_in_chunk = chunk_rows.min(rows - row_start);
             let element_offset = row_start
@@ -905,16 +990,51 @@ impl SafeTensorShardStore {
             let element_count = rows_in_chunk
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("matvec chunk overflow"))?;
-            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-            for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
-                output[row_start + row_offset] = row
-                    .iter()
-                    .zip(input)
-                    .map(|(weight, value)| weight * value)
-                    .sum::<f32>();
-            }
+            file.with_bf16_tensor_bytes_range(tensor, element_offset, element_count, |weights| {
+                for row_offset in 0..rows_in_chunk {
+                    let row = bf16_row_bytes(weights, row_offset, row_byte_len, "matvec chunk")?;
+                    output[row_start + row_offset] = bf16_dot_f32(row, input)?;
+                }
+                Ok(())
+            })?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_matvec_range_row_major_f32_in_place(
+        &self,
+        tensor: &str,
+        element_offset: usize,
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        if input.len() != columns {
+            return Err(TensorLoadError::integrity(format!(
+                "BF16 range matvec input length {} must match columns {columns}",
+                input.len()
+            )));
+        }
+        if output.len() < rows {
+            return Err(TensorLoadError::integrity(
+                "BF16 range matvec failed: output buffer too small",
+            ));
+        }
+        let element_count = rows
+            .checked_mul(columns)
+            .ok_or_else(|| TensorLoadError::integrity("BF16 range matvec shape overflow"))?;
+        let row_byte_len = bf16_row_byte_len(columns, "BF16 range matvec")?;
+        let file = self.open_tensor_file(tensor)?;
+        file.with_bf16_tensor_bytes_range(tensor, element_offset, element_count, |weights| {
+            for (row_offset, out) in output.iter_mut().take(rows).enumerate() {
+                let row =
+                    bf16_row_bytes(weights, row_offset, row_byte_len, "BF16 range matvec chunk")?;
+                *out = bf16_dot_f32(row, input)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn bf16_matvecs_row_major_f32(
@@ -933,15 +1053,15 @@ impl SafeTensorShardStore {
         inputs: &[Vec<f32>],
     ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
-        let metadata = file.tensor_metadata(tensor)?;
-        if metadata.shape.len() != 2 {
+        let entry = file.header.tensor_entry(tensor)?;
+        if entry.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` batched matvec expects rank 2, got rank {}",
-                metadata.shape.len()
+                entry.shape.len()
             )));
         }
-        let rows = metadata.shape[0];
-        let columns = metadata.shape[1];
+        let rows = entry.shape[0];
+        let columns = entry.shape[1];
         for input in inputs {
             if input.len() != columns {
                 return Err(TensorLoadError::integrity(format!(
@@ -963,22 +1083,24 @@ impl SafeTensorShardStore {
             let element_count = rows_in_chunk
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("batched matvec chunk overflow"))?;
-            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-            for (input_idx, input) in inputs.iter().enumerate() {
-                let output_start = input_idx
-                    .checked_mul(rows)
-                    .and_then(|start| start.checked_add(row_start))
-                    .ok_or_else(|| {
-                        TensorLoadError::integrity("batched matvec output offset overflow")
-                    })?;
-                for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
-                    outputs[output_start + row_offset] = row
-                        .iter()
-                        .zip(input)
-                        .map(|(weight, value)| weight * value)
-                        .sum::<f32>();
+            let row_byte_len = bf16_row_byte_len(columns, "batched matvec")?;
+            file.with_bf16_tensor_bytes_range(tensor, element_offset, element_count, |weights| {
+                for row_offset in 0..rows_in_chunk {
+                    let row =
+                        bf16_row_bytes(weights, row_offset, row_byte_len, "batched matvec chunk")?;
+                    for (input_idx, input) in inputs.iter().enumerate() {
+                        let output_index = input_idx
+                            .checked_mul(rows)
+                            .and_then(|start| start.checked_add(row_start))
+                            .and_then(|start| start.checked_add(row_offset))
+                            .ok_or_else(|| {
+                                TensorLoadError::integrity("batched matvec output offset overflow")
+                            })?;
+                        outputs[output_index] = bf16_dot_f32(row, input)?;
+                    }
                 }
-            }
+                Ok(())
+            })?;
         }
         NativeBatchedMatvecOutput::new(outputs, rows)
     }
@@ -991,15 +1113,15 @@ impl SafeTensorShardStore {
         chunk_rows: usize,
     ) -> Result<Vec<TopKLogit>, TensorLoadError> {
         let file = self.open_tensor_file(tensor)?;
-        let metadata = file.tensor_metadata(tensor)?;
-        if metadata.shape.len() != 2 {
+        let entry = file.header.tensor_entry(tensor)?;
+        if entry.shape.len() != 2 {
             return Err(TensorLoadError::unsupported(format!(
                 "tensor `{tensor}` top-k matvec expects rank 2, got rank {}",
-                metadata.shape.len()
+                entry.shape.len()
             )));
         }
-        let rows = metadata.shape[0];
-        let columns = metadata.shape[1];
+        let rows = entry.shape[0];
+        let columns = entry.shape[1];
         if input.len() != columns {
             return Err(TensorLoadError::integrity(format!(
                 "input length {} does not match tensor `{tensor}` columns {columns}",
@@ -1016,6 +1138,7 @@ impl SafeTensorShardStore {
                 "chunk_rows must be greater than zero",
             ));
         }
+        let row_byte_len = bf16_row_byte_len(columns, "top-k matvec")?;
         let mut top = Vec::with_capacity(top_k);
         for row_start in (0..rows).step_by(chunk_rows) {
             let rows_in_chunk = chunk_rows.min(rows - row_start);
@@ -1025,23 +1148,23 @@ impl SafeTensorShardStore {
             let element_count = rows_in_chunk
                 .checked_mul(columns)
                 .ok_or_else(|| TensorLoadError::integrity("top-k matvec chunk overflow"))?;
-            let weights = file.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-            for (row_offset, row) in weights.chunks_exact(columns).enumerate() {
-                let logit = row
-                    .iter()
-                    .zip(input)
-                    .map(|(weight, value)| weight * value)
-                    .sum::<f32>();
-                push_top_logit(
-                    &mut top,
-                    TopKLogit {
-                        index: row_start + row_offset,
-                        logit,
-                    },
-                    top_k,
-                )
-                .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
-            }
+            file.with_bf16_tensor_bytes_range(tensor, element_offset, element_count, |weights| {
+                for row_offset in 0..rows_in_chunk {
+                    let row =
+                        bf16_row_bytes(weights, row_offset, row_byte_len, "top-k matvec chunk")?;
+                    let logit = bf16_dot_f32(row, input)?;
+                    push_top_logit(
+                        &mut top,
+                        TopKLogit {
+                            index: row_start + row_offset,
+                            logit,
+                        },
+                        top_k,
+                    )
+                    .map_err(|err| TensorLoadError::integrity(err.to_string()))?;
+                }
+                Ok(())
+            })?;
         }
         Ok(top)
     }
@@ -1120,21 +1243,59 @@ impl SafeTensorShardStore {
     }
 }
 
-fn bf16_bytes_to_f32(bytes: &[u8]) -> Result<Vec<f32>, TensorLoadError> {
+fn bf16_row_byte_len(columns: usize, context: &str) -> Result<usize, TensorLoadError> {
+    columns
+        .checked_mul(2)
+        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row byte length overflow")))
+}
+
+fn bf16_row_bytes<'a>(
+    bytes: &'a [u8],
+    row_offset: usize,
+    row_byte_len: usize,
+    context: &str,
+) -> Result<&'a [u8], TensorLoadError> {
+    let start = row_offset
+        .checked_mul(row_byte_len)
+        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row offset overflow")))?;
+    let end = start
+        .checked_add(row_byte_len)
+        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row range overflow")))?;
+    bytes
+        .get(start..end)
+        .ok_or_else(|| TensorLoadError::integrity(format!("{context} BF16 row range is invalid")))
+}
+
+fn bf16_dot_f32(row_bytes: &[u8], input: &[f32]) -> Result<f32, TensorLoadError> {
+    let expected_byte_len = input
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| TensorLoadError::integrity("BF16 dot input byte length overflow"))?;
+    if row_bytes.len() != expected_byte_len {
+        return Err(TensorLoadError::integrity(format!(
+            "BF16 row byte length {} does not match input byte length {expected_byte_len}",
+            row_bytes.len()
+        )));
+    }
+    Ok(row_bytes
+        .chunks_exact(2)
+        .zip(input)
+        .map(|(chunk, value)| bf16_bits_to_f32(u16::from_le_bytes([chunk[0], chunk[1]])) * value)
+        .sum())
+}
+
+fn bf16_bytes_to_f32_into(bytes: &[u8], output: &mut Vec<f32>) -> Result<(), TensorLoadError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(TensorLoadError::integrity(
             "BF16 byte length must be divisible by 2",
         ));
     }
-    bytes
-        .chunks_exact(2)
-        .map(|chunk| {
-            chunk
-                .try_into()
-                .map(|b| bf16_bits_to_f32(u16::from_le_bytes(b)))
-                .map_err(|_| TensorLoadError::integrity("BF16 chunk is not 2 bytes"))
-        })
-        .collect::<Result<_, _>>()
+    output.clear();
+    output.reserve(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        output.push(bf16_bits_to_f32(u16::from_le_bytes([chunk[0], chunk[1]])));
+    }
+    Ok(())
 }
 
 fn f32_slice_bytes(len: usize) -> u64 {
@@ -1147,15 +1308,10 @@ fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {
             "BF16 byte length must be divisible by 2",
         ));
     }
-    bytes
+    Ok(bytes
         .chunks_exact(2)
-        .map(|chunk| {
-            chunk
-                .try_into()
-                .map(u16::from_le_bytes)
-                .map_err(|_| TensorLoadError::integrity("BF16 chunk is not 2 bytes"))
-        })
-        .collect::<Result<_, _>>()
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect())
 }
 
 #[derive(Debug, Clone)]
