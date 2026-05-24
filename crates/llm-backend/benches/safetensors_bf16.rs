@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use llm_backend::native::{SafeTensorFile, SafeTensorShardStore, TensorLoadError};
+use llm_backend::native::{
+    NativeBatchedMatvecOutput, SafeTensorFile, SafeTensorShardStore, TensorLoadError,
+};
 
 const TENSOR: &str = "embed.weight";
 const ROWS: usize = 256;
@@ -13,6 +15,7 @@ const COLUMNS: usize = 512;
 const ROW_ITERATIONS: usize = 10_000;
 const MATVEC_ITERATIONS: usize = 200;
 const MATVEC_CHUNK_ROWS: usize = 64;
+const PREFILL_COPY_CHUNKS: &[usize] = &[1, 4, 16, 64, 128];
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -141,6 +144,14 @@ fn main() -> Result<(), TensorLoadError> {
         &matvec_current,
     );
 
+    println!();
+    println!("batched_matvec_copy_overhead: prefill chunk flatten/split vs flat views");
+    println!(
+        "{:<18} {:<24} {:>8} {:>12} {:>12} {:>12} {:>12}",
+        "case", "path", "iters", "total_ms", "ns/iter", "alloc/iter", "bytes/iter"
+    );
+    run_prefill_copy_cases()?;
+
     std::fs::remove_dir_all(root).ok();
     Ok(())
 }
@@ -181,6 +192,48 @@ fn print_result(case: &str, path: &str, iterations: usize, result: &BenchResult)
         "{:<18} {:<24} {:>8} {:>12.3} {:>12.1} {:>12.2} {:>12.1}",
         case, path, iterations, total_ms, ns_per_iter, allocations_per_iter, bytes_per_iter
     );
+}
+
+fn run_prefill_copy_cases() -> Result<(), TensorLoadError> {
+    let max_chunk = PREFILL_COPY_CHUNKS.iter().copied().max().unwrap_or(0);
+    let row_inputs = prefill_row_inputs(max_chunk);
+    let flat_inputs = flatten_prefill_rows(&row_inputs, max_chunk);
+    let output_values = prefill_output_values(max_chunk);
+
+    for &chunk in PREFILL_COPY_CHUNKS {
+        let iterations = prefill_copy_iterations(chunk);
+        let case = format!("prefill_{chunk}");
+        let legacy = measure(iterations, || {
+            let mut flattened = Vec::with_capacity(chunk * COLUMNS);
+            for input in row_inputs.iter().take(chunk) {
+                flattened.extend_from_slice(input);
+            }
+            let rows = output_values[..chunk * ROWS]
+                .chunks_exact(ROWS)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>();
+            Ok(checksum_f32(&flattened) ^ checksum_nested_rows(&rows))
+        })?;
+        print_result(&case, "legacy_flatten_split", iterations, &legacy);
+
+        let output = NativeBatchedMatvecOutput::new(output_values[..chunk * ROWS].to_vec(), ROWS)?;
+        let flat_input = &flat_inputs[..chunk * COLUMNS];
+        let current = measure(iterations, || {
+            Ok(checksum_f32(flat_input) ^ checksum_row_views(output.rows()))
+        })?;
+        print_result(&case, "flat_input_row_views", iterations, &current);
+    }
+
+    Ok(())
+}
+
+fn prefill_copy_iterations(chunk: usize) -> usize {
+    match chunk {
+        0..=4 => 20_000,
+        5..=16 => 10_000,
+        17..=64 => 3_000,
+        _ => 1_000,
+    }
 }
 
 fn legacy_bf16_row_f32(
@@ -310,6 +363,30 @@ fn bench_input() -> Vec<f32> {
         .collect()
 }
 
+fn prefill_row_inputs(rows: usize) -> Vec<Vec<f32>> {
+    (0..rows)
+        .map(|row| {
+            (0..COLUMNS)
+                .map(|column| ((row * 31 + column) % 257) as f32 / 128.0 - 1.0)
+                .collect()
+        })
+        .collect()
+}
+
+fn flatten_prefill_rows(row_inputs: &[Vec<f32>], rows: usize) -> Vec<f32> {
+    let mut flattened = Vec::with_capacity(rows * COLUMNS);
+    for input in row_inputs.iter().take(rows) {
+        flattened.extend_from_slice(input);
+    }
+    flattened
+}
+
+fn prefill_output_values(rows: usize) -> Vec<f32> {
+    (0..rows * ROWS)
+        .map(|index| (index % 131) as f32 / 64.0 - 0.5)
+        .collect()
+}
+
 fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
     let mut data = Vec::with_capacity(values.len() * 2);
     for value in values {
@@ -350,4 +427,14 @@ fn checksum_f32(values: &[f32]) -> u64 {
     values.iter().fold(0_u64, |checksum, value| {
         checksum.rotate_left(5) ^ value.to_bits() as u64
     })
+}
+
+fn checksum_nested_rows(rows: &[Vec<f32>]) -> u64 {
+    rows.iter()
+        .fold(0_u64, |checksum, row| checksum ^ checksum_f32(row))
+}
+
+fn checksum_row_views<'a>(rows: impl IntoIterator<Item = &'a [f32]>) -> u64 {
+    rows.into_iter()
+        .fold(0_u64, |checksum, row| checksum ^ checksum_f32(row))
 }

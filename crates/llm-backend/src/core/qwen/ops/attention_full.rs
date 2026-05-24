@@ -12,8 +12,8 @@ use super::super::super::native_attention::{
     require_full_attention_cache_shape,
 };
 use super::super::super::{
-    CpuNativeMatvecBackend, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError,
+    CpuNativeMatvecBackend, LayerKvCache, NativeBatchedMatvecInputBuffer, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
 use super::super::matvec::rms_norm_f32;
 use llm_models::QwenModelSpec;
@@ -566,25 +566,34 @@ pub(crate) async fn qwen_layer_full_attention_sequence_impl(
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let dims = QwenFullAttentionDims::from_spec(spec);
+    let input_columns = hidden_states.first().map_or(0, Vec::len);
+    let flat_hidden_states =
+        NativeBatchedMatvecInputBuffer::from_rows(hidden_states, input_columns)?;
+    let q_proj_tensor = spec.self_attn_tensor(layer_idx, "q_proj.weight");
+    let k_proj_tensor = spec.self_attn_tensor(layer_idx, "k_proj.weight");
+    let v_proj_tensor = spec.self_attn_tensor(layer_idx, "v_proj.weight");
     let q_proj = matvec
-        .bf16_matvecs_row_major_f32_flat(
+        .bf16_matvecs_row_major_f32_flat_inputs(
             store,
-            &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
-            hidden_states,
+            &q_proj_tensor,
+            flat_hidden_states.values(),
+            flat_hidden_states.input_count(),
         )
         .await?;
     let k_proj = matvec
-        .bf16_matvecs_row_major_f32_flat(
+        .bf16_matvecs_row_major_f32_flat_inputs(
             store,
-            &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
-            hidden_states,
+            &k_proj_tensor,
+            flat_hidden_states.values(),
+            flat_hidden_states.input_count(),
         )
         .await?;
     let v_proj = matvec
-        .bf16_matvecs_row_major_f32_flat(
+        .bf16_matvecs_row_major_f32_flat_inputs(
             store,
-            &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
-            hidden_states,
+            &v_proj_tensor,
+            flat_hidden_states.values(),
+            flat_hidden_states.input_count(),
         )
         .await?;
     let q_norm_weight =

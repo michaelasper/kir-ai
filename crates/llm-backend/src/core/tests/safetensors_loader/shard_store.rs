@@ -56,7 +56,19 @@ fn shard_store_reads_bf16_row_by_tensor_name() {
         )
         .expect("flat batched matvec");
     assert_eq!(flat.row_len(), 2);
+    assert_eq!(flat.row_count(), 2);
     assert_eq!(flat.values(), &[14.0, 32.0, 10.0, 28.0]);
+    assert_eq!(
+        flat.rows().collect::<Vec<_>>(),
+        vec![&[14.0, 32.0][..], &[10.0, 28.0][..]]
+    );
+    assert_eq!(flat.row(1), Some(&[10.0, 28.0][..]));
+    let flat_inputs = store
+        .bf16_matvecs_row_major_f32_flat_inputs("embed.weight", &[1.0, 2.0, 3.0, 3.0, 2.0, 1.0], 2)
+        .expect("flat-input batched matvec");
+    assert_eq!(flat_inputs.row_len(), 2);
+    assert_eq!(flat_inputs.row_count(), 2);
+    assert_eq!(flat_inputs.values(), flat.values());
     let top = store
         .bf16_matvec_top_k_rows_f32("embed.weight", &[1.0, 2.0, 3.0], 1, 1)
         .expect("top logits");

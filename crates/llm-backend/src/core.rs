@@ -23,7 +23,8 @@ pub use gemma::{
 };
 pub use math::{InferenceScratchpad, MathError, TopKLogit, TopKWeight};
 pub use native_matvec::{
-    CpuNativeMatvecBackend, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
+    CpuNativeMatvecBackend, NativeBatchedMatvecInputBuffer, NativeBatchedMatvecOutput,
+    NativeBatchedMatvecRows, NativeKvCacheTensor, NativeMatvecBackend,
 };
 pub use native_text::{
     NativeTextLayerCaches, NativeTextLayerCachesMut, NativeTextModelSpec, NativeTextModelSpecRef,

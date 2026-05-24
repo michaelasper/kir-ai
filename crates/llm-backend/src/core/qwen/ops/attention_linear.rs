@@ -4,12 +4,13 @@ use super::super::super::math::{
     InferenceScratchpad, MathError, require_len, sigmoid_f32, silu_f32, softplus_f32,
 };
 use super::super::super::native_attention::{
-    NativeOutputProjection, native_output_projection, native_output_projection_in_place_unchecked,
-    native_output_projection_unchecked, require_native_output_projection_shape,
+    NativeF32Rows, NativeOutputProjection, native_output_projection,
+    native_output_projection_in_place_unchecked, native_output_projection_unchecked,
+    require_native_output_projection_shape,
 };
 use super::super::super::{
-    CpuNativeMatvecBackend, LinearAttentionCache, NativeMatvecBackend, SafeTensorShardStore,
-    TensorLoadError,
+    CpuNativeMatvecBackend, LinearAttentionCache, NativeBatchedMatvecInputBuffer,
+    NativeBatchedMatvecOutput, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
 };
 use super::super::matvec::{l2_normalize_f32, rms_norm_f32};
 use super::tensor_names::qwen_linear_attn_tensor;
@@ -25,10 +26,10 @@ pub struct QwenLinearAttentionProjectionProbe {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct QwenLinearAttentionProjectionSequence {
-    pub qkv: Vec<Vec<f32>>,
-    pub z: Vec<Vec<f32>>,
-    pub b: Vec<Vec<f32>>,
-    pub a: Vec<Vec<f32>>,
+    pub qkv: NativeBatchedMatvecOutput,
+    pub z: NativeBatchedMatvecOutput,
+    pub b: NativeBatchedMatvecOutput,
+    pub a: NativeBatchedMatvecOutput,
 }
 
 pub(crate) struct QwenLinearAttentionFirstTokenParts<'a> {
@@ -41,10 +42,10 @@ pub(crate) struct QwenLinearAttentionFirstTokenParts<'a> {
 }
 
 pub(crate) struct QwenLinearAttentionSequenceParts<'a> {
-    pub qkv: &'a [Vec<f32>],
-    pub z: &'a [Vec<f32>],
-    pub b: &'a [Vec<f32>],
-    pub a: &'a [Vec<f32>],
+    pub qkv: NativeF32Rows<'a>,
+    pub z: NativeF32Rows<'a>,
+    pub b: NativeF32Rows<'a>,
+    pub a: NativeF32Rows<'a>,
     pub dt_bias: &'a [f32],
     pub a_log: &'a [f32],
     pub conv1d_weight: &'a [f32],
@@ -439,19 +440,20 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
             .ok_or_else(|| MathError::InvalidShape("conv1d weight shape overflow".to_owned()))?,
     )?;
     for token_idx in 0..seq_len {
-        require_len("qkv projection", qkv[token_idx].len(), conv_dim)?;
-        require_len("z projection", z[token_idx].len(), value_dim)?;
-        require_len("b projection", b[token_idx].len(), dims.num_value_heads)?;
-        require_len("a projection", a[token_idx].len(), dims.num_value_heads)?;
+        require_len("qkv projection", qkv.row(token_idx).len(), conv_dim)?;
+        require_len("z projection", z.row(token_idx).len(), value_dim)?;
+        require_len("b projection", b.row(token_idx).len(), dims.num_value_heads)?;
+        require_len("a projection", a.row(token_idx).len(), dims.num_value_heads)?;
     }
 
     let mut mixed_tokens = vec![vec![0.0; conv_dim]; seq_len];
-    for token_idx in 0..seq_len {
+    for (token_idx, mixed_token) in mixed_tokens.iter_mut().enumerate() {
+        let qkv_token = qkv.row(token_idx);
         if let Some(cache) = cache.as_mut() {
-            cache.push_conv_input(&qkv[token_idx]).map_err(|err| {
+            cache.push_conv_input(qkv_token).map_err(|err| {
                 MathError::InvalidShape(format!("linear attention cache update failed: {err}"))
             })?;
-            mixed_tokens[token_idx] = matvec
+            *mixed_token = matvec
                 .linear_attention_conv1d_silu_f32(
                     cache.conv_window(),
                     parts.conv1d_weight,
@@ -466,10 +468,10 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
                 if token_idx >= lookback {
                     let window_start = kernel_idx * conv_dim;
                     conv_window[window_start..window_start + conv_dim]
-                        .copy_from_slice(&qkv[token_idx - lookback]);
+                        .copy_from_slice(qkv.row(token_idx - lookback));
                 }
             }
-            mixed_tokens[token_idx] = matvec
+            *mixed_token = matvec
                 .linear_attention_conv1d_silu_f32(
                     &conv_window,
                     parts.conv1d_weight,
@@ -498,12 +500,14 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
     let mut query_scaled = vec![0.0; dims.key_head_dim];
     let mut outputs = Vec::with_capacity(seq_len);
 
-    for token_idx in 0..seq_len {
-        let mixed_qkv = &mixed_tokens[token_idx];
+    for (token_idx, mixed_qkv) in mixed_tokens.iter().enumerate() {
         let query = &mixed_qkv[..key_dim];
         let key = &mixed_qkv[key_dim..key_dim * 2];
         let value = &mixed_qkv[key_dim * 2..];
         let mut gated = vec![0.0; value_dim];
+        let z_token = z.row(token_idx);
+        let b_token = b.row(token_idx);
+        let a_token = a.row(token_idx);
 
         for value_head in 0..dims.num_value_heads {
             let key_head = value_head / repeat;
@@ -521,9 +525,9 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
             for (output, value) in query_scaled.iter_mut().zip(&query_head) {
                 *output = value * scale;
             }
-            let beta = sigmoid_f32(b[token_idx][value_head]);
+            let beta = sigmoid_f32(b_token[value_head]);
             let decay = (-parts.a_log[value_head].exp()
-                * softplus_f32(a[token_idx][value_head] + parts.dt_bias[value_head]))
+                * softplus_f32(a_token[value_head] + parts.dt_bias[value_head]))
             .exp();
 
             let state_start = value_head * dims.key_head_dim * dims.value_head_dim;
@@ -641,7 +645,7 @@ async fn qwen_linear_attention_sequence_from_parts_impl(
                 rms_norm_f32(&core_head, parts.norm_weight, dims.rms_norm_eps, matvec).await?;
             for value_offset in 0..dims.value_head_dim {
                 gated[value_start + value_offset] =
-                    normalized[value_offset] * silu_f32(z[token_idx][value_start + value_offset]);
+                    normalized[value_offset] * silu_f32(z_token[value_start + value_offset]);
             }
         }
         outputs.push(
@@ -749,10 +753,10 @@ pub(crate) async fn qwen_layer_linear_attention_first_token(
     qwen_linear_attention_sequence_from_parts(
         &dims,
         &QwenLinearAttentionSequenceParts {
-            qkv: &qkv,
-            z: &z,
-            b: &b,
-            a: &a,
+            qkv: NativeF32Rows::from_rows(&qkv),
+            z: NativeF32Rows::from_rows(&z),
+            b: NativeF32Rows::from_rows(&b),
+            a: NativeF32Rows::from_rows(&a),
             dt_bias: dt_bias.as_ref(),
             a_log: a_log.as_ref(),
             conv1d_weight: conv1d_weight.as_ref(),
@@ -815,33 +819,44 @@ pub(crate) async fn qwen_layer_linear_attention_sequence_impl(
     cache: Option<&mut LinearAttentionCache>,
     matvec: &impl NativeMatvecBackend,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    let input_columns = hidden_states.first().map_or(0, Vec::len);
+    let flat_hidden_states =
+        NativeBatchedMatvecInputBuffer::from_rows(hidden_states, input_columns)?;
+    let qkv_tensor = qwen_linear_attn_tensor(layer_idx, "in_proj_qkv.weight");
+    let z_tensor = qwen_linear_attn_tensor(layer_idx, "in_proj_z.weight");
+    let b_tensor = qwen_linear_attn_tensor(layer_idx, "in_proj_b.weight");
+    let a_tensor = qwen_linear_attn_tensor(layer_idx, "in_proj_a.weight");
     let projections = QwenLinearAttentionProjectionSequence {
         qkv: matvec
-            .bf16_matvecs_row_major_f32(
+            .bf16_matvecs_row_major_f32_flat_inputs(
                 store,
-                &qwen_linear_attn_tensor(layer_idx, "in_proj_qkv.weight"),
-                hidden_states,
+                &qkv_tensor,
+                flat_hidden_states.values(),
+                flat_hidden_states.input_count(),
             )
             .await?,
         z: matvec
-            .bf16_matvecs_row_major_f32(
+            .bf16_matvecs_row_major_f32_flat_inputs(
                 store,
-                &qwen_linear_attn_tensor(layer_idx, "in_proj_z.weight"),
-                hidden_states,
+                &z_tensor,
+                flat_hidden_states.values(),
+                flat_hidden_states.input_count(),
             )
             .await?,
         b: matvec
-            .bf16_matvecs_row_major_f32(
+            .bf16_matvecs_row_major_f32_flat_inputs(
                 store,
-                &qwen_linear_attn_tensor(layer_idx, "in_proj_b.weight"),
-                hidden_states,
+                &b_tensor,
+                flat_hidden_states.values(),
+                flat_hidden_states.input_count(),
             )
             .await?,
         a: matvec
-            .bf16_matvecs_row_major_f32(
+            .bf16_matvecs_row_major_f32_flat_inputs(
                 store,
-                &qwen_linear_attn_tensor(layer_idx, "in_proj_a.weight"),
-                hidden_states,
+                &a_tensor,
+                flat_hidden_states.values(),
+                flat_hidden_states.input_count(),
             )
             .await?,
     };
@@ -854,11 +869,23 @@ pub(crate) async fn qwen_layer_linear_attention_sequence_impl(
     let norm_weight =
         store.bf16_tensor_f32_cached_arc(&qwen_linear_attn_tensor(layer_idx, "norm.weight"))?;
     let out_proj_tensor = qwen_linear_attn_tensor(layer_idx, "out_proj.weight");
+    let qkv = NativeF32Rows::from_batched_matvec(&projections.qkv).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen linear qkv projection rows failed: {err}"))
+    })?;
+    let z = NativeF32Rows::from_batched_matvec(&projections.z).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen linear z projection rows failed: {err}"))
+    })?;
+    let b = NativeF32Rows::from_batched_matvec(&projections.b).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen linear b projection rows failed: {err}"))
+    })?;
+    let a = NativeF32Rows::from_batched_matvec(&projections.a).map_err(|err| {
+        TensorLoadError::integrity(format!("Qwen linear a projection rows failed: {err}"))
+    })?;
     let parts = QwenLinearAttentionSequenceParts {
-        qkv: &projections.qkv,
-        z: &projections.z,
-        b: &projections.b,
-        a: &projections.a,
+        qkv,
+        z,
+        b,
+        a,
         dt_bias: dt_bias.as_ref(),
         a_log: a_log.as_ref(),
         conv1d_weight: conv1d_weight.as_ref(),

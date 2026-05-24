@@ -10,11 +10,100 @@ use super::math::{
     softmax_f32_in_place, softmax_top_k_f32, weighted_sum_f32_in_place,
 };
 use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeBatchedMatvecOutput {
     values: Vec<f32>,
     row_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeBatchedMatvecInputBuffer<'a> {
+    values: Cow<'a, [f32]>,
+    input_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeBatchedMatvecRows<'a> {
+    values: &'a [f32],
+    row_len: usize,
+    next_row: usize,
+}
+
+impl<'a> NativeBatchedMatvecInputBuffer<'a> {
+    pub fn from_rows(inputs: &'a [Vec<f32>], columns: usize) -> Result<Self, TensorLoadError> {
+        for input in inputs {
+            if input.len() != columns {
+                return Err(TensorLoadError::integrity(format!(
+                    "input length {} does not match batched matvec columns {columns}",
+                    input.len()
+                )));
+            }
+        }
+        let input_count = inputs.len();
+        match inputs {
+            [] => Ok(Self {
+                values: Cow::Borrowed(&[]),
+                input_count,
+            }),
+            [input] => Ok(Self {
+                values: Cow::Borrowed(input.as_slice()),
+                input_count,
+            }),
+            _ => {
+                let flattened_len = input_count.checked_mul(columns).ok_or_else(|| {
+                    TensorLoadError::integrity("batched matvec input shape overflow")
+                })?;
+                let mut values = Vec::with_capacity(flattened_len);
+                for input in inputs {
+                    values.extend_from_slice(input);
+                }
+                Ok(Self {
+                    values: Cow::Owned(values),
+                    input_count,
+                })
+            }
+        }
+    }
+
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    pub fn input_count(&self) -> usize {
+        self.input_count
+    }
+}
+
+impl<'a> NativeBatchedMatvecRows<'a> {
+    fn row_count(&self) -> usize {
+        self.values.len().checked_div(self.row_len).unwrap_or(0)
+    }
+}
+
+impl<'a> Iterator for NativeBatchedMatvecRows<'a> {
+    type Item = &'a [f32];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.row_len == 0 || self.next_row >= self.row_count() {
+            return None;
+        }
+        let start = self.next_row * self.row_len;
+        self.next_row += 1;
+        Some(&self.values[start..start + self.row_len])
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for NativeBatchedMatvecRows<'_> {
+    fn len(&self) -> usize {
+        self.row_count().saturating_sub(self.next_row)
+    }
 }
 
 impl NativeBatchedMatvecOutput {
@@ -46,6 +135,23 @@ impl NativeBatchedMatvecOutput {
 
     pub fn row_count(&self) -> usize {
         self.values.len().checked_div(self.row_len).unwrap_or(0)
+    }
+
+    pub fn row(&self, index: usize) -> Option<&[f32]> {
+        if self.row_len == 0 {
+            return None;
+        }
+        let start = index.checked_mul(self.row_len)?;
+        let end = start.checked_add(self.row_len)?;
+        self.values.get(start..end)
+    }
+
+    pub fn rows(&self) -> NativeBatchedMatvecRows<'_> {
+        NativeBatchedMatvecRows {
+            values: &self.values,
+            row_len: self.row_len,
+            next_row: 0,
+        }
     }
 
     pub fn into_rows(self) -> Vec<Vec<f32>> {
@@ -139,6 +245,16 @@ pub trait NativeMatvecBackend {
         inputs: &[Vec<f32>],
     ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
         store.bf16_matvecs_row_major_f32_flat(tensor, inputs)
+    }
+
+    async fn bf16_matvecs_row_major_f32_flat_inputs(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[f32],
+        input_count: usize,
+    ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
+        store.bf16_matvecs_row_major_f32_flat_inputs(tensor, inputs, input_count)
     }
 
     async fn bf16_matvec_rows_f32(

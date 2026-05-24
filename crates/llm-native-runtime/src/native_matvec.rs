@@ -1,8 +1,8 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::native::{
     BlockId, CpuNativeMatvecBackend, LayerKvCache, LayerKvCacheBlock, LinearAttentionCache,
-    MathError, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
-    SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
+    MathError, NativeBatchedMatvecInputBuffer, NativeBatchedMatvecOutput, NativeKvCacheTensor,
+    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
 };
 use serde_json::{Value, json};
 use std::{
@@ -1314,24 +1314,32 @@ impl NativeTextMatvecBackend {
         tensor: &str,
         input: &[f32],
     ) -> Option<(usize, usize)> {
+        let (rows, columns) = Self::bf16_matrix_shape_for_tensor(store, tensor)?;
+        (input.len() == columns).then_some((rows, columns))
+    }
+
+    fn bf16_matrix_shape_for_tensor(
+        store: &SafeTensorShardStore,
+        tensor: &str,
+    ) -> Option<(usize, usize)> {
         let metadata = store.tensor_metadata(tensor).ok()?;
         if metadata.dtype != "BF16" || metadata.shape.len() != 2 {
             return None;
         }
         let rows = metadata.shape[0];
         let columns = metadata.shape[1];
-        (input.len() == columns).then_some((rows, columns))
+        Some((rows, columns))
     }
 
-    fn flattened_inputs(inputs: &[Vec<f32>], columns: usize) -> Option<Vec<f32>> {
-        let mut flattened = Vec::with_capacity(inputs.len().checked_mul(columns)?);
-        for input in inputs {
-            if input.len() != columns {
-                return None;
-            }
-            flattened.extend_from_slice(input);
-        }
-        Some(flattened)
+    fn bf16_matrix_shape_for_flat_inputs(
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[f32],
+        input_count: usize,
+    ) -> Option<(usize, usize)> {
+        let (rows, columns) = Self::bf16_matrix_shape_for_tensor(store, tensor)?;
+        let expected_len = input_count.checked_mul(columns)?;
+        (inputs.len() == expected_len).then_some((rows, columns))
     }
 
     fn record_metal_fallback(
@@ -1559,7 +1567,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         tensor: &str,
         inputs: &[Vec<f32>],
     ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
-        let Self::Metal(state) = self else {
+        let Self::Metal(_state) = self else {
             return Self::cpu()
                 .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await;
@@ -1567,7 +1575,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
         let Some(first_input) = inputs.first() else {
             return NativeBatchedMatvecOutput::new(Vec::new(), 0);
         };
-        let Some((rows, columns)) = Self::bf16_matrix_shape(store, tensor, first_input) else {
+        let Some((_rows, columns)) = Self::bf16_matrix_shape(store, tensor, first_input) else {
             Self::record_metal_fallback(
                 "batched_matvec_bf16_f32",
                 format!(
@@ -1581,14 +1589,56 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
                 .await;
         };
-        let Some(flattened) = Self::flattened_inputs(inputs, columns) else {
+        let flattened = match NativeBatchedMatvecInputBuffer::from_rows(inputs, columns) {
+            Ok(flattened) => flattened,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "batched_matvec_bf16_f32",
+                    format!("tensor={tensor},inputs={},cols={columns}", inputs.len()),
+                    err,
+                );
+                return Self::cpu()
+                    .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+                    .await;
+            }
+        };
+        self.bf16_matvecs_row_major_f32_flat_inputs(
+            store,
+            tensor,
+            flattened.values(),
+            flattened.input_count(),
+        )
+        .await
+    }
+
+    async fn bf16_matvecs_row_major_f32_flat_inputs(
+        &self,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        inputs: &[f32],
+        input_count: usize,
+    ) -> Result<NativeBatchedMatvecOutput, TensorLoadError> {
+        let Self::Metal(state) = self else {
+            return Self::cpu()
+                .bf16_matvecs_row_major_f32_flat_inputs(store, tensor, inputs, input_count)
+                .await;
+        };
+        if input_count == 0 && inputs.is_empty() {
+            return NativeBatchedMatvecOutput::new(Vec::new(), 0);
+        }
+        let Some((rows, columns)) =
+            Self::bf16_matrix_shape_for_flat_inputs(store, tensor, inputs, input_count)
+        else {
             Self::record_metal_fallback(
                 "batched_matvec_bf16_f32",
-                format!("tensor={tensor},inputs={},cols={columns}", inputs.len()),
-                "batched input width mismatch",
+                format!(
+                    "tensor={tensor},inputs={input_count},flat_input_len={}",
+                    inputs.len()
+                ),
+                "unsupported BF16 matrix shape or flat input length",
             );
             return Self::cpu()
-                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat_inputs(store, tensor, inputs, input_count)
                 .await;
         };
         let matrix = match state.bf16_matrix_buffer(store, tensor, 0, rows, columns) {
@@ -1600,30 +1650,24 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                     err,
                 );
                 return Self::cpu()
-                    .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+                    .bf16_matvecs_row_major_f32_flat_inputs(store, tensor, inputs, input_count)
                     .await;
             }
         };
-        let output_len = inputs
-            .len()
+        let output_len = input_count
             .checked_mul(rows)
             .ok_or_else(|| TensorLoadError::integrity("batched matvec output overflow"))?;
         if let Some(output) = Self::run_metal_tensor(
             "batched_matvec_bf16_f32",
             format!(
                 "tensor={tensor},rows={rows},cols={columns},inputs={}",
-                inputs.len()
+                input_count
             ),
             || async {
                 let mut output = vec![0.0; output_len];
                 state
                     .device
-                    .batched_matvec_bf16_f32_buffered(
-                        &matrix,
-                        &flattened,
-                        inputs.len(),
-                        &mut output,
-                    )
+                    .batched_matvec_bf16_f32_buffered(&matrix, inputs, input_count, &mut output)
                     .await
                     .map(|()| output)
             },
@@ -1633,7 +1677,7 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
             NativeBatchedMatvecOutput::new(output, rows)
         } else {
             Self::cpu()
-                .bf16_matvecs_row_major_f32_flat(store, tensor, inputs)
+                .bf16_matvecs_row_major_f32_flat_inputs(store, tensor, inputs, input_count)
                 .await
         }
     }
@@ -3039,6 +3083,29 @@ mod tests {
                 "model.norm.weight",
                 "zz.unclassified.weight",
             ]
+        );
+    }
+
+    #[test]
+    fn metal_flat_input_batched_matvec_path_does_not_reflatten_rows() {
+        let source = include_str!("native_matvec.rs");
+        let method_name = ["async fn ", "bf16_matvecs_row_major_f32", "_flat_inputs"].concat();
+        let Some((_, rest)) = source.split_once(&method_name) else {
+            panic!("native matvec backend must expose a flat-input batched matvec path");
+        };
+        let Some((method, _)) = rest.split_once("async fn bf16_matvec_rows_f32_in_place") else {
+            panic!("flat-input batched matvec method boundary changed");
+        };
+
+        assert!(
+            !method.contains("flattened_inputs"),
+            "flat-input Metal batched matvec path must not re-flatten row vectors"
+        );
+        assert!(
+            method.contains(
+                "batched_matvec_bf16_f32_buffered(&matrix, inputs, input_count, &mut output)"
+            ),
+            "flat-input Metal batched matvec path should pass the caller's flat input slice"
         );
     }
 }

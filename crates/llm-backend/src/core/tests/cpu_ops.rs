@@ -223,10 +223,10 @@ async fn qwen_linear_attention_sequence_updates_recurrent_state() {
     let output = qwen_linear_attention_sequence_from_parts(
         &dims,
         &QwenLinearAttentionSequenceParts {
-            qkv: &qkv,
-            z: &z,
-            b: &b,
-            a: &a,
+            qkv: rows(&qkv),
+            z: rows(&z),
+            b: rows(&b),
+            a: rows(&a),
             dt_bias: &dt_bias,
             a_log: &a_log,
             conv1d_weight: &conv1d_weight,
@@ -284,10 +284,10 @@ async fn qwen_linear_attention_sequence_updates_linear_cache() {
     let norm_weight = vec![1.0, 1.0];
     let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
     let parts = QwenLinearAttentionSequenceParts {
-        qkv: &qkv,
-        z: &z,
-        b: &b,
-        a: &a,
+        qkv: rows(&qkv),
+        z: rows(&z),
+        b: rows(&b),
+        a: rows(&a),
         dt_bias: &dt_bias,
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
@@ -355,10 +355,10 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
     let norm_weight = vec![1.0, 1.0];
     let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
     let expected_parts = QwenLinearAttentionSequenceParts {
-        qkv: &qkv,
-        z: &z,
-        b: &b,
-        a: &a,
+        qkv: rows(&qkv),
+        z: rows(&z),
+        b: rows(&b),
+        a: rows(&a),
         dt_bias: &dt_bias,
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
@@ -379,10 +379,10 @@ async fn qwen_linear_attention_step_uses_existing_linear_cache() {
     let prefill_b = b[..2].to_vec();
     let prefill_a = a[..2].to_vec();
     let prefill_parts = QwenLinearAttentionSequenceParts {
-        qkv: &prefill_qkv,
-        z: &prefill_z,
-        b: &prefill_b,
-        a: &prefill_a,
+        qkv: rows(&prefill_qkv),
+        z: rows(&prefill_z),
+        b: rows(&prefill_b),
+        a: rows(&prefill_a),
         dt_bias: &dt_bias,
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
@@ -880,10 +880,10 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
     let norm_weight = vec![1.0, 1.0];
     let out_proj_weight = vec![1.0, 0.0, 0.0, 1.0];
     let expected_parts = QwenLinearAttentionSequenceParts {
-        qkv: &qkv,
-        z: &z,
-        b: &b,
-        a: &a,
+        qkv: rows(&qkv),
+        z: rows(&z),
+        b: rows(&b),
+        a: rows(&a),
         dt_bias: &dt_bias,
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,
@@ -904,10 +904,10 @@ async fn qwen_linear_attention_step_matches_sequence_with_multi_dim_keys() {
     let prefill_b = b[..2].to_vec();
     let prefill_a = a[..2].to_vec();
     let prefill_parts = QwenLinearAttentionSequenceParts {
-        qkv: &prefill_qkv,
-        z: &prefill_z,
-        b: &prefill_b,
-        a: &prefill_a,
+        qkv: rows(&prefill_qkv),
+        z: rows(&prefill_z),
+        b: rows(&prefill_b),
+        a: rows(&prefill_a),
         dt_bias: &dt_bias,
         a_log: &a_log,
         conv1d_weight: &conv1d_weight,

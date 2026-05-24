@@ -1,5 +1,7 @@
 use super::super::super::math::{InferenceScratchpad, rms_norm_f32_in_place};
-use super::super::super::{NativeMatvecBackend, SafeTensorShardStore, TensorLoadError};
+use super::super::super::{
+    NativeBatchedMatvecInputBuffer, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+};
 use super::activation::gelu_pytorch_tanh_f32;
 use llm_models::GemmaModelSpec;
 
@@ -74,17 +76,21 @@ pub(crate) async fn gemma_per_layer_inputs_sequence(
         .ok_or_else(|| TensorLoadError::integrity("Gemma PLE shape overflow"))?;
     let projection_norm_weight =
         store.bf16_tensor_f32_cached_arc(&spec.per_layer_projection_norm_weight())?;
+    let input_columns = input_embeddings.first().map_or(0, Vec::len);
+    let flat_input_embeddings =
+        NativeBatchedMatvecInputBuffer::from_rows(input_embeddings, input_columns)?;
     let projected = matvec
-        .bf16_matvecs_row_major_f32(
+        .bf16_matvecs_row_major_f32_flat_inputs(
             store,
             &spec.per_layer_model_projection_weight(),
-            input_embeddings,
+            flat_input_embeddings.values(),
+            flat_input_embeddings.input_count(),
         )
         .await?;
-    if projected.len() != token_ids.len() {
+    if projected.row_count() != token_ids.len() {
         return Err(TensorLoadError::integrity(format!(
             "Gemma PLE projection count {} must match token count {}",
-            projected.len(),
+            projected.row_count(),
             token_ids.len()
         )));
     }
@@ -105,7 +111,9 @@ pub(crate) async fn gemma_per_layer_inputs_sequence(
         for value in &mut token_per_layer {
             *value *= token_embedding_scale;
         }
-        let projected_token = &projected[token_idx];
+        let projected_token = projected.row(token_idx).ok_or_else(|| {
+            TensorLoadError::integrity(format!("Gemma PLE projection row {token_idx} is missing"))
+        })?;
         if projected_token.len() != total_per_token {
             return Err(TensorLoadError::integrity(format!(
                 "Gemma PLE projection row has length {}, expected {total_per_token}",

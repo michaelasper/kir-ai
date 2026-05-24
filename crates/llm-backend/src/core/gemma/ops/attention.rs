@@ -8,7 +8,8 @@ use super::super::super::native_attention::{
     native_full_attention_sequence_with_cache_from_parts,
 };
 use super::super::super::{
-    InferenceScratchpad, LayerKvCache, NativeMatvecBackend, SafeTensorShardStore, TensorLoadError,
+    InferenceScratchpad, LayerKvCache, NativeBatchedMatvecInputBuffer, NativeMatvecBackend,
+    SafeTensorShardStore, TensorLoadError,
 };
 use super::cache::{GemmaLayerCache, gemma_cache_index_for_layer};
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
@@ -103,11 +104,18 @@ pub(crate) async fn gemma_layer_attention_sequence_with_cache(
     let GemmaLayerCache::Attention(cache) = cache;
     require_gemma_attention_cache_shape(&dims, cache, layer_idx)?;
 
+    let input_columns = hidden_states.first().map_or(0, Vec::len);
+    let flat_hidden_states =
+        NativeBatchedMatvecInputBuffer::from_rows(hidden_states, input_columns)?;
+    let q_proj_tensor = spec.self_attn_tensor(layer_idx, "q_proj.weight");
+    let k_proj_tensor = spec.self_attn_tensor(layer_idx, "k_proj.weight");
+    let v_proj_tensor = spec.self_attn_tensor(layer_idx, "v_proj.weight");
     let q_proj = matvec
-        .bf16_matvecs_row_major_f32_flat(
+        .bf16_matvecs_row_major_f32_flat_inputs(
             store,
-            &spec.self_attn_tensor(layer_idx, "q_proj.weight"),
-            hidden_states,
+            &q_proj_tensor,
+            flat_hidden_states.values(),
+            flat_hidden_states.input_count(),
         )
         .await?;
     let k_proj = if is_shared_layer {
@@ -115,10 +123,11 @@ pub(crate) async fn gemma_layer_attention_sequence_with_cache(
     } else {
         Some(
             matvec
-                .bf16_matvecs_row_major_f32_flat(
+                .bf16_matvecs_row_major_f32_flat_inputs(
                     store,
-                    &spec.self_attn_tensor(layer_idx, "k_proj.weight"),
-                    hidden_states,
+                    &k_proj_tensor,
+                    flat_hidden_states.values(),
+                    flat_hidden_states.input_count(),
                 )
                 .await?,
         )
@@ -129,10 +138,11 @@ pub(crate) async fn gemma_layer_attention_sequence_with_cache(
     } else {
         Some(
             matvec
-                .bf16_matvecs_row_major_f32_flat(
+                .bf16_matvecs_row_major_f32_flat_inputs(
                     store,
-                    &spec.self_attn_tensor(layer_idx, "v_proj.weight"),
-                    hidden_states,
+                    &v_proj_tensor,
+                    flat_hidden_states.values(),
+                    flat_hidden_states.input_count(),
                 )
                 .await?,
         )
