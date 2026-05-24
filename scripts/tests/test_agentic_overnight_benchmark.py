@@ -64,6 +64,114 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
         )
         self.assertIn("stable-prefix-32k-shared-marker", body["messages"][1]["content"])
 
+    def test_tool_fragment_diagnostics_assembles_streamed_arguments(self):
+        bench = load_module()
+
+        diagnostics = bench.tool_call_diagnostics_from_fragments(
+            [
+                [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "record_agentic_observation",
+                            "arguments": '{"task":"agent',
+                        },
+                    }
+                ],
+                [{"index": 0, "function": {"arguments": 'ic","risk":"tool"}'}}],
+            ]
+        )
+
+        self.assertEqual(diagnostics["observed"], 1)
+        self.assertEqual(diagnostics["valid_json_arguments"], 1)
+        self.assertEqual(diagnostics["invalid_json_arguments"], 0)
+        self.assertEqual(diagnostics["names"], ["record_agentic_observation"])
+
+    def test_opencode_command_diagnostics_counts_parseable_shell_commands(self):
+        bench = load_module()
+
+        diagnostics = bench.command_diagnostics_from_stdout(
+            "\n".join(
+                [
+                    json.dumps({"type": "tool_call", "name": "bash", "command": "python -m unittest"}),
+                    json.dumps({"type": "tool_call", "name": "bash", "command": "python -c 'unterminated"}),
+                    json.dumps({"type": "message", "text": "not a command"}),
+                ]
+            )
+        )
+
+        self.assertEqual(diagnostics["observed"], 2)
+        self.assertEqual(diagnostics["syntax_valid"], 1)
+        self.assertEqual(diagnostics["syntax_invalid"], 1)
+        self.assertEqual(diagnostics["syntax_success_rate"], 0.5)
+
+    def test_summary_separates_speed_quality_and_failure_modes(self):
+        bench = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = pathlib.Path(tmp)
+            lane_dir = run_root / "qwen35-mlx-4bit"
+            lane_dir.mkdir()
+            samples = [
+                {
+                    "kind": "direct",
+                    "probe": "direct_tool_required_stream",
+                    "model_id": "local-qwen36-35b-mlx",
+                    "result": {
+                        "latency_ms": 120.0,
+                        "finish_reasons": ["stop"],
+                        "tool_calls": {
+                            "observed": 0,
+                            "valid_json_arguments": 0,
+                            "invalid_json_arguments": 0,
+                            "names": [],
+                        },
+                        "errors": [],
+                    },
+                },
+                {
+                    "kind": "opencode",
+                    "task": "opencode_seeded_bugfix",
+                    "model_id": "local-qwen36-35b-mlx",
+                    "proc": {
+                        "latency_ms": 240.0,
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "command_diagnostics": {
+                            "observed": 1,
+                            "syntax_valid": 1,
+                            "syntax_invalid": 0,
+                        },
+                    },
+                    "judge": {
+                        "passed": False,
+                        "checks": {
+                            "unittest_exit_zero": False,
+                            "readme": True,
+                        },
+                    },
+                },
+            ]
+            (lane_dir / "samples.jsonl").write_text(
+                "\n".join(json.dumps(sample) for sample in samples) + "\n",
+                encoding="utf-8",
+            )
+
+            summary = bench.summarize_run(run_root)
+
+        bucket = summary["by_model"]["local-qwen36-35b-mlx"]
+        self.assertEqual(bucket["model_identity"]["lane"], "qwen35-mlx-4bit")
+        self.assertEqual(bucket["model_identity"]["quantization"], "4bit")
+        self.assertEqual(bucket["agentic_quality"]["opencode_pass_rate"], 0.0)
+        self.assertEqual(bucket["agentic_quality"]["direct_tool_call_success_rate"], 0.0)
+        self.assertEqual(bucket["agentic_quality"]["command_syntax_success_rate"], 1.0)
+        self.assertEqual(bucket["failure_modes"]["tool_use"], 1)
+        self.assertEqual(bucket["failure_modes"]["task_correctness"], 1)
+        self.assertEqual(bucket["speed_quality"]["quality_score"], 0.0)
+        self.assertEqual(bucket["speed_quality"]["throughput_quality_score"], 0.0)
+        self.assertEqual(bucket["speed_quality"]["classification"], "fast_but_low_quality")
+
     def test_dry_run_writes_plan_without_requiring_snapshot_or_opencode(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

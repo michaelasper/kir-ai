@@ -59,6 +59,18 @@ from Kir `/admin/metrics.request_cache` observations.
 
 Key fields to review after a run:
 
+- `by_model[*].model_identity.quantization` to compare model variants such as
+  Qwen 8-bit vs 4-bit lanes.
+- `by_model[*].speed_quality` for the 2D speed/quality view. A lane can be
+  low-latency while still classifying as `fast_but_low_quality` when its
+  quality score is zero.
+- `by_model[*].agentic_quality.direct_tool_call_success_rate` for required-tool
+  probes that produced a valid `record_agentic_observation` call.
+- `by_model[*].agentic_quality.command_syntax_success_rate` for parseable shell
+  command strings observed in opencode JSONL output.
+- `by_model[*].failure_modes` to separate tool-use failures, command execution
+  failures, timeouts, workspace artifact misses, and task-correctness failures
+  such as `unittest_exit_zero`.
 - `by_model[*].first_semantic_delta_ms` for chat TTFI.
 - `by_model[*].first_tool_delta_ms` for required-tool first event latency.
 - `by_model[*].latency_ms` for wall-clock task/probe time.

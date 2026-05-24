@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import random
+import shlex
 import shutil
 import signal
 import socket
@@ -47,6 +48,7 @@ class ModelLane:
     name: str
     family: str
     model_id: str
+    quantization: str
     snapshot: pathlib.Path
     max_context_k: int
     sidecar_package: str
@@ -63,6 +65,7 @@ LANES: list[ModelLane] = [
         name="qwen27-mlx-8bit",
         family="qwen",
         model_id="local-qwen36-27b-mlx",
+        quantization="8bit",
         snapshot=env_path(
             "KIR_BENCH_QWEN27_SNAPSHOT",
             HF_HOME
@@ -91,6 +94,7 @@ LANES: list[ModelLane] = [
         name="qwen35-mlx-4bit",
         family="qwen",
         model_id="local-qwen36-35b-mlx",
+        quantization="4bit",
         snapshot=env_path(
             "KIR_BENCH_QWEN35_SNAPSHOT",
             HF_HOME
@@ -119,6 +123,7 @@ LANES: list[ModelLane] = [
         name="gemma4-e2b-mlx-4bit",
         family="gemma",
         model_id="local-gemma4-e2b",
+        quantization="4bit",
         snapshot=env_path(
             "KIR_BENCH_GEMMA4_E2B_SNAPSHOT",
             REPO_ROOT
@@ -140,6 +145,7 @@ LANES: list[ModelLane] = [
         name="gemma4-31b-mlx",
         family="gemma",
         model_id="local-gemma4-31b",
+        quantization="unknown",
         snapshot=env_path(
             "KIR_BENCH_GEMMA4_31B_SNAPSHOT",
             HF_HOME
@@ -430,6 +436,7 @@ def stream_chat_completion(
         conn.close()
     result["text"] = "".join(text_fragments)
     result["tool_fragments_count"] = len(tool_fragments)
+    result["tool_calls"] = tool_call_diagnostics_from_fragments(tool_fragments)
     result["prompt_tokens"] = usage_value(result.get("usage"), "prompt_tokens")
     result["completion_tokens"] = usage_value(result.get("usage"), "completion_tokens")
     result["cached_tokens"] = cached_tokens_from_usage(result.get("usage"))
@@ -466,6 +473,115 @@ def classify_cache_status(prompt_tokens: int, cached_tokens: int | None) -> str:
     if cached_tokens >= prompt_tokens:
         return "hit"
     return "partial"
+
+
+def rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 3)
+
+
+def tool_call_diagnostics_from_fragments(tool_fragments: list[Any]) -> dict[str, Any]:
+    calls: dict[str, dict[str, str | None]] = {}
+    order: list[str] = []
+    for fragment_batch in tool_fragments:
+        if not isinstance(fragment_batch, list):
+            continue
+        for fragment in fragment_batch:
+            if not isinstance(fragment, dict):
+                continue
+            index = fragment.get("index")
+            key_value = f"index:{index}" if isinstance(index, int) else fragment.get("id")
+            if not isinstance(key_value, str):
+                key_value = f"call:{len(order)}"
+            if key_value not in calls:
+                calls[key_value] = {"name": "", "arguments": "", "id": None}
+                order.append(key_value)
+            call = calls[key_value]
+            call_id = fragment.get("id")
+            if isinstance(call_id, str):
+                call["id"] = call_id
+            function = fragment.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if isinstance(name, str):
+                call["name"] = str(call["name"] or "") + name
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                call["arguments"] = str(call["arguments"] or "") + arguments
+
+    names: list[str] = []
+    valid_json_arguments = 0
+    invalid_json_arguments = 0
+    for key in order:
+        call = calls[key]
+        name = call.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+        arguments = call.get("arguments")
+        arguments_text = arguments.strip() if isinstance(arguments, str) else ""
+        if not arguments_text:
+            invalid_json_arguments += 1
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            parsed = json.loads(arguments_text)
+            if isinstance(parsed, dict):
+                valid_json_arguments += 1
+                continue
+        invalid_json_arguments += 1
+
+    return {
+        "observed": len(order),
+        "valid_json_arguments": valid_json_arguments,
+        "invalid_json_arguments": invalid_json_arguments,
+        "names": names,
+    }
+
+
+def command_strings_from_event(event: Any) -> list[str]:
+    commands: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_lower = str(key).lower()
+                if key_lower in {"command", "cmd", "shell_command"} and isinstance(child, str):
+                    commands.append(child)
+                else:
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(event)
+    return commands
+
+
+def command_diagnostics_from_stdout(stdout: str) -> dict[str, Any]:
+    observed = 0
+    syntax_valid = 0
+    syntax_invalid = 0
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for command in command_strings_from_event(event):
+            observed += 1
+            try:
+                if shlex.split(command):
+                    syntax_valid += 1
+                else:
+                    syntax_invalid += 1
+            except ValueError:
+                syntax_invalid += 1
+    return {
+        "observed": observed,
+        "syntax_valid": syntax_valid,
+        "syntax_invalid": syntax_invalid,
+        "syntax_success_rate": rate(syntax_valid, observed),
+    }
 
 
 def tool_schema() -> list[dict[str, Any]]:
@@ -934,6 +1050,7 @@ def run_subprocess_capture(
         "event_counts": event_counts,
         "stdout_bytes": len((stdout or "").encode("utf-8")),
         "stderr_bytes": len((stderr or "").encode("utf-8")),
+        "command_diagnostics": command_diagnostics_from_stdout(stdout or ""),
         "finished_at": utc_now(),
     }
     write_json(out_prefix.with_suffix(".summary.json"), result)
@@ -1095,6 +1212,89 @@ def run_direct_probe(
     return summary
 
 
+def model_identity_for_model_id(model_id: str) -> dict[str, Any]:
+    for lane in LANES:
+        if lane.model_id == model_id:
+            return {
+                "lane": lane.name,
+                "family": lane.family,
+                "quantization": lane.quantization,
+                "max_context_k": lane.max_context_k,
+            }
+    return {
+        "lane": None,
+        "family": None,
+        "quantization": None,
+        "max_context_k": None,
+    }
+
+
+def increment_count(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
+def int_metric(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def direct_probe_requires_tool(probe: str) -> bool:
+    return probe == "direct_tool_required_stream" or probe.startswith("direct_stable_prefix_")
+
+
+def tool_call_diagnostics_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = result.get("tool_calls")
+    if isinstance(diagnostics, dict):
+        return diagnostics
+    return {
+        "observed": int_metric(result.get("tool_fragments_count")),
+        "valid_json_arguments": 0,
+        "invalid_json_arguments": 0,
+        "names": [],
+    }
+
+
+def direct_tool_call_succeeded(result: dict[str, Any]) -> bool:
+    diagnostics = tool_call_diagnostics_from_result(result)
+    names = diagnostics.get("names")
+    finish_reasons = result.get("finish_reasons")
+    return (
+        int_metric(diagnostics.get("observed")) > 0
+        and int_metric(diagnostics.get("valid_json_arguments")) > 0
+        and isinstance(names, list)
+        and "record_agentic_observation" in names
+        and isinstance(finish_reasons, list)
+        and "tool_calls" in finish_reasons
+        and not result.get("errors")
+    )
+
+
+def opencode_failure_modes(proc: dict[str, Any], judge: dict[str, Any]) -> list[str]:
+    modes: list[str] = []
+    if proc.get("timed_out"):
+        modes.append("timeout")
+    if proc.get("exit_code") != 0:
+        modes.append("command_execution")
+    checks = judge.get("checks")
+    if isinstance(checks, dict):
+        if checks.get("unittest_exit_zero") is False:
+            modes.append("task_correctness")
+        elif any(value is False for value in checks.values()):
+            modes.append("workspace_artifact")
+    if not modes:
+        modes.append("judge_failure")
+    return modes
+
+
+def speed_quality_classification(quality_score: float | None, latency_p50: Any) -> str:
+    if quality_score is None:
+        return "no_quality_samples"
+    if quality_score == 0 and isinstance(latency_p50, (int, float)):
+        return "fast_but_low_quality"
+    if quality_score < 0.5:
+        return "low_quality"
+    return "quality_viable"
+
+
 def summarize_run(run_root: pathlib.Path) -> dict[str, Any]:
     samples: list[dict[str, Any]] = []
     for path in sorted(run_root.glob("*/samples.jsonl")):
@@ -1110,10 +1310,21 @@ def summarize_run(run_root: pathlib.Path) -> dict[str, Any]:
             model,
             {
                 "samples": 0,
+                "model_identity": model_identity_for_model_id(model),
                 "direct": 0,
                 "opencode": 0,
                 "opencode_passed": 0,
                 "failures": 0,
+                "failure_modes": {},
+                "agentic_quality": {
+                    "direct_tool_expected": 0,
+                    "direct_tool_success": 0,
+                    "opencode_process_success": 0,
+                    "command_syntax_observed": 0,
+                    "command_syntax_valid": 0,
+                    "command_syntax_invalid": 0,
+                    "unittest_exit_zero": {"passed": 0, "failed": 0},
+                },
                 "cache_status_counts": {},
                 "latency_ms": [],
                 "first_tool_delta_ms": [],
@@ -1125,6 +1336,7 @@ def summarize_run(run_root: pathlib.Path) -> dict[str, Any]:
         if kind == "direct":
             bucket["direct"] += 1
             result = sample.get("result") or {}
+            direct_failed = False
             for key in ("latency_ms", "first_tool_delta_ms", "first_semantic_delta_ms"):
                 value = result.get(key)
                 if isinstance(value, (int, float)):
@@ -1133,18 +1345,47 @@ def summarize_run(run_root: pathlib.Path) -> dict[str, Any]:
             counts = bucket["cache_status_counts"]
             counts[status] = counts.get(status, 0) + 1
             if result.get("errors"):
+                direct_failed = True
+                increment_count(bucket["failure_modes"], "protocol_or_stream")
+            probe = str(sample.get("probe") or "")
+            if direct_probe_requires_tool(probe):
+                quality = bucket["agentic_quality"]
+                quality["direct_tool_expected"] += 1
+                if direct_tool_call_succeeded(result):
+                    quality["direct_tool_success"] += 1
+                else:
+                    direct_failed = True
+                    increment_count(bucket["failure_modes"], "tool_use")
+            if direct_failed:
                 bucket["failures"] += 1
         elif kind == "opencode":
             bucket["opencode"] += 1
             proc = sample.get("proc") or {}
             judge = sample.get("judge") or {}
+            quality = bucket["agentic_quality"]
             value = proc.get("latency_ms")
             if isinstance(value, (int, float)):
                 bucket["latency_ms"].append(value)
+            if proc.get("exit_code") == 0 and not proc.get("timed_out"):
+                quality["opencode_process_success"] += 1
+            diagnostics = proc.get("command_diagnostics")
+            if isinstance(diagnostics, dict):
+                quality["command_syntax_observed"] += int_metric(diagnostics.get("observed"))
+                quality["command_syntax_valid"] += int_metric(diagnostics.get("syntax_valid"))
+                quality["command_syntax_invalid"] += int_metric(diagnostics.get("syntax_invalid"))
+            checks = judge.get("checks")
+            if isinstance(checks, dict) and "unittest_exit_zero" in checks:
+                unittest_counts = quality["unittest_exit_zero"]
+                if checks.get("unittest_exit_zero"):
+                    unittest_counts["passed"] += 1
+                else:
+                    unittest_counts["failed"] += 1
             if judge.get("passed"):
                 bucket["opencode_passed"] += 1
             else:
                 bucket["failures"] += 1
+                for mode in opencode_failure_modes(proc, judge):
+                    increment_count(bucket["failure_modes"], mode)
     for bucket in by_model.values():
         for key in ("latency_ms", "first_tool_delta_ms", "first_semantic_delta_ms"):
             values = sorted(bucket[key])
@@ -1157,6 +1398,35 @@ def summarize_run(run_root: pathlib.Path) -> dict[str, Any]:
                 }
             else:
                 bucket[key] = {"count": 0}
+        quality = bucket["agentic_quality"]
+        quality["opencode_pass_rate"] = rate(bucket["opencode_passed"], bucket["opencode"])
+        quality["opencode_process_success_rate"] = rate(
+            quality["opencode_process_success"],
+            bucket["opencode"],
+        )
+        quality["direct_tool_call_success_rate"] = rate(
+            quality["direct_tool_success"],
+            quality["direct_tool_expected"],
+        )
+        quality["command_syntax_success_rate"] = rate(
+            quality["command_syntax_valid"],
+            quality["command_syntax_observed"],
+        )
+        quality_attempts = bucket["opencode"] + quality["direct_tool_expected"]
+        quality_successes = bucket["opencode_passed"] + quality["direct_tool_success"]
+        quality_score = rate(quality_successes, quality_attempts)
+        latency_p50 = bucket["latency_ms"].get("p50")
+        if quality_score is not None and isinstance(latency_p50, (int, float)) and latency_p50 > 0:
+            throughput_quality_score = round(quality_score * 1000 / latency_p50, 6)
+        else:
+            throughput_quality_score = None
+        bucket["speed_quality"] = {
+            "quality_score": quality_score,
+            "quality_attempts": quality_attempts,
+            "median_latency_ms": latency_p50,
+            "throughput_quality_score": throughput_quality_score,
+            "classification": speed_quality_classification(quality_score, latency_p50),
+        }
     summary = {
         "updated_at": utc_now(),
         "sample_count": len(samples),
