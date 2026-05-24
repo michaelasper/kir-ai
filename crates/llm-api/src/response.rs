@@ -120,7 +120,10 @@ pub struct ChatCompletionDelta {
     /// Text delta when the runtime has validated it is safe to emit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// Tool call deltas emitted after parser and schema safety checks permit them.
+    /// Tool call deltas in the OpenAI streaming wire shape.
+    ///
+    /// Structured backend deltas may stream incrementally, while parsed text
+    /// tool calls can be buffered until runtime validation permits emission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallDelta>,
 }

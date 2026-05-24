@@ -160,7 +160,10 @@ pub struct FamilyCapabilityFlags {
     pub reasoning_channels: bool,
     /// Family can emit multimodal output markers.
     pub multimodal_artifacts: bool,
-    /// Family has at least one local backend execution path in this workspace.
+    /// Family has native text Rust/Metal execution support in this workspace.
+    ///
+    /// This reflects [`NativeTextModelSpec`](crate::NativeTextModelSpec)
+    /// support, not external production backends such as MLX.
     pub backend_execution: bool,
 }
 
