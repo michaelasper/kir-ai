@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.3](https://github.com/michaelasper/kir-ai/compare/v1.46.2...v1.46.3) (2026-05-24)
+
+### Performance Improvements
+
+* **COR-252:** replace full-sort top-k selection ([546c3ad](https://github.com/michaelasper/kir-ai/commit/546c3ad1f385361f34843e6122ce97d739a678f6))
+
 ## [1.46.2](https://github.com/michaelasper/kir-ai/compare/v1.46.1...v1.46.2) (2026-05-24)
 
 ### Bug Fixes
