@@ -17,7 +17,10 @@ use super::super::qwen::ops::{
     qwen_linear_attention_step_with_cache_from_parts,
 };
 use super::super::{GemmaLayerCache, QwenLayerCache};
-use llm_kv_cache::{LayerKvCache, LinearAttentionCache};
+use llm_kv_cache::{
+    AsymmetricVqCacheConfig, KvCacheConfig, KvCacheFormat, KvCacheValueQuantizationBits,
+    LayerKvCache, LinearAttentionCache,
+};
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -156,6 +159,54 @@ fn layer_cache_variant_snapshots_round_trip_for_qwen_and_gemma() {
             assert_ne!(actual.id(), expected.id());
             assert_eq!(actual.keys(), expected.keys());
             assert_eq!(actual.values(), expected.values());
+        }
+    }
+}
+
+#[test]
+fn layer_cache_variant_snapshots_preserve_phase3_config_for_qwen_and_gemma() {
+    let config = KvCacheConfig::asymmetric_vq(AsymmetricVqCacheConfig::new(
+        KvCacheValueQuantizationBits::Four,
+    ));
+
+    let mut qwen_full = LayerKvCache::new_with_config(2, 1, 2, config).expect("phase3 cache shape");
+    qwen_full
+        .append(&[1.0, 2.0], &[3.0, 4.0])
+        .expect("token fits");
+    let qwen_full = QwenLayerCache::Full(qwen_full);
+    let restored = QwenLayerCache::from_snapshot(qwen_full.snapshot()).expect("snapshot restores");
+    match restored {
+        QwenLayerCache::Full(actual) => {
+            assert_eq!(actual.format(), KvCacheFormat::AsymmetricVq);
+            assert_close(actual.values(), &[3.0, 4.0], 1e-6);
+            assert!(
+                actual
+                    .phase3_dequantized_values()
+                    .expect("phase3 dequantizes")
+                    .is_some()
+            );
+        }
+        QwenLayerCache::Linear(_) => panic!("full Qwen cache variant should round trip"),
+    }
+
+    let mut gemma_attention =
+        LayerKvCache::new_with_config(2, 1, 2, config).expect("phase3 cache shape");
+    gemma_attention
+        .append(&[5.0, 6.0], &[7.0, 8.0])
+        .expect("token fits");
+    let gemma_attention = GemmaLayerCache::Attention(gemma_attention);
+    let restored =
+        GemmaLayerCache::from_snapshot(gemma_attention.snapshot()).expect("snapshot restores");
+    match restored {
+        GemmaLayerCache::Attention(actual) => {
+            assert_eq!(actual.format(), KvCacheFormat::AsymmetricVq);
+            assert_close(actual.values(), &[7.0, 8.0], 1e-6);
+            assert!(
+                actual
+                    .phase3_dequantized_values()
+                    .expect("phase3 dequantizes")
+                    .is_some()
+            );
         }
     }
 }

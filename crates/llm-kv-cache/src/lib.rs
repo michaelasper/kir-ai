@@ -2,12 +2,17 @@ mod block;
 mod block_id;
 mod block_pool;
 mod block_table;
+mod format;
 pub mod prototype_quantization;
 
 pub use block::{CacheBlock, CacheBlockHash, cache_block_chain_hash};
 pub use block_id::BlockId;
 pub use block_pool::BlockPool;
 pub use block_table::{BlockTable, SessionBlockTable, SessionId};
+pub use format::{
+    AsymmetricVqCacheConfig, KvCacheConfig, KvCacheFormat, KvCacheFormatMetrics,
+    KvCacheReconstructionError, KvCacheValueQuantizationBits,
+};
 
 use std::{
     collections::HashSet,
@@ -16,6 +21,7 @@ use std::{
 };
 
 use block::RetainedCacheBlock;
+use format::{KvCacheFormatMetricParts, LayerQuantizedValueStore};
 
 static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -25,6 +31,10 @@ fn next_cache_id() -> u64 {
 
 fn f32_resident_bytes(values: &[f32]) -> u64 {
     (values.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64)
+}
+
+fn uploaded_bytes(elements: usize, bytes_per_element: u64) -> u64 {
+    (elements as u64).saturating_mul(bytes_per_element)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +92,7 @@ const LAYER_KV_BLOCK_TOKENS: usize = 256;
 pub struct LayerKvCache {
     id: u64,
     revision: u64,
+    config: KvCacheConfig,
     max_tokens: usize,
     key_value_heads: usize,
     head_dim: usize,
@@ -94,6 +105,7 @@ pub struct LayerKvCache {
     // Primary ring storage followed by mirrored slots for contiguous logical views.
     key_stage: Vec<f32>,
     value_stage: Vec<f32>,
+    quantized_values: Option<LayerQuantizedValueStore>,
 }
 
 /// Owned layer KV cache state, excluding runtime cache identity.
@@ -103,6 +115,7 @@ pub struct LayerKvCache {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerKvCacheSnapshot {
     pub revision: u64,
+    pub config: KvCacheConfig,
     pub max_tokens: usize,
     pub key_value_heads: usize,
     pub head_dim: usize,
@@ -115,6 +128,7 @@ pub struct LayerKvCacheSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerKvCachePrefixState {
     revision: u64,
+    config: KvCacheConfig,
     max_tokens: usize,
     key_value_heads: usize,
     head_dim: usize,
@@ -238,6 +252,7 @@ impl Clone for LayerKvCache {
         Self {
             id: next_cache_id(),
             revision: self.revision,
+            config: self.config,
             max_tokens: self.max_tokens,
             key_value_heads: self.key_value_heads,
             head_dim: self.head_dim,
@@ -248,6 +263,7 @@ impl Clone for LayerKvCache {
             blocks: self.blocks.clone(),
             key_stage: self.key_stage.clone(),
             value_stage: self.value_stage.clone(),
+            quantized_values: self.quantized_values.clone(),
         }
     }
 }
@@ -258,8 +274,22 @@ impl LayerKvCache {
         key_value_heads: usize,
         head_dim: usize,
     ) -> Result<Self, KvCacheError> {
+        Self::new_with_config(max_tokens, key_value_heads, head_dim, KvCacheConfig::f32())
+    }
+
+    pub fn new_with_config(
+        max_tokens: usize,
+        key_value_heads: usize,
+        head_dim: usize,
+        config: KvCacheConfig,
+    ) -> Result<Self, KvCacheError> {
         if max_tokens == 0 || key_value_heads == 0 || head_dim == 0 {
             return Err(KvCacheError::InvalidShape);
+        }
+        if matches!(config.format(), KvCacheFormat::F16 | KvCacheFormat::Int8) {
+            return Err(KvCacheError::UnsupportedFormat {
+                format: config.format(),
+            });
         }
         let vector_len = key_value_heads
             .checked_mul(head_dim)
@@ -281,9 +311,14 @@ impl LayerKvCache {
             blocks.push(block);
             remaining_tokens -= capacity_tokens;
         }
+        let quantized_values = config
+            .asymmetric_vq_config()
+            .map(|phase3| LayerQuantizedValueStore::new(block_count, vector_len, phase3))
+            .transpose()?;
         Ok(Self {
             id: next_cache_id(),
             revision: 0,
+            config,
             max_tokens,
             key_value_heads,
             head_dim,
@@ -294,12 +329,14 @@ impl LayerKvCache {
             blocks,
             key_stage: vec![0.0; stage_len],
             value_stage: vec![0.0; stage_len],
+            quantized_values,
         })
     }
 
     pub fn snapshot(&self) -> LayerKvCacheSnapshot {
         LayerKvCacheSnapshot {
             revision: self.revision,
+            config: self.config,
             max_tokens: self.max_tokens,
             key_value_heads: self.key_value_heads,
             head_dim: self.head_dim,
@@ -316,10 +353,11 @@ impl LayerKvCache {
             return Err(KvCacheError::InvalidShape);
         }
 
-        let mut cache = Self::new(
+        let mut cache = Self::new_with_config(
             snapshot.max_tokens,
             snapshot.key_value_heads,
             snapshot.head_dim,
+            snapshot.config,
         )?;
         let vector_len = cache.vector_len();
         let used_len = snapshot
@@ -378,6 +416,7 @@ impl LayerKvCache {
         }
         LayerKvCachePrefixState {
             revision: self.revision,
+            config: self.config,
             max_tokens: self.max_tokens,
             key_value_heads: self.key_value_heads,
             head_dim: self.head_dim,
@@ -398,7 +437,12 @@ impl LayerKvCache {
         {
             return Err(KvCacheError::InvalidShape);
         }
-        let mut cache = Self::new(state.max_tokens, state.key_value_heads, state.head_dim)?;
+        let mut cache = Self::new_with_config(
+            state.max_tokens,
+            state.key_value_heads,
+            state.head_dim,
+            state.config,
+        )?;
         for prefix_block in &state.blocks {
             let block = CacheBlock::from_retained(&prefix_block.retained)?;
             if prefix_block.block_index >= cache.blocks.len()
@@ -427,6 +471,14 @@ impl LayerKvCache {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn config(&self) -> KvCacheConfig {
+        self.config
+    }
+
+    pub fn format(&self) -> KvCacheFormat {
+        self.config.format()
     }
 
     pub fn max_tokens(&self) -> usize {
@@ -459,7 +511,7 @@ impl LayerKvCache {
 
     /// Returns bytes retained by compatibility staging and block key/value storage.
     pub fn resident_bytes(&self) -> u64 {
-        self.blocks.iter().fold(
+        let f32_bytes = self.blocks.iter().fold(
             f32_resident_bytes(&self.key_stage)
                 .saturating_add(f32_resident_bytes(&self.value_stage)),
             |resident_bytes, block| {
@@ -467,11 +519,88 @@ impl LayerKvCache {
                     .saturating_add(f32_resident_bytes(block.key_storage()))
                     .saturating_add(f32_resident_bytes(block.value_storage()))
             },
+        );
+        f32_bytes.saturating_add(
+            self.quantized_values
+                .as_ref()
+                .map_or(0, LayerQuantizedValueStore::resident_bytes),
         )
+    }
+
+    pub fn phase3_dequantized_values(&self) -> Result<Option<Vec<f32>>, KvCacheError> {
+        let Some(quantized_values) = self.quantized_values.as_ref() else {
+            return Ok(None);
+        };
+        let mut values = Vec::with_capacity(self.used_len());
+        for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
+            let (block_index, block_token_index) = self
+                .physical_block_position(physical_token_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block_values = quantized_values.dequantized_block(block_index)?;
+            let start = block_token_index
+                .checked_mul(self.vector_len())
+                .ok_or(KvCacheError::InvalidShape)?;
+            let end = start
+                .checked_add(self.vector_len())
+                .ok_or(KvCacheError::InvalidShape)?;
+            values.extend_from_slice(
+                block_values
+                    .get(start..end)
+                    .ok_or(KvCacheError::InvalidShape)?,
+            );
+        }
+        Ok(Some(values))
+    }
+
+    pub fn format_metrics(&self) -> Result<KvCacheFormatMetrics, KvCacheError> {
+        let f32_residency = self.blocks.iter().fold(
+            f32_resident_bytes(&self.key_stage)
+                .saturating_add(f32_resident_bytes(&self.value_stage)),
+            |resident_bytes, block| {
+                resident_bytes
+                    .saturating_add(f32_resident_bytes(block.key_storage()))
+                    .saturating_add(f32_resident_bytes(block.value_storage()))
+            },
+        );
+        let active_key_value_elements = self.keys().len().saturating_add(self.values().len());
+        let f32_uploaded_bytes = uploaded_bytes(active_key_value_elements, 4);
+        let f16_uploaded_bytes = uploaded_bytes(active_key_value_elements, 2);
+        let int8_uploaded_bytes = uploaded_bytes(active_key_value_elements, 1);
+        let phase3_key_uploaded_bytes = uploaded_bytes(self.keys().len(), 2);
+        let (phase3_value_bits, phase3_resident_bytes, phase3_payload_bytes, phase3_metadata_bytes) =
+            self.quantized_values
+                .as_ref()
+                .map_or((None, 0, 0, 0), |quantized_values| {
+                    (
+                        Some(quantized_values.value_bits()),
+                        quantized_values.resident_bytes(),
+                        quantized_values.payload_bytes(),
+                        quantized_values.metadata_bytes(),
+                    )
+                });
+        let phase3_reconstruction_error =
+            self.phase3_reconstruction_error(phase3_value_bits.is_some())?;
+        Ok(KvCacheFormatMetrics::from_parts(KvCacheFormatMetricParts {
+            active_format: self.format(),
+            phase3_value_bits,
+            f32_resident_bytes: f32_residency,
+            f32_uploaded_bytes,
+            f16_uploaded_bytes,
+            int8_uploaded_bytes,
+            phase3_resident_bytes,
+            phase3_value_payload_bytes: phase3_payload_bytes,
+            phase3_value_metadata_bytes: phase3_metadata_bytes,
+            phase3_uploaded_bytes: phase3_key_uploaded_bytes
+                .saturating_add(phase3_payload_bytes)
+                .saturating_add(phase3_metadata_bytes),
+            phase3_reconstruction_error,
+        }))
     }
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
         self.validate_token_shape(key, value)?;
+        self.validate_quantized_value_payload(value)?;
         if self.token_count == self.max_tokens {
             return Err(KvCacheError::CapacityExceeded {
                 requested: 1,
@@ -505,6 +634,7 @@ impl LayerKvCache {
         if self.token_count < self.max_tokens {
             return self.append(key, value);
         }
+        self.validate_quantized_value_payload(value)?;
         let tokens_seen = self
             .tokens_seen
             .checked_add(1)
@@ -683,6 +813,9 @@ impl LayerKvCache {
         for block in &mut self.blocks {
             block.clear();
         }
+        if let Some(quantized_values) = self.quantized_values.as_mut() {
+            quantized_values.clear();
+        }
         self.key_stage.fill(0.0);
         self.value_stage.fill(0.0);
         self.revision = self.revision.saturating_add(1);
@@ -740,6 +873,7 @@ impl LayerKvCache {
         if block_token_index != expected_block_token_index {
             return Err(KvCacheError::InvalidShape);
         }
+        self.refresh_quantized_block(block_index)?;
         Ok(())
     }
 
@@ -774,7 +908,8 @@ impl LayerKvCache {
             .blocks
             .get_mut(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
-        block.write_at(block_token_index, key, value)
+        block.write_at(block_token_index, key, value)?;
+        self.refresh_quantized_block(block_index)
     }
 
     fn write_stage_token(&mut self, token_index: usize, key: &[f32], value: &[f32]) {
@@ -811,7 +946,70 @@ impl LayerKvCache {
                 .to_vec();
             self.write_stage_token(physical_token_index, &key, &value);
         }
+        self.rebuild_quantized_values()
+    }
+
+    fn rebuild_quantized_values(&mut self) -> Result<(), KvCacheError> {
+        let Some(quantized_values) = self.quantized_values.as_mut() else {
+            return Ok(());
+        };
+        quantized_values.clear();
+        for block_index in 0..self.blocks.len() {
+            let Some(block) = self.blocks.get(block_index) else {
+                return Err(KvCacheError::InvalidShape);
+            };
+            if block.token_count() == 0 {
+                continue;
+            }
+            quantized_values.update_block(block_index, block.values())?;
+        }
         Ok(())
+    }
+
+    fn refresh_quantized_block(&mut self, block_index: usize) -> Result<(), KvCacheError> {
+        let Some(quantized_values) = self.quantized_values.as_mut() else {
+            return Ok(());
+        };
+        let block = self
+            .blocks
+            .get(block_index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        if block.token_count() == 0 {
+            return Ok(());
+        }
+        quantized_values.update_block(block_index, block.values())
+    }
+
+    fn phase3_reconstruction_error(
+        &self,
+        enabled: bool,
+    ) -> Result<Option<KvCacheReconstructionError>, KvCacheError> {
+        if !enabled {
+            return Ok(None);
+        }
+        let Some(decoded) = self.phase3_dequantized_values()? else {
+            return Ok(None);
+        };
+        if decoded.is_empty() {
+            return Ok(Some(KvCacheReconstructionError::new(0.0, 0.0)));
+        }
+        if decoded.len() != self.values().len() {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: self.values().len(),
+                actual: decoded.len(),
+            });
+        }
+        let mut squared_error = 0.0_f64;
+        let mut max_abs = 0.0_f32;
+        for (expected, actual) in self.values().iter().zip(decoded) {
+            let delta = expected - actual;
+            squared_error += f64::from(delta * delta);
+            max_abs = max_abs.max(delta.abs());
+        }
+        Ok(Some(KvCacheReconstructionError::new(
+            squared_error / self.values().len() as f64,
+            max_abs,
+        )))
     }
 
     fn validate_token_shape(&self, key: &[f32], value: &[f32]) -> Result<(), KvCacheError> {
@@ -827,6 +1025,16 @@ impl LayerKvCache {
                 expected: vector_len,
                 actual: value.len(),
             });
+        }
+        Ok(())
+    }
+
+    fn validate_quantized_value_payload(&self, value: &[f32]) -> Result<(), KvCacheError> {
+        if self.quantized_values.is_none() {
+            return Ok(());
+        }
+        if value.iter().any(|value| !value.is_finite()) {
+            return Err(KvCacheError::NonFiniteValue);
         }
         Ok(())
     }
@@ -1078,6 +1286,8 @@ impl LinearAttentionCache {
 pub enum KvCacheError {
     CapacityExceeded { requested: usize, available: usize },
     ShapeMismatch { expected: usize, actual: usize },
+    UnsupportedFormat { format: KvCacheFormat },
+    NonFiniteValue,
     InvalidShape,
 }
 
@@ -1095,6 +1305,10 @@ impl fmt::Display for KvCacheError {
                 formatter,
                 "KV cache shape mismatch: expected {expected} values, got {actual}"
             ),
+            Self::UnsupportedFormat { format } => {
+                write!(formatter, "KV cache format {format} is not supported")
+            }
+            Self::NonFiniteValue => write!(formatter, "KV cache values must be finite"),
             Self::InvalidShape => {
                 write!(formatter, "KV cache shape must be non-zero and fit usize")
             }
