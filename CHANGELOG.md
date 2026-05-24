@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.53.0](https://github.com/michaelasper/kir-ai/compare/v1.52.0...v1.53.0) (2026-05-24)
+
+### Features
+
+* **COR-328:** add Metal staged KV cache residency ([3c96796](https://github.com/michaelasper/kir-ai/commit/3c9679621e852e9e6c63354d772113094398bb15))
+
+### Bug Fixes
+
+* **COR-328:** make Metal KV stage incremental ([be4cbed](https://github.com/michaelasper/kir-ai/commit/be4cbed7322ced4f4aecfa8c3dd24b98bad53efa))
+
 ## [1.52.0](https://github.com/michaelasper/kir-ai/compare/v1.51.0...v1.52.0) (2026-05-24)
 
 ### Features
