@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.51.0](https://github.com/michaelasper/kir-ai/compare/v1.50.0...v1.51.0) (2026-05-24)
+
+### Features
+
+* **COR-295:** interleave prefill progress and checkpoint chunks ([9e8ca50](https://github.com/michaelasper/kir-ai/commit/9e8ca500b58cbcf44d41aa1bc4d95dcd9dd42618))
+
+### Bug Fixes
+
+* **COR-295:** enforce native prefill readmission ([45cad2d](https://github.com/michaelasper/kir-ai/commit/45cad2d75f04d04b843f75c8c100583823fc4e59))
+
 ## [1.50.0](https://github.com/michaelasper/kir-ai/compare/v1.49.1...v1.50.0) (2026-05-24)
 
 ### Features
