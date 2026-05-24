@@ -100,6 +100,8 @@ struct MetalLayerKvStageMirror {
     keys: llm_metal::F16Buffer,
     values: llm_metal::F16Buffer,
     revision_at_last_sync: Option<u64>,
+    tokens_seen_at_last_sync: usize,
+    token_count_at_last_sync: usize,
     max_tokens: usize,
     vector_len: usize,
 }
@@ -112,6 +114,8 @@ struct MetalLayerInt8KvStageMirror {
     values: llm_metal::I8Buffer,
     value_scales: llm_metal::F32Buffer,
     revision_at_last_sync: Option<u64>,
+    tokens_seen_at_last_sync: usize,
+    token_count_at_last_sync: usize,
     max_tokens: usize,
     vector_len: usize,
 }
@@ -126,10 +130,9 @@ struct MetalBlockCopy {
 }
 
 #[derive(Debug)]
-struct MetalStageCopy {
-    source_keys: llm_metal::F16Buffer,
-    source_values: llm_metal::F16Buffer,
-    source_start: usize,
+struct MetalStageWrite<'a> {
+    source_keys: &'a [f32],
+    source_values: &'a [f32],
     destination_start: usize,
     element_count: usize,
 }
@@ -149,17 +152,25 @@ struct MetalBlockInt8Copy {
 }
 
 #[derive(Debug)]
-struct MetalInt8StageCopy {
-    source_keys: llm_metal::I8Buffer,
-    source_key_scales: llm_metal::F32Buffer,
-    source_values: llm_metal::I8Buffer,
-    source_value_scales: llm_metal::F32Buffer,
-    source_start: usize,
-    source_scale_start: usize,
+struct MetalInt8StageWrite<'a> {
+    source_keys: &'a [i8],
+    source_key_scales: &'a [f32],
+    source_values: &'a [i8],
+    source_value_scales: &'a [f32],
     destination_start: usize,
     destination_scale_start: usize,
     element_count: usize,
     token_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetalStageSyncPlan {
+    Clean,
+    Write {
+        logical_start: usize,
+        logical_end: usize,
+        full_rebuild: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -642,7 +653,6 @@ impl NativeTextMetalState {
                 cache.token_count()
             )));
         }
-        self.sync_kv_cache(cache)?;
         let vector_len = cache.vector_len();
         let stage_len = kv_cache_stage_element_len(cache)?;
         let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
@@ -664,7 +674,7 @@ impl NativeTextMetalState {
                     )
                 })?
         };
-        let (keys, values, copies, changed_residency) = {
+        let (keys, values, writes, changed_residency, sync_required, full_rebuild) = {
             let mut stages = self.kv_stages.lock_or_panic("Metal KV stage mirror");
             let mut changed_residency = false;
             let stage = match stages.get_mut(&cache.id()) {
@@ -685,6 +695,8 @@ impl NativeTextMetalState {
                             keys: self.device.new_f16_buffer_len(stage_len)?,
                             values: self.device.new_f16_buffer_len(stage_len)?,
                             revision_at_last_sync: None,
+                            tokens_seen_at_last_sync: 0,
+                            token_count_at_last_sync: 0,
                             max_tokens: cache.max_tokens(),
                             vector_len,
                         },
@@ -697,59 +709,73 @@ impl NativeTextMetalState {
                     })?
                 }
             };
-            if stage.revision_at_last_sync == Some(cache.revision()) {
-                (
+            match kv_stage_sync_plan(
+                stage.revision_at_last_sync,
+                stage.tokens_seen_at_last_sync,
+                stage.token_count_at_last_sync,
+                cache.revision(),
+                cache.next_position(),
+                cache.token_count(),
+            ) {
+                MetalStageSyncPlan::Clean => (
                     stage.keys.clone(),
                     stage.values.clone(),
                     Vec::new(),
                     changed_residency,
-                )
-            } else {
-                let block_mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
-                let copies = kv_stage_copies_from_active_blocks(
-                    &active_blocks,
-                    &block_mirrors,
-                    row_count,
-                    vector_len,
-                    cache.max_tokens(),
-                )?;
-                (
-                    stage.keys.clone(),
-                    stage.values.clone(),
-                    copies,
-                    changed_residency,
-                )
+                    false,
+                    false,
+                ),
+                MetalStageSyncPlan::Write {
+                    logical_start,
+                    logical_end,
+                    full_rebuild,
+                } => {
+                    let writes = kv_stage_writes_from_active_blocks(
+                        &active_blocks,
+                        logical_start,
+                        logical_end,
+                        vector_len,
+                        cache.max_tokens(),
+                    )?;
+                    (
+                        stage.keys.clone(),
+                        stage.values.clone(),
+                        writes,
+                        changed_residency,
+                        true,
+                        full_rebuild,
+                    )
+                }
             }
         };
 
         let mut copied_bytes = 0_u64;
-        for copy in &copies {
-            self.device
-                .copy_f16_buffer_range(
-                    &copy.source_keys,
-                    copy.source_start,
-                    &keys,
-                    copy.destination_start,
-                    copy.element_count,
-                )
-                .await?;
-            self.device
-                .copy_f16_buffer_range(
-                    &copy.source_values,
-                    copy.source_start,
-                    &values,
-                    copy.destination_start,
-                    copy.element_count,
-                )
-                .await?;
-            copied_bytes = copied_bytes.saturating_add(f16_stage_copy_bytes(copy.element_count));
+        for write in &writes {
+            self.device.write_f16_buffer_range_from_f32(
+                &keys,
+                write.destination_start,
+                write.source_keys,
+            )?;
+            self.device.write_f16_buffer_range_from_f32(
+                &values,
+                write.destination_start,
+                write.source_values,
+            )?;
+            copied_bytes = copied_bytes.saturating_add(f16_stage_copy_bytes(write.element_count));
         }
-        if !copies.is_empty() {
+        if sync_required {
             let mut stages = self.kv_stages.lock_or_panic("Metal KV stage mirror");
             if let Some(stage) = stages.get_mut(&cache.id()) {
                 stage.revision_at_last_sync = Some(cache.revision());
+                stage.tokens_seen_at_last_sync = cache.next_position();
+                stage.token_count_at_last_sync = cache.token_count();
             }
-            native_text_metal_metrics().record_kv_cache_stage_rebuild(copied_bytes);
+            let metrics = native_text_metal_metrics();
+            if full_rebuild && copied_bytes > 0 {
+                metrics.record_kv_cache_stage_rebuild(copied_bytes);
+            } else if copied_bytes > 0 {
+                metrics.record_kv_cache_stage_sync(copied_bytes);
+            }
         }
         if changed_residency {
             self.record_kv_stage_residency();
@@ -780,7 +806,6 @@ impl NativeTextMetalState {
                 cache.token_count()
             )));
         }
-        self.sync_int8_kv_cache(cache)?;
         let vector_len = cache.vector_len();
         let stage_len = kv_cache_stage_element_len(cache)?;
         let scale_stage_len = cache.max_tokens().checked_mul(2).ok_or_else(|| {
@@ -816,7 +841,16 @@ impl NativeTextMetalState {
                 first.physical_token_start(),
             )
         };
-        let (keys, key_scales, values, value_scales, copies, changed_residency) = {
+        let (
+            keys,
+            key_scales,
+            values,
+            value_scales,
+            writes,
+            changed_residency,
+            sync_required,
+            full_rebuild,
+        ) = {
             let mut stages = self
                 .kv_int8_stages
                 .lock_or_panic("Metal INT8 KV stage mirror");
@@ -843,6 +877,8 @@ impl NativeTextMetalState {
                             values: self.device.new_i8_buffer_len(stage_len)?,
                             value_scales: self.device.new_f32_buffer_len(scale_stage_len)?,
                             revision_at_last_sync: None,
+                            tokens_seen_at_last_sync: 0,
+                            token_count_at_last_sync: 0,
                             max_tokens: cache.max_tokens(),
                             vector_len,
                         },
@@ -855,86 +891,89 @@ impl NativeTextMetalState {
                     })?
                 }
             };
-            if stage.revision_at_last_sync == Some(cache.revision()) {
-                (
+            match kv_stage_sync_plan(
+                stage.revision_at_last_sync,
+                stage.tokens_seen_at_last_sync,
+                stage.token_count_at_last_sync,
+                cache.revision(),
+                cache.next_position(),
+                cache.token_count(),
+            ) {
+                MetalStageSyncPlan::Clean => (
                     stage.keys.clone(),
                     stage.key_scales.clone(),
                     stage.values.clone(),
                     stage.value_scales.clone(),
                     Vec::new(),
                     changed_residency,
-                )
-            } else {
-                let block_mirrors = self
-                    .kv_int8_blocks
-                    .lock_or_panic("Metal INT8 KV block mirror");
-                let copies = int8_kv_stage_copies_from_active_blocks(
-                    &active_blocks,
-                    &block_mirrors,
-                    row_count,
-                    vector_len,
-                    cache.max_tokens(),
-                )?;
-                (
-                    stage.keys.clone(),
-                    stage.key_scales.clone(),
-                    stage.values.clone(),
-                    stage.value_scales.clone(),
-                    copies,
-                    changed_residency,
-                )
+                    false,
+                    false,
+                ),
+                MetalStageSyncPlan::Write {
+                    logical_start,
+                    logical_end,
+                    full_rebuild,
+                } => {
+                    let writes = int8_kv_stage_writes_from_active_blocks(
+                        &active_blocks,
+                        logical_start,
+                        logical_end,
+                        vector_len,
+                        cache.max_tokens(),
+                    )?;
+                    (
+                        stage.keys.clone(),
+                        stage.key_scales.clone(),
+                        stage.values.clone(),
+                        stage.value_scales.clone(),
+                        writes,
+                        changed_residency,
+                        true,
+                        full_rebuild,
+                    )
+                }
             }
         };
 
         let mut copied_bytes = 0_u64;
-        for copy in &copies {
+        for write in &writes {
             self.device
-                .copy_i8_buffer_range(
-                    &copy.source_keys,
-                    copy.source_start,
-                    &keys,
-                    copy.destination_start,
-                    copy.element_count,
-                )
-                .await?;
-            self.device
-                .copy_i8_buffer_range(
-                    &copy.source_values,
-                    copy.source_start,
-                    &values,
-                    copy.destination_start,
-                    copy.element_count,
-                )
-                .await?;
-            self.device
-                .copy_f32_buffer_range(
-                    &copy.source_key_scales,
-                    copy.source_scale_start,
-                    &key_scales,
-                    copy.destination_scale_start,
-                    copy.token_count,
-                )
-                .await?;
-            self.device
-                .copy_f32_buffer_range(
-                    &copy.source_value_scales,
-                    copy.source_scale_start,
-                    &value_scales,
-                    copy.destination_scale_start,
-                    copy.token_count,
-                )
-                .await?;
-            copied_bytes = copied_bytes
-                .saturating_add(int8_stage_copy_bytes(copy.element_count, copy.token_count));
+                .write_i8_buffer_range(&keys, write.destination_start, write.source_keys)?;
+            self.device.write_i8_buffer_range(
+                &values,
+                write.destination_start,
+                write.source_values,
+            )?;
+            self.device.write_f32_buffer_range(
+                &key_scales,
+                write.destination_scale_start,
+                write.source_key_scales,
+            )?;
+            self.device.write_f32_buffer_range(
+                &value_scales,
+                write.destination_scale_start,
+                write.source_value_scales,
+            )?;
+            copied_bytes = copied_bytes.saturating_add(int8_stage_copy_bytes(
+                write.element_count,
+                write.token_count,
+            ));
         }
-        if !copies.is_empty() {
+        if sync_required {
             let mut stages = self
                 .kv_int8_stages
                 .lock_or_panic("Metal INT8 KV stage mirror");
             if let Some(stage) = stages.get_mut(&cache.id()) {
                 stage.revision_at_last_sync = Some(cache.revision());
+                stage.tokens_seen_at_last_sync = cache.next_position();
+                stage.token_count_at_last_sync = cache.token_count();
             }
-            native_text_metal_metrics().record_kv_cache_stage_rebuild(copied_bytes);
+            let metrics = native_text_metal_metrics();
+            if full_rebuild && copied_bytes > 0 {
+                metrics.record_kv_cache_stage_rebuild(copied_bytes);
+            } else if copied_bytes > 0 {
+                metrics.record_kv_cache_stage_sync(copied_bytes);
+            }
         }
         if changed_residency {
             self.record_kv_stage_residency();
@@ -1692,203 +1731,310 @@ fn kv_cache_stage_element_len(cache: &LayerKvCache) -> Result<usize, llm_metal::
         })
 }
 
-fn kv_stage_copies_from_active_blocks(
-    active_blocks: &[LayerKvCacheBlock<'_>],
-    mirrors: &HashMap<BlockId, MetalBlockKvMirror>,
-    row_count: usize,
+fn kv_stage_sync_plan(
+    revision_at_last_sync: Option<u64>,
+    tokens_seen_at_last_sync: usize,
+    token_count_at_last_sync: usize,
+    cache_revision: u64,
+    cache_tokens_seen: usize,
+    cache_token_count: usize,
+) -> MetalStageSyncPlan {
+    if revision_at_last_sync == Some(cache_revision) {
+        return MetalStageSyncPlan::Clean;
+    }
+
+    let full_rebuild = revision_at_last_sync.is_none()
+        || cache_tokens_seen < tokens_seen_at_last_sync
+        || cache_token_count < token_count_at_last_sync;
+    if full_rebuild {
+        return MetalStageSyncPlan::Write {
+            logical_start: 0,
+            logical_end: cache_token_count,
+            full_rebuild: true,
+        };
+    }
+
+    let dirty_tokens = cache_tokens_seen.saturating_sub(tokens_seen_at_last_sync);
+    if dirty_tokens == 0 || dirty_tokens > cache_token_count {
+        return MetalStageSyncPlan::Write {
+            logical_start: 0,
+            logical_end: cache_token_count,
+            full_rebuild: true,
+        };
+    }
+
+    MetalStageSyncPlan::Write {
+        logical_start: cache_token_count - dirty_tokens,
+        logical_end: cache_token_count,
+        full_rebuild: false,
+    }
+}
+
+fn kv_stage_writes_from_active_blocks<'a>(
+    active_blocks: &'a [LayerKvCacheBlock<'a>],
+    logical_start: usize,
+    logical_end: usize,
     vector_len: usize,
     max_tokens: usize,
-) -> Result<Vec<MetalStageCopy>, llm_metal::MetalError> {
-    let mut copies = Vec::new();
+) -> Result<Vec<MetalStageWrite<'a>>, llm_metal::MetalError> {
+    let mut writes = Vec::new();
     for block in active_blocks {
-        if block.logical_token_start() >= row_count {
-            break;
-        }
-        let copy_tokens = block
-            .token_count()
-            .min(row_count - block.logical_token_start());
-        let source_start = block
-            .block_token_start()
+        let Some(range) = intersect_stage_logical_range(
+            block.logical_token_start(),
+            block.physical_token_start(),
+            block.block_token_start(),
+            block.token_count(),
+            logical_start,
+            logical_end,
+        )?
+        else {
+            continue;
+        };
+        let source_start = range
+            .block_token_start
             .checked_mul(vector_len)
             .ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(
                     "KV cache stage source start overflows usize".to_owned(),
                 )
             })?;
-        let destination_start = block
-            .physical_token_start()
-            .checked_mul(vector_len)
-            .ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(
-                    "KV cache stage destination start overflows usize".to_owned(),
-                )
-            })?;
-        let mirror_destination_start = block
-            .physical_token_start()
-            .checked_add(max_tokens)
-            .and_then(|token| token.checked_mul(vector_len))
-            .ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(
-                    "KV cache stage mirror destination start overflows usize".to_owned(),
-                )
-            })?;
-        let element_count = copy_tokens.checked_mul(vector_len).ok_or_else(|| {
+        let element_count = range.token_count.checked_mul(vector_len).ok_or_else(|| {
             llm_metal::MetalError::InvalidShape(
                 "KV cache stage copy length overflows usize".to_owned(),
             )
         })?;
-        let physical_end = block
-            .physical_token_start()
-            .checked_add(copy_tokens)
+        let source_end = source_start.checked_add(element_count).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "KV cache stage source range overflows usize".to_owned(),
+            )
+        })?;
+        let source_keys = block
+            .key_storage()
+            .get(source_start..source_end)
             .ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(
-                    "KV cache stage physical range overflows usize".to_owned(),
+                    "KV cache stage source key range exceeds block storage".to_owned(),
                 )
             })?;
-        if physical_end > max_tokens {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "KV cache stage physical range {}..{physical_end} exceeds max_tokens {max_tokens}",
-                block.physical_token_start()
-            )));
-        }
-        let mirror = mirrors.get(&block.block_id()).ok_or_else(|| {
-            llm_metal::MetalError::InvalidShape(format!(
-                "missing Metal KV block mirror for block {}",
-                block.block_id()
-            ))
-        })?;
-        if mirror.block_id != block.block_id() {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "Metal KV block mirror key mismatch: map key {}, mirror block {}",
-                block.block_id(),
-                mirror.block_id
-            )));
-        }
-        if mirror.revision_at_last_sync != block.revision() {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "stale Metal KV block mirror for block {}",
-                block.block_id()
-            )));
-        }
-        for destination_start in [destination_start, mirror_destination_start] {
-            copies.push(MetalStageCopy {
-                source_keys: mirror.keys.clone(),
-                source_values: mirror.values.clone(),
-                source_start,
+        let source_values = block
+            .value_storage()
+            .get(source_start..source_end)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "KV cache stage source value range exceeds block storage".to_owned(),
+                )
+            })?;
+        let destination_starts = kv_stage_destination_starts(
+            range.physical_token_start,
+            range.token_count,
+            vector_len,
+            max_tokens,
+            "KV cache stage",
+        )?;
+        for destination_start in destination_starts {
+            writes.push(MetalStageWrite {
+                source_keys,
+                source_values,
                 destination_start,
                 element_count,
             });
         }
     }
-    Ok(copies)
+    Ok(writes)
 }
 
-fn int8_kv_stage_copies_from_active_blocks(
-    active_blocks: &[LayerKvCacheInt8Block<'_>],
-    mirrors: &HashMap<BlockId, MetalBlockInt8KvMirror>,
-    row_count: usize,
+fn int8_kv_stage_writes_from_active_blocks<'a>(
+    active_blocks: &'a [LayerKvCacheInt8Block<'a>],
+    logical_start: usize,
+    logical_end: usize,
     vector_len: usize,
     max_tokens: usize,
-) -> Result<Vec<MetalInt8StageCopy>, llm_metal::MetalError> {
-    let mut copies = Vec::new();
+) -> Result<Vec<MetalInt8StageWrite<'a>>, llm_metal::MetalError> {
+    let mut writes = Vec::new();
     for block in active_blocks {
-        if block.logical_token_start() >= row_count {
-            break;
-        }
-        let copy_tokens = block
-            .token_count()
-            .min(row_count - block.logical_token_start());
-        let source_start = block
-            .block_token_start()
+        let Some(range) = intersect_stage_logical_range(
+            block.logical_token_start(),
+            block.physical_token_start(),
+            block.block_token_start(),
+            block.token_count(),
+            logical_start,
+            logical_end,
+        )?
+        else {
+            continue;
+        };
+        let source_start = range
+            .block_token_start
             .checked_mul(vector_len)
             .ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(
                     "INT8 KV cache stage source start overflows usize".to_owned(),
                 )
             })?;
-        let source_scale_start = block.block_token_start();
-        let destination_start = block
-            .physical_token_start()
-            .checked_mul(vector_len)
-            .ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(
-                    "INT8 KV cache stage destination start overflows usize".to_owned(),
-                )
-            })?;
-        let mirror_destination_start = block
-            .physical_token_start()
-            .checked_add(max_tokens)
-            .and_then(|token| token.checked_mul(vector_len))
-            .ok_or_else(|| {
-                llm_metal::MetalError::InvalidShape(
-                    "INT8 KV cache stage mirror destination start overflows usize".to_owned(),
-                )
-            })?;
-        let mirror_scale_destination_start = block
-            .physical_token_start()
-            .checked_add(max_tokens)
-            .ok_or_else(|| {
-            llm_metal::MetalError::InvalidShape(
-                "INT8 KV cache stage mirror scale destination overflows usize".to_owned(),
-            )
-        })?;
-        let element_count = copy_tokens.checked_mul(vector_len).ok_or_else(|| {
+        let element_count = range.token_count.checked_mul(vector_len).ok_or_else(|| {
             llm_metal::MetalError::InvalidShape(
                 "INT8 KV cache stage copy length overflows usize".to_owned(),
             )
         })?;
-        let physical_end = block
-            .physical_token_start()
-            .checked_add(copy_tokens)
+        let source_end = source_start.checked_add(element_count).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "INT8 KV cache stage source range overflows usize".to_owned(),
+            )
+        })?;
+        let scale_end = range
+            .block_token_start
+            .checked_add(range.token_count)
             .ok_or_else(|| {
                 llm_metal::MetalError::InvalidShape(
-                    "INT8 KV cache stage physical range overflows usize".to_owned(),
+                    "INT8 KV cache stage scale source range overflows usize".to_owned(),
                 )
             })?;
-        if physical_end > max_tokens {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "INT8 KV cache stage physical range {}..{physical_end} exceeds max_tokens {max_tokens}",
-                block.physical_token_start()
-            )));
-        }
-        let mirror = mirrors.get(&block.block_id()).ok_or_else(|| {
-            llm_metal::MetalError::InvalidShape(format!(
-                "missing Metal INT8 KV block mirror for block {}",
-                block.block_id()
-            ))
-        })?;
-        if mirror.block_id != block.block_id() {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "Metal INT8 KV block mirror key mismatch: map key {}, mirror block {}",
-                block.block_id(),
-                mirror.block_id
-            )));
-        }
-        if mirror.revision_at_last_sync != block.revision() {
-            return Err(llm_metal::MetalError::InvalidShape(format!(
-                "stale Metal INT8 KV block mirror for block {}",
-                block.block_id()
-            )));
-        }
-        for (destination_start, destination_scale_start) in [
-            (destination_start, block.physical_token_start()),
-            (mirror_destination_start, mirror_scale_destination_start),
-        ] {
-            copies.push(MetalInt8StageCopy {
-                source_keys: mirror.keys.clone(),
-                source_key_scales: mirror.key_scales.clone(),
-                source_values: mirror.values.clone(),
-                source_value_scales: mirror.value_scales.clone(),
-                source_start,
-                source_scale_start,
+        let source_keys = block
+            .key_codes_storage()
+            .get(source_start..source_end)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache stage source key range exceeds block storage".to_owned(),
+                )
+            })?;
+        let source_values = block
+            .value_codes_storage()
+            .get(source_start..source_end)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache stage source value range exceeds block storage".to_owned(),
+                )
+            })?;
+        let source_key_scales = block
+            .key_scales_storage()
+            .get(range.block_token_start..scale_end)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache stage key scale range exceeds block storage".to_owned(),
+                )
+            })?;
+        let source_value_scales = block
+            .value_scales_storage()
+            .get(range.block_token_start..scale_end)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache stage value scale range exceeds block storage".to_owned(),
+                )
+            })?;
+        let destination_starts = kv_stage_destination_starts(
+            range.physical_token_start,
+            range.token_count,
+            vector_len,
+            max_tokens,
+            "INT8 KV cache stage",
+        )?;
+        let scale_destination_starts = [
+            range.physical_token_start,
+            range
+                .physical_token_start
+                .checked_add(max_tokens)
+                .ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(
+                        "INT8 KV cache stage mirror scale destination overflows usize".to_owned(),
+                    )
+                })?,
+        ];
+        for (destination_start, destination_scale_start) in
+            destination_starts.into_iter().zip(scale_destination_starts)
+        {
+            writes.push(MetalInt8StageWrite {
+                source_keys,
+                source_key_scales,
+                source_values,
+                source_value_scales,
                 destination_start,
                 destination_scale_start,
                 element_count,
-                token_count: copy_tokens,
+                token_count: range.token_count,
             });
         }
     }
-    Ok(copies)
+    Ok(writes)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StageLogicalRange {
+    block_token_start: usize,
+    physical_token_start: usize,
+    token_count: usize,
+}
+
+fn intersect_stage_logical_range(
+    block_logical_start: usize,
+    block_physical_start: usize,
+    block_token_start: usize,
+    block_token_count: usize,
+    logical_start: usize,
+    logical_end: usize,
+) -> Result<Option<StageLogicalRange>, llm_metal::MetalError> {
+    let block_logical_end = block_logical_start
+        .checked_add(block_token_count)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "KV cache stage logical block range overflows usize".to_owned(),
+            )
+        })?;
+    let copy_logical_start = block_logical_start.max(logical_start);
+    let copy_logical_end = block_logical_end.min(logical_end);
+    if copy_logical_start >= copy_logical_end {
+        return Ok(None);
+    }
+    let token_offset = copy_logical_start - block_logical_start;
+    Ok(Some(StageLogicalRange {
+        block_token_start: block_token_start.checked_add(token_offset).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "KV cache stage block token start overflows usize".to_owned(),
+            )
+        })?,
+        physical_token_start: block_physical_start
+            .checked_add(token_offset)
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "KV cache stage physical token start overflows usize".to_owned(),
+                )
+            })?,
+        token_count: copy_logical_end - copy_logical_start,
+    }))
+}
+
+fn kv_stage_destination_starts(
+    physical_token_start: usize,
+    token_count: usize,
+    vector_len: usize,
+    max_tokens: usize,
+    label: &'static str,
+) -> Result<[usize; 2], llm_metal::MetalError> {
+    let physical_end = physical_token_start
+        .checked_add(token_count)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!("{label} physical range overflows usize"))
+        })?;
+    if physical_end > max_tokens {
+        return Err(llm_metal::MetalError::InvalidShape(format!(
+            "{label} physical range {physical_token_start}..{physical_end} exceeds max_tokens {max_tokens}"
+        )));
+    }
+    let destination_start = physical_token_start
+        .checked_mul(vector_len)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "{label} destination start overflows usize"
+            ))
+        })?;
+    let mirror_destination_start = physical_token_start
+        .checked_add(max_tokens)
+        .and_then(|token| token.checked_mul(vector_len))
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "{label} mirror destination start overflows usize"
+            ))
+        })?;
+    Ok([destination_start, mirror_destination_start])
 }
 
 fn f16_stage_copy_bytes(element_count: usize) -> u64 {
@@ -2118,6 +2264,297 @@ mod kv_cache_sync_tests {
         assert_eq!(stage.vector_len, cache.vector_len());
         assert_eq!(stage.keys.len(), row_count * cache.vector_len() * 2);
         assert_eq!(stage.key_scales.len(), row_count * 2);
+    }
+
+    #[tokio::test]
+    async fn metal_f16_stage_serves_larger_source_count_without_revision_change() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 staged source-count test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4]];
+        let values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2]];
+        for (key, value) in keys.iter().zip(&values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("first Metal attention succeeds");
+
+        state
+            .full_attention_cache_mix(&cache, &query, 3, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("larger-source Metal attention succeeds");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &keys, &values, score_scale),
+            1e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_int8_stage_serves_larger_source_count_without_revision_change() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 staged source-count test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache =
+            LayerKvCache::new_with_config(4, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+        let keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4]];
+        let values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2]];
+        for (key, value) in keys.iter().zip(&values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("first Metal INT8 attention succeeds");
+
+        state
+            .full_attention_cache_mix(&cache, &query, 3, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("larger-source Metal INT8 attention succeeds");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &keys, &values, score_scale),
+            4e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_f16_stage_updates_mirrored_wrap_row_for_larger_source_count() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 staged wrap test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let initial_keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4], [0.3, -0.5]];
+        let initial_values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2], [-0.9, 0.5]];
+        for (key, value) in initial_keys.iter().zip(&initial_values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("warm Metal attention succeeds");
+
+        let wrapped_key = [-0.4, 0.6];
+        let wrapped_value = [0.1, -0.8];
+        cache
+            .append_sliding(&wrapped_key, &wrapped_value)
+            .expect("sliding append overwrites the oldest physical row");
+        let active_keys = [
+            initial_keys[1],
+            initial_keys[2],
+            initial_keys[3],
+            wrapped_key,
+        ];
+        let active_values = [
+            initial_values[1],
+            initial_values[2],
+            initial_values[3],
+            wrapped_value,
+        ];
+
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap first Metal attention succeeds");
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap larger-source Metal attention succeeds");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &active_keys, &active_values, score_scale),
+            1e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_f16_stage_syncs_only_dirty_wrap_row_after_sliding_append() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 dirty-row staging test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let initial_keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4], [0.3, -0.5]];
+        let initial_values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2], [-0.9, 0.5]];
+        for (key, value) in initial_keys.iter().zip(&initial_values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("warm Metal attention succeeds");
+        let before = kv_stage_bytes_copied();
+
+        cache
+            .append_sliding(&[-0.4, 0.6], &[0.1, -0.8])
+            .expect("sliding append overwrites the oldest physical row");
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap Metal attention succeeds");
+
+        let copied = kv_stage_bytes_copied().saturating_sub(before);
+        assert_eq!(
+            copied,
+            f16_stage_copy_bytes(cache.vector_len()).saturating_mul(2),
+            "sliding append should sync only the dirty physical row and mirrored row"
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_int8_stage_updates_mirrored_wrap_row_for_larger_source_count() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 staged wrap test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache =
+            LayerKvCache::new_with_config(4, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+        let initial_keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4], [0.3, -0.5]];
+        let initial_values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2], [-0.9, 0.5]];
+        for (key, value) in initial_keys.iter().zip(&initial_values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("warm Metal INT8 attention succeeds");
+
+        let wrapped_key = [-0.4, 0.6];
+        let wrapped_value = [0.1, -0.8];
+        cache
+            .append_sliding(&wrapped_key, &wrapped_value)
+            .expect("sliding append overwrites the oldest physical row");
+        let active_keys = [
+            initial_keys[1],
+            initial_keys[2],
+            initial_keys[3],
+            wrapped_key,
+        ];
+        let active_values = [
+            initial_values[1],
+            initial_values[2],
+            initial_values[3],
+            wrapped_value,
+        ];
+
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap first Metal INT8 attention succeeds");
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap larger-source Metal INT8 attention succeeds");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &active_keys, &active_values, score_scale),
+            4e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_int8_stage_syncs_only_dirty_wrap_row_after_sliding_append() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 dirty-row staging test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache =
+            LayerKvCache::new_with_config(4, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+        let initial_keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4], [0.3, -0.5]];
+        let initial_values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2], [-0.9, 0.5]];
+        for (key, value) in initial_keys.iter().zip(&initial_values) {
+            cache.append(key, value).expect("token appends");
+        }
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("warm Metal INT8 attention succeeds");
+        let before = kv_stage_bytes_copied();
+
+        cache
+            .append_sliding(&[-0.4, 0.6], &[0.1, -0.8])
+            .expect("sliding append overwrites the oldest physical row");
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("post-wrap Metal INT8 attention succeeds");
+
+        let copied = kv_stage_bytes_copied().saturating_sub(before);
+        assert_eq!(
+            copied,
+            int8_stage_copy_bytes(cache.vector_len(), 1).saturating_mul(2),
+            "sliding append should sync only the dirty physical row and mirrored row"
+        );
+    }
+
+    fn kv_stage_bytes_copied() -> u64 {
+        native_text_metal_metrics().snapshot()["kv_cache"]["stage_bytes_copied"]
+            .as_u64()
+            .expect("stage_bytes_copied is reported as u64")
+    }
+
+    fn assert_attention_close(actual: &[f32], expected: [f32; 2], tolerance: f32) {
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < tolerance,
+                "expected {actual} to be within {tolerance} of {expected}"
+            );
+        }
     }
 
     fn reference_attention(
@@ -2355,6 +2792,12 @@ impl MetalBackendMetrics {
     pub(crate) fn record_kv_cache_stage_rebuild(&self, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.stage_rebuilds = cache.stage_rebuilds.saturating_add(1);
+            cache.stage_bytes_copied = cache.stage_bytes_copied.saturating_add(byte_len);
+        });
+    }
+
+    pub(crate) fn record_kv_cache_stage_sync(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.stage_bytes_copied = cache.stage_bytes_copied.saturating_add(byte_len);
         });
     }
