@@ -94,6 +94,27 @@ impl F16Buffer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct I8Buffer {
+    pub(crate) buffer: Option<Buffer>,
+    pub(crate) len: usize,
+    pub(crate) byte_len: usize,
+}
+
+impl I8Buffer {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.byte_len
+    }
+}
+
 pub(crate) fn f32_to_f16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
@@ -324,6 +345,159 @@ impl MetalDevice {
         })
     }
 
+    pub fn new_i8_buffer(&self, values: &[i8]) -> Result<I8Buffer, MetalError> {
+        let byte_len = values
+            .len()
+            .checked_mul(std::mem::size_of::<i8>())
+            .ok_or_else(|| {
+                MetalError::InvalidShape("i8 buffer byte length overflows usize".to_owned())
+            })?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(self.device.new_buffer_with_data(
+                values.as_ptr().cast::<c_void>(),
+                byte_len as u64,
+                MTLResourceOptions::StorageModeShared,
+            ))
+        };
+        Ok(I8Buffer {
+            buffer,
+            len: values.len(),
+            byte_len,
+        })
+    }
+
+    pub fn new_i8_buffer_len(&self, len: usize) -> Result<I8Buffer, MetalError> {
+        let byte_len = len.checked_mul(std::mem::size_of::<i8>()).ok_or_else(|| {
+            MetalError::InvalidShape("i8 buffer byte length overflows usize".to_owned())
+        })?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(
+                self.device
+                    .new_buffer(byte_len as u64, MTLResourceOptions::StorageModeShared),
+            )
+        };
+        Ok(I8Buffer {
+            buffer,
+            len,
+            byte_len,
+        })
+    }
+
+    pub fn write_i8_buffer_range(
+        &self,
+        buffer: &I8Buffer,
+        start: usize,
+        values: &[i8],
+    ) -> Result<(), MetalError> {
+        let end = start.checked_add(values.len()).ok_or_else(|| {
+            MetalError::InvalidShape("i8 buffer write range overflows usize".to_owned())
+        })?;
+        if end > buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "i8 buffer write range {start}..{end} exceeds buffer length {}",
+                buffer.len
+            )));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty i8 buffer range write requires a Metal buffer".to_owned(),
+            ));
+        };
+        let _cpu_access = self.synchronization.begin_cpu_access();
+        // SAFETY: the destination range is bounds-checked above against the i8
+        // element length used to allocate the StorageModeShared buffer. The
+        // synchronization guard waits for in-flight GPU commands and prevents
+        // new submissions during this copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                metal_buffer.contents().cast::<i8>().add(start),
+                values.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn copy_i8_buffer_range(
+        &self,
+        source: &I8Buffer,
+        source_start: usize,
+        destination: &I8Buffer,
+        destination_start: usize,
+        len: usize,
+    ) -> Result<(), MetalError> {
+        let source_end = source_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("source i8 buffer copy range overflows usize".to_owned())
+        })?;
+        if source_end > source.len {
+            return Err(MetalError::InvalidShape(format!(
+                "source i8 buffer copy range {source_start}..{source_end} exceeds buffer length {}",
+                source.len
+            )));
+        }
+        let destination_end = destination_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("destination i8 buffer copy range overflows usize".to_owned())
+        })?;
+        if destination_end > destination.len {
+            return Err(MetalError::InvalidShape(format!(
+                "destination i8 buffer copy range {destination_start}..{destination_end} exceeds buffer length {}",
+                destination.len
+            )));
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        let Some(source_buffer) = source.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty i8 buffer copy requires a source Metal buffer".to_owned(),
+            ));
+        };
+        let Some(destination_buffer) = destination.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty i8 buffer copy requires a destination Metal buffer".to_owned(),
+            ));
+        };
+        let byte_len = u64::try_from(len).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "i8 buffer copy byte length does not fit u64: {err}"
+            ))
+        })?;
+        let source_offset = u64::try_from(source_start).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "source i8 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+        let destination_offset = u64::try_from(destination_start).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "destination i8 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+
+        let command_buffer = self.vector_add.queue.new_command_buffer();
+        let encoder = command_buffer.new_blit_command_encoder();
+        encoder.copy_from_buffer(
+            source_buffer,
+            source_offset,
+            destination_buffer,
+            destination_offset,
+            byte_len,
+        );
+        encoder.end_encoding();
+        finish_command_buffer_async(
+            &self.synchronization,
+            command_buffer,
+            "copy_i8_buffer_range",
+        )
+        .await
+    }
+
     pub fn write_f16_buffer_range_from_f32(
         &self,
         buffer: &F16Buffer,
@@ -536,6 +710,91 @@ impl MetalDevice {
         let mut output = vec![0.0; len];
         self.read_f32_buffer_range_in_place(buffer, start, len, &mut output)?;
         Ok(output)
+    }
+
+    pub async fn copy_f32_buffer_range(
+        &self,
+        source: &F32Buffer,
+        source_start: usize,
+        destination: &F32Buffer,
+        destination_start: usize,
+        len: usize,
+    ) -> Result<(), MetalError> {
+        let source_end = source_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("source f32 buffer copy range overflows usize".to_owned())
+        })?;
+        if source_end > source.len {
+            return Err(MetalError::InvalidShape(format!(
+                "source f32 buffer copy range {source_start}..{source_end} exceeds buffer length {}",
+                source.len
+            )));
+        }
+        let destination_end = destination_start.checked_add(len).ok_or_else(|| {
+            MetalError::InvalidShape("destination f32 buffer copy range overflows usize".to_owned())
+        })?;
+        if destination_end > destination.len {
+            return Err(MetalError::InvalidShape(format!(
+                "destination f32 buffer copy range {destination_start}..{destination_end} exceeds buffer length {}",
+                destination.len
+            )));
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        let Some(source_buffer) = source.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f32 buffer copy requires a source Metal buffer".to_owned(),
+            ));
+        };
+        let Some(destination_buffer) = destination.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty f32 buffer copy requires a destination Metal buffer".to_owned(),
+            ));
+        };
+        let element_size = std::mem::size_of::<f32>();
+        let byte_len = len.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape("f32 buffer copy byte length overflows usize".to_owned())
+        })?;
+        let source_offset = source_start.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape("source f32 buffer copy offset overflows usize".to_owned())
+        })?;
+        let destination_offset = destination_start.checked_mul(element_size).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "destination f32 buffer copy offset overflows usize".to_owned(),
+            )
+        })?;
+        let byte_len = u64::try_from(byte_len).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "f32 buffer copy byte length does not fit u64: {err}"
+            ))
+        })?;
+        let source_offset = u64::try_from(source_offset).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "source f32 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+        let destination_offset = u64::try_from(destination_offset).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "destination f32 buffer copy offset does not fit u64: {err}"
+            ))
+        })?;
+
+        let command_buffer = self.vector_add.queue.new_command_buffer();
+        let encoder = command_buffer.new_blit_command_encoder();
+        encoder.copy_from_buffer(
+            source_buffer,
+            source_offset,
+            destination_buffer,
+            destination_offset,
+            byte_len,
+        );
+        encoder.end_encoding();
+        finish_command_buffer_async(
+            &self.synchronization,
+            command_buffer,
+            "copy_f32_buffer_range",
+        )
+        .await
     }
 
     pub fn read_f32_buffer_range_in_place(

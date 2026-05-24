@@ -1,6 +1,7 @@
 pub use llm_kv_cache::{
-    BlockId, KvCacheError, LayerKvCache, LayerKvCacheBlock, LayerKvCachePrefixState,
-    LayerKvCacheSnapshot, LinearAttentionCache, LinearAttentionCacheSnapshot,
+    BlockId, KvCacheConfig, KvCacheError, KvCacheFormat, LayerKvCache, LayerKvCacheBlock,
+    LayerKvCacheInt8Block, LayerKvCachePrefixState, LayerKvCacheSnapshot, LinearAttentionCache,
+    LinearAttentionCacheSnapshot,
 };
 
 mod backend;

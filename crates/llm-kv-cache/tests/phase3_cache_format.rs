@@ -173,7 +173,7 @@ fn asymmetric_vq_survives_sliding_clone_snapshot_and_prefix_restore() {
 }
 
 #[test]
-fn f16_and_int8_formats_fail_closed_until_storage_paths_exist() {
+fn f16_format_fails_closed_while_int8_storage_is_available() {
     let f16 = LayerKvCache::new_with_config(2, 1, 2, KvCacheConfig::f16())
         .expect_err("f16 CPU cache storage is not implemented");
     assert_eq!(
@@ -183,14 +183,14 @@ fn f16_and_int8_formats_fail_closed_until_storage_paths_exist() {
         }
     );
 
-    let int8 = LayerKvCache::new_with_config(2, 1, 2, KvCacheConfig::int8())
-        .expect_err("int8 CPU cache storage is not implemented");
-    assert_eq!(
-        int8,
-        KvCacheError::UnsupportedFormat {
-            format: KvCacheFormat::Int8
-        }
-    );
+    let mut int8 = LayerKvCache::new_with_config(2, 1, 2, KvCacheConfig::int8())
+        .expect("int8 CPU cache storage is implemented");
+    int8.append(&[1.0, 2.0], &[0.5, 1.0])
+        .expect("int8 append succeeds");
+    let metrics = int8.format_metrics().expect("int8 metrics are available");
+    assert_eq!(metrics.active_format(), KvCacheFormat::Int8);
+    assert_eq!(metrics.phase3_value_bits(), None);
+    assert!(metrics.int8_resident_bytes() > 0);
 }
 
 #[test]

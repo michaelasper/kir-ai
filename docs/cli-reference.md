@@ -188,7 +188,10 @@ benchmark traces identify the native prefix-cache budget used by the served lane
 When `/admin/metrics` is available, each lane also includes `cache_metrics` with
 prefix-cache hit rate, hit-token and miss-token counters, residency, Metal BF16
 weight-cache hit rate/residency, KV-cache residency, recurrent
-linear-attention-cache residency, and eviction churn signals. Each executed case
+linear-attention-cache residency, f32/f16/int8 KV-cache uploaded/resident byte
+breakdowns, and eviction churn signals. Lane comparison rows repeat the KV
+cache memory snapshot with uploaded/resident byte deltas against the first lane
+so TTFT/decode comparisons can be read beside cache-memory deltas. Each executed case
 records `admin_metrics.prefix_cache.before`, `after`, and `delta`; the two
 prefix-cache probe cases fail if their delta does not show increased
 `hit_tokens`. Lane comparison reports `artifact_identity_mismatch` unless

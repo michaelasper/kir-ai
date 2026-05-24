@@ -84,7 +84,13 @@ fn cache_metrics_summary_extracts_admin_cache_counters() {
                     "bytes_uploaded": 4096,
                     "bytes_evicted": 1024,
                     "resident_bytes": 3072,
-                    "resident_buffers": 2
+                    "resident_buffers": 2,
+                    "f32_bytes_uploaded": 0,
+                    "f16_bytes_uploaded": 1024,
+                    "int8_bytes_uploaded": 3072,
+                    "f32_resident_bytes": 0,
+                    "f16_resident_bytes": 1024,
+                    "int8_resident_bytes": 2048
                 },
                 "linear_attention_cache": {
                     "allocations": 1,
@@ -108,6 +114,8 @@ fn cache_metrics_summary_extracts_admin_cache_counters() {
     assert_eq!(value["prefix_cache"]["avoided_prefill_tokens"], 73);
     assert!((summary.weight_cache.hit_rate.expect("weight hit rate") - 0.7).abs() < f64::EPSILON);
     assert_eq!(summary.kv_cache.resident_bytes, 3072);
+    assert_eq!(summary.kv_cache.f16_resident_bytes, 1024);
+    assert_eq!(summary.kv_cache.int8_bytes_uploaded, 3072);
     assert_eq!(summary.linear_attention_cache.syncs, 3);
     assert_eq!(summary.readiness.status, "observable");
     assert!(summary.readiness.missing_signals.is_empty());

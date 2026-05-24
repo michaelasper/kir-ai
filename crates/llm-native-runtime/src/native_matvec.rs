@@ -1,8 +1,9 @@
 use crate::sync_ext::FailPoisonedMutex;
 use llm_backend::native::{
-    BlockId, CpuNativeMatvecBackend, LayerKvCache, LayerKvCacheBlock, LinearAttentionCache,
-    MathError, NativeBatchedMatvecInputBuffer, NativeBatchedMatvecOutput, NativeKvCacheTensor,
-    NativeMatvecBackend, SafeTensorShardStore, TensorLoadError, TopKLogit, TopKWeight,
+    BlockId, CpuNativeMatvecBackend, KvCacheFormat, LayerKvCache, LayerKvCacheBlock,
+    LayerKvCacheInt8Block, LinearAttentionCache, MathError, NativeBatchedMatvecInputBuffer,
+    NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend, SafeTensorShardStore,
+    TensorLoadError, TopKLogit, TopKWeight,
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +19,7 @@ pub(crate) struct NativeTextMetalState {
     pub(crate) device: llm_metal::MetalDevice,
     bf16_matrices: Mutex<Bf16MatrixBufferCache<Arc<llm_metal::Bf16MatrixBuffer>>>,
     kv_blocks: Mutex<HashMap<BlockId, MetalBlockKvMirror>>,
+    kv_int8_blocks: Mutex<HashMap<BlockId, MetalBlockInt8KvMirror>>,
     linear_caches: Mutex<HashMap<u64, MetalLinearAttentionCacheMirror>>,
 }
 
@@ -77,12 +79,36 @@ struct MetalBlockKvMirror {
 }
 
 #[derive(Debug)]
+struct MetalBlockInt8KvMirror {
+    block_id: BlockId,
+    keys: llm_metal::I8Buffer,
+    key_scales: llm_metal::F32Buffer,
+    values: llm_metal::I8Buffer,
+    value_scales: llm_metal::F32Buffer,
+    revision_at_last_sync: u64,
+}
+
+#[derive(Debug)]
 struct MetalBlockCopy {
     source_keys: llm_metal::F16Buffer,
     source_values: llm_metal::F16Buffer,
     source_start: usize,
     destination_start: usize,
     element_count: usize,
+}
+
+#[derive(Debug)]
+struct MetalBlockInt8Copy {
+    source_keys: llm_metal::I8Buffer,
+    source_key_scales: llm_metal::F32Buffer,
+    source_values: llm_metal::I8Buffer,
+    source_value_scales: llm_metal::F32Buffer,
+    source_start: usize,
+    source_scale_start: usize,
+    destination_start: usize,
+    destination_scale_start: usize,
+    element_count: usize,
+    token_count: usize,
 }
 
 #[derive(Debug)]
@@ -267,6 +293,7 @@ impl NativeTextMetalState {
             device,
             bf16_matrices: Mutex::new(Bf16MatrixBufferCache::new(weight_cache_bytes)),
             kv_blocks: Mutex::new(HashMap::new()),
+            kv_int8_blocks: Mutex::new(HashMap::new()),
             linear_caches: Mutex::new(HashMap::new()),
         }
     }
@@ -360,6 +387,9 @@ impl NativeTextMetalState {
     }
 
     fn sync_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
+        if cache.format() == KvCacheFormat::Int8 {
+            return self.sync_int8_kv_cache(cache);
+        }
         let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
         let mut mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
         let synced_revisions = mirrors
@@ -439,6 +469,114 @@ impl NativeTextMetalState {
         Ok(())
     }
 
+    fn sync_int8_kv_cache(&self, cache: &LayerKvCache) -> Result<(), llm_metal::MetalError> {
+        let active_blocks = cache
+            .active_int8_blocks()
+            .map_err(kv_cache_shape_error)?
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache format has no INT8 block storage".to_owned(),
+                )
+            })?;
+        let mut mirrors = self
+            .kv_int8_blocks
+            .lock_or_panic("Metal INT8 KV block mirror");
+        let synced_revisions = mirrors
+            .iter()
+            .map(|(block_id, mirror)| (*block_id, mirror.revision_at_last_sync))
+            .collect::<HashMap<_, _>>();
+        let sync_blocks = int8_kv_cache_blocks_needing_sync_from_active(
+            active_blocks.iter().copied(),
+            &synced_revisions,
+        );
+        let skipped_syncs = active_blocks
+            .iter()
+            .map(LayerKvCacheInt8Block::block_id)
+            .collect::<HashSet<_>>()
+            .len()
+            .saturating_sub(sync_blocks.len());
+        let mut allocated_bytes = 0_u64;
+        let mut synced_bytes = 0_u64;
+        let mut residency_changed = false;
+
+        for block in sync_blocks {
+            let byte_len = int8_kv_cache_block_pair_mirror_byte_len(block)?;
+            match mirrors.get_mut(&block.block_id()) {
+                Some(mirror)
+                    if mirror.keys.len() == block.key_codes_storage().len()
+                        && mirror.values.len() == block.value_codes_storage().len()
+                        && mirror.key_scales.len() == block.key_scales_storage().len()
+                        && mirror.value_scales.len() == block.value_scales_storage().len() =>
+                {
+                    self.device.write_i8_buffer_range(
+                        &mirror.keys,
+                        0,
+                        block.key_codes_storage(),
+                    )?;
+                    self.device.write_i8_buffer_range(
+                        &mirror.values,
+                        0,
+                        block.value_codes_storage(),
+                    )?;
+                    self.device.write_f32_buffer_range(
+                        &mirror.key_scales,
+                        0,
+                        block.key_scales_storage(),
+                    )?;
+                    self.device.write_f32_buffer_range(
+                        &mirror.value_scales,
+                        0,
+                        block.value_scales_storage(),
+                    )?;
+                    mirror.revision_at_last_sync = block.revision();
+                    synced_bytes = synced_bytes.saturating_add(byte_len);
+                }
+                Some(mirror) => {
+                    mirror.keys = self.device.new_i8_buffer(block.key_codes_storage())?;
+                    mirror.values = self.device.new_i8_buffer(block.value_codes_storage())?;
+                    mirror.key_scales = self.device.new_f32_buffer(block.key_scales_storage())?;
+                    mirror.value_scales =
+                        self.device.new_f32_buffer(block.value_scales_storage())?;
+                    mirror.revision_at_last_sync = block.revision();
+                    synced_bytes = synced_bytes.saturating_add(byte_len);
+                    residency_changed = true;
+                }
+                None => {
+                    mirrors.insert(
+                        block.block_id(),
+                        MetalBlockInt8KvMirror {
+                            block_id: block.block_id(),
+                            keys: self.device.new_i8_buffer(block.key_codes_storage())?,
+                            key_scales: self.device.new_f32_buffer(block.key_scales_storage())?,
+                            values: self.device.new_i8_buffer(block.value_codes_storage())?,
+                            value_scales: self
+                                .device
+                                .new_f32_buffer(block.value_scales_storage())?,
+                            revision_at_last_sync: block.revision(),
+                        },
+                    );
+                    allocated_bytes = allocated_bytes.saturating_add(byte_len);
+                    residency_changed = true;
+                }
+            }
+        }
+
+        let metrics = native_text_metal_metrics();
+        if allocated_bytes > 0 {
+            metrics.record_int8_kv_cache_allocation(allocated_bytes);
+        }
+        if synced_bytes > 0 {
+            metrics.record_int8_kv_cache_sync(synced_bytes);
+        }
+        if skipped_syncs > 0 {
+            metrics.record_kv_cache_skipped_syncs(skipped_syncs as u64);
+        }
+        if residency_changed {
+            self.record_int8_kv_cache_residency_locked(&mirrors);
+        }
+        Ok(())
+    }
+
     async fn select_kv_cache_head_rows(
         &self,
         cache: &LayerKvCache,
@@ -448,6 +586,26 @@ impl NativeTextMetalState {
         head_len: usize,
         output: &mut [f32],
     ) -> Result<(), llm_metal::MetalError> {
+        if cache.format() == KvCacheFormat::Int8 {
+            let (keys, key_scales, values, value_scales) =
+                self.gather_int8_kv_cache_rows(cache, row_count).await?;
+            let (values, scales) = match tensor {
+                NativeKvCacheTensor::Key => (keys, key_scales),
+                NativeKvCacheTensor::Value => (values, value_scales),
+            };
+            return self
+                .device
+                .select_head_rows_int8_buffered(
+                    &values,
+                    &scales,
+                    row_count,
+                    cache.vector_len(),
+                    head_start,
+                    head_len,
+                    output,
+                )
+                .await;
+        }
         let (keys, values) = self.gather_kv_cache_rows(cache, row_count).await?;
         let values = match tensor {
             NativeKvCacheTensor::Key => keys,
@@ -477,6 +635,26 @@ impl NativeTextMetalState {
         score_scale: f32,
         output: &mut [f32],
     ) -> Result<(), llm_metal::MetalError> {
+        if cache.format() == KvCacheFormat::Int8 {
+            let (keys, key_scales, values, value_scales) =
+                self.gather_int8_kv_cache_rows(cache, row_count).await?;
+            return self
+                .device
+                .full_attention_cache_mix_int8_buffered(
+                    &keys,
+                    &key_scales,
+                    &values,
+                    &value_scales,
+                    query,
+                    row_count,
+                    num_attention_heads,
+                    num_key_value_heads,
+                    head_dim,
+                    score_scale,
+                    output,
+                )
+                .await;
+        }
         let (keys, values) = self.gather_kv_cache_rows(cache, row_count).await?;
         self.device
             .full_attention_cache_mix_f16_buffered(
@@ -600,6 +778,157 @@ impl NativeTextMetalState {
         Ok((keys, values))
     }
 
+    async fn gather_int8_kv_cache_rows(
+        &self,
+        cache: &LayerKvCache,
+        row_count: usize,
+    ) -> Result<
+        (
+            llm_metal::I8Buffer,
+            llm_metal::F32Buffer,
+            llm_metal::I8Buffer,
+            llm_metal::F32Buffer,
+        ),
+        llm_metal::MetalError,
+    > {
+        if row_count > cache.token_count() {
+            return Err(llm_metal::MetalError::InvalidShape(format!(
+                "INT8 KV cache row_count {row_count} exceeds token_count {}",
+                cache.token_count()
+            )));
+        }
+        self.sync_int8_kv_cache(cache)?;
+        let vector_len = cache.vector_len();
+        let element_count = row_count.checked_mul(vector_len).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "INT8 KV cache gather length overflows usize".to_owned(),
+            )
+        })?;
+        let keys = self.device.new_i8_buffer_len(element_count)?;
+        let key_scales = self.device.new_f32_buffer_len(row_count)?;
+        let values = self.device.new_i8_buffer_len(element_count)?;
+        let value_scales = self.device.new_f32_buffer_len(row_count)?;
+        if element_count == 0 {
+            return Ok((keys, key_scales, values, value_scales));
+        }
+
+        let copies = {
+            let active_blocks = cache
+                .active_int8_blocks()
+                .map_err(kv_cache_shape_error)?
+                .ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(
+                        "INT8 KV cache format has no INT8 block storage".to_owned(),
+                    )
+                })?;
+            let mirrors = self
+                .kv_int8_blocks
+                .lock_or_panic("Metal INT8 KV block mirror");
+            let mut copies = Vec::new();
+            for block in active_blocks {
+                if block.logical_token_start() >= row_count {
+                    break;
+                }
+                let copy_tokens = block
+                    .token_count()
+                    .min(row_count - block.logical_token_start());
+                let source_start = block
+                    .block_token_start()
+                    .checked_mul(vector_len)
+                    .ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "INT8 KV cache gather source start overflows usize".to_owned(),
+                        )
+                    })?;
+                let destination_start = block
+                    .logical_token_start()
+                    .checked_mul(vector_len)
+                    .ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "INT8 KV cache gather destination start overflows usize".to_owned(),
+                        )
+                    })?;
+                let element_count = copy_tokens.checked_mul(vector_len).ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(
+                        "INT8 KV cache gather copy length overflows usize".to_owned(),
+                    )
+                })?;
+                let mirror = mirrors.get(&block.block_id()).ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(format!(
+                        "missing Metal INT8 KV block mirror for block {}",
+                        block.block_id()
+                    ))
+                })?;
+                if mirror.block_id != block.block_id() {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "Metal INT8 KV block mirror key mismatch: map key {}, mirror block {}",
+                        block.block_id(),
+                        mirror.block_id
+                    )));
+                }
+                if mirror.revision_at_last_sync != block.revision() {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "stale Metal INT8 KV block mirror for block {}",
+                        block.block_id()
+                    )));
+                }
+                copies.push(MetalBlockInt8Copy {
+                    source_keys: mirror.keys.clone(),
+                    source_key_scales: mirror.key_scales.clone(),
+                    source_values: mirror.values.clone(),
+                    source_value_scales: mirror.value_scales.clone(),
+                    source_start,
+                    source_scale_start: block.block_token_start(),
+                    destination_start,
+                    destination_scale_start: block.logical_token_start(),
+                    element_count,
+                    token_count: copy_tokens,
+                });
+            }
+            copies
+        };
+
+        for copy in copies {
+            self.device
+                .copy_i8_buffer_range(
+                    &copy.source_keys,
+                    copy.source_start,
+                    &keys,
+                    copy.destination_start,
+                    copy.element_count,
+                )
+                .await?;
+            self.device
+                .copy_i8_buffer_range(
+                    &copy.source_values,
+                    copy.source_start,
+                    &values,
+                    copy.destination_start,
+                    copy.element_count,
+                )
+                .await?;
+            self.device
+                .copy_f32_buffer_range(
+                    &copy.source_key_scales,
+                    copy.source_scale_start,
+                    &key_scales,
+                    copy.destination_scale_start,
+                    copy.token_count,
+                )
+                .await?;
+            self.device
+                .copy_f32_buffer_range(
+                    &copy.source_value_scales,
+                    copy.source_scale_start,
+                    &value_scales,
+                    copy.destination_scale_start,
+                    copy.token_count,
+                )
+                .await?;
+        }
+        Ok((keys, key_scales, values, value_scales))
+    }
+
     fn sync_linear_cache(&self, cache: &LinearAttentionCache) -> Result<(), llm_metal::MetalError> {
         let byte_len = cache_resident_byte_len(cache.recurrent_state().len())?;
         let mut caches = self
@@ -700,8 +1029,8 @@ impl NativeTextMetalState {
             let mut mirrors = self.kv_blocks.lock_or_panic("Metal KV block mirror");
             let mut bytes = 0_u64;
             let mut count = 0_u64;
-            for id in removed.kv {
-                if let Some(mirror) = mirrors.remove(&id) {
+            for id in &removed.kv {
+                if let Some(mirror) = mirrors.remove(id) {
                     bytes = bytes
                         .saturating_add((mirror.keys.byte_len() + mirror.values.byte_len()) as u64);
                     count += 2;
@@ -710,6 +1039,27 @@ impl NativeTextMetalState {
             if count > 0 {
                 native_text_metal_metrics().record_kv_cache_eviction(count, bytes);
                 self.record_kv_cache_residency_locked(&mirrors);
+            }
+        }
+        if !removed.kv.is_empty() {
+            let mut mirrors = self
+                .kv_int8_blocks
+                .lock_or_panic("Metal INT8 KV block mirror");
+            let mut bytes = 0_u64;
+            let mut count = 0_u64;
+            for id in &removed.kv {
+                if let Some(mirror) = mirrors.remove(id) {
+                    bytes = bytes
+                        .saturating_add(mirror.keys.byte_len() as u64)
+                        .saturating_add(mirror.key_scales.byte_len() as u64)
+                        .saturating_add(mirror.values.byte_len() as u64)
+                        .saturating_add(mirror.value_scales.byte_len() as u64);
+                    count += 4;
+                }
+            }
+            if count > 0 {
+                native_text_metal_metrics().record_int8_kv_cache_eviction(count, bytes);
+                self.record_int8_kv_cache_residency_locked(&mirrors);
             }
         }
         if !removed.linear.is_empty() {
@@ -738,6 +1088,23 @@ impl NativeTextMetalState {
             .sum();
         native_text_metal_metrics()
             .record_kv_cache_residency(resident_bytes, caches.len() as u64 * 2);
+    }
+
+    fn record_int8_kv_cache_residency_locked(
+        &self,
+        caches: &HashMap<BlockId, MetalBlockInt8KvMirror>,
+    ) {
+        let resident_bytes = caches
+            .values()
+            .map(|mirror| {
+                (mirror.keys.byte_len()
+                    + mirror.key_scales.byte_len()
+                    + mirror.values.byte_len()
+                    + mirror.value_scales.byte_len()) as u64
+            })
+            .sum();
+        native_text_metal_metrics()
+            .record_int8_kv_cache_residency(resident_bytes, caches.len() as u64 * 4);
     }
 
     fn record_linear_cache_residency_locked(
@@ -791,6 +1158,44 @@ fn kv_cache_block_pair_mirror_byte_len(
     cache_resident_mirror_byte_len(elements)
 }
 
+fn int8_kv_cache_block_pair_mirror_byte_len(
+    block: LayerKvCacheInt8Block<'_>,
+) -> Result<u64, llm_metal::MetalError> {
+    let code_bytes = block
+        .key_codes_storage()
+        .len()
+        .checked_add(block.value_codes_storage().len())
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal INT8 KV block code byte length overflows usize".to_owned(),
+            )
+        })?;
+    let scale_count = block
+        .key_scales_storage()
+        .len()
+        .checked_add(block.value_scales_storage().len())
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal INT8 KV block scale count overflows usize".to_owned(),
+            )
+        })?;
+    let scale_bytes = scale_count
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal INT8 KV block scale byte length overflows usize".to_owned(),
+            )
+        })?;
+    code_bytes
+        .checked_add(scale_bytes)
+        .map(|bytes| bytes as u64)
+        .ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "Metal INT8 KV block mirror byte length overflows usize".to_owned(),
+            )
+        })
+}
+
 #[cfg(test)]
 fn kv_cache_blocks_needing_sync<'a>(
     cache: &'a LayerKvCache,
@@ -807,6 +1212,23 @@ fn kv_cache_blocks_needing_sync_from_active<'a>(
     active_blocks: impl IntoIterator<Item = LayerKvCacheBlock<'a>>,
     synced_revisions: &HashMap<BlockId, u64>,
 ) -> Vec<LayerKvCacheBlock<'a>> {
+    let mut seen = HashSet::new();
+    let mut sync_blocks = Vec::new();
+    for block in active_blocks {
+        if !seen.insert(block.block_id()) {
+            continue;
+        }
+        if synced_revisions.get(&block.block_id()).copied() != Some(block.revision()) {
+            sync_blocks.push(block);
+        }
+    }
+    sync_blocks
+}
+
+fn int8_kv_cache_blocks_needing_sync_from_active<'a>(
+    active_blocks: impl IntoIterator<Item = LayerKvCacheInt8Block<'a>>,
+    synced_revisions: &HashMap<BlockId, u64>,
+) -> Vec<LayerKvCacheInt8Block<'a>> {
     let mut seen = HashSet::new();
     let mut sync_blocks = Vec::new();
     for block in active_blocks {
@@ -839,6 +1261,27 @@ mod kv_cache_sync_tests {
         assert_eq!(
             kv_cache_block_pair_mirror_byte_len(block).expect("mirror byte length fits"),
             80
+        );
+    }
+
+    #[test]
+    fn int8_kv_cache_block_mirror_byte_len_includes_codes_and_scales() {
+        let mut cache =
+            LayerKvCache::new_with_config(10, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+
+        cache
+            .append(&[1.0, 2.0], &[3.0, 4.0])
+            .expect("first token fits");
+        let block = cache
+            .active_int8_blocks()
+            .expect("active int8 blocks are valid")
+            .expect("int8 blocks exist")
+            .remove(0);
+
+        assert_eq!(
+            int8_kv_cache_block_pair_mirror_byte_len(block).expect("mirror byte length fits"),
+            12
         );
     }
 
@@ -928,6 +1371,62 @@ mod kv_cache_sync_tests {
         }
     }
 
+    #[tokio::test]
+    async fn metal_int8_block_mirror_attention_matches_cpu_reference_across_blocks() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 block mirror attention test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let row_count = METAL_KV_CACHE_MIRROR_BLOCK_TOKENS + 1;
+        let mut cache = LayerKvCache::new_with_config(
+            row_count,
+            1,
+            2,
+            llm_backend::native::KvCacheConfig::int8(),
+        )
+        .expect("cache shape is valid");
+        let mut keys = Vec::with_capacity(row_count);
+        let mut values = Vec::with_capacity(row_count);
+        for token in 0..row_count {
+            let key = [
+                token as f32 / row_count as f32,
+                1.0 - token as f32 / (row_count as f32 * 2.0),
+            ];
+            let value = [(token % 7) as f32 - 3.0, (token % 11) as f32 * 0.25 - 1.0];
+            cache.append(&key, &value).expect("token appends");
+            keys.push(key);
+            values.push(value);
+        }
+        assert_eq!(
+            cache
+                .active_int8_blocks()
+                .expect("active int8 blocks")
+                .expect("int8 blocks")
+                .len(),
+            2,
+            "test cache must span block mirrors"
+        );
+
+        let query = [0.25, -0.5];
+        let score_scale = 0.7;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, row_count, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal INT8 attention succeeds");
+
+        let expected = reference_attention(&query, &keys, &values, score_scale);
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 3e-2,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+    }
+
     fn reference_attention(
         query: &[f32; 2],
         keys: &[[f32; 2]],
@@ -983,6 +1482,18 @@ struct MetalCacheCounters {
     bytes_evicted: u64,
     resident_bytes: u64,
     resident_buffers: u64,
+    f32_bytes_uploaded: u64,
+    f16_bytes_uploaded: u64,
+    int8_bytes_uploaded: u64,
+    f32_bytes_evicted: u64,
+    f16_bytes_evicted: u64,
+    int8_bytes_evicted: u64,
+    f32_resident_bytes: u64,
+    f16_resident_bytes: u64,
+    int8_resident_bytes: u64,
+    f32_resident_buffers: u64,
+    f16_resident_buffers: u64,
+    int8_resident_buffers: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1083,14 +1594,28 @@ impl MetalBackendMetrics {
     pub(crate) fn record_kv_cache_allocation(&self, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.allocations += 1;
-            cache.bytes_uploaded += byte_len;
+            cache.record_upload(CachePrecisionMetric::F16, byte_len);
+        });
+    }
+
+    pub(crate) fn record_int8_kv_cache_allocation(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.allocations += 1;
+            cache.record_upload(CachePrecisionMetric::Int8, byte_len);
         });
     }
 
     pub(crate) fn record_kv_cache_sync(&self, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.syncs += 1;
-            cache.bytes_uploaded += byte_len;
+            cache.record_upload(CachePrecisionMetric::F16, byte_len);
+        });
+    }
+
+    pub(crate) fn record_int8_kv_cache_sync(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.syncs += 1;
+            cache.record_upload(CachePrecisionMetric::Int8, byte_len);
         });
     }
 
@@ -1103,14 +1628,30 @@ impl MetalBackendMetrics {
     pub(crate) fn record_kv_cache_eviction(&self, count: u64, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.evictions += count;
-            cache.bytes_evicted += byte_len;
+            cache.record_eviction(CachePrecisionMetric::F16, byte_len);
+        });
+    }
+
+    pub(crate) fn record_int8_kv_cache_eviction(&self, count: u64, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.evictions += count;
+            cache.record_eviction(CachePrecisionMetric::Int8, byte_len);
         });
     }
 
     pub(crate) fn record_kv_cache_residency(&self, resident_bytes: u64, resident_buffers: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
-            cache.resident_bytes = resident_bytes;
-            cache.resident_buffers = resident_buffers;
+            cache.record_residency(CachePrecisionMetric::F16, resident_bytes, resident_buffers);
+        });
+    }
+
+    pub(crate) fn record_int8_kv_cache_residency(
+        &self,
+        resident_bytes: u64,
+        resident_buffers: u64,
+    ) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.record_residency(CachePrecisionMetric::Int8, resident_bytes, resident_buffers);
         });
     }
 
@@ -1208,6 +1749,64 @@ enum CacheMetricKind {
     Linear,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CachePrecisionMetric {
+    F16,
+    Int8,
+}
+
+impl MetalCacheCounters {
+    fn record_upload(&mut self, precision: CachePrecisionMetric, byte_len: u64) {
+        self.bytes_uploaded = self.bytes_uploaded.saturating_add(byte_len);
+        match precision {
+            CachePrecisionMetric::F16 => {
+                self.f16_bytes_uploaded = self.f16_bytes_uploaded.saturating_add(byte_len);
+            }
+            CachePrecisionMetric::Int8 => {
+                self.int8_bytes_uploaded = self.int8_bytes_uploaded.saturating_add(byte_len);
+            }
+        }
+    }
+
+    fn record_eviction(&mut self, precision: CachePrecisionMetric, byte_len: u64) {
+        self.bytes_evicted = self.bytes_evicted.saturating_add(byte_len);
+        match precision {
+            CachePrecisionMetric::F16 => {
+                self.f16_bytes_evicted = self.f16_bytes_evicted.saturating_add(byte_len);
+            }
+            CachePrecisionMetric::Int8 => {
+                self.int8_bytes_evicted = self.int8_bytes_evicted.saturating_add(byte_len);
+            }
+        }
+    }
+
+    fn record_residency(
+        &mut self,
+        precision: CachePrecisionMetric,
+        resident_bytes: u64,
+        resident_buffers: u64,
+    ) {
+        match precision {
+            CachePrecisionMetric::F16 => {
+                self.f16_resident_bytes = resident_bytes;
+                self.f16_resident_buffers = resident_buffers;
+            }
+            CachePrecisionMetric::Int8 => {
+                self.int8_resident_bytes = resident_bytes;
+                self.int8_resident_buffers = resident_buffers;
+            }
+        }
+        self.resident_bytes = self
+            .f32_resident_bytes
+            .saturating_add(self.f16_resident_bytes)
+            .saturating_add(self.int8_resident_bytes);
+        self.resident_buffers = self
+            .f32_resident_buffers
+            .saturating_add(self.f16_resident_buffers)
+            .saturating_add(self.int8_resident_buffers);
+    }
+}
+
 fn cache_counters_json(counters: MetalCacheCounters) -> Value {
     json!({
         "allocations": counters.allocations,
@@ -1218,6 +1817,18 @@ fn cache_counters_json(counters: MetalCacheCounters) -> Value {
         "bytes_evicted": counters.bytes_evicted,
         "resident_bytes": counters.resident_bytes,
         "resident_buffers": counters.resident_buffers,
+        "f32_bytes_uploaded": counters.f32_bytes_uploaded,
+        "f16_bytes_uploaded": counters.f16_bytes_uploaded,
+        "int8_bytes_uploaded": counters.int8_bytes_uploaded,
+        "f32_bytes_evicted": counters.f32_bytes_evicted,
+        "f16_bytes_evicted": counters.f16_bytes_evicted,
+        "int8_bytes_evicted": counters.int8_bytes_evicted,
+        "f32_resident_bytes": counters.f32_resident_bytes,
+        "f16_resident_bytes": counters.f16_resident_bytes,
+        "int8_resident_bytes": counters.int8_resident_bytes,
+        "f32_resident_buffers": counters.f32_resident_buffers,
+        "f16_resident_buffers": counters.f16_resident_buffers,
+        "int8_resident_buffers": counters.int8_resident_buffers,
     })
 }
 

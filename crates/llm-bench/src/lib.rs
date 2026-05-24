@@ -493,6 +493,12 @@ fn resident_cache_metrics(cache: &Value) -> ResidentCacheMetricsReport {
         bytes_evicted: metric_u64(cache, "bytes_evicted"),
         resident_bytes: metric_u64(cache, "resident_bytes"),
         resident_buffers: metric_u64(cache, "resident_buffers"),
+        f32_bytes_uploaded: metric_u64(cache, "f32_bytes_uploaded"),
+        f16_bytes_uploaded: metric_u64(cache, "f16_bytes_uploaded"),
+        int8_bytes_uploaded: metric_u64(cache, "int8_bytes_uploaded"),
+        f32_resident_bytes: metric_u64(cache, "f32_resident_bytes"),
+        f16_resident_bytes: metric_u64(cache, "f16_resident_bytes"),
+        int8_resident_bytes: metric_u64(cache, "int8_resident_bytes"),
     }
 }
 
@@ -527,6 +533,18 @@ fn cache_readiness(
         (
             "kv_cache_residency",
             has_metric(kv, "resident_bytes") && has_metric(kv, "resident_buffers"),
+        ),
+        (
+            "kv_cache_precision_residency",
+            has_metric(kv, "f32_resident_bytes")
+                && has_metric(kv, "f16_resident_bytes")
+                && has_metric(kv, "int8_resident_bytes"),
+        ),
+        (
+            "kv_cache_precision_uploads",
+            has_metric(kv, "f32_bytes_uploaded")
+                && has_metric(kv, "f16_bytes_uploaded")
+                && has_metric(kv, "int8_bytes_uploaded"),
         ),
         (
             "linear_attention_cache_residency",
@@ -598,6 +616,10 @@ fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
             let mut lane_metrics = Vec::new();
             let mut fastest_lane = None;
             let mut fastest_latency = None;
+            let first_lane_kv_cache = first_lane
+                .cache_metrics
+                .as_ref()
+                .map(|metrics| &metrics.kv_cache);
             for lane in lanes {
                 let Some(lane_case) = find_lane_case(lane, profile.name, case.name) else {
                     continue;
@@ -620,6 +642,12 @@ fn compare_bench_lanes(lanes: &[BenchLaneReport]) -> BenchLaneComparisonReport {
                     total_tokens: lane_case.total_tokens,
                     cached_tokens_status: lane_case.cached_tokens_status,
                     cached_tokens: lane_case.cached_tokens,
+                    cache_memory: lane.cache_metrics.as_ref().map(|metrics| {
+                        BenchLaneCacheMemoryReport::from_kv_cache(
+                            &metrics.kv_cache,
+                            first_lane_kv_cache,
+                        )
+                    }),
                     classification: lane_case.classification.clone(),
                 });
             }
@@ -1017,7 +1045,50 @@ struct BenchLaneCaseMetricReport {
     cached_tokens_status: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cached_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_memory: Option<BenchLaneCacheMemoryReport>,
     classification: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchLaneCacheMemoryReport {
+    bytes_uploaded: u64,
+    bytes_uploaded_delta_vs_first_lane: i64,
+    resident_bytes: u64,
+    resident_bytes_delta_vs_first_lane: i64,
+    f32_bytes_uploaded: u64,
+    f16_bytes_uploaded: u64,
+    int8_bytes_uploaded: u64,
+    f32_resident_bytes: u64,
+    f16_resident_bytes: u64,
+    int8_resident_bytes: u64,
+}
+
+impl BenchLaneCacheMemoryReport {
+    fn from_kv_cache(
+        cache: &ResidentCacheMetricsReport,
+        first_lane: Option<&ResidentCacheMetricsReport>,
+    ) -> Self {
+        let first_lane = first_lane.unwrap_or(cache);
+        Self {
+            bytes_uploaded: cache.bytes_uploaded,
+            bytes_uploaded_delta_vs_first_lane: gauge_delta(
+                first_lane.bytes_uploaded,
+                cache.bytes_uploaded,
+            ),
+            resident_bytes: cache.resident_bytes,
+            resident_bytes_delta_vs_first_lane: gauge_delta(
+                first_lane.resident_bytes,
+                cache.resident_bytes,
+            ),
+            f32_bytes_uploaded: cache.f32_bytes_uploaded,
+            f16_bytes_uploaded: cache.f16_bytes_uploaded,
+            int8_bytes_uploaded: cache.int8_bytes_uploaded,
+            f32_resident_bytes: cache.f32_resident_bytes,
+            f16_resident_bytes: cache.f16_resident_bytes,
+            int8_resident_bytes: cache.int8_resident_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1068,6 +1139,12 @@ struct ResidentCacheMetricsReport {
     bytes_evicted: u64,
     resident_bytes: u64,
     resident_buffers: u64,
+    f32_bytes_uploaded: u64,
+    f16_bytes_uploaded: u64,
+    int8_bytes_uploaded: u64,
+    f32_resident_bytes: u64,
+    f16_resident_bytes: u64,
+    int8_resident_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1433,6 +1510,8 @@ impl CachePolicyReport {
                 "weight_cache_hit_rate",
                 "weight_cache_residency",
                 "kv_cache_residency",
+                "kv_cache_precision_residency",
+                "kv_cache_precision_uploads",
                 "linear_attention_cache_residency",
                 "eviction_churn",
             ],

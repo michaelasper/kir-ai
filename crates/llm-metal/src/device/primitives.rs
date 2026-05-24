@@ -1,6 +1,7 @@
 use super::command::finish_command_buffer_async;
 use super::{
-    F16Buffer, F32Buffer, MetalDevice, MetalError, metal_buffer_byte_len, power_of_two_at_most,
+    F16Buffer, F32Buffer, I8Buffer, MetalDevice, MetalError, metal_buffer_byte_len,
+    power_of_two_at_most,
 };
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
@@ -787,6 +788,287 @@ impl MetalDevice {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn full_attention_cache_mix_int8_buffered(
+        &self,
+        keys: &I8Buffer,
+        key_scales: &F32Buffer,
+        values: &I8Buffer,
+        value_scales: &F32Buffer,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        if num_attention_heads == 0 || num_key_value_heads == 0 || head_dim == 0 {
+            return Err(MetalError::InvalidShape(
+                "full attention dimensions must be non-zero".to_owned(),
+            ));
+        }
+        if !num_attention_heads.is_multiple_of(num_key_value_heads) {
+            return Err(MetalError::InvalidShape(
+                "attention heads must be divisible by key/value heads".to_owned(),
+            ));
+        }
+        let attention_dim = num_attention_heads.checked_mul(head_dim).ok_or_else(|| {
+            MetalError::InvalidShape("attention output dimension overflows usize".to_owned())
+        })?;
+        let kv_vector_len = num_key_value_heads.checked_mul(head_dim).ok_or_else(|| {
+            MetalError::InvalidShape("attention KV vector dimension overflows usize".to_owned())
+        })?;
+        let used_kv_len = row_count.checked_mul(kv_vector_len).ok_or_else(|| {
+            MetalError::InvalidShape("attention KV cache shape overflows usize".to_owned())
+        })?;
+        let score_len = num_attention_heads.checked_mul(row_count).ok_or_else(|| {
+            MetalError::InvalidShape("attention score shape overflows usize".to_owned())
+        })?;
+        if query.len() != attention_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "query length {} does not match attention dimension {attention_dim}",
+                query.len()
+            )));
+        }
+        if output.len() < attention_dim {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than attention dimension {attention_dim}",
+                output.len()
+            )));
+        }
+        if row_count == 0 {
+            output[..attention_dim].fill(0.0);
+            return Ok(());
+        }
+        if keys.len < used_kv_len || values.len < used_kv_len {
+            return Err(MetalError::InvalidShape(format!(
+                "INT8 KV cache buffers are shorter than row_count {row_count} * vector_len {kv_vector_len}"
+            )));
+        }
+        if key_scales.len < row_count || value_scales.len < row_count {
+            return Err(MetalError::InvalidShape(format!(
+                "INT8 KV scale buffers must have at least row_count {row_count} entries"
+            )));
+        }
+        let Some(keys_buffer) = keys.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty attention requires an INT8 key cache buffer".to_owned(),
+            ));
+        };
+        let Some(key_scales_buffer) = key_scales.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty attention requires an INT8 key scale buffer".to_owned(),
+            ));
+        };
+        let Some(values_buffer) = values.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty attention requires an INT8 value cache buffer".to_owned(),
+            ));
+        };
+        let Some(value_scales_buffer) = value_scales.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty attention requires an INT8 value scale buffer".to_owned(),
+            ));
+        };
+        let row_count_u32 = u32::try_from(row_count).map_err(|err| {
+            MetalError::InvalidShape(format!("attention row count does not fit u32: {err}"))
+        })?;
+        let num_attention_heads_u32 = u32::try_from(num_attention_heads).map_err(|err| {
+            MetalError::InvalidShape(format!("attention head count does not fit u32: {err}"))
+        })?;
+        let num_key_value_heads_u32 = u32::try_from(num_key_value_heads).map_err(|err| {
+            MetalError::InvalidShape(format!("KV head count does not fit u32: {err}"))
+        })?;
+        let head_dim_u32 = u32::try_from(head_dim).map_err(|err| {
+            MetalError::InvalidShape(format!("attention head dimension does not fit u32: {err}"))
+        })?;
+        let groups = num_attention_heads / num_key_value_heads;
+        let groups_u32 = u32::try_from(groups).map_err(|err| {
+            MetalError::InvalidShape(format!("attention group count does not fit u32: {err}"))
+        })?;
+        let query_buffer = self.new_f32_buffer(query)?;
+        let Some(query_buffer) = query_buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty attention requires a query buffer".to_owned(),
+            ));
+        };
+        let score_byte_len = metal_buffer_byte_len::<f32>(score_len, "attention score")?;
+        let output_byte_len = metal_buffer_byte_len::<f32>(attention_dim, "attention output")?;
+        let scores_buffer = self
+            .device
+            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
+        let weights_buffer = self
+            .device
+            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.attention_scores_int8.queue.new_command_buffer();
+        let score_encoder = command_buffer.new_compute_command_encoder();
+        score_encoder.set_compute_pipeline_state(&self.attention_scores_int8.pipeline);
+        score_encoder.set_buffer(0, Some(query_buffer), 0);
+        score_encoder.set_buffer(1, Some(keys_buffer), 0);
+        score_encoder.set_buffer(2, Some(key_scales_buffer), 0);
+        score_encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&row_count_u32) as u64,
+            (&row_count_u32 as *const u32).cast::<c_void>(),
+        );
+        score_encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&num_attention_heads_u32) as u64,
+            (&num_attention_heads_u32 as *const u32).cast::<c_void>(),
+        );
+        score_encoder.set_bytes(
+            5,
+            std::mem::size_of_val(&num_key_value_heads_u32) as u64,
+            (&num_key_value_heads_u32 as *const u32).cast::<c_void>(),
+        );
+        score_encoder.set_bytes(
+            6,
+            std::mem::size_of_val(&head_dim_u32) as u64,
+            (&head_dim_u32 as *const u32).cast::<c_void>(),
+        );
+        score_encoder.set_bytes(
+            7,
+            std::mem::size_of_val(&groups_u32) as u64,
+            (&groups_u32 as *const u32).cast::<c_void>(),
+        );
+        score_encoder.set_bytes(
+            8,
+            std::mem::size_of_val(&score_scale) as u64,
+            (&score_scale as *const f32).cast::<c_void>(),
+        );
+        score_encoder.set_buffer(9, Some(&scores_buffer), 0);
+        let score_threads = MTLSize {
+            width: row_count as u64,
+            height: num_attention_heads as u64,
+            depth: 1,
+        };
+        let score_group_width = self
+            .attention_scores_int8
+            .pipeline
+            .thread_execution_width()
+            .min(row_count as u64);
+        let score_threads_per_group = MTLSize {
+            width: score_group_width,
+            height: 1,
+            depth: 1,
+        };
+        score_encoder.dispatch_threads(score_threads, score_threads_per_group);
+        score_encoder.end_encoding();
+
+        let max_threads = self
+            .softmax_rows_f32
+            .pipeline
+            .max_total_threads_per_threadgroup()
+            .max(1);
+        let softmax_group_width = power_of_two_at_most((row_count as u64).min(max_threads));
+        let softmax_thread_count = u32::try_from(softmax_group_width).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "attention softmax threadgroup width does not fit u32: {err}"
+            ))
+        })?;
+        let softmax_encoder = command_buffer.new_compute_command_encoder();
+        softmax_encoder.set_compute_pipeline_state(&self.softmax_rows_f32.pipeline);
+        softmax_encoder.set_buffer(0, Some(&scores_buffer), 0);
+        softmax_encoder.set_bytes(
+            1,
+            std::mem::size_of_val(&row_count_u32) as u64,
+            (&row_count_u32 as *const u32).cast::<c_void>(),
+        );
+        softmax_encoder.set_buffer(2, Some(&weights_buffer), 0);
+        softmax_encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&softmax_thread_count) as u64,
+            (&softmax_thread_count as *const u32).cast::<c_void>(),
+        );
+        softmax_encoder.set_threadgroup_memory_length(
+            0,
+            softmax_group_width * std::mem::size_of::<f32>() as u64,
+        );
+        softmax_encoder.dispatch_thread_groups(
+            MTLSize {
+                width: num_attention_heads as u64,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: softmax_group_width,
+                height: 1,
+                depth: 1,
+            },
+        );
+        softmax_encoder.end_encoding();
+
+        let sum_encoder = command_buffer.new_compute_command_encoder();
+        sum_encoder.set_compute_pipeline_state(&self.attention_weighted_sum_int8.pipeline);
+        sum_encoder.set_buffer(0, Some(values_buffer), 0);
+        sum_encoder.set_buffer(1, Some(value_scales_buffer), 0);
+        sum_encoder.set_buffer(2, Some(&weights_buffer), 0);
+        sum_encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&row_count_u32) as u64,
+            (&row_count_u32 as *const u32).cast::<c_void>(),
+        );
+        sum_encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&num_attention_heads_u32) as u64,
+            (&num_attention_heads_u32 as *const u32).cast::<c_void>(),
+        );
+        sum_encoder.set_bytes(
+            5,
+            std::mem::size_of_val(&num_key_value_heads_u32) as u64,
+            (&num_key_value_heads_u32 as *const u32).cast::<c_void>(),
+        );
+        sum_encoder.set_bytes(
+            6,
+            std::mem::size_of_val(&head_dim_u32) as u64,
+            (&head_dim_u32 as *const u32).cast::<c_void>(),
+        );
+        sum_encoder.set_bytes(
+            7,
+            std::mem::size_of_val(&groups_u32) as u64,
+            (&groups_u32 as *const u32).cast::<c_void>(),
+        );
+        sum_encoder.set_buffer(8, Some(&output_buffer), 0);
+        let sum_threads = MTLSize {
+            width: head_dim as u64,
+            height: num_attention_heads as u64,
+            depth: 1,
+        };
+        let sum_group_width = self
+            .attention_weighted_sum_int8
+            .pipeline
+            .thread_execution_width()
+            .min(head_dim as u64);
+        let sum_threads_per_group = MTLSize {
+            width: sum_group_width,
+            height: 1,
+            depth: 1,
+        };
+        sum_encoder.dispatch_threads(sum_threads, sum_threads_per_group);
+        sum_encoder.end_encoding();
+
+        finish_command_buffer_async(
+            &self.synchronization,
+            command_buffer,
+            "full_attention_cache_mix_int8",
+        )
+        .await?;
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 for every attention output element.
+        unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            let values = std::slice::from_raw_parts(ptr, attention_dim);
+            output[..attention_dim].copy_from_slice(values);
+        };
+        Ok(())
+    }
+
     pub async fn select_head_rows_f32(
         &self,
         values: &[f32],
@@ -1047,6 +1329,144 @@ impl MetalDevice {
         };
         Ok(())
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn select_head_rows_int8_buffered(
+        &self,
+        values: &I8Buffer,
+        scales: &F32Buffer,
+        row_count: usize,
+        row_len: usize,
+        head_start: usize,
+        head_len: usize,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        let used_len = row_count.checked_mul(row_len).ok_or_else(|| {
+            MetalError::InvalidShape("INT8 head row selection shape overflows usize".to_owned())
+        })?;
+        if values.len < used_len {
+            return Err(MetalError::InvalidShape(format!(
+                "INT8 head row selection value length {} is shorter than row_count {row_count} * row_len {row_len}",
+                values.len
+            )));
+        }
+        if scales.len < row_count {
+            return Err(MetalError::InvalidShape(format!(
+                "INT8 head row selection scale length {} is shorter than row_count {row_count}",
+                scales.len
+            )));
+        }
+        let head_end = head_start.checked_add(head_len).ok_or_else(|| {
+            MetalError::InvalidShape("INT8 head row selection range overflows usize".to_owned())
+        })?;
+        if head_end > row_len {
+            return Err(MetalError::InvalidShape(format!(
+                "INT8 head row selection range {head_start}..{head_end} exceeds row length {row_len}"
+            )));
+        }
+        let output_len = row_count.checked_mul(head_len).ok_or_else(|| {
+            MetalError::InvalidShape(
+                "INT8 head row selection output shape overflows usize".to_owned(),
+            )
+        })?;
+        if output.len() < output_len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than expected {output_len}",
+                output.len()
+            )));
+        }
+        if output_len == 0 {
+            return Ok(());
+        }
+        let row_len_u32 = u32::try_from(row_len).map_err(|err| {
+            MetalError::InvalidShape(format!("INT8 head row length does not fit u32: {err}"))
+        })?;
+        let head_start_u32 = u32::try_from(head_start).map_err(|err| {
+            MetalError::InvalidShape(format!("INT8 head row start does not fit u32: {err}"))
+        })?;
+        let head_len_u32 = u32::try_from(head_len).map_err(|err| {
+            MetalError::InvalidShape(format!("INT8 head row length does not fit u32: {err}"))
+        })?;
+        let output_len_u32 = u32::try_from(output_len).map_err(|err| {
+            MetalError::InvalidShape(format!(
+                "INT8 head row output length does not fit u32: {err}"
+            ))
+        })?;
+        let output_byte_len =
+            metal_buffer_byte_len::<f32>(output_len, "INT8 head row selection output")?;
+        let Some(values_buffer) = values.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty INT8 head row selection requires a values buffer".to_owned(),
+            ));
+        };
+        let Some(scales_buffer) = scales.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty INT8 head row selection requires a scale buffer".to_owned(),
+            ));
+        };
+        let output_buffer = self
+            .device
+            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = self.select_head_rows_int8.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.select_head_rows_int8.pipeline);
+        encoder.set_buffer(0, Some(values_buffer), 0);
+        encoder.set_buffer(1, Some(scales_buffer), 0);
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&row_len_u32) as u64,
+            (&row_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&head_start_u32) as u64,
+            (&head_start_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            4,
+            std::mem::size_of_val(&head_len_u32) as u64,
+            (&head_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            5,
+            std::mem::size_of_val(&output_len_u32) as u64,
+            (&output_len_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(6, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: output_len as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .select_head_rows_int8
+            .pipeline
+            .thread_execution_width()
+            .min(output_len as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        finish_command_buffer_async(
+            &self.synchronization,
+            command_buffer,
+            "select_head_rows_int8",
+        )
+        .await?;
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per selected row element.
+        unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            let values = std::slice::from_raw_parts(ptr, output_len);
+            output[..output_len].copy_from_slice(values);
+        };
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1181,6 +1601,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_attention_cache_mix_int8_matches_reference_values() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let keys = device.new_i8_buffer(&[127, 0, 0, 127]).expect("key buffer");
+        let key_scales = device
+            .new_f32_buffer(&[1.0 / 127.0, 1.0 / 127.0])
+            .expect("key scale buffer");
+        let values = device
+            .new_i8_buffer(&[127, 0, 0, 127])
+            .expect("value buffer");
+        let value_scales = device
+            .new_f32_buffer(&[10.0 / 127.0, 10.0 / 127.0])
+            .expect("value scale buffer");
+        let query = [1.0, 0.0, 0.0, 1.0];
+        let mut output = vec![0.0; 4];
+
+        device
+            .full_attention_cache_mix_int8_buffered(
+                &keys,
+                &key_scales,
+                &values,
+                &value_scales,
+                &query,
+                2,
+                2,
+                1,
+                2,
+                1.0,
+                &mut output,
+            )
+            .await
+            .expect("attention mix succeeds");
+
+        let head0_weight_0 = 1.0_f32.exp() / (1.0_f32.exp() + 0.0_f32.exp());
+        let head0_weight_1 = 1.0 - head0_weight_0;
+        let head1_weight_0 = head0_weight_1;
+        let head1_weight_1 = head0_weight_0;
+        let expected = [
+            10.0 * head0_weight_0,
+            10.0 * head0_weight_1,
+            10.0 * head1_weight_0,
+            10.0 * head1_weight_1,
+        ];
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn select_head_rows_f16_buffered_matches_reference_values() {
         let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
         else {
@@ -1197,6 +1673,28 @@ mod tests {
             .select_head_rows_f16_buffered(&values, 2, 4, 1, 2, &mut output)
             .await
             .expect("head row selection succeeds");
+
+        assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
+    }
+
+    #[tokio::test]
+    async fn select_head_rows_int8_buffered_matches_reference_values() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let values = device
+            .new_i8_buffer(&[10, 20, 30, 40, 5, 10, 15, 20])
+            .expect("value buffer");
+        let scales = device.new_f32_buffer(&[0.1, 2.0]).expect("scale buffer");
+        let mut output = vec![0.0; 4];
+
+        device
+            .select_head_rows_int8_buffered(&values, &scales, 2, 4, 1, 2, &mut output)
+            .await
+            .expect("int8 head row selection succeeds");
 
         assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
     }

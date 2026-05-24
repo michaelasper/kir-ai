@@ -21,7 +21,7 @@ use std::{
 };
 
 use block::RetainedCacheBlock;
-use format::{KvCacheFormatMetricParts, LayerQuantizedValueStore};
+use format::{KvCacheFormatMetricParts, LayerInt8KvStore, LayerQuantizedValueStore};
 
 static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -105,6 +105,7 @@ pub struct LayerKvCache {
     // Primary ring storage followed by mirrored slots for contiguous logical views.
     key_stage: Vec<f32>,
     value_stage: Vec<f32>,
+    int8_storage: Option<LayerInt8KvStore>,
     quantized_values: Option<LayerQuantizedValueStore>,
 }
 
@@ -199,6 +200,62 @@ pub struct LayerKvCacheBlock<'a> {
     value_storage: &'a [f32],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LayerKvCacheInt8Block<'a> {
+    block_id: BlockId,
+    revision: u64,
+    logical_token_start: usize,
+    block_token_start: usize,
+    token_count: usize,
+    vector_len: usize,
+    key_codes: &'a [i8],
+    value_codes: &'a [i8],
+    key_scales: &'a [f32],
+    value_scales: &'a [f32],
+}
+
+impl<'a> LayerKvCacheInt8Block<'a> {
+    pub fn block_id(&self) -> BlockId {
+        self.block_id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn logical_token_start(&self) -> usize {
+        self.logical_token_start
+    }
+
+    pub fn block_token_start(&self) -> usize {
+        self.block_token_start
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    pub fn vector_len(&self) -> usize {
+        self.vector_len
+    }
+
+    pub fn key_codes_storage(&self) -> &'a [i8] {
+        self.key_codes
+    }
+
+    pub fn value_codes_storage(&self) -> &'a [i8] {
+        self.value_codes
+    }
+
+    pub fn key_scales_storage(&self) -> &'a [f32] {
+        self.key_scales
+    }
+
+    pub fn value_scales_storage(&self) -> &'a [f32] {
+        self.value_scales
+    }
+}
+
 impl<'a> LayerKvCacheBlock<'a> {
     pub fn block_id(&self) -> BlockId {
         self.block_id
@@ -263,6 +320,7 @@ impl Clone for LayerKvCache {
             blocks: self.blocks.clone(),
             key_stage: self.key_stage.clone(),
             value_stage: self.value_stage.clone(),
+            int8_storage: self.int8_storage.clone(),
             quantized_values: self.quantized_values.clone(),
         }
     }
@@ -286,7 +344,7 @@ impl LayerKvCache {
         if max_tokens == 0 || key_value_heads == 0 || head_dim == 0 {
             return Err(KvCacheError::InvalidShape);
         }
-        if matches!(config.format(), KvCacheFormat::F16 | KvCacheFormat::Int8) {
+        if matches!(config.format(), KvCacheFormat::F16) {
             return Err(KvCacheError::UnsupportedFormat {
                 format: config.format(),
             });
@@ -311,6 +369,11 @@ impl LayerKvCache {
             blocks.push(block);
             remaining_tokens -= capacity_tokens;
         }
+        let int8_storage = if config.format() == KvCacheFormat::Int8 {
+            Some(LayerInt8KvStore::new(block_count, vector_len)?)
+        } else {
+            None
+        };
         let quantized_values = config
             .asymmetric_vq_config()
             .map(|phase3| LayerQuantizedValueStore::new(block_count, vector_len, phase3))
@@ -329,6 +392,7 @@ impl LayerKvCache {
             blocks,
             key_stage: vec![0.0; stage_len],
             value_stage: vec![0.0; stage_len],
+            int8_storage,
             quantized_values,
         })
     }
@@ -520,11 +584,25 @@ impl LayerKvCache {
                     .saturating_add(f32_resident_bytes(block.value_storage()))
             },
         );
-        f32_bytes.saturating_add(
-            self.quantized_values
-                .as_ref()
-                .map_or(0, LayerQuantizedValueStore::resident_bytes),
-        )
+        f32_bytes
+            .saturating_add(
+                self.int8_storage
+                    .as_ref()
+                    .map_or(0, LayerInt8KvStore::resident_bytes),
+            )
+            .saturating_add(
+                self.quantized_values
+                    .as_ref()
+                    .map_or(0, LayerQuantizedValueStore::resident_bytes),
+            )
+    }
+
+    pub fn int8_dequantized_keys(&self) -> Result<Option<Vec<f32>>, KvCacheError> {
+        self.int8_dequantized_tensor(Int8Tensor::Key)
+    }
+
+    pub fn int8_dequantized_values(&self) -> Result<Option<Vec<f32>>, KvCacheError> {
+        self.int8_dequantized_tensor(Int8Tensor::Value)
     }
 
     pub fn phase3_dequantized_values(&self) -> Result<Option<Vec<f32>>, KvCacheError> {
@@ -567,6 +645,11 @@ impl LayerKvCache {
         let f32_uploaded_bytes = uploaded_bytes(active_key_value_elements, 4);
         let f16_uploaded_bytes = uploaded_bytes(active_key_value_elements, 2);
         let int8_uploaded_bytes = uploaded_bytes(active_key_value_elements, 1);
+        let f16_resident_bytes = f32_residency / 2;
+        let int8_resident_bytes = self
+            .int8_storage
+            .as_ref()
+            .map_or(0, LayerInt8KvStore::resident_bytes);
         let (phase3_value_bits, phase3_resident_bytes, phase3_payload_bytes, phase3_metadata_bytes) =
             self.quantized_values
                 .as_ref()
@@ -591,6 +674,8 @@ impl LayerKvCache {
             active_format: self.format(),
             phase3_value_bits,
             f32_resident_bytes: f32_residency,
+            f16_resident_bytes,
+            int8_resident_bytes,
             f32_uploaded_bytes,
             f16_uploaded_bytes,
             int8_uploaded_bytes,
@@ -604,7 +689,7 @@ impl LayerKvCache {
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
         self.validate_token_shape(key, value)?;
-        self.validate_quantized_value_payload(value)?;
+        self.validate_compressed_token_payload(key, value)?;
         if self.token_count == self.max_tokens {
             return Err(KvCacheError::CapacityExceeded {
                 requested: 1,
@@ -638,7 +723,7 @@ impl LayerKvCache {
         if self.token_count < self.max_tokens {
             return self.append(key, value);
         }
-        self.validate_quantized_value_payload(value)?;
+        self.validate_compressed_token_payload(key, value)?;
         let tokens_seen = self
             .tokens_seen
             .checked_add(1)
@@ -792,6 +877,52 @@ impl LayerKvCache {
         Ok(active_blocks)
     }
 
+    pub fn active_int8_blocks(
+        &self,
+    ) -> Result<Option<Vec<LayerKvCacheInt8Block<'_>>>, KvCacheError> {
+        let Some(int8_storage) = self.int8_storage.as_ref() else {
+            return Ok(None);
+        };
+        let mut active_blocks: Vec<LayerKvCacheInt8Block<'_>> = Vec::new();
+        for logical_token_index in 0..self.token_count {
+            let (block_index, block_token_index) = self
+                .block_position(logical_token_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block_id = self
+                .block_table
+                .get(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block = self
+                .blocks
+                .get(block_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            if block.id() != block_id {
+                return Err(KvCacheError::InvalidShape);
+            }
+            let int8_block = int8_storage.block(block_index)?;
+            if let Some(previous) = active_blocks.last_mut()
+                && previous.block_id == block_id
+                && previous.block_token_start + previous.token_count == block_token_index
+            {
+                previous.token_count += 1;
+                continue;
+            }
+            active_blocks.push(LayerKvCacheInt8Block {
+                block_id,
+                revision: block.revision(),
+                logical_token_start: logical_token_index,
+                block_token_start: block_token_index,
+                token_count: 1,
+                vector_len: self.vector_len(),
+                key_codes: int8_block.key_codes(),
+                value_codes: int8_block.value_codes(),
+                key_scales: int8_block.key_scales(),
+                value_scales: int8_block.value_scales(),
+            });
+        }
+        Ok(Some(active_blocks))
+    }
+
     pub fn keys(&self) -> &[f32] {
         let start = self.window_start * self.vector_len();
         &self.key_stage[start..start + self.used_len()]
@@ -819,6 +950,9 @@ impl LayerKvCache {
         }
         if let Some(quantized_values) = self.quantized_values.as_mut() {
             quantized_values.clear();
+        }
+        if let Some(int8_storage) = self.int8_storage.as_mut() {
+            int8_storage.clear();
         }
         self.key_stage.fill(0.0);
         self.value_stage.fill(0.0);
@@ -877,6 +1011,7 @@ impl LayerKvCache {
         if block_token_index != expected_block_token_index {
             return Err(KvCacheError::InvalidShape);
         }
+        self.refresh_int8_block(block_index)?;
         self.refresh_quantized_block(block_index)?;
         Ok(())
     }
@@ -913,6 +1048,7 @@ impl LayerKvCache {
             .get_mut(block_index)
             .ok_or(KvCacheError::InvalidShape)?;
         block.write_at(block_token_index, key, value)?;
+        self.refresh_int8_block(block_index)?;
         self.refresh_quantized_block(block_index)
     }
 
@@ -950,7 +1086,25 @@ impl LayerKvCache {
                 .to_vec();
             self.write_stage_token(physical_token_index, &key, &value);
         }
+        self.rebuild_int8_storage()?;
         self.rebuild_quantized_values()
+    }
+
+    fn rebuild_int8_storage(&mut self) -> Result<(), KvCacheError> {
+        let Some(int8_storage) = self.int8_storage.as_mut() else {
+            return Ok(());
+        };
+        int8_storage.clear();
+        for block_index in 0..self.blocks.len() {
+            let Some(block) = self.blocks.get(block_index) else {
+                return Err(KvCacheError::InvalidShape);
+            };
+            if block.token_count() == 0 {
+                continue;
+            }
+            int8_storage.update_block(block_index, block.keys(), block.values())?;
+        }
+        Ok(())
     }
 
     fn rebuild_quantized_values(&mut self) -> Result<(), KvCacheError> {
@@ -982,6 +1136,52 @@ impl LayerKvCache {
             return Ok(());
         }
         quantized_values.update_block(block_index, block.values())
+    }
+
+    fn refresh_int8_block(&mut self, block_index: usize) -> Result<(), KvCacheError> {
+        let Some(int8_storage) = self.int8_storage.as_mut() else {
+            return Ok(());
+        };
+        let block = self
+            .blocks
+            .get(block_index)
+            .ok_or(KvCacheError::InvalidShape)?;
+        if block.token_count() == 0 {
+            return Ok(());
+        }
+        int8_storage.update_block(block_index, block.keys(), block.values())
+    }
+
+    fn int8_dequantized_tensor(
+        &self,
+        tensor: Int8Tensor,
+    ) -> Result<Option<Vec<f32>>, KvCacheError> {
+        let Some(int8_storage) = self.int8_storage.as_ref() else {
+            return Ok(None);
+        };
+        let mut values = Vec::with_capacity(self.used_len());
+        for logical_token_index in 0..self.token_count {
+            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
+            let (block_index, block_token_index) = self
+                .physical_block_position(physical_token_index)
+                .ok_or(KvCacheError::InvalidShape)?;
+            let block_values = match tensor {
+                Int8Tensor::Key => int8_storage.dequantized_key_block(block_index)?,
+                Int8Tensor::Value => int8_storage.dequantized_value_block(block_index)?,
+            };
+            let start = block_token_index
+                .checked_mul(self.vector_len())
+                .ok_or(KvCacheError::InvalidShape)?;
+            let end = start
+                .checked_add(self.vector_len())
+                .ok_or(KvCacheError::InvalidShape)?;
+            values.extend_from_slice(
+                block_values
+                    .get(start..end)
+                    .ok_or(KvCacheError::InvalidShape)?,
+            );
+        }
+        Ok(Some(values))
     }
 
     fn phase3_reconstruction_error(
@@ -1033,11 +1233,15 @@ impl LayerKvCache {
         Ok(())
     }
 
-    fn validate_quantized_value_payload(&self, value: &[f32]) -> Result<(), KvCacheError> {
-        if self.quantized_values.is_none() {
+    fn validate_compressed_token_payload(
+        &self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvCacheError> {
+        if self.quantized_values.is_none() && self.int8_storage.is_none() {
             return Ok(());
         }
-        if value.iter().any(|value| !value.is_finite()) {
+        if key.iter().chain(value).any(|value| !value.is_finite()) {
             return Err(KvCacheError::NonFiniteValue);
         }
         Ok(())
@@ -1050,6 +1254,12 @@ impl LayerKvCache {
     fn stage_storage_len(&self) -> usize {
         self.max_tokens * self.vector_len()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Int8Tensor {
+    Key,
+    Value,
 }
 
 #[derive(Debug, PartialEq)]

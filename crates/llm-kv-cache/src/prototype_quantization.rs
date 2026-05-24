@@ -3,6 +3,8 @@
 //! This module is intentionally disconnected from serving defaults. It exists
 //! to compare random orthogonal rotation plus Lloyd-Max/codebook quantization
 //! against simple uniform INT8/INT4/3-bit baselines on deterministic fixtures.
+//! Asymmetric/TurboQuant-style cache quantization remains deferred to #334; the
+//! COR-296 serving path only enables symmetric per-token INT8 KV storage.
 
 use std::{fmt, hint::black_box, time::Instant};
 

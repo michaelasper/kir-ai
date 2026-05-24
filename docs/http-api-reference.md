@@ -209,7 +209,9 @@ Returns aggregate request, stream, failure, token, and scheduler counters for th
   `avoided_prefill_tokens` so warm-prefix runs can distinguish hit rate from
   avoided prefill work. Native text Metal KV cache metrics include resident
   bytes/buffers, allocations, syncs, skipped syncs, bytes uploaded, evictions,
-  and bytes evicted when Metal support is compiled in.
+  and bytes evicted when Metal support is compiled in, plus
+  `f32_*`, `f16_*`, and `int8_*` uploaded/resident byte breakdowns for cache
+  precision comparisons.
 - `request_cache`: Bounded per-request prefix-cache observations. `capacity`
   is fixed at `128`; `recent` contains successful buffered and streaming
   requests with `request_id`, `model`, `streamed`, `prompt_tokens`,

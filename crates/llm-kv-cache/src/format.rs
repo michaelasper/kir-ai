@@ -91,6 +91,10 @@ impl KvCacheConfig {
         }
     }
 
+    /// Opts into the asymmetric/codebook quantization prototype.
+    ///
+    /// This remains the phase-3 TurboQuant-style track deferred to #334. It is
+    /// kept separate from the symmetric INT8 CPU and Metal KV cache path.
     pub fn asymmetric_vq(config: AsymmetricVqCacheConfig) -> Self {
         Self {
             format: KvCacheFormat::AsymmetricVq,
@@ -138,6 +142,8 @@ pub struct KvCacheFormatMetrics {
     active_format: KvCacheFormat,
     phase3_value_bits: Option<KvCacheValueQuantizationBits>,
     f32_resident_bytes: u64,
+    f16_resident_bytes: u64,
+    int8_resident_bytes: u64,
     f32_uploaded_bytes: u64,
     f16_uploaded_bytes: u64,
     int8_uploaded_bytes: u64,
@@ -153,6 +159,8 @@ pub(crate) struct KvCacheFormatMetricParts {
     pub(crate) active_format: KvCacheFormat,
     pub(crate) phase3_value_bits: Option<KvCacheValueQuantizationBits>,
     pub(crate) f32_resident_bytes: u64,
+    pub(crate) f16_resident_bytes: u64,
+    pub(crate) int8_resident_bytes: u64,
     pub(crate) f32_uploaded_bytes: u64,
     pub(crate) f16_uploaded_bytes: u64,
     pub(crate) int8_uploaded_bytes: u64,
@@ -169,6 +177,8 @@ impl KvCacheFormatMetrics {
             active_format: parts.active_format,
             phase3_value_bits: parts.phase3_value_bits,
             f32_resident_bytes: parts.f32_resident_bytes,
+            f16_resident_bytes: parts.f16_resident_bytes,
+            int8_resident_bytes: parts.int8_resident_bytes,
             f32_uploaded_bytes: parts.f32_uploaded_bytes,
             f16_uploaded_bytes: parts.f16_uploaded_bytes,
             int8_uploaded_bytes: parts.int8_uploaded_bytes,
@@ -190,6 +200,14 @@ impl KvCacheFormatMetrics {
 
     pub fn f32_resident_bytes(self) -> u64 {
         self.f32_resident_bytes
+    }
+
+    pub fn f16_resident_bytes(self) -> u64 {
+        self.f16_resident_bytes
+    }
+
+    pub fn int8_resident_bytes(self) -> u64 {
+        self.int8_resident_bytes
     }
 
     pub fn f32_uploaded_bytes(self) -> u64 {
@@ -222,6 +240,158 @@ impl KvCacheFormatMetrics {
 
     pub fn phase3_reconstruction_error(self) -> Option<KvCacheReconstructionError> {
         self.phase3_reconstruction_error
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LayerInt8KvStore {
+    vector_len: usize,
+    blocks: Vec<Option<Int8KvBlock>>,
+}
+
+impl LayerInt8KvStore {
+    pub(crate) fn new(block_count: usize, vector_len: usize) -> Result<Self, KvCacheError> {
+        if block_count == 0 || vector_len == 0 {
+            return Err(KvCacheError::InvalidShape);
+        }
+        Ok(Self {
+            vector_len,
+            blocks: vec![None; block_count],
+        })
+    }
+
+    pub(crate) fn update_block(
+        &mut self,
+        block_index: usize,
+        keys: &[f32],
+        values: &[f32],
+    ) -> Result<(), KvCacheError> {
+        if block_index >= self.blocks.len()
+            || keys.is_empty()
+            || keys.len() != values.len()
+            || !keys.len().is_multiple_of(self.vector_len)
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+        self.blocks[block_index] = Some(Int8KvBlock::quantize(keys, values, self.vector_len)?);
+        Ok(())
+    }
+
+    pub(crate) fn clear(&mut self) {
+        for block in &mut self.blocks {
+            *block = None;
+        }
+    }
+
+    pub(crate) fn block(&self, block_index: usize) -> Result<&Int8KvBlock, KvCacheError> {
+        self.blocks
+            .get(block_index)
+            .ok_or(KvCacheError::InvalidShape)?
+            .as_ref()
+            .ok_or(KvCacheError::InvalidShape)
+    }
+
+    pub(crate) fn dequantized_key_block(
+        &self,
+        block_index: usize,
+    ) -> Result<Vec<f32>, KvCacheError> {
+        self.block(block_index)?.dequantize_keys()
+    }
+
+    pub(crate) fn dequantized_value_block(
+        &self,
+        block_index: usize,
+    ) -> Result<Vec<f32>, KvCacheError> {
+        self.block(block_index)?.dequantize_values()
+    }
+
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        self.payload_bytes().saturating_add(self.metadata_bytes())
+    }
+
+    pub(crate) fn payload_bytes(&self) -> u64 {
+        self.blocks
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(Int8KvBlock::payload_bytes)
+            .sum()
+    }
+
+    pub(crate) fn metadata_bytes(&self) -> u64 {
+        self.blocks
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(Int8KvBlock::metadata_bytes)
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Int8KvBlock {
+    vector_len: usize,
+    token_count: usize,
+    key_scales: Vec<f32>,
+    value_scales: Vec<f32>,
+    key_codes: Vec<i8>,
+    value_codes: Vec<i8>,
+}
+
+impl Int8KvBlock {
+    fn quantize(keys: &[f32], values: &[f32], vector_len: usize) -> Result<Self, KvCacheError> {
+        if keys.is_empty()
+            || vector_len == 0
+            || keys.len() != values.len()
+            || !keys.len().is_multiple_of(vector_len)
+        {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let (key_codes, key_scales) = quantize_int8_rows(keys, vector_len)?;
+        let (value_codes, value_scales) = quantize_int8_rows(values, vector_len)?;
+        Ok(Self {
+            vector_len,
+            token_count: keys.len() / vector_len,
+            key_scales,
+            value_scales,
+            key_codes,
+            value_codes,
+        })
+    }
+
+    pub(crate) fn key_codes(&self) -> &[i8] {
+        &self.key_codes
+    }
+
+    pub(crate) fn value_codes(&self) -> &[i8] {
+        &self.value_codes
+    }
+
+    pub(crate) fn key_scales(&self) -> &[f32] {
+        &self.key_scales
+    }
+
+    pub(crate) fn value_scales(&self) -> &[f32] {
+        &self.value_scales
+    }
+
+    fn dequantize_keys(&self) -> Result<Vec<f32>, KvCacheError> {
+        dequantize_int8_rows(&self.key_codes, &self.key_scales, self.vector_len)
+    }
+
+    fn dequantize_values(&self) -> Result<Vec<f32>, KvCacheError> {
+        dequantize_int8_rows(&self.value_codes, &self.value_scales, self.vector_len)
+    }
+
+    fn payload_bytes(&self) -> u64 {
+        self.key_codes.len().saturating_add(self.value_codes.len()) as u64
+    }
+
+    fn metadata_bytes(&self) -> u64 {
+        let scale_bytes = self
+            .key_scales
+            .len()
+            .saturating_add(self.value_scales.len())
+            .saturating_mul(std::mem::size_of::<f32>());
+        scale_bytes.saturating_add(2_usize.saturating_mul(std::mem::size_of::<usize>())) as u64
     }
 }
 
@@ -481,4 +651,63 @@ fn unpack_codes(
         codes.push(code);
     }
     Ok(codes)
+}
+
+fn quantize_int8_rows(
+    values: &[f32],
+    vector_len: usize,
+) -> Result<(Vec<i8>, Vec<f32>), KvCacheError> {
+    if values.is_empty() || vector_len == 0 || !values.len().is_multiple_of(vector_len) {
+        return Err(KvCacheError::InvalidShape);
+    }
+    let mut codes = Vec::with_capacity(values.len());
+    let mut scales = Vec::with_capacity(values.len() / vector_len);
+    for row in values.chunks_exact(vector_len) {
+        let mut max_abs = 0.0_f32;
+        for value in row {
+            if !value.is_finite() {
+                return Err(KvCacheError::NonFiniteValue);
+            }
+            max_abs = max_abs.max(value.abs());
+        }
+        let scale = if max_abs == 0.0 {
+            0.0
+        } else {
+            max_abs / f32::from(i8::MAX)
+        };
+        for value in row {
+            let code = if scale == 0.0 {
+                0
+            } else {
+                (*value / scale)
+                    .round()
+                    .clamp(f32::from(-i8::MAX), f32::from(i8::MAX)) as i8
+            };
+            codes.push(code);
+        }
+        scales.push(scale);
+    }
+    Ok((codes, scales))
+}
+
+fn dequantize_int8_rows(
+    codes: &[i8],
+    scales: &[f32],
+    vector_len: usize,
+) -> Result<Vec<f32>, KvCacheError> {
+    if vector_len == 0 || !codes.len().is_multiple_of(vector_len) {
+        return Err(KvCacheError::InvalidShape);
+    }
+    let token_count = codes.len() / vector_len;
+    if scales.len() != token_count {
+        return Err(KvCacheError::ShapeMismatch {
+            expected: token_count,
+            actual: scales.len(),
+        });
+    }
+    let mut values = Vec::with_capacity(codes.len());
+    for (row, scale) in codes.chunks_exact(vector_len).zip(scales) {
+        values.extend(row.iter().map(|code| f32::from(*code) * *scale));
+    }
+    Ok(values)
 }
