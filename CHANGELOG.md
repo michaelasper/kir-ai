@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.49.1](https://github.com/michaelasper/kir-ai/compare/v1.49.0...v1.49.1) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-315:** reduce streaming hot-path clones ([7d9b018](https://github.com/michaelasper/kir-ai/commit/7d9b0182e76cb13d794d10fa55982921dfd98cd8))
+
 ## [1.49.0](https://github.com/michaelasper/kir-ai/compare/v1.48.0...v1.49.0) (2026-05-24)
 
 ### Features
