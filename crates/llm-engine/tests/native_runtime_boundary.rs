@@ -17,6 +17,7 @@ fn native_runtime_crate_exposes_backend_constructor_api() {
         eager_materialize_shards: true,
         metal_weight_cache_bytes: Some(4096),
         prefix_cache_bytes: Some(2048),
+        prefix_disk_cache: None,
         warm_metal_weight_cache: true,
     })
     .with_family(ModelFamily::Qwen);

@@ -22,11 +22,23 @@ use llm_tokenizer::HuggingFaceTokenizer;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
+mod disk_cache;
 mod driver;
 mod generation;
 mod prefix_cache;
 mod streaming;
 
+pub use disk_cache::NativeTextDiskCacheConfig;
+#[allow(unused_imports)]
+pub(crate) use disk_cache::{
+    NativeTextDiskCache, NativeTextDiskCacheIdentity, NativeTextDiskCacheStoreStatus,
+    NativeTextDiskCacheValue,
+};
+#[cfg(test)]
+pub(crate) use disk_cache::{
+    NativeTextDiskCacheError, NativeTextDiskCacheLayerLayout, NativeTextDiskCacheTensorArchive,
+    NativeTextDiskCacheTensorSink,
+};
 #[allow(unused_imports)]
 pub(crate) use driver::{
     NativeTextAdapter, NativeTextCandidateDecision, NativeTextDriver, NativeTextResolvedStopTokens,
@@ -58,15 +70,16 @@ pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
 pub const DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 2048;
 pub const DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeTextRuntimeOptions {
     pub eager_materialize_shards: bool,
     pub metal_weight_cache_bytes: Option<u64>,
     pub prefix_cache_bytes: Option<u64>,
+    pub prefix_disk_cache: Option<NativeTextDiskCacheConfig>,
     pub warm_metal_weight_cache: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeTextLoadOptions {
     pub family: Option<ModelFamily>,
     pub runtime: NativeTextRuntimeOptions,
@@ -104,6 +117,7 @@ pub(crate) struct NativeTextSnapshotOpen<S> {
     pub(crate) matvec: NativeTextMatvecBackend,
     pub(crate) tokenizer: HuggingFaceTokenizer,
     pub(crate) prefix_cache_bytes: Option<u64>,
+    pub(crate) prefix_disk_cache: Option<NativeTextDiskCacheConfig>,
 }
 
 pub(crate) struct NativeTextSnapshotOpenFamily<S> {
@@ -139,6 +153,9 @@ where
 {
     let model_id = model_id.into();
     let snapshot_path = snapshot_path.as_ref().to_path_buf();
+    let prefix_disk_cache = options.prefix_disk_cache.clone();
+    let prefix_cache_bytes = options.prefix_cache_bytes;
+    let blocking_options = options.clone();
     let cache_namespace = tokio::fs::canonicalize(&snapshot_path)
         .await?
         .to_string_lossy()
@@ -149,7 +166,7 @@ where
         open_native_text_snapshot_blocking(
             snapshot_path,
             config_json,
-            options,
+            blocking_options,
             family,
             cache_namespace,
         )
@@ -188,7 +205,8 @@ where
         store: blocking_open.store,
         matvec: blocking_open.matvec,
         tokenizer: blocking_open.tokenizer,
-        prefix_cache_bytes: options.prefix_cache_bytes,
+        prefix_cache_bytes,
+        prefix_disk_cache,
     })
 }
 
@@ -537,6 +555,51 @@ mod tests {
         fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
             std::mem::size_of_val(hidden) as u64
                 + states.iter().map(|cache| cache.bytes).sum::<u64>()
+        }
+    }
+
+    impl NativeTextDiskCacheValue for TestCache {
+        fn encode_disk_states(
+            states: &[Self::PrefixCacheState],
+            sink: &mut NativeTextDiskCacheTensorSink,
+        ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
+            let values = states
+                .iter()
+                .map(|state| state.marker as f32)
+                .collect::<Vec<_>>();
+            sink.push_f32("test.markers", vec![values.len()], values)?;
+            Ok(vec![NativeTextDiskCacheLayerLayout::test_marker_tensor(
+                "test.markers",
+            )])
+        }
+
+        fn decode_disk_states(
+            layouts: &[NativeTextDiskCacheLayerLayout],
+            archive: &NativeTextDiskCacheTensorArchive<'_>,
+        ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
+            let Some(layout) = layouts.first() else {
+                return Err(NativeTextDiskCacheError::integrity(
+                    "missing test marker layout",
+                ));
+            };
+            let tensor = layout
+                .test_marker_tensor_name()
+                .ok_or_else(|| NativeTextDiskCacheError::integrity("wrong test marker layout"))?;
+            archive
+                .f32_tensor(tensor)?
+                .into_iter()
+                .map(|marker| {
+                    if marker.fract() != 0.0 || marker < 0.0 {
+                        return Err(NativeTextDiskCacheError::integrity(
+                            "test marker must be a non-negative integer",
+                        ));
+                    }
+                    Ok(TestCache {
+                        bytes: std::mem::size_of::<TestCache>() as u64,
+                        marker: marker as u32,
+                    })
+                })
+                .collect()
         }
     }
 
@@ -1195,9 +1258,10 @@ mod tests {
             eager_materialize_shards: true,
             metal_weight_cache_bytes: Some(4096),
             prefix_cache_bytes: Some(17),
+            prefix_disk_cache: None,
             warm_metal_weight_cache: true,
         };
-        let options = NativeTextLoadOptions::with_runtime_options(runtime);
+        let options = NativeTextLoadOptions::with_runtime_options(runtime.clone());
 
         assert_eq!(options.runtime, runtime);
     }

@@ -5,12 +5,12 @@ use crate::{
         NativeTextMatvecBackend,
     },
     native_text::{
-        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
-        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions, NativeTextSnapshotOpen,
-        NativeTextSnapshotOpenFamily, NativeTextStopTokens, native_text_prefix_namespace,
-        open_native_text_snapshot,
+        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDiskCache,
+        NativeTextDiskCacheIdentity, NativeTextDriver, NativeTextNextTokenContext,
+        NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
+        NativeTextPrefixCacheValue, NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions,
+        NativeTextSnapshotOpen, NativeTextSnapshotOpenFamily, NativeTextStopTokens,
+        native_text_prefix_namespace, open_native_text_snapshot,
     },
 };
 use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
@@ -56,6 +56,7 @@ pub(crate) struct NativeGemmaAdapter {
     top_k: usize,
     chunk_rows: usize,
     prefix_cache: Arc<NativeGemmaPrefixCache>,
+    prefix_disk_cache: Option<Arc<NativeTextDiskCache<GemmaLayerCache>>>,
 }
 
 type NativeGemmaPrefixCache = NativeTextPrefixCache<GemmaLayerCache>;
@@ -150,6 +151,7 @@ impl NativeGemmaBackend {
             matvec,
             tokenizer,
             prefix_cache_bytes,
+            prefix_disk_cache,
         } = open_native_text_snapshot(
             model_id,
             snapshot_path,
@@ -163,6 +165,16 @@ impl NativeGemmaBackend {
             },
         )
         .await?;
+        let prefix_disk_cache = match prefix_disk_cache {
+            Some(config) => Some(Arc::new(
+                NativeTextDiskCache::open(
+                    config,
+                    NativeTextDiskCacheIdentity::from_model_metadata(&metadata, "gemma"),
+                )
+                .await?,
+            )),
+            None => None,
+        };
         let adapter = NativeGemmaAdapter {
             model_id: model_id.clone(),
             metadata: metadata.clone(),
@@ -175,6 +187,7 @@ impl NativeGemmaBackend {
             prefix_cache: Arc::new(NativeGemmaPrefixCache::new(
                 prefix_cache_bytes.unwrap_or(DEFAULT_NATIVE_GEMMA_PREFIX_CACHE_BYTES),
             )),
+            prefix_disk_cache,
         };
         Ok(Self {
             driver: NativeTextDriver::new(
@@ -300,6 +313,10 @@ impl NativeTextAdapter for NativeGemmaAdapter {
 
     fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics {
         native_gemma_prefix_cache_metrics()
+    }
+
+    fn prefix_disk_cache(&self) -> Option<&NativeTextDiskCache<GemmaLayerCache>> {
+        self.prefix_disk_cache.as_deref()
     }
 
     fn prefix_cache_namespace(

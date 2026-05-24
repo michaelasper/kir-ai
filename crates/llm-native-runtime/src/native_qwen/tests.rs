@@ -1953,6 +1953,7 @@ fn native_qwen_test_backend(
         prefix_cache: Arc::new(NativeQwenPrefixCache::new(
             DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES,
         )),
+        prefix_disk_cache: None,
     };
     NativeQwenBackend {
         driver: NativeTextDriver::new(

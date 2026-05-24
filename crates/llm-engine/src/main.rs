@@ -7,7 +7,7 @@ use llm_engine::{
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
-    NativeTextLoadOptions, NativeTextRuntimeOptions,
+    NativeTextDiskCacheConfig, NativeTextLoadOptions, NativeTextRuntimeOptions,
 };
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
@@ -130,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
                         .transpose()?;
                 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let native_prefix_cache_bytes = native_prefix_cache_bytes_from_args(&serve_args)?;
+                #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+                let native_prefix_disk_cache =
+                    native_prefix_disk_cache_config_from_args(&serve_args)?;
                 #[cfg(feature = "mlx")]
                 let mlx_endpoint = if let Some(endpoint) = flag_value(&serve_args, "--mlx-endpoint")
                 {
@@ -207,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
                                 ),
                                 metal_weight_cache_bytes: native_metal_weight_cache_bytes,
                                 prefix_cache_bytes: native_prefix_cache_bytes,
+                                prefix_disk_cache: native_prefix_disk_cache,
                                 warm_metal_weight_cache: has_flag(
                                     &serve_args,
                                     "--warm-native-metal-weight-cache",
@@ -327,6 +331,10 @@ Options:
   --mlx-stream-usage <true|false>            Forward stream_options.include_usage to MLX sidecars [default: true, env: LLM_ENGINE_MLX_STREAM_USAGE]
   --mlx-tool-parser <auto|json|qwen-xml>     MLX streamed tool parser [default: auto]
   --native-prefix-cache-bytes <bytes>        Native prefix cache budget [default: 536870912, env: LLM_ENGINE_PREFIX_CACHE_BYTES]
+  --native-prefix-cache-ssd                  Enable opt-in native SSD prefix cache tier [env: LLM_ENGINE_PREFIX_CACHE_SSD=1]
+  --native-prefix-cache-ssd-path <path>      Native SSD prefix cache root [default: ~/.cache/kir-ai/kv-cache, env: LLM_ENGINE_PREFIX_CACHE_SSD_PATH]
+  --native-prefix-cache-ssd-writer-queue <n> Native SSD prefix cache bounded writer queue [default: 8, env: LLM_ENGINE_PREFIX_CACHE_SSD_WRITER_QUEUE]
+  --native-prefix-cache-ssd-block-tokens <n> Native SSD prefix cache token block size [default: 256, env: LLM_ENGINE_PREFIX_CACHE_SSD_BLOCK_TOKENS]
   --native-metal-weight-cache-bytes <bytes>  Native Metal BF16 weight cache budget
   --warm-native-metal-weight-cache           Warm native Metal BF16 weight cache at startup
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
@@ -468,10 +476,62 @@ fn native_prefix_cache_bytes_from_env(
 }
 
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn native_prefix_disk_cache_config_from_args(
+    args: &[String],
+) -> anyhow::Result<Option<NativeTextDiskCacheConfig>> {
+    let enabled = if has_flag(args, "--native-prefix-cache-ssd") {
+        true
+    } else if let Ok(value) = std::env::var("LLM_ENGINE_PREFIX_CACHE_SSD") {
+        parse_bool_config("LLM_ENGINE_PREFIX_CACHE_SSD", &value)?
+    } else {
+        false
+    };
+    if !enabled {
+        return Ok(None);
+    }
+    let root = flag_value(args, "--native-prefix-cache-ssd-path")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("LLM_ENGINE_PREFIX_CACHE_SSD_PATH").map(Into::into))
+        .unwrap_or_else(NativeTextDiskCacheConfig::default_root);
+    let writer_queue_depth =
+        if let Some(value) = flag_value(args, "--native-prefix-cache-ssd-writer-queue") {
+            parse_positive_usize_config("--native-prefix-cache-ssd-writer-queue", value)?
+        } else if let Ok(value) = std::env::var("LLM_ENGINE_PREFIX_CACHE_SSD_WRITER_QUEUE") {
+            parse_positive_usize_config("LLM_ENGINE_PREFIX_CACHE_SSD_WRITER_QUEUE", &value)?
+        } else {
+            NativeTextDiskCacheConfig::default().writer_queue_depth
+        };
+    let block_token_count =
+        if let Some(value) = flag_value(args, "--native-prefix-cache-ssd-block-tokens") {
+            parse_positive_usize_config("--native-prefix-cache-ssd-block-tokens", value)?
+        } else if let Ok(value) = std::env::var("LLM_ENGINE_PREFIX_CACHE_SSD_BLOCK_TOKENS") {
+            parse_positive_usize_config("LLM_ENGINE_PREFIX_CACHE_SSD_BLOCK_TOKENS", &value)?
+        } else {
+            NativeTextDiskCacheConfig::default().block_token_count
+        };
+    Ok(Some(
+        NativeTextDiskCacheConfig::for_root(root)
+            .with_writer_queue_depth(writer_queue_depth)
+            .with_block_token_count(block_token_count),
+    ))
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 fn parse_u64_config(name: &str, value: &str) -> anyhow::Result<u64> {
     value
         .parse::<u64>()
         .map_err(|err| anyhow::anyhow!("{name} must be a non-negative integer: {err}"))
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn parse_positive_usize_config(name: &str, value: &str) -> anyhow::Result<usize> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|err| anyhow::anyhow!("{name} must be a positive integer: {err}"))?;
+    if parsed == 0 {
+        anyhow::bail!("{name} must be greater than 0");
+    }
+    Ok(parsed)
 }
 
 fn parse_positive_u64_flag(args: &[String], flag: &str, default: u64) -> anyhow::Result<u64> {
@@ -724,6 +784,32 @@ mod serve_arg_tests {
             .expect("flag override parses"),
             Some(64)
         );
+    }
+
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+    #[test]
+    fn native_prefix_disk_cache_is_disabled_by_default_and_parses_opt_in_flags() {
+        assert!(
+            native_prefix_disk_cache_config_from_args(&args(&[]))
+                .expect("default SSD config parses")
+                .is_none()
+        );
+
+        let config = native_prefix_disk_cache_config_from_args(&args(&[
+            "--native-prefix-cache-ssd",
+            "--native-prefix-cache-ssd-path",
+            "/tmp/kir-ai-kv",
+            "--native-prefix-cache-ssd-writer-queue",
+            "3",
+            "--native-prefix-cache-ssd-block-tokens",
+            "2",
+        ]))
+        .expect("opt-in SSD config parses")
+        .expect("SSD config is enabled");
+
+        assert_eq!(config.root, std::path::PathBuf::from("/tmp/kir-ai-kv"));
+        assert_eq!(config.writer_queue_depth, 3);
+        assert_eq!(config.block_token_count, 2);
     }
 }
 

@@ -1,4 +1,5 @@
 use super::{
+    NativeTextDiskCache, NativeTextDiskCacheStoreStatus, NativeTextDiskCacheValue,
     NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
     NativeTextPrefixCacheValue, NativeTextSamplingRng, NativeTextStreamDecoder,
     NativeTokenizerStreamDecoder, native_text_cache_namespace_token_bucket,
@@ -31,7 +32,7 @@ thread_local! {
 #[async_trait]
 pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     type DecodeSession: Send + 'static;
-    type LayerCache: NativeTextPrefixCacheValue + NativeTextCacheMirrorSource + Send + 'static;
+    type LayerCache: NativeTextDiskCacheValue + NativeTextCacheMirrorSource + Send + Sync + 'static;
 
     fn family_display_name(&self) -> &'static str;
     fn worker_label(&self) -> &'static str;
@@ -70,6 +71,9 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     fn max_prefill_tokens(&self) -> usize;
     fn prefix_cache(&self) -> &NativeTextPrefixCache<Self::LayerCache>;
     fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics;
+    fn prefix_disk_cache(&self) -> Option<&NativeTextDiskCache<Self::LayerCache>> {
+        None
+    }
     fn prefix_cache_namespace(
         &self,
         request: &BackendRequest,
@@ -208,14 +212,24 @@ struct NativeTextRequestCacheReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTextPrefixLookupResult {
-    Hit,
+    Hit(NativeTextPrefixLookupSource),
     Miss,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeTextPrefixLookupSource {
+    InMemory,
+    Ssd,
+}
+
 impl NativeTextRequestCacheReport {
-    fn hit(prompt_tokens: usize, reused_tokens: usize) -> Self {
+    fn hit(
+        prompt_tokens: usize,
+        reused_tokens: usize,
+        source: NativeTextPrefixLookupSource,
+    ) -> Self {
         Self {
-            lookup_result: NativeTextPrefixLookupResult::Hit,
+            lookup_result: NativeTextPrefixLookupResult::Hit(source),
             prompt_tokens: prompt_tokens as u64,
             reused_tokens: reused_tokens as u64,
         }
@@ -236,7 +250,7 @@ impl NativeTextRequestCacheReport {
     fn trace(self, namespace: &NativeTextPrefixCacheNamespace) {
         tracing::debug!(
             lookup_result = self.lookup_result.as_str(),
-            reuse_source = "in_memory_prefix_cache",
+            reuse_source = self.lookup_result.reuse_source(),
             reused_tokens = self.reused_tokens,
             prompt_tokens = self.prompt_tokens,
             model_id = %namespace.model_id,
@@ -256,8 +270,16 @@ impl NativeTextRequestCacheReport {
 impl NativeTextPrefixLookupResult {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Hit => "hit",
+            Self::Hit(_) => "hit",
             Self::Miss => "miss",
+        }
+    }
+
+    fn reuse_source(self) -> &'static str {
+        match self {
+            Self::Hit(NativeTextPrefixLookupSource::InMemory) => "in_memory_prefix_cache",
+            Self::Hit(NativeTextPrefixLookupSource::Ssd) => "ssd_prefix_cache",
+            Self::Miss => "none",
         }
     }
 }
@@ -684,8 +706,53 @@ where
                 )));
             }
             cached_prefix_len = hit.token_count;
-            cache_report = NativeTextRequestCacheReport::hit(context_tokens.len(), hit.token_count);
+            cache_report = NativeTextRequestCacheReport::hit(
+                context_tokens.len(),
+                hit.token_count,
+                NativeTextPrefixLookupSource::InMemory,
+            );
             (Some(hit.hidden), hit.caches)
+        } else if let Some(disk_cache) = self.adapter.prefix_disk_cache() {
+            match disk_cache
+                .lookup(&namespace, context_tokens, |caches| {
+                    self.adapter
+                        .prefix_cache_hit_is_compatible(caches, cache_tokens)
+                })
+                .await
+            {
+                Ok(Some(hit)) => {
+                    if hit.caches.len() != layer_count {
+                        return Err(BackendError::internal_invariant(format!(
+                            "native {} SSD prefix cache entry had {} layers, expected {layer_count}",
+                            self.adapter.family_display_name(),
+                            hit.caches.len()
+                        )));
+                    }
+                    cached_prefix_len = hit.token_count;
+                    cache_report = NativeTextRequestCacheReport::hit(
+                        context_tokens.len(),
+                        hit.token_count,
+                        NativeTextPrefixLookupSource::Ssd,
+                    );
+                    disk_cache.promote_hit(
+                        self.adapter.prefix_cache(),
+                        namespace.clone(),
+                        &context_tokens[..hit.token_count],
+                        self.adapter.prefix_cache_metrics(),
+                        &hit,
+                    );
+                    (Some(hit.hidden), hit.caches)
+                }
+                Ok(None) => (None, self.adapter.allocate_caches(cache_tokens)?),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        model_id = %namespace.model_id,
+                        "native text SSD prefix cache lookup failed; falling back to fresh prefill"
+                    );
+                    (None, self.adapter.allocate_caches(cache_tokens)?)
+                }
+            }
         } else {
             (None, self.adapter.allocate_caches(cache_tokens)?)
         };
@@ -726,6 +793,33 @@ where
                 prefill_hidden = hidden_states.last().cloned();
                 completed_prefill_chunks += 1;
                 completed_prefill_tokens = completed_prefill_tokens.saturating_add(chunk.len());
+                if let Some(disk_cache) = self.adapter.prefix_disk_cache() {
+                    let current_prefix_len = cached_prefix_len + completed_prefill_tokens;
+                    if current_prefix_len.is_multiple_of(disk_cache.block_token_count())
+                        && let Some(hidden) = hidden_states.last()
+                    {
+                        let states =
+                            <A::LayerCache as NativeTextPrefixCacheValue>::prefix_cache_state(
+                                &caches,
+                            );
+                        match disk_cache.queue_store(
+                            &namespace,
+                            &context_tokens[..current_prefix_len],
+                            hidden,
+                            &states,
+                        ) {
+                            NativeTextDiskCacheStoreStatus::Queued
+                            | NativeTextDiskCacheStoreStatus::Skipped => {}
+                            NativeTextDiskCacheStoreStatus::Dropped => {
+                                tracing::debug!(
+                                    model_id = %namespace.model_id,
+                                    token_count = current_prefix_len,
+                                    "native text SSD prefix cache store dropped"
+                                );
+                            }
+                        }
+                    }
+                }
                 self.adapter
                     .prefix_cache_metrics()
                     .record_prefill_chunk(chunk.len() as u64);

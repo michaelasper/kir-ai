@@ -63,7 +63,8 @@ pub mod mlx_backend {
 pub mod native_backend {
     pub use llm_native_runtime::{
         DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
-        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextLoadOptions, NativeTextRuntimeOptions,
+        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextDiskCacheConfig, NativeTextLoadOptions,
+        NativeTextRuntimeOptions,
     };
 }
 
@@ -72,7 +73,8 @@ pub use mlx_backend::{MlxBackend, MlxBackendOptions, MlxTimeouts, MlxToolParserM
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 pub use native_backend::{
     DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS, DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
-    DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextLoadOptions, NativeTextRuntimeOptions,
+    DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextDiskCacheConfig, NativeTextLoadOptions,
+    NativeTextRuntimeOptions,
 };
 pub use route::EngineConfigError;
 #[cfg(feature = "test-utils")]

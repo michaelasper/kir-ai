@@ -9,7 +9,7 @@ boolean flags are present or absent.
 
 ```sh
 llm-engine [serve]
-llm-engine serve [--addr <host:port>] [--tls-cert <path> --tls-key <path>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--max-public-inference-requests-per-second <n>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
+llm-engine serve [--addr <host:port>] [--tls-cert <path> --tls-key <path>] [--protocol-test-backend --i-understand-this-is-not-real-inference | --snapshot <path> | --snapshot-alias <alias>] [--snapshot-readiness <fast|deep>] [--loader <native-metal|mlx>] [--family <qwen|deep_seek|gemma|llama>] [--model-id <id>] [--max-new-tokens <n>] [--max-prefill-tokens <n>] [--max-json-body-bytes <bytes>] [--max-message-content-bytes <bytes>] [--max-completion-prompt-bytes <bytes>] [--max-public-inference-requests-per-second <n>] [--mlx-endpoint <url>] [--native-prefix-cache-bytes <bytes>] [--native-prefix-cache-ssd] [--native-prefix-cache-ssd-path <path>] [--native-prefix-cache-ssd-writer-queue <n>] [--native-prefix-cache-ssd-block-tokens <n>] [--native-metal-weight-cache-bytes <bytes>] [--warm-native-metal-weight-cache] [--canonical-tool-schemas]
 llm-bench qwen-long-context [--endpoint <url> --snapshot <path> | --lane <spec> ...]
 llm-bench qwen-mlx-tool-normalized --lane <spec> [--lane <spec> ...]
 llm-engine bench qwen-long-context [compatibility launcher]
@@ -67,6 +67,10 @@ llm-engine serve \
 | `--admin-token <token>` | generated for loopback binds; required for non-loopback binds | Bearer token required by `/admin/*` routes. If omitted on a loopback bind, `serve` generates a temporary token for that process and prints the required `Authorization: Bearer <token>` header at startup. |
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` or `mlx_vlm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-prefix-cache-bytes <u64>` | `536870912` | Per-backend native Qwen/Gemma prefix-cache budget. Set `0` to reject stores while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when this flag is omitted. |
+| `--native-prefix-cache-ssd` | absent | Enables the opt-in native Qwen/Gemma SSD prefix-cache tier. `LLM_ENGINE_PREFIX_CACHE_SSD=1` enables the same setting. |
+| `--native-prefix-cache-ssd-path <path>` | `~/.cache/kir-ai/kv-cache` | Root directory for native SSD prefix-cache block files. `LLM_ENGINE_PREFIX_CACHE_SSD_PATH` is used when this flag is omitted. |
+| `--native-prefix-cache-ssd-writer-queue <usize>` | `8` | Bounded async writer queue depth for native SSD prefix-cache stores. Full queues drop new stores rather than blocking generation. `LLM_ENGINE_PREFIX_CACHE_SSD_WRITER_QUEUE` is used when this flag is omitted. |
+| `--native-prefix-cache-ssd-block-tokens <usize>` | `256` | Token block size for native SSD prefix-cache entries. `LLM_ENGINE_PREFIX_CACHE_SSD_BLOCK_TOKENS` is used when this flag is omitted. |
 | `--native-metal-weight-cache-bytes <u64>` | `8589934592` | Per-backend Metal BF16 weight-buffer LRU budget. Set `0` to disable weight-buffer caching. |
 | `--warm-native-metal-weight-cache` | absent | Preloads rank-2 BF16 tensors into the Metal weight-buffer cache at startup until the configured budget is full. |
 | `--canonical-tool-schemas` | absent | Opts production serving into canonical tool schema rendering/cache keys. Equivalent JSON object key order and string-only `required` array order normalize to one minified schema. |
@@ -98,6 +102,14 @@ that upstream field is absent, Kir proxy admin metrics derive a best-effort
 cache status from prior matching stable-prefix observations. Kir does not send
 unsupported `cache_key`, `session_id`, or `prompt_cache_key` fields to MLX
 request bodies.
+
+Native Qwen/Gemma serving can opt into an SSD prefix-cache tier with
+`--native-prefix-cache-ssd`. The tier stores validated block-aligned KV cache
+snapshots as safetensors-compatible files under
+`<root>/<model_hash>/<namespace_hash>/<block_hash>.safetensors`, promotes disk
+hits into the existing in-memory prefix cache, and never persists raw prompts,
+messages, tool schemas, or request bodies. The tier is disabled by default
+while disk pressure and eviction behavior remain intentionally unproven.
 
 The default request-size limits accept the current long-context benchmark
 payloads, including the synthetic 135k stable-prefix probe. Lower the three

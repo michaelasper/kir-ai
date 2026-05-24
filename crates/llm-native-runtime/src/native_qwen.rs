@@ -5,12 +5,12 @@ use crate::{
         NativeTextMatvecBackend,
     },
     native_text::{
-        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDriver,
-        NativeTextNextTokenContext, NativeTextPrefixCache, NativeTextPrefixCacheMetrics,
-        NativeTextPrefixCacheNamespace, NativeTextPrefixCacheValue,
-        NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions, NativeTextSnapshotOpen,
-        NativeTextSnapshotOpenFamily, NativeTextStopTokens, native_text_prefix_namespace,
-        open_native_text_snapshot,
+        DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES, NativeTextAdapter, NativeTextDiskCache,
+        NativeTextDiskCacheIdentity, NativeTextDriver, NativeTextNextTokenContext,
+        NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
+        NativeTextPrefixCacheValue, NativeTextPrefixNamespaceContext, NativeTextRuntimeOptions,
+        NativeTextSnapshotOpen, NativeTextSnapshotOpenFamily, NativeTextStopTokens,
+        native_text_prefix_namespace, open_native_text_snapshot,
     },
 };
 use crate::{ResolvedSnapshotBackend, SnapshotBackendLoader};
@@ -53,6 +53,7 @@ pub(crate) struct NativeQwenAdapter {
     top_k: usize,
     chunk_rows: usize,
     prefix_cache: Arc<NativeQwenPrefixCache>,
+    prefix_disk_cache: Option<Arc<NativeTextDiskCache<QwenLayerCache>>>,
 }
 
 const DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES: u64 = DEFAULT_NATIVE_TEXT_PREFIX_CACHE_BYTES;
@@ -157,6 +158,7 @@ impl NativeQwenBackend {
             matvec,
             tokenizer,
             prefix_cache_bytes,
+            prefix_disk_cache,
         } = open_native_text_snapshot(
             model_id,
             snapshot_path,
@@ -170,6 +172,16 @@ impl NativeQwenBackend {
             },
         )
         .await?;
+        let prefix_disk_cache = match prefix_disk_cache {
+            Some(config) => Some(Arc::new(
+                NativeTextDiskCache::open(
+                    config,
+                    NativeTextDiskCacheIdentity::from_model_metadata(&metadata, "qwen"),
+                )
+                .await?,
+            )),
+            None => None,
+        };
         let adapter = NativeQwenAdapter {
             model_id: model_id.clone(),
             metadata: metadata.clone(),
@@ -182,6 +194,7 @@ impl NativeQwenBackend {
             prefix_cache: Arc::new(NativeQwenPrefixCache::new(
                 prefix_cache_bytes.unwrap_or(DEFAULT_NATIVE_QWEN_PREFIX_CACHE_BYTES),
             )),
+            prefix_disk_cache,
         };
         Ok(Self {
             driver: NativeTextDriver::new(
@@ -268,6 +281,10 @@ impl NativeTextAdapter for NativeQwenAdapter {
 
     fn prefix_cache_metrics(&self) -> &NativeTextPrefixCacheMetrics {
         native_qwen_prefix_cache_metrics()
+    }
+
+    fn prefix_disk_cache(&self) -> Option<&NativeTextDiskCache<QwenLayerCache>> {
+        self.prefix_disk_cache.as_deref()
     }
 
     fn prefix_cache_namespace(

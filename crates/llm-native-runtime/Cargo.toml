@@ -34,13 +34,16 @@ llm-sampler = { path = "../llm-sampler", optional = true }
 llm-tokenizer = { path = "../llm-tokenizer", optional = true }
 llm-util = { path = "../llm-util" }
 rand = { workspace = true, optional = true }
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, optional = true }
 tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [[bench]]

@@ -192,6 +192,14 @@ budget. It defaults to `536870912` bytes. Set `0` to reject prefix-cache stores
 while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES`
 provides the same setting when the flag is omitted.
 
+`--native-prefix-cache-ssd` enables the opt-in native Qwen/Gemma SSD
+prefix-cache tier. It writes block-aligned safetensors-compatible cache entries
+under `~/.cache/kir-ai/kv-cache` by default, or under
+`--native-prefix-cache-ssd-path`. Disk hits are validated against the model and
+cache namespace before promotion into the hot in-memory prefix cache. The tier is
+disabled by default while disk pressure and eviction policy are still being
+proven.
+
 `--native-metal-weight-cache-bytes` controls the per-backend LRU budget for
 uploaded Metal BF16 weight buffers. It defaults to `8589934592` bytes and can be
 set to `0` to disable weight-buffer caching.
