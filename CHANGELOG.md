@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.3](https://github.com/michaelasper/kir-ai/compare/v1.56.2...v1.56.3) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-265:** validate deserialized hub repo ids ([fe8c335](https://github.com/michaelasper/kir-ai/commit/fe8c3356aaed6974f80a43d63a28dbbb8e53f9f1))
+
 ## [1.56.2](https://github.com/michaelasper/kir-ai/compare/v1.56.1...v1.56.2) (2026-05-24)
 
 ### Bug Fixes
