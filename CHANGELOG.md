@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.2](https://github.com/michaelasper/kir-ai/compare/v1.46.1...v1.46.2) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-343:** classify Metal reduction input errors ([7fd0bbf](https://github.com/michaelasper/kir-ai/commit/7fd0bbfc522c0ce8e80d688f82e853860f809d9a))
+
 ## [1.46.1](https://github.com/michaelasper/kir-ai/compare/v1.46.0...v1.46.1) (2026-05-24)
 
 ### Bug Fixes
