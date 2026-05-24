@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.5](https://github.com/michaelasper/kir-ai/compare/v1.56.4...v1.56.5) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-329:** gate native Metal dependency ([98368db](https://github.com/michaelasper/kir-ai/commit/98368dbab1a472175b50b1ad68e7920c767d7619))
+
 ## [1.56.4](https://github.com/michaelasper/kir-ai/compare/v1.56.3...v1.56.4) (2026-05-24)
 
 ### Performance Improvements
