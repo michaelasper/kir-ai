@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.10](https://github.com/michaelasper/kir-ai/compare/v1.46.9...v1.46.10) (2026-05-24)
+
+### Bug Fixes
+
+* **COR-259:** classify backend failures by error type ([9b096a4](https://github.com/michaelasper/kir-ai/commit/9b096a4680c3519561410aca8421f615692c5859))
+
 ## [1.46.9](https://github.com/michaelasper/kir-ai/compare/v1.46.8...v1.46.9) (2026-05-24)
 
 ### Bug Fixes
