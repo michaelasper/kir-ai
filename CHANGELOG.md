@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.5](https://github.com/michaelasper/kir-ai/compare/v1.46.4...v1.46.5) (2026-05-24)
+
+### Performance Improvements
+
+* **COR-254:** reduce safetensors BF16 copy churn ([f807059](https://github.com/michaelasper/kir-ai/commit/f807059fede5b792abe6fbc456b63cea498c2f92))
+
 ## [1.46.4](https://github.com/michaelasper/kir-ai/compare/v1.46.3...v1.46.4) (2026-05-24)
 
 ### Performance Improvements
