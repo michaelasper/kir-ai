@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.54.0](https://github.com/michaelasper/kir-ai/compare/v1.53.0...v1.54.0) (2026-05-24)
+
+### Features
+
+* **COR-440:** define shared prefix routing identity ([b2f3e19](https://github.com/michaelasper/kir-ai/commit/b2f3e1936feb925ad294078ad294afc573e2fde7))
+
 ## [1.53.0](https://github.com/michaelasper/kir-ai/compare/v1.52.0...v1.53.0) (2026-05-24)
 
 ### Features
