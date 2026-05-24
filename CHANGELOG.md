@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.46.4](https://github.com/michaelasper/kir-ai/compare/v1.46.3...v1.46.4) (2026-05-24)
+
+### Performance Improvements
+
+* **COR-253:** reduce top-p sampler sort cost ([174230b](https://github.com/michaelasper/kir-ai/commit/174230bedd5247c5e5ec9a103893ae1b1b0889ee))
+
 ## [1.46.3](https://github.com/michaelasper/kir-ai/compare/v1.46.2...v1.46.3) (2026-05-24)
 
 ### Performance Improvements
