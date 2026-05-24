@@ -1,8 +1,8 @@
 use llm_backend::native::{
     CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeMatvecBackend, QwenLayerCache,
-    QwenMoeDims, QwenMoeRouterProbe, SafeTensorShardStore, TensorLoadError, TopKWeight,
-    qwen_decode_token_with_cache, qwen_layer_caches_for_spec, qwen_layer_moe_forward,
-    qwen_layer0_moe_router, qwen_prefill_sequence_with_cache,
+    QwenMoeDims, QwenMoeRouterProbe, SafeTensorArchive, SafeTensorHeader, SafeTensorShardStore,
+    TensorLoadError, TopKWeight, qwen_decode_token_with_cache, qwen_layer_caches_for_spec,
+    qwen_layer_moe_forward, qwen_layer0_moe_router, qwen_prefill_sequence_with_cache,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 use std::fmt;
@@ -169,6 +169,45 @@ impl RecordingMatvecBackend {
     fn softmax_top_k_calls(&self) -> usize {
         self.softmax_top_k_calls.load(Ordering::Relaxed)
     }
+}
+
+#[test]
+fn safetensors_archive_loads_metadata_and_f32_tensor() {
+    let bytes = tiny_safetensors_f32("linear.weight", &[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+
+    let archive = SafeTensorArchive::from_bytes(&bytes).expect("archive loads");
+    let metadata = archive
+        .tensor_metadata("linear.weight")
+        .expect("metadata loads");
+    let values = archive
+        .f32_tensor("linear.weight")
+        .expect("f32 tensor loads");
+
+    assert_eq!(metadata.shape, vec![2, 2]);
+    assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn safetensors_header_rejects_non_integer_shape_dimension() {
+    let mut bytes = Vec::new();
+    let header = serde_json::json!({
+        "linear.weight": {
+            "dtype": "BF16",
+            "shape": [2, "2"],
+            "data_offsets": [0, 4]
+        }
+    })
+    .to_string();
+    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(header.as_bytes());
+    bytes.extend_from_slice(&[0_u8; 4]);
+
+    let err = SafeTensorHeader::from_bytes(&bytes).expect_err("shape validation fails");
+
+    assert_eq!(
+        err.message(),
+        "tensor `linear.weight` shape must contain integers"
+    );
 }
 
 #[test]
@@ -742,6 +781,14 @@ fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8>
         data.extend_from_slice(&f32_to_bf16_bits(*value).to_le_bytes());
     }
     tiny_safetensors(name, "BF16", shape, &data)
+}
+
+fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    tiny_safetensors(name, "F32", shape, &data)
 }
 
 fn tiny_safetensors(name: &str, dtype: &str, shape: &[usize], data: &[u8]) -> Vec<u8> {

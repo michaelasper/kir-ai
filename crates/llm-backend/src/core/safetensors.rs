@@ -1,4 +1,13 @@
-use super::math::{TopKLogit, bf16_bits_to_f32, push_top_logit};
+mod header;
+mod math;
+
+use self::{
+    header::{parse_shape, read_header_prefix, validate_header_len},
+    math::{
+        bf16_bytes_to_bits, bf16_bytes_to_f32_into, bf16_dot_f32, bf16_row_byte_len, bf16_row_bytes,
+    },
+};
+use super::math::{TopKLogit, push_top_logit};
 use super::native_matvec::NativeBatchedMatvecOutput;
 use llm_models::SafetensorsIndex;
 use memmap2::{Mmap, MmapOptions};
@@ -13,7 +22,6 @@ use std::{
 };
 use thiserror::Error;
 
-const MAX_SAFETENSORS_HEADER_LEN: u64 = 64 * 1024 * 1024;
 const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 
 #[derive(Debug, Clone)]
@@ -1309,75 +1317,8 @@ impl SafeTensorShardStore {
     }
 }
 
-fn bf16_row_byte_len(columns: usize, context: &str) -> Result<usize, TensorLoadError> {
-    columns
-        .checked_mul(2)
-        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row byte length overflow")))
-}
-
-fn bf16_row_bytes<'a>(
-    bytes: &'a [u8],
-    row_offset: usize,
-    row_byte_len: usize,
-    context: &str,
-) -> Result<&'a [u8], TensorLoadError> {
-    let start = row_offset
-        .checked_mul(row_byte_len)
-        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row offset overflow")))?;
-    let end = start
-        .checked_add(row_byte_len)
-        .ok_or_else(|| TensorLoadError::integrity(format!("{context} row range overflow")))?;
-    bytes
-        .get(start..end)
-        .ok_or_else(|| TensorLoadError::integrity(format!("{context} BF16 row range is invalid")))
-}
-
-fn bf16_dot_f32(row_bytes: &[u8], input: &[f32]) -> Result<f32, TensorLoadError> {
-    let expected_byte_len = input
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| TensorLoadError::integrity("BF16 dot input byte length overflow"))?;
-    if row_bytes.len() != expected_byte_len {
-        return Err(TensorLoadError::integrity(format!(
-            "BF16 row byte length {} does not match input byte length {expected_byte_len}",
-            row_bytes.len()
-        )));
-    }
-    Ok(row_bytes
-        .chunks_exact(2)
-        .zip(input)
-        .map(|(chunk, value)| bf16_bits_to_f32(u16::from_le_bytes([chunk[0], chunk[1]])) * value)
-        .sum())
-}
-
-fn bf16_bytes_to_f32_into(bytes: &[u8], output: &mut Vec<f32>) -> Result<(), TensorLoadError> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(TensorLoadError::integrity(
-            "BF16 byte length must be divisible by 2",
-        ));
-    }
-    output.clear();
-    output.reserve(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        output.push(bf16_bits_to_f32(u16::from_le_bytes([chunk[0], chunk[1]])));
-    }
-    Ok(())
-}
-
 fn f32_slice_bytes(len: usize) -> u64 {
     (len * std::mem::size_of::<f32>()) as u64
-}
-
-fn bf16_bytes_to_bits(bytes: &[u8]) -> Result<Vec<u16>, TensorLoadError> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(TensorLoadError::integrity(
-            "BF16 byte length must be divisible by 2",
-        ));
-    }
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -1426,62 +1367,6 @@ impl TensorHeaderEntry {
             "tensor byte length does not fit in usize",
         )
     }
-}
-
-fn read_header_prefix(bytes: &[u8], file_len: u64) -> Result<(u64, usize), TensorLoadError> {
-    let prefix = bytes
-        .get(0..8)
-        .ok_or_else(|| TensorLoadError::integrity("safetensors file is missing header prefix"))?;
-    let header_len = validate_header_len(
-        u64::from_le_bytes(
-            prefix
-                .try_into()
-                .map_err(|_| TensorLoadError::integrity("header prefix is not 8 bytes"))?,
-        ),
-        file_len,
-    )?;
-    let header_end = 8_u64
-        .checked_add(header_len)
-        .ok_or_else(|| TensorLoadError::integrity("safetensors header length overflow"))?;
-    Ok((
-        header_len,
-        usize_from_u64(header_end, "safetensors header end does not fit in usize")?,
-    ))
-}
-
-fn validate_header_len(header_len: u64, file_len: u64) -> Result<u64, TensorLoadError> {
-    if header_len > MAX_SAFETENSORS_HEADER_LEN {
-        return Err(TensorLoadError::integrity(format!(
-            "safetensors header length {header_len} exceeds limit {MAX_SAFETENSORS_HEADER_LEN}"
-        )));
-    }
-    let header_end = 8_u64
-        .checked_add(header_len)
-        .ok_or_else(|| TensorLoadError::integrity("safetensors header length overflow"))?;
-    if header_end > file_len {
-        return Err(TensorLoadError::integrity(
-            "safetensors header length exceeds file length",
-        ));
-    }
-    Ok(header_len)
-}
-
-fn parse_shape(
-    name: &str,
-    value: Option<&serde_json::Value>,
-) -> Result<Vec<usize>, TensorLoadError> {
-    let array = value
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| TensorLoadError::integrity(format!("tensor `{name}` is missing shape")))?;
-    array
-        .iter()
-        .map(|value| {
-            let dim = value.as_u64().ok_or_else(|| {
-                TensorLoadError::integrity(format!("tensor `{name}` shape must contain integers"))
-            })?;
-            usize_from_u64(dim, "tensor shape dimension does not fit in usize")
-        })
-        .collect()
 }
 
 fn parse_data_offsets(
