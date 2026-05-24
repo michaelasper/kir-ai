@@ -537,13 +537,16 @@ The recent OMP wedge sharpened the requirement. The server generated 4096 comple
 
 ### High-Level Shape
 
-The engine is a native Rust service with a narrow C++ MLX bridge and a direct Metal layer.
+The engine is a native Rust service with a separated HTTP server crate, an
+accepted loopback MLX sidecar backend for the current M5 implementation, and a
+direct Metal layer. A future `llm-backend-mlx` C++ FFI bridge remains a roadmap
+decision, not a requirement for the M5 engine/server boundary.
 
 ```
 Client / OMP / OpenAI SDK
         |
         v
-Rust HTTP API
+Rust HTTP API (`llm-server`)
         |
         v
 OpenAI Request Normalizer
@@ -563,7 +566,8 @@ Scheduler + KV Cache Manager
         +----------------------+
         |                      |
         v                      v
-MLX C++ Backend          Direct Metal Kernels
+MLX sidecar backend      Direct Metal Kernels
+(`llm-engine` today)
         |                      |
         +----------+-----------+
                    |
@@ -699,6 +703,14 @@ In-flight Metal kernels may not be preemptible. Cancellation latency must theref
 
 The initial workspace should be multi-crate, even if many crates are small at first.
 
+Current M5 alignment: `crates/llm-server` already exists and owns the HTTP
+service edge, routing, SSE framing, admin endpoints, scheduler admission, and
+HTTP error mapping. `llm-engine` is now the CLI/backend facade that delegates
+router construction to `llm-server` and supplies backend-specific factories and
+metrics. There is no `llm-backend-mlx` workspace member yet; MLX support is
+currently an accepted loopback sidecar backend module in `llm-engine` while the
+C++ FFI bridge decision remains deferred.
+
 ### `llm-api`
 
 OpenAI-compatible request and response types.
@@ -725,6 +737,9 @@ Key types:
 ### `llm-server`
 
 HTTP service.
+
+Current workspace status: implemented as `crates/llm-server`. Compatibility
+router helpers in `llm-engine` delegate to this crate.
 
 Responsibilities:
 
@@ -865,9 +880,14 @@ Responsibilities:
 
 ### `llm-backend-mlx`
 
-C++ MLX bridge.
+Roadmap-only C++ MLX bridge target.
 
-Responsibilities:
+Current workspace status: not implemented as a crate in M5. The supported MLX
+path is the loopback sidecar backend in `llm-engine`, which keeps OpenAI
+request semantics, tool parsing, metrics, and safety checks on the Rust side.
+Do not add this crate until the C++ FFI bridge is explicitly approved.
+
+Future responsibilities if the FFI bridge is approved:
 
 - Load MLX artifacts through C++ MLX.
 - Expose narrow FFI.
@@ -1273,11 +1293,19 @@ Benchmark dashboards should display model artifact identity next to performance 
 
 ## Backend Strategy
 
-### Phase 1: MLX C++ Bootstrap, No Python
+### Phase 1: MLX Sidecar Bootstrap, C++ Bridge Decision Later
 
-Use `libmlx.dylib`, MLX headers, and a narrow C++ shim.
+The current M5 implementation uses a loopback OpenAI-compatible MLX sidecar
+through `llm-engine` instead of a Rust/C++ FFI crate. This keeps request
+validation, tool parsing, scheduler decisions, metrics, timeout bounds, and
+fail-closed safety in Rust while preserving production MLX participation.
 
-This path gives us:
+A future `llm-backend-mlx` crate may use `libmlx.dylib`, MLX headers, and a
+narrow C++ shim only after the FFI surface, lifetime rules, and feature coverage
+are validated.
+
+The sidecar is an implementation bridge, not the final no-Python bootstrap
+target. A future C++ bridge path gives us:
 
 - Native Apple Silicon compute.
 - Existing MLX tensor runtime.
@@ -1285,7 +1313,7 @@ This path gives us:
 - A faster path to loading MLX artifacts.
 - A way to validate the Rust API/scheduler/tool/cache contracts before writing every kernel ourselves.
 
-Rules:
+Rules for the future bridge:
 
 - No Python MLX.
 - No Python model loader.
