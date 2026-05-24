@@ -630,11 +630,41 @@ impl SafeTensorShardStore {
                 TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}"))
             })?;
             if let Some(cached) = cache.get(&key) {
+                tracing::trace!(
+                    operation = "safetensors_f32_cache_lookup",
+                    cache = "range",
+                    cache_hit = true,
+                    tensor = tensor,
+                    element_offset,
+                    element_count,
+                    value_count = cached.len(),
+                    "safetensors F32 cache hit"
+                );
                 return Ok(Arc::clone(cached));
             }
         }
+        tracing::trace!(
+            operation = "safetensors_f32_cache_lookup",
+            cache = "range",
+            cache_hit = false,
+            tensor = tensor,
+            element_offset,
+            element_count,
+            "safetensors F32 cache miss"
+        );
         let values = self.bf16_tensor_f32_range(tensor, element_offset, element_count)?;
-        Ok(self.insert_f32_cache_entry(key, values)?.0)
+        let (cached, inserted) = self.insert_f32_cache_entry(key, values)?;
+        tracing::trace!(
+            operation = "safetensors_f32_cache_insert",
+            cache = "range",
+            inserted,
+            tensor = tensor,
+            element_offset,
+            element_count,
+            value_count = cached.len(),
+            "safetensors F32 cache insert complete"
+        );
+        Ok(cached)
     }
 
     pub fn bf16_tensor_f32_cached(&self, tensor: &str) -> Result<Vec<f32>, TensorLoadError> {
@@ -650,9 +680,24 @@ impl SafeTensorShardStore {
                 TensorLoadError::integrity(format!("f32 cache lock poisoned: {err}"))
             })?;
             if let Some(cached) = cache.get(&key) {
+                tracing::trace!(
+                    operation = "safetensors_f32_cache_lookup",
+                    cache = "full",
+                    cache_hit = true,
+                    tensor = tensor,
+                    value_count = cached.len(),
+                    "safetensors F32 cache hit"
+                );
                 return Ok(Arc::clone(cached));
             }
         }
+        tracing::trace!(
+            operation = "safetensors_f32_cache_lookup",
+            cache = "full",
+            cache_hit = false,
+            tensor = tensor,
+            "safetensors F32 cache miss"
+        );
         let file = self.open_tensor_file(tensor)?;
         let metadata = file.tensor_metadata(tensor)?;
         let element_count = metadata.shape.iter().try_fold(1_usize, |acc, dim| {
@@ -660,7 +705,16 @@ impl SafeTensorShardStore {
                 .ok_or_else(|| TensorLoadError::integrity("tensor shape overflows usize"))
         })?;
         let values = file.bf16_tensor_f32_range(tensor, 0, element_count)?;
-        Ok(self.insert_f32_cache_entry(key, values)?.0)
+        let (cached, inserted) = self.insert_f32_cache_entry(key, values)?;
+        tracing::trace!(
+            operation = "safetensors_f32_cache_insert",
+            cache = "full",
+            inserted,
+            tensor = tensor,
+            value_count = cached.len(),
+            "safetensors F32 cache insert complete"
+        );
+        Ok(cached)
     }
 
     pub fn preload_bf16_f32_tensors(
@@ -1034,18 +1088,34 @@ impl SafeTensorShardStore {
                 TensorLoadError::integrity(format!("shard cache lock poisoned: {err}"))
             })?;
             if let Some(file) = shards.get(&shard_path) {
+                tracing::trace!(
+                    operation = "safetensors_shard_cache_lookup",
+                    cache_hit = true,
+                    shard_path = %shard_path.display(),
+                    "safetensors shard cache hit"
+                );
                 return Ok(Arc::clone(file));
             }
         }
+        tracing::trace!(
+            operation = "safetensors_shard_cache_lookup",
+            cache_hit = false,
+            shard_path = %shard_path.display(),
+            "safetensors shard cache miss"
+        );
         let file = Arc::new(SafeTensorFile::open(&shard_path)?);
         let mut shards = self.shards.lock().map_err(|err| {
             TensorLoadError::integrity(format!("shard cache lock poisoned: {err}"))
         })?;
-        Ok(Arc::clone(
-            shards
-                .entry(shard_path)
-                .or_insert_with(|| Arc::clone(&file)),
-        ))
+        let cached = shards
+            .entry(shard_path)
+            .or_insert_with(|| Arc::clone(&file));
+        tracing::trace!(
+            operation = "safetensors_shard_cache_insert",
+            inserted = Arc::ptr_eq(cached, &file),
+            "safetensors shard cache insert complete"
+        );
+        Ok(Arc::clone(cached))
     }
 }
 

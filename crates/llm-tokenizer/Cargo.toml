@@ -9,6 +9,7 @@ rust-version.workspace = true
 llm-chat-template = { path = "../llm-chat-template" }
 thiserror.workspace = true
 tokenizers.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 llm-api = { path = "../llm-api" }

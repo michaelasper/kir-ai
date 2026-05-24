@@ -1057,6 +1057,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1166,6 +1167,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "sha2",
+ "tracing",
 ]
 
 [[package]]
@@ -1285,6 +1287,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokenizers",
+ "tracing",
 ]
 
 [[package]]
@@ -1296,6 +1299,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

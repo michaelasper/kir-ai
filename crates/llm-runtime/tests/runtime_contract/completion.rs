@@ -29,6 +29,35 @@ async fn runtime_returns_text_completion() {
 }
 
 #[tokio::test]
+async fn runtime_completion_emits_backend_dispatch_trace() {
+    let backend = ProtocolTestBackend::new("local-qwen36", "hello from completion");
+    let runtime = Runtime::new(backend);
+
+    let capture = TraceCapture::start();
+    let response = runtime
+        .completion(CompletionRequest {
+            model: "local-qwen36".to_owned(),
+            prompt: "say hi".to_owned(),
+            max_tokens: Some(8),
+            ..CompletionRequest::default()
+        })
+        .await
+        .expect("completion succeeds");
+    let events = capture.events();
+
+    assert_eq!(response.object, "text_completion");
+    assert!(
+        events.iter().any(|event| {
+            event.has_field("operation", "runtime_backend_dispatch")
+                && event.has_field("request_kind", "completion")
+                && event.has_field("stream", "false")
+                && event.has_field("model_id", "local-qwen36")
+        }),
+        "runtime should emit structured backend dispatch trace metadata, got {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn runtime_forwards_completion_sampling_controls_to_backend() {
     let observed = Arc::new(Mutex::new(None));
     let backend = RecordingSamplingBackend {

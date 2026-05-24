@@ -24,13 +24,30 @@ impl HuggingFaceTokenizer {
             .inner
             .encode(text, add_special_tokens)
             .map_err(|err| TokenizerError::Encode(err.to_string()))?;
-        Ok(encoding.get_ids().to_vec())
+        let ids = encoding.get_ids().to_vec();
+        tracing::trace!(
+            operation = "encode",
+            input_bytes = text.len(),
+            token_count = ids.len(),
+            add_special_tokens,
+            "tokenizer encode complete"
+        );
+        Ok(ids)
     }
 
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String, TokenizerError> {
-        self.inner
+        let decoded = self
+            .inner
             .decode(ids, skip_special_tokens)
-            .map_err(|err| TokenizerError::Decode(err.to_string()))
+            .map_err(|err| TokenizerError::Decode(err.to_string()))?;
+        tracing::trace!(
+            operation = "decode",
+            token_count = ids.len(),
+            output_bytes = decoded.len(),
+            skip_special_tokens,
+            "tokenizer decode complete"
+        );
+        Ok(decoded)
     }
 
     pub fn token_to_id(&self, token: &str) -> Option<u32> {

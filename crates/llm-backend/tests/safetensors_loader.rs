@@ -5,7 +5,13 @@ use llm_backend::native::{
     qwen_layer0_moe_router, qwen_prefill_sequence_with_cache,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::fmt;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
+use tracing::field::{Field, Visit};
+use tracing::{Event, Id, Metadata, Subscriber, span};
 
 #[path = "safetensors_loader/qwen_attention.rs"]
 mod qwen_attention;
@@ -20,6 +26,123 @@ struct RecordingMatvecBackend {
     dense_f32_calls: AtomicUsize,
     recurrent_cache_update_calls: AtomicUsize,
     softmax_top_k_calls: AtomicUsize,
+}
+
+#[derive(Clone, Debug)]
+struct RecordedEvent {
+    fields: Vec<(String, String)>,
+}
+
+impl RecordedEvent {
+    fn has_field(&self, name: &str, value: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|(field, recorded)| field == name && recorded == value)
+    }
+}
+
+static TRACE_EVENTS: OnceLock<Arc<Mutex<Vec<RecordedEvent>>>> = OnceLock::new();
+
+struct TraceCapture {
+    events: Arc<Mutex<Vec<RecordedEvent>>>,
+}
+
+impl TraceCapture {
+    fn start() -> Self {
+        let events = Arc::clone(TRACE_EVENTS.get_or_init(|| {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = RecordingSubscriber {
+                events: Arc::clone(&events),
+            };
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("trace test subscriber installs once");
+            events
+        }));
+        events.lock().expect("recorded events lock").clear();
+        tracing::callsite::rebuild_interest_cache();
+        Self { events }
+    }
+
+    fn events(&self) -> Vec<RecordedEvent> {
+        self.events.lock().expect("recorded events lock").clone()
+    }
+}
+
+struct RecordingSubscriber {
+    events: Arc<Mutex<Vec<RecordedEvent>>>,
+}
+
+impl Subscriber for RecordingSubscriber {
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn register_callsite(
+        &self,
+        _metadata: &'static Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+
+    fn new_span(&self, _span: &span::Attributes<'_>) -> Id {
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut visitor = FieldRecorder::default();
+        event.record(&mut visitor);
+        self.events
+            .lock()
+            .expect("recorded events lock")
+            .push(RecordedEvent {
+                fields: visitor.fields,
+            });
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+#[derive(Default)]
+struct FieldRecorder {
+    fields: Vec<(String, String)>,
+}
+
+impl FieldRecorder {
+    fn record_value(&mut self, field: &Field, value: String) {
+        self.fields.push((field.name().to_owned(), value));
+    }
+}
+
+impl Visit for FieldRecorder {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record_value(field, value.to_string());
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_value(field, value.to_owned());
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        self.record_value(field, format!("{value:?}"));
+    }
 }
 
 impl RecordingMatvecBackend {
@@ -46,6 +169,58 @@ impl RecordingMatvecBackend {
     fn softmax_top_k_calls(&self) -> usize {
         self.softmax_top_k_calls.load(Ordering::Relaxed)
     }
+}
+
+#[test]
+fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
+    let root = temp_snapshot_dir("f32-cache-trace");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    std::fs::write(
+        root.join("model.safetensors.index.json"),
+        serde_json::json!({
+            "metadata": { "total_size": 12 },
+            "weight_map": { "embed.weight": "model-00001-of-00001.safetensors" }
+        })
+        .to_string(),
+    )
+    .expect("index");
+    std::fs::write(
+        root.join("model-00001-of-00001.safetensors"),
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let capture = TraceCapture::start();
+    let first = store
+        .bf16_tensor_f32_range_cached("embed.weight", 0, 6)
+        .expect("first cached read");
+    let second = store
+        .bf16_tensor_f32_range_cached("embed.weight", 0, 6)
+        .expect("second cached read");
+    let events = capture.events();
+
+    assert_eq!(first, second);
+    assert!(
+        events.iter().any(|event| {
+            event.has_field("operation", "safetensors_f32_cache_lookup")
+                && event.has_field("cache", "range")
+                && event.has_field("cache_hit", "false")
+                && event.has_field("tensor", "embed.weight")
+        }),
+        "first cached read should emit F32 cache miss metadata, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.has_field("operation", "safetensors_f32_cache_lookup")
+                && event.has_field("cache", "range")
+                && event.has_field("cache_hit", "true")
+                && event.has_field("tensor", "embed.weight")
+        }),
+        "second cached read should emit F32 cache hit metadata, got {events:?}"
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 impl NativeMatvecBackend for RecordingMatvecBackend {

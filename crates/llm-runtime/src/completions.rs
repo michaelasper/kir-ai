@@ -102,6 +102,15 @@ where
         };
         let request = request.into_inner();
         let backend_request = completion_backend_request(request)?;
+        tracing::debug!(
+            operation = "runtime_backend_dispatch",
+            request_kind = "completion",
+            stream = true,
+            model_id = completion.model.as_str(),
+            prompt_bytes = backend_request.prompt().len(),
+            max_tokens = ?backend_request.max_tokens,
+            "dispatching runtime request to backend"
+        );
         let backend_stream = self
             .backend
             .generate_stream_with_cancel(backend_request, cancellation.clone());
@@ -123,6 +132,15 @@ where
         let model = request.model.clone();
         let stop = request.stop.clone();
         let backend_request = completion_backend_request(request)?;
+        tracing::debug!(
+            operation = "runtime_backend_dispatch",
+            request_kind = "completion",
+            stream = false,
+            model_id = model.as_str(),
+            prompt_bytes = backend_request.prompt().len(),
+            max_tokens = ?backend_request.max_tokens,
+            "dispatching runtime request to backend"
+        );
         let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend

@@ -18,19 +18,29 @@ pub fn parse_assistant_for_family(
     family: ModelFamily,
     text: &str,
 ) -> Result<ParsedAssistant, ParserError> {
-    match family {
+    let parsed = match family {
         ModelFamily::Qwen => QwenParser.parse_complete(text),
         ModelFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ModelFamily::Gemma => GemmaParser.parse_complete(text),
         ModelFamily::Llama => LlamaParser.parse_complete(text),
-    }
+    }?;
+    tracing::trace!(
+        operation = "parse_assistant",
+        model_family = family.canonical_slug(),
+        input_bytes = text.len(),
+        content_bytes = parsed.content.len(),
+        tool_call_count = parsed.tool_calls.len(),
+        has_reasoning = parsed.reasoning.is_some(),
+        "assistant output parsed for model family"
+    );
+    Ok(parsed)
 }
 
 pub fn parse_assistant_for_parser_family(
     family: ToolParserFamily,
     text: &str,
 ) -> Result<ParsedAssistant, ParserError> {
-    match family {
+    let parsed = match family {
         ToolParserFamily::Auto => parse_assistant_auto(text),
         ToolParserFamily::Hermes | ToolParserFamily::Qwen => QwenParser.parse_complete(text),
         ToolParserFamily::DeepSeek => DeepSeekParser.parse_complete(text),
@@ -38,7 +48,17 @@ pub fn parse_assistant_for_parser_family(
         ToolParserFamily::Llama => LlamaParser.parse_complete(text),
         ToolParserFamily::Json => json::parse_json_tool_output(text),
         ToolParserFamily::Xlam => json::parse_xlam_tool_output(text),
-    }
+    }?;
+    tracing::trace!(
+        operation = "parse_assistant",
+        parser_family = ?family,
+        input_bytes = text.len(),
+        content_bytes = parsed.content.len(),
+        tool_call_count = parsed.tool_calls.len(),
+        has_reasoning = parsed.reasoning.is_some(),
+        "assistant output parsed for parser family"
+    );
+    Ok(parsed)
 }
 
 pub fn split_reasoning(text: &str) -> Result<(Option<String>, String), ParserError> {

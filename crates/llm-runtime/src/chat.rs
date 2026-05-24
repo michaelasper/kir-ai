@@ -116,6 +116,17 @@ where
             created: Utc::now().timestamp(),
             model: request_ref.model.clone(),
         };
+        tracing::debug!(
+            operation = "runtime_backend_dispatch",
+            request_kind = "chat",
+            stream = true,
+            model_id = request_ref.model.as_str(),
+            message_count = request_ref.messages.len(),
+            tool_count = request_ref.tools.len(),
+            prompt_bytes = backend_request.prompt().len(),
+            max_tokens = ?backend_request.max_tokens,
+            "dispatching runtime request to backend"
+        );
         let backend_stream = self
             .backend
             .generate_stream_with_cancel(backend_request, cancellation.clone());
@@ -138,6 +149,17 @@ where
         let adapter = self.chat_adapter()?;
         let request_ref = request.as_ref();
         let backend_request = self.chat_backend_request(adapter, request_ref)?;
+        tracing::debug!(
+            operation = "runtime_backend_dispatch",
+            request_kind = "chat",
+            stream = false,
+            model_id = request_ref.model.as_str(),
+            message_count = request_ref.messages.len(),
+            tool_count = request_ref.tools.len(),
+            prompt_bytes = backend_request.prompt().len(),
+            max_tokens = ?backend_request.max_tokens,
+            "dispatching runtime request to backend"
+        );
         let mut cancel_on_drop = CancelOnDrop::new(cancellation.clone());
         let output = self
             .backend
