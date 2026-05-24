@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.55.0](https://github.com/michaelasper/kir-ai/compare/v1.54.0...v1.55.0) (2026-05-24)
+
+### Features
+
+* **COR-441:** report prefill concurrency benchmark scenarios ([a15c6fd](https://github.com/michaelasper/kir-ai/commit/a15c6fd106940fe7e48bbf85681545bcef891b14))
+
 ## [1.54.0](https://github.com/michaelasper/kir-ai/compare/v1.53.0...v1.54.0) (2026-05-24)
 
 ### Features
