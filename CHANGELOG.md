@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.47.0](https://github.com/michaelasper/kir-ai/compare/v1.46.10...v1.47.0) (2026-05-24)
+
+### Features
+
+* **COR-292:** prototype kv quantization evaluation ([32f51b7](https://github.com/michaelasper/kir-ai/commit/32f51b714973a106a0885a7ff51530a35aa8846d))
+
 ## [1.46.10](https://github.com/michaelasper/kir-ai/compare/v1.46.9...v1.46.10) (2026-05-24)
 
 ### Bug Fixes
