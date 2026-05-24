@@ -2,7 +2,7 @@ use super::*;
 use crate::native_matvec::{
     Bf16MatrixBufferCache, Bf16MatrixCacheKey,
     DEFAULT_NATIVE_TEXT_METAL_WEIGHT_CACHE_BYTES as DEFAULT_NATIVE_QWEN_METAL_WEIGHT_CACHE_BYTES,
-    MetalBackendMetrics, NativeTextMetalWarmup as NativeQwenMetalWarmup,
+    NativeTextMetalWarmup as NativeQwenMetalWarmup,
 };
 use crate::native_text::{
     NativeStreamTextDeltas, NativeTextCandidateDecision, NativeTextStopTokens,
@@ -107,104 +107,6 @@ impl NativeTextCacheMirrorCleaner<QwenLayerCache> for TestQwenCacheMirrorCleaner
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.cache_count.fetch_add(caches.len(), Ordering::SeqCst);
     }
-}
-
-#[test]
-fn metal_backend_metrics_records_attempt_success_and_fallback_by_kernel() {
-    let metrics = MetalBackendMetrics::default();
-
-    metrics.record_attempt("matvec_bf16_f32");
-    metrics.record_success("matvec_bf16_f32");
-    metrics.record_attempt("matvec_bf16_f32");
-    metrics.record_fallback("matvec_bf16_f32", "rows=2,cols=3", "execution failed");
-
-    let snapshot = metrics.snapshot();
-    let matvec = &snapshot["kernels"]["matvec_bf16_f32"];
-    assert_eq!(matvec["attempts"], 2);
-    assert_eq!(matvec["successes"], 1);
-    assert_eq!(matvec["fallbacks"], 1);
-}
-
-#[test]
-fn metal_backend_metrics_records_bf16_matrix_cache_activity() {
-    let metrics = MetalBackendMetrics::default();
-
-    metrics.record_bf16_matrix_cache_miss();
-    metrics.record_bf16_matrix_cache_upload(12);
-    metrics.record_bf16_matrix_cache_eviction(2, 8);
-    metrics.record_bf16_matrix_cache_residency(10, 3, 16);
-    metrics.record_bf16_matrix_cache_hit();
-
-    let snapshot = metrics.snapshot();
-    let cache = &snapshot["bf16_matrix_cache"];
-    assert_eq!(cache["hits"], 1);
-    assert_eq!(cache["misses"], 1);
-    assert_eq!(cache["uploads"], 1);
-    assert_eq!(cache["bytes_uploaded"], 12);
-    assert_eq!(cache["evictions"], 2);
-    assert_eq!(cache["bytes_evicted"], 8);
-    assert_eq!(cache["resident_bytes"], 10);
-    assert_eq!(cache["resident_buffers"], 3);
-    assert_eq!(cache["budget_bytes"], 16);
-}
-
-#[test]
-fn metal_backend_metrics_records_resident_attention_cache_activity() {
-    let metrics = MetalBackendMetrics::default();
-
-    metrics.record_kv_cache_allocation(16);
-    metrics.record_kv_cache_sync(8);
-    metrics.record_kv_cache_skipped_syncs(3);
-    metrics.record_kv_cache_residency(16, 2);
-    metrics.record_int8_kv_cache_allocation(10);
-    metrics.record_int8_kv_cache_sync(6);
-    metrics.record_int8_kv_cache_residency(12, 4);
-    let active_snapshot = metrics.snapshot();
-    let active_kv = &active_snapshot["kv_cache"];
-    assert_eq!(active_kv["bytes_uploaded"], 40);
-    assert_eq!(active_kv["f32_bytes_uploaded"], 0);
-    assert_eq!(active_kv["f16_bytes_uploaded"], 24);
-    assert_eq!(active_kv["int8_bytes_uploaded"], 16);
-    assert_eq!(active_kv["resident_bytes"], 28);
-    assert_eq!(active_kv["f32_resident_bytes"], 0);
-    assert_eq!(active_kv["f16_resident_bytes"], 16);
-    assert_eq!(active_kv["int8_resident_bytes"], 12);
-    assert_eq!(active_kv["resident_buffers"], 6);
-    assert_eq!(active_kv["f16_resident_buffers"], 2);
-    assert_eq!(active_kv["int8_resident_buffers"], 4);
-
-    metrics.record_kv_cache_eviction(2, 16);
-    metrics.record_int8_kv_cache_eviction(4, 12);
-    metrics.record_kv_cache_residency(0, 0);
-    metrics.record_int8_kv_cache_residency(0, 0);
-    metrics.record_linear_cache_allocation(12);
-    metrics.record_linear_cache_sync(4);
-    metrics.record_linear_cache_residency(12, 1);
-    metrics.record_linear_cache_eviction(1, 12);
-    metrics.record_linear_cache_residency(0, 0);
-
-    let snapshot = metrics.snapshot();
-    let kv = &snapshot["kv_cache"];
-    assert_eq!(kv["allocations"], 2);
-    assert_eq!(kv["syncs"], 2);
-    assert_eq!(kv["skipped_syncs"], 3);
-    assert_eq!(kv["evictions"], 6);
-    assert_eq!(kv["bytes_uploaded"], 40);
-    assert_eq!(kv["bytes_evicted"], 28);
-    assert_eq!(kv["f16_bytes_evicted"], 16);
-    assert_eq!(kv["int8_bytes_evicted"], 12);
-    assert_eq!(kv["resident_bytes"], 0);
-    assert_eq!(kv["resident_buffers"], 0);
-    assert_eq!(kv["f16_resident_bytes"], 0);
-    assert_eq!(kv["int8_resident_bytes"], 0);
-    let linear = &snapshot["linear_attention_cache"];
-    assert_eq!(linear["allocations"], 1);
-    assert_eq!(linear["syncs"], 1);
-    assert_eq!(linear["evictions"], 1);
-    assert_eq!(linear["bytes_uploaded"], 16);
-    assert_eq!(linear["bytes_evicted"], 12);
-    assert_eq!(linear["resident_bytes"], 0);
-    assert_eq!(linear["resident_buffers"], 0);
 }
 
 #[test]

@@ -535,10 +535,10 @@ fn native_qwen_metal_weight_cache_bytes(configured: Option<u64>) -> u64 {
 fn native_qwen_warmable_bf16_matrix_tensors(
     store: &SafeTensorShardStore,
 ) -> Result<
-    Vec<crate::native_matvec::NativeTextWarmableBf16MatrixTensor>,
+    Vec<crate::warm_order::NativeTextWarmableBf16MatrixTensor>,
     llm_backend::native::TensorLoadError,
 > {
-    crate::native_matvec::native_text_warmable_bf16_matrix_tensors(store)
+    crate::warm_order::native_text_warmable_bf16_matrix_tensors(store)
 }
 
 pub fn native_qwen_prefix_cache_metrics_snapshot() -> Value {

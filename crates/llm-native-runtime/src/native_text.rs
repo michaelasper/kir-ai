@@ -274,7 +274,7 @@ where
 }
 
 pub fn native_text_metal_metrics_snapshot() -> serde_json::Value {
-    crate::native_matvec::native_text_metal_metrics_snapshot()
+    crate::native_metrics::native_text_metal_metrics_snapshot()
 }
 
 pub fn native_text_prefix_cache_metrics_snapshot(
