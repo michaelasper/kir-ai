@@ -9,7 +9,7 @@ use llm_backend::ProtocolTestBackend;
 use llm_backend_contracts::{
     BackendCapabilities, BackendError, BackendFinishReason, BackendHealth, BackendModelMetadata,
     BackendOutput, BackendRequest, BackendStreamChunk, BackendStreamProgress, BackendToolCallDelta,
-    BackendToolCallFunctionDelta, BackendToolCallType, ModelBackend,
+    BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice, ModelBackend,
 };
 use llm_engine::{EngineOptions, PublicInferenceRateLimit, build_router, router_builder};
 use llm_hub::{HubFile, HubRepoId, ModelProfile, ModelStore, build_download_plan};

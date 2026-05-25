@@ -42,6 +42,84 @@ async fn chat_stream_runtime_errors_include_stable_metadata() {
     assert_eq!(body.matches("data: [DONE]").count(), 1);
 }
 
+#[tokio::test]
+async fn chat_stream_gemma_mlx_required_tool_error_exposes_attribution() {
+    let response = build_router_with_backend(Box::new(GemmaMlxRequiredToolRejectingStreamBackend))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gemma4-e2b-mlx-4bit",
+                        "messages": [{"role": "user", "content": "record the observation"}],
+                        "stream": true,
+                        "tools": [{
+                            "type": "function",
+                            "function": {
+                                "name": "record_agentic_observation",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {"type": "string"}
+                                    },
+                                    "required": ["summary"]
+                                }
+                            }
+                        }],
+                        "tool_choice": {
+                            "type": "function",
+                            "function": {"name": "record_agentic_observation"}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request builds"),
+        )
+        .await
+        .expect("stream response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response.into_body()).await;
+    let frames = sse_json_frames(&body);
+    let error_frames: Vec<&Value> = frames
+        .iter()
+        .filter_map(|frame| frame.get("error"))
+        .collect();
+    assert_eq!(error_frames.len(), 1, "body: {body}");
+    let error = error_frames[0];
+
+    assert_eq!(error["code"], "invalid_request");
+    assert_eq!(error["phase"], "request_validation");
+    assert_eq!(error["retryable"], false);
+    assert_eq!(error["type"], "llm_engine_error");
+    let message = error["message"].as_str().expect("error message is string");
+    assert!(
+        message.contains("model `gemma4-e2b-mlx-4bit`"),
+        "body: {body}"
+    );
+    assert!(message.contains("backend `mlx`"), "body: {body}");
+    assert!(message.contains("family `gemma`"), "body: {body}");
+    assert!(
+        message.contains("function `record_agentic_observation`"),
+        "body: {body}"
+    );
+    let content_deltas: Vec<&str> = frames
+        .iter()
+        .filter_map(|frame| {
+            frame["choices"][0]["delta"]["content"]
+                .as_str()
+                .filter(|content| !content.is_empty())
+        })
+        .collect();
+    assert!(
+        content_deltas.is_empty(),
+        "required-tool failure must not stream text fallback: {body}"
+    );
+    assert_eq!(body.matches("data: [DONE]").count(), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn chat_stream_sends_backend_chunk_before_backend_finishes() {
     let first = Arc::new(Notify::new());

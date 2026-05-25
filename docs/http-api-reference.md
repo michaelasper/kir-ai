@@ -669,8 +669,9 @@ non-streaming generation. Tool-call and JSON-object validation paths may buffer
 before emitting deltas to preserve fail-closed semantics. Runtime errors that
 happen after an SSE stream starts are emitted as `data:` error objects with
 stable `code`, `phase`, and `retryable` fields, followed by `[DONE]`. Runtime
-SSE error messages are intentionally generic for clients; detailed diagnostics
-stay in server logs.
+SSE backend-execution error messages are intentionally generic for clients;
+request-validation errors may include sanitized model/backend attribution.
+Detailed internal diagnostics stay in server logs.
 
 ## `POST /v1/completions`
 

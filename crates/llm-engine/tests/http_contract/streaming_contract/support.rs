@@ -299,6 +299,60 @@ impl ModelBackend for SlowStructuredToolArgumentBackend {
     }
 }
 
+struct GemmaMlxRequiredToolRejectingStreamBackend;
+
+#[async_trait]
+impl ModelBackend for GemmaMlxRequiredToolRejectingStreamBackend {
+    fn model_id(&self) -> &str {
+        "gemma4-e2b-mlx-4bit"
+    }
+
+    fn model_metadata(&self) -> BackendModelMetadata {
+        BackendModelMetadata::new(self.model_id(), "mlx").with_family("gemma")
+    }
+
+    async fn generate(&self, _request: BackendRequest) -> Result<BackendOutput, BackendError> {
+        Err(BackendError::other(
+            "Gemma MLX required-tool HTTP test must use generate_stream".to_owned(),
+        ))
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> Result<BackendOutput, BackendError> {
+        generate_after_pre_cancel(self, request, cancellation).await
+    }
+
+    fn generate_stream_with_cancel<'a>(
+        &'a self,
+        request: BackendRequest,
+        cancellation: CancellationToken,
+    ) -> futures::stream::BoxStream<'a, Result<BackendStreamChunk, BackendError>> {
+        if cancellation.is_cancelled() {
+            return futures::stream::once(async { Err(BackendError::cancelled()) }).boxed();
+        }
+        let message = gemma_mlx_required_tool_rejection_message(self.model_id(), &request);
+        futures::stream::once(async { Err(BackendError::unsupported_request(message)) }).boxed()
+    }
+}
+
+fn gemma_mlx_required_tool_rejection_message(model: &str, request: &BackendRequest) -> String {
+    let choice = request
+        .as_chat()
+        .and_then(|chat| chat.required_tool_choice.as_ref());
+    let choice = match choice {
+        Some(BackendToolChoice::RequiredAny) => "any declared tool".to_owned(),
+        Some(BackendToolChoice::RequiredFunction(name)) => format!("function `{name}`"),
+        Some(_) | None => "missing required tool choice".to_owned(),
+    };
+    format!(
+        "MLX Gemma required tool_choice is not supported for model `{model}` \
+         (backend `mlx`, family `gemma`); required tool choice {choice} cannot be enforced"
+    )
+}
+
 struct PendingCancellableStreamBackend {
     cancelled: Arc<Notify>,
 }

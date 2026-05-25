@@ -247,12 +247,22 @@ fn runtime_error_stream_events(err: RuntimeError) -> Vec<Result<Event, Infallibl
         retryable = metadata.retryable,
         "streaming runtime error"
     );
-    engine_error_stream_events(EngineErrorBody::new(
-        "streaming response failed",
-        metadata.code,
-        metadata.phase,
-        metadata.retryable,
-    ))
+    engine_error_stream_events(runtime_error_stream_body(&err, metadata))
+}
+
+fn runtime_error_stream_body(
+    err: &RuntimeError,
+    metadata: super::error::RuntimeErrorMetadata,
+) -> EngineErrorBody {
+    match err {
+        RuntimeError::InvalidRequest { .. } => EngineErrorBody::from_runtime_error(err),
+        _ => EngineErrorBody::new(
+            "streaming response failed",
+            metadata.code,
+            metadata.phase,
+            metadata.retryable,
+        ),
+    }
 }
 
 fn engine_error_stream_events(body: EngineErrorBody) -> Vec<Result<Event, Infallible>> {
