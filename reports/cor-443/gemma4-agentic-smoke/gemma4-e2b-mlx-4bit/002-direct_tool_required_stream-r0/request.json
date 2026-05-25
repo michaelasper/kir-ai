@@ -1,0 +1,60 @@
+{
+  "max_tokens": 512,
+  "messages": [
+    {
+      "content": "When a tool is available and required, call it with valid JSON arguments.",
+      "role": "system"
+    },
+    {
+      "content": "Record that malformed tool calls and first-tool latency are risks for coding agents.",
+      "role": "user"
+    }
+  ],
+  "model": "local-gemma4-e2b",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "temperature": 0,
+  "tool_choice": {
+    "function": {
+      "name": "record_agentic_observation"
+    },
+    "type": "function"
+  },
+  "tools": [
+    {
+      "function": {
+        "description": "Record a structured benchmark observation.",
+        "name": "record_agentic_observation",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "confidence": {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "next_step": {
+              "type": "string"
+            },
+            "risk": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "risk",
+            "next_step",
+            "confidence"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

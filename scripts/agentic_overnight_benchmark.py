@@ -36,6 +36,7 @@ HF_HOME = pathlib.Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expand
 DEFAULT_RUN_ROOT = REPO_ROOT / "target" / "agentic-bench-runs"
 DEFAULT_CONTEXT_SIZES_K = (8, 32, 64, 96, 135, 200, 256)
 DEFAULT_SEED = 264259
+STABLE_PREFIX_SECTIONS_PER_K = 20
 
 
 def env_path(name: str, fallback: pathlib.Path) -> pathlib.Path:
@@ -137,7 +138,7 @@ LANES: list[ModelLane] = [
         sidecar_package="mlx-vlm",
         sidecar_module="mlx_vlm.server",
         sidecar_kind="vlm",
-        sidecar_extra=("--prompt-cache-size", "16", "--prefill-step-size", "2048"),
+        sidecar_extra=("--prefill-step-size", "2048"),
         snapshot_env="KIR_BENCH_GEMMA4_E2B_SNAPSHOT",
         note="Gemma 4 E2B MLX 4-bit, practical repeated-workload lane",
     ),
@@ -157,7 +158,7 @@ LANES: list[ModelLane] = [
         sidecar_package="mlx-vlm",
         sidecar_module="mlx_vlm.server",
         sidecar_kind="vlm",
-        sidecar_extra=("--prompt-cache-size", "16", "--prefill-step-size", "2048"),
+        sidecar_extra=("--prefill-step-size", "2048"),
         include_by_default=False,
         snapshot_env="KIR_BENCH_GEMMA4_31B_SNAPSHOT",
         note="Optional heavy Gemma 4 31B lane; enable with --include-heavy-gemma31",
@@ -624,10 +625,9 @@ def long_context_text(target_k: int, marker: str) -> str:
         "stable prefix",
         "request cache observation",
     ]
-    # The name is an approximate target in K prompt tokens. These repeated
-    # natural-language phrases intentionally overfill a little so the run sees
-    # different prefill regimes instead of just different character counts.
-    for i in range(target_k * 36):
+    # The name is an approximate target in K prompt tokens. Keep the density
+    # conservative so max-context lanes do not exceed model windows.
+    for i in range(target_k * STABLE_PREFIX_SECTIONS_PER_K):
         words = " ".join(seed[(i + j) % len(seed)] for j in range(9))
         paragraphs.append(
             f"section {i:05d}: {words}. Preserve the first marker and ignore distractor {i % 97}."
@@ -1455,7 +1455,9 @@ def sidecar_command(lane: ModelLane, sidecar_port: int) -> list[str]:
     unsupported_vlm_args = [
         arg
         for arg in lane.sidecar_extra
-        if arg == "--max-tokens" or arg.startswith("--max-tokens=")
+        if arg in {"--max-tokens", "--prompt-cache-size"}
+        or arg.startswith("--max-tokens=")
+        or arg.startswith("--prompt-cache-size=")
     ]
     if lane.sidecar_kind == "vlm" and unsupported_vlm_args:
         raise ValueError(

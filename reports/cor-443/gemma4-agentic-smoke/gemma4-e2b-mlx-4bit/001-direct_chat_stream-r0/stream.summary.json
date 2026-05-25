@@ -1,0 +1,42 @@
+{
+  "cache_status": "miss",
+  "cached_tokens": 0,
+  "chunks": 34,
+  "completion_tokens": 35,
+  "errors": [],
+  "finish_reasons": [
+    "stop"
+  ],
+  "first_semantic_delta_ms": 1934.641,
+  "first_tool_delta_ms": null,
+  "latency_ms": 2182.376,
+  "prompt_tokens": 76,
+  "request_id": "req-6",
+  "response_headers": {
+    "cache-control": "no-cache",
+    "content-type": "text/event-stream",
+    "date": "Mon, 25 May 2026 06:32:11 GMT",
+    "transfer-encoding": "chunked",
+    "x-request-id": "req-6"
+  },
+  "started_at": "2026-05-25T06:32:11Z",
+  "status": 200,
+  "text": "A likely bottleneck is excessive context window usage, which can be detected by measuring the token count per turn. This metric reveals if the model is being overloaded with unnecessary information.",
+  "tool_calls": {
+    "invalid_json_arguments": 0,
+    "names": [],
+    "observed": 0,
+    "valid_json_arguments": 0
+  },
+  "tool_fragments_count": 0,
+  "ttfb_ms": 1.155,
+  "uncached_tokens": 76,
+  "usage": {
+    "completion_tokens": 35,
+    "prompt_tokens": 76,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 111
+  }
+}
