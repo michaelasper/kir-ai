@@ -211,6 +211,83 @@ fn serve_loopback_with_explicit_admin_token_accepts_bearer_token() {
 }
 
 #[test]
+#[cfg(all(unix, feature = "test-utils"))]
+fn serve_exits_successfully_on_sigint() {
+    assert_server_exits_successfully_on_signal(libc::SIGINT);
+}
+
+#[test]
+#[cfg(all(unix, feature = "test-utils"))]
+fn serve_exits_successfully_on_sigterm() {
+    assert_server_exits_successfully_on_signal(libc::SIGTERM);
+}
+
+#[test]
+#[cfg(all(unix, feature = "test-utils"))]
+fn serve_ignores_sigpipe() {
+    let addr = reserve_loopback_addr();
+    let mut server = spawn_protocol_test_server(&addr, None);
+    wait_for_server(&mut server.child, &addr);
+
+    send_signal(&server.child, libc::SIGPIPE);
+    std::thread::sleep(Duration::from_millis(100));
+
+    assert!(
+        server.child.try_wait().expect("poll server").is_none(),
+        "server should ignore SIGPIPE while serving"
+    );
+
+    send_signal(&server.child, libc::SIGINT);
+    let status = wait_for_child_exit(&mut server.child);
+    assert!(
+        status.success(),
+        "server should still exit cleanly after ignored SIGPIPE: {status}"
+    );
+}
+
+#[cfg(all(unix, feature = "test-utils"))]
+fn assert_server_exits_successfully_on_signal(signal: libc::c_int) {
+    let addr = reserve_loopback_addr();
+    let mut server = spawn_protocol_test_server(&addr, None);
+    wait_for_server(&mut server.child, &addr);
+
+    send_signal(&server.child, signal);
+    let status = wait_for_child_exit(&mut server.child);
+
+    assert!(
+        status.success(),
+        "server should exit cleanly after signal {signal}: {status}"
+    );
+}
+
+#[cfg(all(unix, feature = "test-utils"))]
+fn send_signal(child: &std::process::Child, signal: libc::c_int) {
+    // SAFETY: `child.id()` belongs to the live server process managed by this test.
+    let result = unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    assert_eq!(
+        result,
+        0,
+        "kill({signal}) failed: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[cfg(all(unix, feature = "test-utils"))]
+fn wait_for_child_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("poll server") {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    child.kill().expect("kill hanging server");
+    let _ = child.wait();
+    panic!("server did not exit after shutdown signal");
+}
+
+#[test]
 #[cfg(not(feature = "bench"))]
 fn bench_command_without_feature_errors_clearly() {
     let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))

@@ -9,7 +9,9 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     error::Error,
-    fmt, io,
+    fmt,
+    future::Future,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -275,10 +277,19 @@ async fn handle_accept_error(err: io::Error) {
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, router: ServerRouter) -> io::Result<()> {
+    serve_with_graceful_shutdown(listener, router, std::future::pending()).await
+}
+
+pub async fn serve_with_graceful_shutdown(
+    listener: tokio::net::TcpListener,
+    router: ServerRouter,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown)
     .await
 }
 
@@ -286,6 +297,15 @@ pub async fn serve_tls(
     listener: tokio::net::TcpListener,
     router: ServerRouter,
     tls_config: TlsConfig,
+) -> io::Result<()> {
+    serve_tls_with_graceful_shutdown(listener, router, tls_config, std::future::pending()).await
+}
+
+pub async fn serve_tls_with_graceful_shutdown(
+    listener: tokio::net::TcpListener,
+    router: ServerRouter,
+    tls_config: TlsConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     let server_config = load_tls_server_config(&tls_config)
         .await
@@ -295,5 +315,6 @@ pub async fn serve_tls(
         tls_listener.tap_io(|_| {}),
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown)
     .await
 }

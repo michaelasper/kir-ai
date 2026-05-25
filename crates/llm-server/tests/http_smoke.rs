@@ -245,6 +245,121 @@ async fn tls_serve_rejects_missing_certificate_file() {
     );
 }
 
+#[tokio::test]
+async fn serve_with_graceful_shutdown_drains_in_flight_request() {
+    use axum::{Router, routing::get};
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::{Notify, oneshot};
+
+    let request_started = Arc::new(Notify::new());
+    let release_request = Arc::new(Notify::new());
+    let router = Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .route(
+            "/slow",
+            get({
+                let request_started = Arc::clone(&request_started);
+                let release_request = Arc::clone(&release_request);
+                move || {
+                    let request_started = Arc::clone(&request_started);
+                    let release_request = Arc::clone(&release_request);
+                    async move {
+                        request_started.notify_one();
+                        release_request.notified().await;
+                        "completed"
+                    }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let mut server = tokio::spawn(llm_server::serve_with_graceful_shutdown(
+        listener,
+        router,
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    ));
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("client builds");
+    let slow_client = client.clone();
+    let slow_request = tokio::spawn(async move {
+        slow_client
+            .get(format!("http://{addr}/slow"))
+            .send()
+            .await
+            .expect("slow request responds")
+            .text()
+            .await
+            .expect("slow response body reads")
+    });
+    tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+        .await
+        .expect("slow request reaches handler");
+
+    shutdown_tx.send(()).expect("shutdown signal sends");
+
+    tokio::select! {
+        result = &mut server => panic!("server exited before in-flight request completed: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+
+    let new_request = tokio::time::timeout(
+        Duration::from_millis(200),
+        client.get(format!("http://{addr}/health")).send(),
+    )
+    .await;
+    if let Ok(Ok(response)) = new_request {
+        panic!(
+            "server accepted a new request during graceful shutdown: {}",
+            response.status()
+        );
+    }
+
+    release_request.notify_one();
+    let body = tokio::time::timeout(Duration::from_secs(1), slow_request)
+        .await
+        .expect("slow request completes after release")
+        .expect("slow request task joins");
+    assert_eq!(body, "completed");
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .expect("server exits after in-flight drain")
+        .expect("server task joins")
+        .expect("server exits cleanly");
+}
+
+#[tokio::test]
+async fn tls_serve_with_graceful_shutdown_rejects_missing_certificate_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let err = llm_server::serve_tls_with_graceful_shutdown(
+        listener,
+        axum::Router::new(),
+        llm_server::TlsConfig::new(
+            temp.path().join("missing-cert.pem"),
+            temp.path().join("key.pem"),
+        ),
+        std::future::pending(),
+    )
+    .await
+    .expect_err("missing certificate path fails before serving");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("TLS certificate file"),
+        "error should identify the certificate path class: {err}"
+    );
+}
+
 #[cfg(feature = "test-utils")]
 #[tokio::test]
 async fn tls_serve_answers_https_health_on_loopback() {

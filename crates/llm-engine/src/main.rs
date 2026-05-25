@@ -12,7 +12,7 @@ use llm_engine::{
 #[cfg(feature = "mlx")]
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
 use llm_hub::{ModelStore, SnapshotReadiness};
-use std::net::SocketAddr;
+use std::{future::Future, net::SocketAddr};
 
 #[cfg(feature = "bench")]
 mod bench_compat;
@@ -27,6 +27,7 @@ const PROTOCOL_TEST_BACKEND_WARNING: &str =
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    ignore_sigpipe();
     let command = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "serve".to_owned());
@@ -276,10 +277,17 @@ async fn main() -> anyhow::Result<()> {
                     tls_cert = %tls_config.cert_path().display(),
                     "llm-engine HTTPS listening"
                 );
-                llm_server::serve_tls(listener, router, tls_config).await?;
+                llm_server::serve_tls_with_graceful_shutdown(
+                    listener,
+                    router,
+                    tls_config,
+                    shutdown_signal(),
+                )
+                .await?;
             } else {
                 tracing::info!(%addr, "llm-engine HTTP listening");
-                llm_server::serve(listener, router).await?;
+                llm_server::serve_with_graceful_shutdown(listener, router, shutdown_signal())
+                    .await?;
             }
         }
         #[cfg(feature = "bench")]
@@ -293,6 +301,79 @@ async fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownTrigger {
+    Sigint,
+    Sigterm,
+}
+
+impl ShutdownTrigger {
+    fn as_str(self) -> &'static str {
+        match self {
+            ShutdownTrigger::Sigint => "SIGINT",
+            ShutdownTrigger::Sigterm => "SIGTERM",
+        }
+    }
+}
+
+async fn wait_for_shutdown_request<CtrlC, Terminate>(
+    ctrl_c: CtrlC,
+    terminate: Terminate,
+) -> ShutdownTrigger
+where
+    CtrlC: Future<Output = std::io::Result<()>>,
+    Terminate: Future<Output = std::io::Result<()>>,
+{
+    tokio::select! {
+        result = ctrl_c => {
+            if let Err(err) = result {
+                tracing::warn!(error = %err, "failed while waiting for SIGINT shutdown signal");
+            }
+            ShutdownTrigger::Sigint
+        }
+        result = terminate => {
+            if let Err(err) = result {
+                tracing::warn!(error = %err, "failed while waiting for SIGTERM shutdown signal");
+            }
+            ShutdownTrigger::Sigterm
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    let trigger = wait_for_shutdown_request(tokio::signal::ctrl_c(), sigterm_signal()).await;
+    tracing::info!(
+        signal = trigger.as_str(),
+        "shutdown signal received; draining in-flight requests"
+    );
+}
+
+#[cfg(unix)]
+async fn sigterm_signal() -> std::io::Result<()> {
+    let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let _ = signal.recv().await;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn sigterm_signal() -> std::io::Result<()> {
+    std::future::pending::<std::io::Result<()>>().await
+}
+
+#[cfg(unix)]
+fn ignore_sigpipe() {
+    // SAFETY: Installing SIG_IGN for SIGPIPE is process-global startup configuration.
+    // It converts broken pipe writes into ordinary EPIPE errors instead of terminating
+    // the server during streaming responses.
+    let previous_handler = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    if previous_handler == libc::SIG_ERR {
+        tracing::warn!("failed to ignore SIGPIPE; broken pipe writes may terminate the process");
+    }
+}
+
+#[cfg(not(unix))]
+fn ignore_sigpipe() {}
 
 fn print_serve_help() {
     println!(
@@ -616,6 +697,29 @@ mod serve_arg_tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[tokio::test]
+    async fn shutdown_request_resolves_on_sigint_future() {
+        let trigger = wait_for_shutdown_request(
+            async { Ok(()) },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await;
+
+        assert_eq!(trigger, ShutdownTrigger::Sigint);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_request_resolves_on_sigterm_future() {
+        let trigger =
+            wait_for_shutdown_request(std::future::pending::<std::io::Result<()>>(), async {
+                Ok(())
+            })
+            .await;
+
+        assert_eq!(trigger, ShutdownTrigger::Sigterm);
     }
 
     #[test]
