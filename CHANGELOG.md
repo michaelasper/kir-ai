@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.4](https://github.com/michaelasper/kir-ai/compare/v1.57.3...v1.57.4) (2026-05-25)
+
+### Performance Improvements
+
+* **COR-498:** pool Metal primitive buffers ([b3c1cc4](https://github.com/michaelasper/kir-ai/commit/b3c1cc43146d978ee962e73c0681376f7e272cba))
+
 ## [1.57.3](https://github.com/michaelasper/kir-ai/compare/v1.57.2...v1.57.3) (2026-05-25)
 
 ### Bug Fixes
