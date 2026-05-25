@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.13](https://github.com/michaelasper/kir-ai/compare/v1.57.12...v1.57.13) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-450:** harden rate-limit client identity ([4fb97d6](https://github.com/michaelasper/kir-ai/commit/4fb97d663b041d20db516696ec76a7c3d832312c))
+* **COR-450:** ignore unauthenticated rate-limit headers ([d7cb270](https://github.com/michaelasper/kir-ai/commit/d7cb270e5fa32fa28ad0c003d234e66f13256ae8))
+* **COR-450:** isolate public inference rate limits ([4905b3b](https://github.com/michaelasper/kir-ai/commit/4905b3b2d75c6bcdb4a34c0b947516c2f366b567))
+
 ## [1.57.12](https://github.com/michaelasper/kir-ai/compare/v1.57.11...v1.57.12) (2026-05-25)
 
 ### Bug Fixes
