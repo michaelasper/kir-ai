@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.6](https://github.com/michaelasper/kir-ai/compare/v1.57.5...v1.57.6) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-518:** narrow Metal buffer hazards ([ca030d7](https://github.com/michaelasper/kir-ai/commit/ca030d7604f3e32f5d9ec2eed0c1486a3754b622))
+
 ## [1.57.5](https://github.com/michaelasper/kir-ai/compare/v1.57.4...v1.57.5) (2026-05-25)
 
 ### Performance Improvements
