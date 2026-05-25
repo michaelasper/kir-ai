@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.14](https://github.com/michaelasper/kir-ai/compare/v1.57.13...v1.57.14) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-451:** add graceful server shutdown ([db8bb3d](https://github.com/michaelasper/kir-ai/commit/db8bb3d7f7c05f11fd8d9e8ae226cbb78b6c0e7e))
+
 ## [1.57.13](https://github.com/michaelasper/kir-ai/compare/v1.57.12...v1.57.13) (2026-05-25)
 
 ### Bug Fixes
