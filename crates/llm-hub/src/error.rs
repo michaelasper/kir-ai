@@ -33,6 +33,7 @@ impl HubError {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn auth_failed(message: impl Into<String>) -> Self {
         Self {
             code: "model_auth_failed",
@@ -47,6 +48,7 @@ impl HubError {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn network(message: impl ToString) -> Self {
         Self {
             code: "model_download_interrupted",

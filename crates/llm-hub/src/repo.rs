@@ -30,6 +30,7 @@ impl HubRepoId {
         &self.id
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn components(&self) -> Result<(&str, &str), HubError> {
         let Some((namespace, name)) = self.id.split_once('/') else {
             return Err(HubError::invalid_request(format!(

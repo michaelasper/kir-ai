@@ -1,3 +1,6 @@
+#[cfg(feature = "remote")]
+use crate::HubClient;
+#[cfg(feature = "remote")]
 use crate::client::HubDownloadFileRequest;
 use crate::manifest::{
     PromotedSnapshot, SNAPSHOT_MANIFEST_FILE, SnapshotManifest, SnapshotVerification,
@@ -6,7 +9,7 @@ use crate::manifest::{
     verify_snapshot_file, write_snapshot_verification_stamp,
 };
 use crate::plan::{snapshot_dir_name, validate_artifact_path};
-use crate::{DownloadPlan, HubClient, HubError, HubRepoId};
+use crate::{DownloadPlan, HubError, HubRepoId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -257,6 +260,7 @@ impl ModelStore {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub async fn pull_plan(
         &self,
         client: &HubClient,

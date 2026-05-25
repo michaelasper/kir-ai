@@ -1,7 +1,6 @@
-use crate::{
-    DEFAULT_MODEL_PROFILE_NAME, DownloadPlan, HubClient, HubError, HubRepoId, ModelProfile,
-    ModelStore, PromotedSnapshot,
-};
+use crate::{DEFAULT_MODEL_PROFILE_NAME, HubError, HubRepoId, ModelProfile};
+#[cfg(feature = "remote")]
+use crate::{DownloadPlan, HubClient, ModelStore, PromotedSnapshot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -74,11 +73,13 @@ pub struct ModelLifecyclePlanOptions {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "remote")]
 pub struct ModelLifecycleService<'a> {
     client: &'a HubClient,
     token: Option<&'a str>,
 }
 
+#[cfg(feature = "remote")]
 impl<'a> ModelLifecycleService<'a> {
     pub fn new(client: &'a HubClient, token: Option<&'a str>) -> Self {
         Self { client, token }

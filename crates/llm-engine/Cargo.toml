@@ -34,7 +34,7 @@ getrandom.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend = { path = "../llm-backend" }
 llm-backend-contracts = { path = "../llm-backend-contracts" }
-llm-hub = { path = "../llm-hub" }
+llm-hub = { path = "../llm-hub", features = ["remote"] }
 llm-models = { path = "../llm-models" }
 llm-native-runtime = { path = "../llm-native-runtime", default-features = false }
 llm-runtime = { path = "../llm-runtime" }

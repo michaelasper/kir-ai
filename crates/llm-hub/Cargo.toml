@@ -5,19 +5,28 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+remote = ["dep:futures", "dep:reqwest", "dep:url"]
+
 [dependencies]
 chrono.workspace = true
-futures.workspace = true
+futures = { workspace = true, optional = true }
 hex.workspace = true
 llm-models = { path = "../llm-models" }
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-url.workspace = true
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+url.workspace = true
+
+[[test]]
+name = "hub_client"
+required-features = ["remote"]

@@ -19,7 +19,7 @@ libc.workspace = true
 llm-api = { path = "../llm-api" }
 llm-backend-contracts = { path = "../llm-backend-contracts" }
 llm-backend = { path = "../llm-backend", optional = true }
-llm-hub = { path = "../llm-hub" }
+llm-hub = { path = "../llm-hub", features = ["remote"] }
 llm-runtime = { path = "../llm-runtime" }
 llm-telemetry = { path = "../llm-telemetry", default-features = false }
 llm-util = { path = "../llm-util" }

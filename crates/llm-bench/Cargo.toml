@@ -5,21 +5,41 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+bench-server = [
+  "dep:futures",
+  "dep:llm-api",
+  "dep:llm-hub",
+  "dep:llm-models",
+  "dep:llm-server",
+  "dep:llm-telemetry",
+  "dep:llm-tokenizer",
+  "dep:reqwest",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:sha2",
+]
+
 [dependencies]
 anyhow.workspace = true
-futures.workspace = true
-llm-api = { path = "../llm-api" }
-llm-hub = { path = "../llm-hub" }
-llm-models = { path = "../llm-models" }
-llm-server = { path = "../llm-server" }
-llm-telemetry = { path = "../llm-telemetry" }
-llm-tokenizer = { path = "../llm-tokenizer" }
+futures = { workspace = true, optional = true }
+llm-api = { path = "../llm-api", optional = true }
+llm-hub = { path = "../llm-hub", optional = true }
+llm-models = { path = "../llm-models", optional = true }
+llm-server = { path = "../llm-server", optional = true }
+llm-telemetry = { path = "../llm-telemetry", optional = true }
+llm-tokenizer = { path = "../llm-tokenizer", optional = true }
 llm-util = { path = "../llm-util" }
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "cli"
+required-features = ["bench-server"]
