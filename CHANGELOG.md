@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.10](https://github.com/michaelasper/kir-ai/compare/v1.57.9...v1.57.10) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-514:** expose streaming validation attribution ([e2be46e](https://github.com/michaelasper/kir-ai/commit/e2be46e7d9d97608fe01f9600746ff16f3e5f1c8))
+* **COR-514:** fail closed Gemma MLX required tools ([fd0cbbd](https://github.com/michaelasper/kir-ai/commit/fd0cbbd61a162a2668dbb0eb06744374958be71c))
+
 ## [1.57.9](https://github.com/michaelasper/kir-ai/compare/v1.57.8...v1.57.9) (2026-05-25)
 
 ### Performance Improvements
