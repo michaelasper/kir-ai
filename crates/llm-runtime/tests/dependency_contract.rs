@@ -39,4 +39,10 @@ fn runtime_prompt_rendering_does_not_depend_on_hf_tokenizer_stack() {
             "llm-runtime normal dependency graph still includes `{forbidden}`:\n{tree}"
         );
     }
+    for forbidden in ["futures v", "futures-executor "] {
+        assert!(
+            !tree.lines().any(|line| line.starts_with(forbidden)),
+            "llm-runtime normal dependency graph should use futures-util helpers without `{forbidden}`:\n{tree}"
+        );
+    }
 }

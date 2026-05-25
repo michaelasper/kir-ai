@@ -1214,7 +1214,8 @@ impl BackendError {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use futures::{StreamExt, executor::block_on};
+    use futures::StreamExt;
+    use futures_executor::block_on;
     use tokio_util::sync::CancellationToken;
 
     struct CancelAwareBackend;

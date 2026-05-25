@@ -32,9 +32,14 @@ rust-version = "1.95"
 anyhow = "1.0.100"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-axum = { version = "0.8.7", features = ["json", "macros", "tokio"] }
+# HTTP serving only uses routers, JSON/SSE responses, and Tokio I/O. Keep
+# Axum macros and unused default extractors out of the shared graph.
+axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio"] }
 chrono = { version = "0.4.42", features = ["serde"] }
-futures = "0.3.31"
+# Local call sites use stream/future helpers from futures-util. Preserve the
+# dependency name for import stability without pulling the broad futures meta crate.
+futures = { package = "futures-util", version = "0.3.31", default-features = false, features = ["std"] }
+futures-executor = "0.3.31"
 getrandom = "0.3.4"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
@@ -56,6 +61,8 @@ tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "rt-multi-t
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.17"
+# Supported Hugging Face tokenizer.json files use Regex pre-tokenizers; keep the
+# native onig backend enabled rather than adding per-model tokenizer features.
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.43"

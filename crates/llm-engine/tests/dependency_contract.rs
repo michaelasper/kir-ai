@@ -24,9 +24,21 @@ fn engine_metal_feature_enables_llm_metal_dependency() {
     let tree = cargo_tree(&["--no-default-features", "--features", "native-qwen,metal"]);
 
     assert!(
-        has_llm_metal(&tree),
+        has_package(&tree, "llm-metal"),
         "llm-engine `metal` feature should enable `llm-metal`:\n{tree}"
     );
+}
+
+#[test]
+fn engine_default_dependency_graph_excludes_unused_macro_and_futures_meta_crates() {
+    let tree = cargo_tree(&[]);
+
+    for package in ["axum-macros", "futures", "futures-executor"] {
+        assert!(
+            !has_package(&tree, package),
+            "llm-engine default dependency graph should not include unused `{package}`:\n{tree}"
+        );
+    }
 }
 
 fn cargo_tree(feature_args: &[&str]) -> String {
@@ -64,11 +76,12 @@ fn cargo_tree(feature_args: &[&str]) -> String {
 
 fn assert_no_llm_metal(tree: &str) {
     assert!(
-        !has_llm_metal(tree),
+        !has_package(tree, "llm-metal"),
         "llm-engine normal dependency graph unexpectedly includes `llm-metal`:\n{tree}"
     );
 }
 
-fn has_llm_metal(tree: &str) -> bool {
-    tree.lines().any(|line| line.starts_with("llm-metal "))
+fn has_package(tree: &str, package: &str) -> bool {
+    let prefix = format!("{package} ");
+    tree.lines().any(|line| line.starts_with(&prefix))
 }

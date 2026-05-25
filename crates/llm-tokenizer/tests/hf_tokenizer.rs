@@ -24,6 +24,23 @@ fn official_qwen36_tokenizer_round_trips_text() {
 }
 
 #[test]
+fn official_qwen36_tokenizer_uses_regex_pretokenizer_covered_by_onig() {
+    let tokenizer_json: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/qwen36/tokenizer.json"
+    )))
+    .expect("official tokenizer fixture is JSON");
+    let regex_pattern = tokenizer_json
+        .pointer("/pre_tokenizer/pretokenizers/0/pattern/Regex")
+        .and_then(serde_json::Value::as_str)
+        .expect("official Qwen tokenizer uses a regex split pre-tokenizer");
+
+    assert!(regex_pattern.contains("\\p{L}"));
+    HuggingFaceTokenizer::from_file(TOKENIZER_PATH)
+        .expect("tokenizers/onig loads the supported regex pre-tokenizer");
+}
+
+#[test]
 fn tokenizer_decode_emits_trace_metadata() {
     let tokenizer =
         HuggingFaceTokenizer::from_file(TOKENIZER_PATH).expect("official tokenizer loads");
