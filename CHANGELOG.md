@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.11](https://github.com/michaelasper/kir-ai/compare/v1.57.10...v1.57.11) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-482:** make block pool clones share allocator state ([cce797a](https://github.com/michaelasper/kir-ai/commit/cce797a438f4d4ead79f573c7d1a607aa9ede4ee))
+
 ## [1.57.10](https://github.com/michaelasper/kir-ai/compare/v1.57.9...v1.57.10) (2026-05-25)
 
 ### Bug Fixes
