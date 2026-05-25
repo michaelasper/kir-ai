@@ -193,14 +193,8 @@ impl MetalDevice {
                 "non-empty BF16 matvec requires a matrix buffer".to_owned(),
             ));
         };
-        let vector_buffer = self.device.new_buffer_with_data(
-            vector.as_ptr().cast::<c_void>(),
-            vector_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let vector_buffer = self.take_scratch_f32_buffer(vector);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.matvec_bf16_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -245,6 +239,8 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, rows);
             output[..rows].copy_from_slice(values);
         };
+        self.return_scratch_buffer(vector_byte_len, vector_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -322,14 +318,8 @@ impl MetalDevice {
                 "non-empty batched BF16 matvec requires a matrix buffer".to_owned(),
             ));
         };
-        let vector_buffer = self.device.new_buffer_with_data(
-            vectors.as_ptr().cast::<c_void>(),
-            vector_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let vector_buffer = self.take_scratch_f32_buffer(vectors);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.batched_matvec_bf16_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -383,6 +373,8 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, output_len);
             output[..output_len].copy_from_slice(values);
         };
+        self.return_scratch_buffer(vector_byte_len, vector_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 }
