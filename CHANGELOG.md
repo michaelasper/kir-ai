@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.2](https://github.com/michaelasper/kir-ai/compare/v1.57.1...v1.57.2) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-512:** make model cli fake hub stream blocking ([0104b7d](https://github.com/michaelasper/kir-ai/commit/0104b7d2fcad12b70888f4e4ccc50544b0609179))
+
 ## [1.57.1](https://github.com/michaelasper/kir-ai/compare/v1.57.0...v1.57.1) (2026-05-25)
 
 ### Bug Fixes
