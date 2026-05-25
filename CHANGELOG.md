@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.8](https://github.com/michaelasper/kir-ai/compare/v1.56.7...v1.56.8) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-475:** avoid deep stage clones in kv cache ([03c119d](https://github.com/michaelasper/kir-ai/commit/03c119dbaa45ba9d5829339329f97b9685adebbd))
+
 ## [1.56.7](https://github.com/michaelasper/kir-ai/compare/v1.56.6...v1.56.7) (2026-05-25)
 
 ### Bug Fixes
