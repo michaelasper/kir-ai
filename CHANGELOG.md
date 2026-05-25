@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.15](https://github.com/michaelasper/kir-ai/compare/v1.57.14...v1.57.15) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-403:** avoid pooling timed-out metal input buffers ([4bc389f](https://github.com/michaelasper/kir-ai/commit/4bc389f8210898e52a2df9ab5da3ab09ae591532))
+* **COR-403:** pool metal head-row selection buffers ([42c658f](https://github.com/michaelasper/kir-ai/commit/42c658f9b307d2bea2f99ef1147382c4efb4bd63))
+
 ## [1.57.14](https://github.com/michaelasper/kir-ai/compare/v1.57.13...v1.57.14) (2026-05-25)
 
 ### Bug Fixes
