@@ -1255,6 +1255,8 @@ version = "0.1.0"
 name = "llm-test-support"
 version = "0.1.0"
 dependencies = [
+ "llm-api",
+ "serde",
  "serde_json",
 ]
 
@@ -1265,6 +1267,8 @@ dependencies = [
  "llm-api",
  "llm-chat-template",
  "llm-models",
+ "llm-test-support",
+ "llm-tool-parser",
  "serde_json",
  "sha2",
  "thiserror",
@@ -1278,6 +1282,7 @@ version = "0.1.0"
 dependencies = [
  "llm-api",
  "llm-models",
+ "llm-test-support",
  "serde",
  "serde_json",
  "thiserror",

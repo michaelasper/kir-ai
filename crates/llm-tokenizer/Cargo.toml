@@ -15,4 +15,6 @@ tracing.workspace = true
 [dev-dependencies]
 llm-api = { path = "../llm-api" }
 llm-models = { path = "../llm-models" }
+llm-test-support = { path = "../llm-test-support" }
+llm-tool-parser = { path = "../llm-tool-parser" }
 serde_json.workspace = true
