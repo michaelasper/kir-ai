@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.9](https://github.com/michaelasper/kir-ai/compare/v1.57.8...v1.57.9) (2026-05-25)
+
+### Performance Improvements
+
+* **COR-448:** split Metal command queues ([3af1786](https://github.com/michaelasper/kir-ai/commit/3af1786e675546aea5d2523ad02906108740acf6))
+
 ## [1.57.8](https://github.com/michaelasper/kir-ai/compare/v1.57.7...v1.57.8) (2026-05-25)
 
 ### Performance Improvements
