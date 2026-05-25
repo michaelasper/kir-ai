@@ -103,7 +103,7 @@ impl MetalSynchronization {
 
     pub(crate) fn begin_command(self: &Arc<Self>) -> MetalCommandInFlight {
         let mut state = self.lock_state();
-        while state.cpu_accessing || state.pending_cpu_access > 0 {
+        while state.cpu_accessing {
             state = self.wait(state);
         }
         state.in_flight_commands += 1;
@@ -115,14 +115,12 @@ impl MetalSynchronization {
     pub(crate) fn begin_cpu_access(self: &Arc<Self>) -> MetalCpuAccessGuard {
         let mut state = self.lock_state();
         // StorageModeShared buffers are visible to both the CPU and GPU. Treat
-        // command submission and CPU copies as one device-wide critical section
-        // so no command can start while a CPU copy is active, and CPU copies wait
-        // for already-submitted commands to finish.
-        state.pending_cpu_access += 1;
+        // active CPU copies as a device-wide critical section. CPU copies wait
+        // for already-submitted commands to finish, but pending CPU access does
+        // not block new GPU submissions on the token hot path.
         while state.cpu_accessing || state.in_flight_commands > 0 {
             state = self.wait(state);
         }
-        state.pending_cpu_access -= 1;
         state.cpu_accessing = true;
         MetalCpuAccessGuard {
             synchronization: Arc::clone(self),
@@ -162,7 +160,6 @@ impl MetalSynchronization {
 #[derive(Debug, Default)]
 struct MetalSynchronizationState {
     in_flight_commands: usize,
-    pending_cpu_access: usize,
     cpu_accessing: bool,
 }
 
@@ -377,5 +374,37 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(1))
             .expect("command starts after cpu access finishes");
         worker.join().expect("worker joins");
+    }
+
+    #[test]
+    fn pending_cpu_access_does_not_block_command_submission() {
+        let synchronization = Arc::new(MetalSynchronization::new());
+        let in_flight = synchronization.begin_command();
+        let (cpu_tx, cpu_rx) = mpsc::channel();
+        let worker_sync = Arc::clone(&synchronization);
+
+        let cpu_worker = std::thread::spawn(move || {
+            let _guard = worker_sync.begin_cpu_access();
+            cpu_tx.send(()).expect("cpu signal sends");
+        });
+
+        assert!(cpu_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        let (command_tx, command_rx) = mpsc::channel();
+        let command_sync = Arc::clone(&synchronization);
+        let command_worker = std::thread::spawn(move || {
+            let _in_flight = command_sync.begin_command();
+            command_tx.send(()).expect("command signal sends");
+        });
+
+        command_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pending cpu access should not block command submission");
+        command_worker.join().expect("command worker joins");
+        drop(in_flight);
+        cpu_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cpu access starts after commands finish");
+        cpu_worker.join().expect("cpu worker joins");
     }
 }

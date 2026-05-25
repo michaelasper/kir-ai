@@ -3,7 +3,7 @@ use super::{
     F16Buffer, F32Buffer, I8Buffer, MetalDevice, MetalError, metal_buffer_byte_len,
     power_of_two_at_most,
 };
-use metal::{MTLResourceOptions, MTLSize};
+use metal::MTLSize;
 use std::ffi::c_void;
 
 impl MetalDevice {
@@ -30,19 +30,9 @@ impl MetalDevice {
         }
 
         let byte_len = std::mem::size_of_val(left) as u64;
-        let left_buffer = self.device.new_buffer_with_data(
-            left.as_ptr().cast::<c_void>(),
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let right_buffer = self.device.new_buffer_with_data(
-            right.as_ptr().cast::<c_void>(),
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
+        let left_buffer = self.take_scratch_f32_buffer(left);
+        let right_buffer = self.take_scratch_f32_buffer(right);
+        let output_buffer = self.take_scratch_buffer(byte_len);
 
         let command_buffer = self.vector_add.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -78,6 +68,9 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, left.len());
             output[..left.len()].copy_from_slice(values);
         };
+        self.return_scratch_buffer(byte_len, left_buffer);
+        self.return_scratch_buffer(byte_len, right_buffer);
+        self.return_scratch_buffer(byte_len, output_buffer);
         Ok(())
     }
 
@@ -114,14 +107,8 @@ impl MetalDevice {
             MetalError::InvalidShape(format!("softmax threadgroup width does not fit u32: {err}"))
         })?;
         let byte_len = std::mem::size_of_val(scores) as u64;
-        let scores_buffer = self.device.new_buffer_with_data(
-            scores.as_ptr().cast::<c_void>(),
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
+        let scores_buffer = self.take_scratch_f32_buffer(scores);
+        let output_buffer = self.take_scratch_buffer(byte_len);
 
         let command_buffer = self.softmax_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -160,6 +147,8 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, scores.len());
             output[..scores.len()].copy_from_slice(values);
         };
+        self.return_scratch_buffer(byte_len, scores_buffer);
+        self.return_scratch_buffer(byte_len, output_buffer);
         Ok(())
     }
 
@@ -204,19 +193,9 @@ impl MetalDevice {
         let values_byte_len = std::mem::size_of_val(values) as u64;
         let weights_byte_len = std::mem::size_of_val(weights) as u64;
         let output_byte_len = metal_buffer_byte_len::<f32>(vector_len, "weighted sum output")?;
-        let values_buffer = self.device.new_buffer_with_data(
-            values.as_ptr().cast::<c_void>(),
-            values_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let weights_buffer = self.device.new_buffer_with_data(
-            weights.as_ptr().cast::<c_void>(),
-            weights_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let values_buffer = self.take_scratch_f32_buffer(values);
+        let weights_buffer = self.take_scratch_f32_buffer(weights);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.weighted_sum_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -261,6 +240,9 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, vector_len);
             output[..vector_len].copy_from_slice(values);
         };
+        self.return_scratch_buffer(values_byte_len, values_buffer);
+        self.return_scratch_buffer(weights_byte_len, weights_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -346,28 +328,18 @@ impl MetalDevice {
         let groups_u32 = u32::try_from(groups).map_err(|err| {
             MetalError::InvalidShape(format!("attention group count does not fit u32: {err}"))
         })?;
-        let query_buffer = self.new_f32_buffer(query)?;
-        let Some(query_buffer) = query_buffer.buffer.as_ref() else {
-            return Err(MetalError::InvalidShape(
-                "non-empty attention requires a query buffer".to_owned(),
-            ));
-        };
+        let query_byte_len = std::mem::size_of_val(query) as u64;
+        let query_buffer = self.take_scratch_f32_buffer(query);
         let score_byte_len = metal_buffer_byte_len::<f32>(score_len, "attention score")?;
         let output_byte_len = metal_buffer_byte_len::<f32>(attention_dim, "attention output")?;
-        let scores_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let weights_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let scores_buffer = self.take_scratch_buffer(score_byte_len);
+        let weights_buffer = self.take_scratch_buffer(score_byte_len);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.attention_scores_f32.queue.new_command_buffer();
         let score_encoder = command_buffer.new_compute_command_encoder();
         score_encoder.set_compute_pipeline_state(&self.attention_scores_f32.pipeline);
-        score_encoder.set_buffer(0, Some(query_buffer), 0);
+        score_encoder.set_buffer(0, Some(&query_buffer), 0);
         score_encoder.set_buffer(1, Some(keys_buffer), 0);
         score_encoder.set_bytes(
             2,
@@ -523,6 +495,10 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, attention_dim);
             output[..attention_dim].copy_from_slice(values);
         };
+        self.return_scratch_buffer(query_byte_len, query_buffer);
+        self.return_scratch_buffer(score_byte_len, scores_buffer);
+        self.return_scratch_buffer(score_byte_len, weights_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -651,28 +627,18 @@ impl MetalDevice {
         let groups_u32 = u32::try_from(groups).map_err(|err| {
             MetalError::InvalidShape(format!("attention group count does not fit u32: {err}"))
         })?;
-        let query_buffer = self.new_f32_buffer(query)?;
-        let Some(query_buffer) = query_buffer.buffer.as_ref() else {
-            return Err(MetalError::InvalidShape(
-                "non-empty attention requires a query buffer".to_owned(),
-            ));
-        };
+        let query_byte_len = std::mem::size_of_val(query) as u64;
+        let query_buffer = self.take_scratch_f32_buffer(query);
         let score_byte_len = metal_buffer_byte_len::<f32>(score_len, "attention score")?;
         let output_byte_len = metal_buffer_byte_len::<f32>(attention_dim, "attention output")?;
-        let scores_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let weights_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let scores_buffer = self.take_scratch_buffer(score_byte_len);
+        let weights_buffer = self.take_scratch_buffer(score_byte_len);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.attention_scores_f16.queue.new_command_buffer();
         let score_encoder = command_buffer.new_compute_command_encoder();
         score_encoder.set_compute_pipeline_state(&self.attention_scores_f16.pipeline);
-        score_encoder.set_buffer(0, Some(query_buffer), 0);
+        score_encoder.set_buffer(0, Some(&query_buffer), 0);
         score_encoder.set_buffer(1, Some(keys_buffer), key_byte_offset);
         score_encoder.set_bytes(
             2,
@@ -828,6 +794,10 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, attention_dim);
             output[..attention_dim].copy_from_slice(values);
         };
+        self.return_scratch_buffer(query_byte_len, query_buffer);
+        self.return_scratch_buffer(score_byte_len, scores_buffer);
+        self.return_scratch_buffer(score_byte_len, weights_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -999,28 +969,18 @@ impl MetalDevice {
         let groups_u32 = u32::try_from(groups).map_err(|err| {
             MetalError::InvalidShape(format!("attention group count does not fit u32: {err}"))
         })?;
-        let query_buffer = self.new_f32_buffer(query)?;
-        let Some(query_buffer) = query_buffer.buffer.as_ref() else {
-            return Err(MetalError::InvalidShape(
-                "non-empty attention requires a query buffer".to_owned(),
-            ));
-        };
+        let query_byte_len = std::mem::size_of_val(query) as u64;
+        let query_buffer = self.take_scratch_f32_buffer(query);
         let score_byte_len = metal_buffer_byte_len::<f32>(score_len, "attention score")?;
         let output_byte_len = metal_buffer_byte_len::<f32>(attention_dim, "attention output")?;
-        let scores_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let weights_buffer = self
-            .device
-            .new_buffer(score_byte_len, MTLResourceOptions::StorageModeShared);
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let scores_buffer = self.take_scratch_buffer(score_byte_len);
+        let weights_buffer = self.take_scratch_buffer(score_byte_len);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.attention_scores_int8.queue.new_command_buffer();
         let score_encoder = command_buffer.new_compute_command_encoder();
         score_encoder.set_compute_pipeline_state(&self.attention_scores_int8.pipeline);
-        score_encoder.set_buffer(0, Some(query_buffer), 0);
+        score_encoder.set_buffer(0, Some(&query_buffer), 0);
         score_encoder.set_buffer(1, Some(keys_buffer), key_byte_offset);
         score_encoder.set_buffer(2, Some(key_scales_buffer), key_scale_byte_offset);
         score_encoder.set_bytes(
@@ -1178,6 +1138,10 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, attention_dim);
             output[..attention_dim].copy_from_slice(values);
         };
+        self.return_scratch_buffer(query_byte_len, query_buffer);
+        self.return_scratch_buffer(score_byte_len, scores_buffer);
+        self.return_scratch_buffer(score_byte_len, weights_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -1259,9 +1223,7 @@ impl MetalDevice {
                 "non-empty head row selection requires a values buffer".to_owned(),
             ));
         };
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.select_head_rows_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -1319,6 +1281,7 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, output_len);
             output[..output_len].copy_from_slice(values);
         };
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -1379,9 +1342,7 @@ impl MetalDevice {
                 "non-empty head row selection requires a values buffer".to_owned(),
             ));
         };
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.select_head_rows_f16.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -1439,6 +1400,7 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, output_len);
             output[..output_len].copy_from_slice(values);
         };
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -1516,9 +1478,7 @@ impl MetalDevice {
                 "non-empty INT8 head row selection requires a scale buffer".to_owned(),
             ));
         };
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self.select_head_rows_int8.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -1577,6 +1537,7 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, output_len);
             output[..output_len].copy_from_slice(values);
         };
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 }

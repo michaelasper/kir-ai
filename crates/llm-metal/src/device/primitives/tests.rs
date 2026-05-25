@@ -68,6 +68,129 @@ async fn full_attention_cache_mix_matches_reference_values() {
 }
 
 #[tokio::test]
+async fn vector_add_reuses_transient_scratch_buffers() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let left = [1.0, 2.0, 3.0];
+    let right = [4.0, 5.0, 6.0];
+    let mut output = vec![0.0; 3];
+
+    device
+        .add_f32(&left, &right, &mut output)
+        .await
+        .expect("first vector add succeeds");
+    device
+        .add_f32(&left, &right, &mut output)
+        .await
+        .expect("second vector add succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(3 * std::mem::size_of::<f32>() as u64),
+        3
+    );
+    assert_eq!(output, [5.0, 7.0, 9.0]);
+}
+
+#[tokio::test]
+async fn softmax_f32_reuses_transient_scratch_buffers() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let scores = [1.0, 2.0, 3.0, 4.0];
+    let mut output = vec![0.0; 4];
+
+    device
+        .softmax_f32(&scores, &mut output)
+        .await
+        .expect("first softmax succeeds");
+    device
+        .softmax_f32(&scores, &mut output)
+        .await
+        .expect("second softmax succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(4 * std::mem::size_of::<f32>() as u64),
+        2
+    );
+}
+
+#[tokio::test]
+async fn weighted_sum_f32_reuses_transient_scratch_buffers() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let values = [1.0, 2.0, 3.0, 4.0, -1.0, 0.5];
+    let weights = [0.5, 0.25, 0.25];
+    let mut output = vec![0.0; 2];
+
+    device
+        .weighted_sum_f32(&values, &weights, 2, &mut output)
+        .await
+        .expect("first weighted sum succeeds");
+    device
+        .weighted_sum_f32(&values, &weights, 2, &mut output)
+        .await
+        .expect("second weighted sum succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(6 * std::mem::size_of::<f32>() as u64),
+        1
+    );
+    assert_eq!(
+        device.scratch_buffer_count_for_test(3 * std::mem::size_of::<f32>() as u64),
+        1
+    );
+    assert_eq!(
+        device.scratch_buffer_count_for_test(2 * std::mem::size_of::<f32>() as u64),
+        1
+    );
+    assert!((output[0] - 1.0).abs() < 1e-6);
+    assert!((output[1] - 2.125).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn full_attention_cache_mix_f32_reuses_transient_scratch_buffers() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let keys = device
+        .new_f32_buffer(&[1.0, 0.0, 0.0, 1.0])
+        .expect("key buffer");
+    let values = device
+        .new_f32_buffer(&[10.0, 20.0, 30.0, 40.0])
+        .expect("value buffer");
+    let query = [1.0, 0.0, 0.0, 1.0];
+    let mut output = vec![0.0; 4];
+
+    device
+        .full_attention_cache_mix_f32_buffered(&keys, &values, &query, 2, 2, 1, 2, 1.0, &mut output)
+        .await
+        .expect("first attention mix succeeds");
+    device
+        .full_attention_cache_mix_f32_buffered(&keys, &values, &query, 2, 2, 1, 2, 1.0, &mut output)
+        .await
+        .expect("second attention mix succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(4 * std::mem::size_of::<f32>() as u64),
+        4
+    );
+}
+
+#[tokio::test]
 async fn full_attention_cache_mix_f16_matches_reference_values() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {
@@ -295,6 +418,35 @@ async fn select_head_rows_f16_buffered_matches_reference_values() {
         .await
         .expect("head row selection succeeds");
 
+    assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
+}
+
+#[tokio::test]
+async fn select_head_rows_f16_buffered_reuses_output_buffer() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let values = device
+        .new_f16_buffer_from_f32(&[1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0])
+        .expect("value buffer");
+    let mut output = vec![0.0; 4];
+
+    device
+        .select_head_rows_f16_buffered(&values, 2, 4, 1, 2, &mut output)
+        .await
+        .expect("first head row selection succeeds");
+    device
+        .select_head_rows_f16_buffered(&values, 2, 4, 1, 2, &mut output)
+        .await
+        .expect("second head row selection succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(4 * std::mem::size_of::<f32>() as u64),
+        1
+    );
     assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
 }
 
