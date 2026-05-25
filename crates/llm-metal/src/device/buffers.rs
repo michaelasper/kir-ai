@@ -492,7 +492,7 @@ impl MetalDevice {
             ))
         })?;
 
-        let command_buffer = self.vector_add.queue.new_command_buffer();
+        let command_buffer = self.transfer_queue().new_command_buffer();
         let encoder = command_buffer.new_blit_command_encoder();
         encoder.copy_from_buffer(
             source_buffer,
@@ -620,7 +620,7 @@ impl MetalDevice {
             ))
         })?;
 
-        let command_buffer = self.attention_scores_f16.queue.new_command_buffer();
+        let command_buffer = self.transfer_queue().new_command_buffer();
         let encoder = command_buffer.new_blit_command_encoder();
         encoder.copy_from_buffer(
             source_buffer,
@@ -792,7 +792,7 @@ impl MetalDevice {
             ))
         })?;
 
-        let command_buffer = self.vector_add.queue.new_command_buffer();
+        let command_buffer = self.transfer_queue().new_command_buffer();
         let encoder = command_buffer.new_blit_command_encoder();
         encoder.copy_from_buffer(
             source_buffer,

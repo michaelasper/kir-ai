@@ -103,9 +103,11 @@ impl MetalBufferHazard {
 
     pub(crate) fn begin_command(self: &Arc<Self>) -> MetalBufferCommandInFlight {
         let mut state = self.lock_state();
-        while state.cpu_accessing {
+        state.pending_commands += 1;
+        while state.cpu_accessing || state.in_flight_commands > 0 {
             state = self.wait(state);
         }
+        state.pending_commands -= 1;
         state.in_flight_commands += 1;
         MetalBufferCommandInFlight {
             hazard: Arc::clone(self),
@@ -114,11 +116,12 @@ impl MetalBufferHazard {
 
     pub(crate) fn begin_cpu_access(self: &Arc<Self>) -> MetalCpuAccessGuard {
         let mut state = self.lock_state();
-        // StorageModeShared buffers are visible to both the CPU and GPU. Treat
-        // active CPU copies as a buffer-local critical section. CPU copies wait
-        // for already-submitted commands touching the same buffer to finish,
-        // but pending CPU access does not block new GPU submissions.
-        while state.cpu_accessing || state.in_flight_commands > 0 {
+        // StorageModeShared buffers are visible to both the CPU and GPU.
+        // Treat active CPU copies as a buffer-local critical section. CPU
+        // copies wait for commands touching the same buffer to finish, and
+        // already-pending GPU submissions keep their place ahead of CPU reads
+        // or writes.
+        while state.cpu_accessing || state.in_flight_commands > 0 || state.pending_commands > 0 {
             state = self.wait(state);
         }
         state.cpu_accessing = true;
@@ -159,6 +162,7 @@ impl MetalBufferHazard {
 
 #[derive(Debug, Default)]
 struct MetalBufferHazardState {
+    pending_commands: usize,
     in_flight_commands: usize,
     cpu_accessing: bool,
 }
@@ -171,12 +175,24 @@ pub(crate) struct MetalCommandInFlight {
 impl MetalCommandInFlight {
     fn begin(hazards: &[&Arc<MetalBufferHazard>]) -> Self {
         Self {
-            _guards: hazards
-                .iter()
+            _guards: ordered_unique_hazards(hazards)
+                .into_iter()
                 .map(|hazard| hazard.begin_command())
                 .collect(),
         }
     }
+}
+
+fn ordered_unique_hazards<'a>(
+    hazards: &[&'a Arc<MetalBufferHazard>],
+) -> Vec<&'a Arc<MetalBufferHazard>> {
+    let mut ordered = hazards.to_vec();
+    // Multi-buffer commands may receive source/destination hazards in
+    // different orders. Address ordering gives every caller the same lock
+    // order, and deduplication avoids self-waiting when source == destination.
+    ordered.sort_unstable_by_key(|hazard| Arc::as_ptr(*hazard) as usize);
+    ordered.dedup_by_key(|hazard| Arc::as_ptr(*hazard) as usize);
+    ordered
 }
 
 #[derive(Debug)]
@@ -427,7 +443,24 @@ mod tests {
     }
 
     #[test]
-    fn pending_cpu_access_does_not_block_command_submission_on_same_buffer() {
+    fn command_submission_does_not_wait_for_in_flight_command_on_unrelated_buffer() {
+        let busy_hazard = Arc::new(MetalBufferHazard::new());
+        let command_hazard = Arc::new(MetalBufferHazard::new());
+        let _in_flight = busy_hazard.begin_command();
+        let (tx, rx) = mpsc::channel();
+
+        let command_worker = std::thread::spawn(move || {
+            let _in_flight = command_hazard.begin_command();
+            tx.send(()).expect("command signal sends");
+        });
+
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("unrelated command submission should not wait for another buffer's command");
+        command_worker.join().expect("command worker joins");
+    }
+
+    #[test]
+    fn same_buffer_command_submission_waits_for_in_flight_command_before_pending_cpu_access() {
         let hazard = Arc::new(MetalBufferHazard::new());
         let in_flight = hazard.begin_command();
         let (cpu_tx, cpu_rx) = mpsc::channel();
@@ -441,17 +474,22 @@ mod tests {
         assert!(cpu_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         let (command_tx, command_rx) = mpsc::channel();
+        let (release_command_tx, release_command_rx) = mpsc::channel::<()>();
         let command_hazard = Arc::clone(&hazard);
         let command_worker = std::thread::spawn(move || {
             let _in_flight = command_hazard.begin_command();
             command_tx.send(()).expect("command signal sends");
+            let _ = release_command_rx.recv();
         });
 
-        command_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("pending cpu access should not block command submission");
-        command_worker.join().expect("command worker joins");
+        assert!(command_rx.recv_timeout(Duration::from_millis(20)).is_err());
         drop(in_flight);
+        command_rx.recv_timeout(Duration::from_secs(1)).expect(
+            "next same-buffer command starts after prior command and before pending cpu access",
+        );
+        assert!(cpu_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(release_command_tx);
+        command_worker.join().expect("command worker joins");
         cpu_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("cpu access starts after commands finish");

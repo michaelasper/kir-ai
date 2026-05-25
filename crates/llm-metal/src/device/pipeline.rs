@@ -12,6 +12,37 @@ pub(crate) struct MetalKernel {
     pub(crate) queue: Arc<CommandQueue>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct MetalCommandQueues {
+    pub(crate) compute: Arc<CommandQueue>,
+    pub(crate) attention: Arc<CommandQueue>,
+    pub(crate) transfer: Arc<CommandQueue>,
+}
+
+impl MetalCommandQueues {
+    fn new(device: &Device) -> Self {
+        let compute = Arc::new(device.new_command_queue());
+        compute.set_label("llm-metal.compute");
+        let attention = Arc::new(device.new_command_queue());
+        attention.set_label("llm-metal.attention");
+        let transfer = Arc::new(device.new_command_queue());
+        transfer.set_label("llm-metal.transfer");
+        Self {
+            compute,
+            attention,
+            transfer,
+        }
+    }
+
+    fn compute(&self) -> &Arc<CommandQueue> {
+        &self.compute
+    }
+
+    fn attention(&self) -> &Arc<CommandQueue> {
+        &self.attention
+    }
+}
+
 impl MetalDevice {
     pub fn system_default() -> Option<Self> {
         Self::system_default_result().ok().flatten()
@@ -27,68 +58,100 @@ impl MetalDevice {
 
     fn new(device: Device) -> Result<Self, MetalError> {
         let library = Self::shader_library(&device)?;
-        let command_queue = Arc::new(device.new_command_queue());
-        let vector_add = Self::kernel(&device, &library, &command_queue, "vector_add")?;
-        let rms_norm_f32_kernel = Self::kernel(&device, &library, &command_queue, "rms_norm_f32")?;
-        let softmax_f32 = Self::kernel(&device, &library, &command_queue, "softmax_f32")?;
-        let attention_scores_f32 =
-            Self::kernel(&device, &library, &command_queue, "attention_scores_f32")?;
-        let attention_scores_f16 =
-            Self::kernel(&device, &library, &command_queue, "attention_scores_f16")?;
-        let attention_scores_int8 =
-            Self::kernel(&device, &library, &command_queue, "attention_scores_int8")?;
-        let softmax_rows_f32 = Self::kernel(&device, &library, &command_queue, "softmax_rows_f32")?;
+        let queues = MetalCommandQueues::new(&device);
+        let vector_add = Self::kernel(&device, &library, queues.compute(), "vector_add")?;
+        let rms_norm_f32_kernel =
+            Self::kernel(&device, &library, queues.compute(), "rms_norm_f32")?;
+        let softmax_f32 = Self::kernel(&device, &library, queues.compute(), "softmax_f32")?;
+        let attention_scores_f32 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "attention_scores_f32",
+        )?;
+        let attention_scores_f16 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "attention_scores_f16",
+        )?;
+        let attention_scores_int8 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "attention_scores_int8",
+        )?;
+        let softmax_rows_f32 =
+            Self::kernel(&device, &library, queues.attention(), "softmax_rows_f32")?;
         let attention_weighted_sum_f32 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "attention_weighted_sum_f32",
         )?;
         let attention_weighted_sum_f16 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "attention_weighted_sum_f16",
         )?;
         let attention_weighted_sum_int8 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "attention_weighted_sum_int8",
         )?;
         let linear_attention_conv1d_silu_f32 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "linear_attention_conv1d_silu_f32",
         )?;
-        let weighted_sum_f32 = Self::kernel(&device, &library, &command_queue, "weighted_sum_f32")?;
+        let weighted_sum_f32 =
+            Self::kernel(&device, &library, queues.compute(), "weighted_sum_f32")?;
         let linear_attention_recurrent_update_f32 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "linear_attention_recurrent_update_f32",
         )?;
         let linear_attention_recurrent_update_state_f32 = Self::kernel(
             &device,
             &library,
-            &command_queue,
+            queues.attention(),
             "linear_attention_recurrent_update_state_f32",
         )?;
-        let select_head_rows_f32 =
-            Self::kernel(&device, &library, &command_queue, "select_head_rows_f32")?;
-        let select_head_rows_f16 =
-            Self::kernel(&device, &library, &command_queue, "select_head_rows_f16")?;
-        let select_head_rows_int8 =
-            Self::kernel(&device, &library, &command_queue, "select_head_rows_int8")?;
-        let matvec_f32 = Self::kernel(&device, &library, &command_queue, "matvec_f32")?;
-        let matvec_bf16_f32 = Self::kernel(&device, &library, &command_queue, "matvec_bf16_f32")?;
-        let batched_matvec_bf16_f32 =
-            Self::kernel(&device, &library, &command_queue, "batched_matvec_bf16_f32")?;
-        let argmax_f32 = Self::kernel(&device, &library, &command_queue, "argmax_f32")?;
-        let top_k_f32 = Self::kernel(&device, &library, &command_queue, "top_k_f32")?;
+        let select_head_rows_f32 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "select_head_rows_f32",
+        )?;
+        let select_head_rows_f16 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "select_head_rows_f16",
+        )?;
+        let select_head_rows_int8 = Self::kernel(
+            &device,
+            &library,
+            queues.attention(),
+            "select_head_rows_int8",
+        )?;
+        let matvec_f32 = Self::kernel(&device, &library, queues.compute(), "matvec_f32")?;
+        let matvec_bf16_f32 = Self::kernel(&device, &library, queues.compute(), "matvec_bf16_f32")?;
+        let batched_matvec_bf16_f32 = Self::kernel(
+            &device,
+            &library,
+            queues.compute(),
+            "batched_matvec_bf16_f32",
+        )?;
+        let argmax_f32 = Self::kernel(&device, &library, queues.compute(), "argmax_f32")?;
+        let top_k_f32 = Self::kernel(&device, &library, queues.compute(), "top_k_f32")?;
         Ok(Self {
             device,
+            queues,
             scratch_buffers: Arc::new(std::sync::Mutex::new(
                 super::buffers::MetalBufferPool::default(),
             )),
@@ -167,6 +230,10 @@ impl MetalDevice {
             queue: Arc::clone(queue),
         }))
     }
+
+    pub(crate) fn transfer_queue(&self) -> &Arc<CommandQueue> {
+        &self.queues.transfer
+    }
 }
 
 fn source_compile_error(err: String, embedded_error: Option<&str>) -> MetalError {
@@ -213,50 +280,70 @@ mod tests {
     }
 
     #[test]
-    fn metal_device_uses_one_command_queue_for_all_kernels() {
+    fn metal_device_uses_distinct_command_queues_for_compute_and_transfer() {
         let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
         else {
             eprintln!("no Metal device available; skipping queue sharing test");
             return;
         };
 
-        let queue = &device.vector_add.queue;
-        assert!(Arc::ptr_eq(queue, &device.rms_norm_f32_kernel.queue));
-        assert!(Arc::ptr_eq(queue, &device.softmax_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.attention_scores_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.attention_scores_f16.queue));
-        assert!(Arc::ptr_eq(queue, &device.attention_scores_int8.queue));
-        assert!(Arc::ptr_eq(queue, &device.softmax_rows_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.attention_weighted_sum_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.attention_weighted_sum_f16.queue));
+        let compute = &device.queues.compute;
+        let attention = &device.queues.attention;
+        let transfer = &device.queues.transfer;
+
+        assert_eq!(compute.label(), "llm-metal.compute");
+        assert_eq!(attention.label(), "llm-metal.attention");
+        assert_eq!(transfer.label(), "llm-metal.transfer");
+        assert!(Arc::ptr_eq(compute, &device.vector_add.queue));
+        assert!(Arc::ptr_eq(compute, &device.rms_norm_f32_kernel.queue));
+        assert!(Arc::ptr_eq(compute, &device.softmax_f32.queue));
+        assert!(Arc::ptr_eq(attention, &device.attention_scores_f32.queue));
+        assert!(Arc::ptr_eq(attention, &device.attention_scores_f16.queue));
+        assert!(Arc::ptr_eq(attention, &device.attention_scores_int8.queue));
+        assert!(Arc::ptr_eq(attention, &device.softmax_rows_f32.queue));
         assert!(Arc::ptr_eq(
-            queue,
+            attention,
+            &device.attention_weighted_sum_f32.queue
+        ));
+        assert!(Arc::ptr_eq(
+            attention,
+            &device.attention_weighted_sum_f16.queue
+        ));
+        assert!(Arc::ptr_eq(
+            attention,
             &device.attention_weighted_sum_int8.queue
         ));
         assert!(Arc::ptr_eq(
-            queue,
+            attention,
             &device.linear_attention_conv1d_silu_f32.queue
         ));
-        assert!(Arc::ptr_eq(queue, &device.weighted_sum_f32.queue));
+        assert!(Arc::ptr_eq(compute, &device.weighted_sum_f32.queue));
         assert!(Arc::ptr_eq(
-            queue,
+            attention,
             &device.linear_attention_recurrent_update_f32.queue
         ));
         assert!(Arc::ptr_eq(
-            queue,
+            attention,
             &device.linear_attention_recurrent_update_state_f32.queue
         ));
-        assert!(Arc::ptr_eq(queue, &device.select_head_rows_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.select_head_rows_f16.queue));
-        assert!(Arc::ptr_eq(queue, &device.select_head_rows_int8.queue));
-        assert!(Arc::ptr_eq(queue, &device.matvec_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.matvec_bf16_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.batched_matvec_bf16_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.argmax_f32.queue));
-        assert!(Arc::ptr_eq(queue, &device.top_k_f32.queue));
+        assert!(Arc::ptr_eq(attention, &device.select_head_rows_f32.queue));
+        assert!(Arc::ptr_eq(attention, &device.select_head_rows_f16.queue));
+        assert!(Arc::ptr_eq(attention, &device.select_head_rows_int8.queue));
+        assert!(Arc::ptr_eq(compute, &device.matvec_f32.queue));
+        assert!(Arc::ptr_eq(compute, &device.matvec_bf16_f32.queue));
+        assert!(Arc::ptr_eq(compute, &device.batched_matvec_bf16_f32.queue));
+        assert!(Arc::ptr_eq(compute, &device.argmax_f32.queue));
+        assert!(Arc::ptr_eq(compute, &device.top_k_f32.queue));
+        assert!(!Arc::ptr_eq(compute, attention));
+        assert!(!Arc::ptr_eq(compute, transfer));
+        assert!(!Arc::ptr_eq(attention, transfer));
 
         let cloned = device.clone();
-        assert!(Arc::ptr_eq(queue, &cloned.vector_add.queue));
-        assert!(Arc::ptr_eq(queue, &cloned.top_k_f32.queue));
+        assert!(Arc::ptr_eq(compute, &cloned.queues.compute));
+        assert!(Arc::ptr_eq(attention, &cloned.queues.attention));
+        assert!(Arc::ptr_eq(transfer, &cloned.queues.transfer));
+        assert!(Arc::ptr_eq(compute, &cloned.vector_add.queue));
+        assert!(Arc::ptr_eq(compute, &cloned.top_k_f32.queue));
+        assert!(Arc::ptr_eq(attention, &cloned.attention_scores_f32.queue));
     }
 }

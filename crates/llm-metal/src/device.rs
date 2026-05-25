@@ -15,7 +15,10 @@ pub use buffers::{Bf16MatrixBuffer, F16Buffer, F32Buffer, I8Buffer};
 pub use error::MetalError;
 pub use reductions::{ArgmaxResult, TopKResult};
 
-use self::{buffers::MetalBufferPool, pipeline::MetalKernel};
+use self::{
+    buffers::MetalBufferPool,
+    pipeline::{MetalCommandQueues, MetalKernel},
+};
 
 pub(crate) fn power_of_two_at_most(value: u64) -> u64 {
     debug_assert!(value > 0);
@@ -39,6 +42,7 @@ pub(crate) fn metal_buffer_byte_len<T>(
 #[derive(Debug, Clone)]
 pub struct MetalDevice {
     pub(crate) device: Device,
+    pub(crate) queues: MetalCommandQueues,
     pub(crate) scratch_buffers: Arc<Mutex<MetalBufferPool>>,
     pub(crate) vector_add: Arc<MetalKernel>,
     pub(crate) rms_norm_f32_kernel: Arc<MetalKernel>,
