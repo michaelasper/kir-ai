@@ -1,7 +1,6 @@
 use llm_backend::native::{
-    NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore,
-    native_final_norm_for_spec_ref, native_lm_head_logits_for_spec_ref,
-    native_lm_head_top_k_for_spec_ref,
+    NativeMatvecBackend, NativeTextModelSpecRef, SafeTensorShardStore, TopKLogit,
+    native_final_norm_for_spec_ref, native_lm_head_top_k_for_spec_ref,
 };
 use llm_backend_contracts::{BackendError, SamplingConfig};
 use llm_sampler::TopPSamplerScratch;
@@ -12,6 +11,8 @@ use std::{
 };
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
+
+const NATIVE_TEXT_TOP_P_PREFILTER_TOP_K: usize = 256;
 
 pub(crate) fn resolve_native_text_max_tokens(
     requested: Option<u32>,
@@ -164,6 +165,68 @@ pub(crate) fn sample_token_id_with_draw_with_scratch(
     }
 }
 
+fn native_text_lm_head_candidate_count(
+    configured_top_k: usize,
+    vocab_size: usize,
+    sampling: SamplingConfig,
+) -> usize {
+    let candidate_top_k = if sampling.is_greedy() {
+        configured_top_k
+    } else {
+        // Top-p needs enough headroom to represent a useful nucleus without
+        // falling back to a full-vocab logits buffer on every sampled token.
+        configured_top_k.max(NATIVE_TEXT_TOP_P_PREFILTER_TOP_K)
+    };
+    candidate_top_k.min(vocab_size).max(1)
+}
+
+fn sample_token_id_from_top_logits_with_draw(
+    top_logits: &[TopKLogit],
+    sampling: SamplingConfig,
+    sampling_draw: Option<f32>,
+    family_display_name: &str,
+    top_p_scratch: &mut TopPSamplerScratch,
+) -> Result<usize, BackendError> {
+    if top_logits.is_empty() {
+        return Err(BackendError::sampler(format!(
+            "{family_display_name} lm head returned no logits"
+        )));
+    }
+
+    match sampling {
+        SamplingConfig::Greedy => Ok(top_logits[0].index),
+        SamplingConfig::TopP { .. } => {
+            let sampling_draw = sampling_draw.ok_or_else(|| {
+                BackendError::sampler(format!(
+                    "{family_display_name} non-greedy sampling requires an RNG draw"
+                ))
+            })?;
+            let candidate_logits = top_logits
+                .iter()
+                .map(|candidate| candidate.logit)
+                .collect::<Vec<_>>();
+            let candidate_index = sample_token_id_with_draw_with_scratch(
+                &candidate_logits,
+                sampling,
+                sampling_draw,
+                family_display_name,
+                top_p_scratch,
+            )?;
+            top_logits
+                .get(candidate_index)
+                .map(|candidate| candidate.index)
+                .ok_or_else(|| {
+                    BackendError::sampler(format!(
+                        "{family_display_name} sampled invalid top-k candidate index {candidate_index}"
+                    ))
+                })
+        }
+        _ => Err(BackendError::invalid_sampling_config(
+            "unsupported sampling configuration",
+        )),
+    }
+}
+
 pub(crate) struct NativeTextNextTokenContext<'a, M: NativeMatvecBackend> {
     pub(crate) store: &'a SafeTensorShardStore,
     pub(crate) spec: NativeTextModelSpecRef<'a>,
@@ -184,34 +247,11 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         let final_norm = native_final_norm_for_spec_ref(self.store, self.spec, hidden, self.matvec)
             .await
             .map_err(BackendError::from)?;
-        if !sampling.is_greedy() {
-            let logits = native_lm_head_logits_for_spec_ref(
-                self.store,
-                self.spec,
-                &final_norm,
-                self.chunk_rows,
-                self.matvec,
-            )
-            .await
-            .map_err(BackendError::from)?;
-            let sampling_draw = sampling_draw.ok_or_else(|| {
-                BackendError::sampler(format!(
-                    "{} non-greedy sampling requires an RNG draw",
-                    self.family_display_name
-                ))
-            })?;
-            let sampled_token_id = sample_token_id_with_draw_with_scratch(
-                &logits,
-                sampling,
-                sampling_draw,
-                self.family_display_name,
-                top_p_scratch,
-            )?;
-            ensure_token_id_fits_u32(sampled_token_id, self.family_display_name)?;
-            return Ok(sampled_token_id);
-        }
-
-        let top_k = self.top_k.min(self.spec.vocab_size() as usize).max(1);
+        let top_k = native_text_lm_head_candidate_count(
+            self.top_k,
+            self.spec.vocab_size() as usize,
+            sampling,
+        );
         let top_logits = native_lm_head_top_k_for_spec_ref(
             self.store,
             self.spec,
@@ -222,14 +262,15 @@ impl<M: NativeMatvecBackend> NativeTextNextTokenContext<'_, M> {
         )
         .await
         .map_err(BackendError::from)?;
-        let item = top_logits.into_iter().next().ok_or_else(|| {
-            BackendError::sampler(format!(
-                "{} lm head returned no logits",
-                self.family_display_name
-            ))
-        })?;
-        ensure_token_id_fits_u32(item.index, self.family_display_name)?;
-        Ok(item.index)
+        let token_id = sample_token_id_from_top_logits_with_draw(
+            &top_logits,
+            sampling,
+            sampling_draw,
+            self.family_display_name,
+            top_p_scratch,
+        )?;
+        ensure_token_id_fits_u32(token_id, self.family_display_name)?;
+        Ok(token_id)
     }
 }
 
@@ -326,6 +367,276 @@ fn splitmix64_next(seed: &mut u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_backend::native::{CpuNativeMatvecBackend, MathError, TensorLoadError, TopKLogit};
+    use llm_models::{ModelFamily, QwenModelSpec};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn top_p_sampling_uses_prefiltered_lm_head_candidates() {
+        let snapshot = llm_test_support::safetensors::temp_snapshot_dir(
+            "llm-native-runtime",
+            "top-p-prefilter",
+        );
+        std::fs::remove_dir_all(&snapshot).ok();
+        std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+        let spec = zero_layer_qwen_spec(1, 300);
+        let mut lm_head = vec![-100.0_f32; spec.vocab_size as usize];
+        lm_head[42] = 100.0;
+        lm_head[17] = 99.0;
+        llm_test_support::safetensors::TinySafetensorsSnapshot::new()
+            .with_bf16_tensor(
+                "model.safetensors",
+                spec.final_norm_weight(),
+                vec![1],
+                vec![0.0],
+            )
+            .with_bf16_tensor(
+                "model.safetensors",
+                spec.lm_head_weight(),
+                vec![spec.vocab_size as usize, 1],
+                lm_head,
+            )
+            .write(&snapshot)
+            .expect("write snapshot");
+
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+        let matvec = RecordingLmHeadMatvec::default();
+        let mut scratch = TopPSamplerScratch::new();
+
+        let token_id = NativeTextNextTokenContext {
+            store: &store,
+            spec: (&spec).into(),
+            top_k: 2,
+            chunk_rows: 64,
+            matvec: &matvec,
+            family_display_name: "Qwen",
+        }
+        .select_next_token(
+            &[1.0],
+            SamplingConfig::TopP {
+                temperature: 1.0,
+                top_p: 0.5,
+            },
+            Some(0.0),
+            &mut scratch,
+        )
+        .await
+        .expect("top-p token");
+
+        assert_eq!(token_id, 42);
+        assert_eq!(matvec.full_vocab_lm_head_calls(), 0);
+        assert_eq!(matvec.top_k_lm_head_calls(), 1);
+        assert_eq!(matvec.last_lm_head_top_k(), 256);
+        std::fs::remove_dir_all(snapshot).ok();
+    }
+
+    #[derive(Default)]
+    struct RecordingLmHeadMatvec {
+        full_vocab_lm_head_calls: AtomicUsize,
+        top_k_lm_head_calls: AtomicUsize,
+        last_lm_head_top_k: AtomicUsize,
+    }
+
+    impl RecordingLmHeadMatvec {
+        fn full_vocab_lm_head_calls(&self) -> usize {
+            self.full_vocab_lm_head_calls.load(Ordering::SeqCst)
+        }
+
+        fn top_k_lm_head_calls(&self) -> usize {
+            self.top_k_lm_head_calls.load(Ordering::SeqCst)
+        }
+
+        fn last_lm_head_top_k(&self) -> usize {
+            self.last_lm_head_top_k.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NativeMatvecBackend for RecordingLmHeadMatvec {
+        async fn bf16_matvec_row_major_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            CpuNativeMatvecBackend
+                .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
+                .await
+        }
+
+        async fn bf16_matvec_rows_f32_in_place(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            chunk_rows: usize,
+            output: &mut [f32],
+        ) -> Result<(), TensorLoadError> {
+            if tensor == "lm_head.weight" {
+                self.full_vocab_lm_head_calls.fetch_add(1, Ordering::SeqCst);
+            }
+            CpuNativeMatvecBackend
+                .bf16_matvec_rows_f32_in_place(store, tensor, input, chunk_rows, output)
+                .await
+        }
+
+        async fn bf16_matvec_top_k_rows_f32(
+            &self,
+            store: &SafeTensorShardStore,
+            tensor: &str,
+            input: &[f32],
+            top_k: usize,
+            chunk_rows: usize,
+        ) -> Result<Vec<TopKLogit>, TensorLoadError> {
+            if tensor == "lm_head.weight" {
+                self.top_k_lm_head_calls.fetch_add(1, Ordering::SeqCst);
+                self.last_lm_head_top_k.store(top_k, Ordering::SeqCst);
+            }
+            CpuNativeMatvecBackend
+                .bf16_matvec_top_k_rows_f32(store, tensor, input, top_k, chunk_rows)
+                .await
+        }
+
+        async fn matvec_row_major_f32_in_place(
+            &self,
+            input: &[f32],
+            weights: &[f32],
+            rows: usize,
+            columns: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+                .await
+        }
+
+        async fn rms_norm_one_centered_f32_in_place(
+            &self,
+            input: &[f32],
+            weight: &[f32],
+            eps: f32,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+                .await
+        }
+
+        async fn softmax_f32_in_place(
+            &self,
+            scores: &[f32],
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .softmax_f32_in_place(scores, output)
+                .await
+        }
+
+        async fn linear_attention_conv1d_silu_f32_in_place(
+            &self,
+            window: &[f32],
+            weights: &[f32],
+            conv_dim: usize,
+            kernel_size: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_conv1d_silu_f32_in_place(
+                    window,
+                    weights,
+                    conv_dim,
+                    kernel_size,
+                    output,
+                )
+                .await
+        }
+
+        async fn weighted_sum_f32_in_place(
+            &self,
+            values: &[f32],
+            weights: &[f32],
+            vector_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .weighted_sum_f32_in_place(values, weights, vector_len, output)
+                .await
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn linear_attention_recurrent_update_f32_in_place(
+            &self,
+            state: &[f32],
+            key: &[f32],
+            value: &[f32],
+            memory: &[f32],
+            beta: f32,
+            decay: f32,
+            key_head_dim: usize,
+            value_head_dim: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .linear_attention_recurrent_update_f32_in_place(
+                    state,
+                    key,
+                    value,
+                    memory,
+                    beta,
+                    decay,
+                    key_head_dim,
+                    value_head_dim,
+                    output,
+                )
+                .await
+        }
+
+        async fn select_head_rows_f32_in_place(
+            &self,
+            values: &[f32],
+            row_count: usize,
+            row_len: usize,
+            head_start: usize,
+            head_len: usize,
+            output: &mut [f32],
+        ) -> Result<(), MathError> {
+            CpuNativeMatvecBackend
+                .select_head_rows_f32_in_place(
+                    values, row_count, row_len, head_start, head_len, output,
+                )
+                .await
+        }
+    }
+
+    fn zero_layer_qwen_spec(hidden_size: u32, vocab_size: u32) -> QwenModelSpec {
+        QwenModelSpec {
+            family: ModelFamily::Qwen,
+            architecture: "Qwen3_5MoeForConditionalGeneration".to_owned(),
+            model_type: "qwen3_5_moe".to_owned(),
+            text_model_type: "qwen3_5_moe_text".to_owned(),
+            hidden_size,
+            rms_norm_eps: 0.0,
+            tie_word_embeddings: false,
+            rope_theta: 1_000_000.0,
+            partial_rotary_factor: 1.0,
+            num_hidden_layers: 0,
+            num_attention_heads: 1,
+            num_key_value_heads: 1,
+            head_dim: hidden_size,
+            linear_num_key_heads: 1,
+            linear_num_value_heads: 1,
+            linear_key_head_dim: 1,
+            linear_value_head_dim: hidden_size,
+            linear_conv_kernel_dim: 1,
+            num_experts: 1,
+            num_experts_per_tok: 1,
+            moe_intermediate_size: 1,
+            shared_expert_intermediate_size: 1,
+            max_position_embeddings: 1,
+            vocab_size,
+            layer_kinds: Vec::new(),
+        }
+    }
 
     fn assert_unsupported_message(err: BackendError, expected: &str) {
         assert!(
