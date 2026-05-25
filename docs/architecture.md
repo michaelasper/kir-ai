@@ -68,6 +68,23 @@ OpenAI-shaped JSON or SSE responses.
 | `llm-kv-cache` | KV-cache and linear-attention cache storage plus token budget accounting. | Used by native Qwen/Gemma execution and mirrored by the Metal backend where supported. |
 | `llm-telemetry` | Token counters and request metrics. | Standalone metrics primitives. Runtime currently constructs API usage directly. |
 
+## Tiny Crate Boundaries
+
+`llm-kv-cache`, `llm-sampler`, and `llm-telemetry` are intentionally retained as
+separate crates:
+
+- `llm-kv-cache` owns cache storage, block tables, quantized cache formats, and
+  token budgeting shared across backend/native/Metal execution boundaries.
+- `llm-sampler` owns deterministic greedy and top-p decode primitives with fast
+  tests and benchmarks, while `llm-native-runtime` depends on it only when native
+  text execution is enabled.
+- `llm-telemetry` owns dependency-light metrics structs shared by server, engine,
+  and benchmark surfaces without introducing API/runtime dependency cycles.
+
+Merging these crates would move code into larger owners without removing a real
+architectural boundary, so their manifests use the shared workspace package
+metadata instead.
+
 ## Protocol Test Backend
 
 The protocol test backend is a protocol test stub, not a chat model and not an

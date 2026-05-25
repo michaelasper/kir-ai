@@ -1,7 +1,9 @@
 [package]
 name = "llm-sampler"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 

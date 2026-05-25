@@ -1,7 +1,9 @@
 [package]
 name = "llm-kv-cache"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
