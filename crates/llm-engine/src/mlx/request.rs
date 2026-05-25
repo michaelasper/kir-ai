@@ -7,9 +7,10 @@ use super::{
 use llm_api::ChatMessage;
 use llm_backend_contracts::{
     BackendChatMessage, BackendChatRole, BackendError, BackendModelMetadata, BackendRequest,
-    BackendToolCall, BackendToolCallFunction, BackendToolCallType, BackendToolDefinition,
-    SamplingConfig,
+    BackendToolCall, BackendToolCallFunction, BackendToolCallType, BackendToolChoice,
+    BackendToolDefinition, SamplingConfig,
 };
+use llm_models::ModelFamily;
 use serde::Serialize;
 use serde_json::Value;
 use url::Url;
@@ -49,6 +50,7 @@ pub(super) fn build_upstream_request(
             stream_options,
         }),
         MlxUpstreamProtocol::ChatCompletions => {
+            validate_mlx_chat_tool_choice_support(metadata, request)?;
             let messages = mlx_chat_messages(request)?;
             let tools = mlx_tools(request);
             let tool_choice = mlx_tool_choice(request)?;
@@ -70,6 +72,46 @@ pub(super) fn build_upstream_request(
         }
     };
     Ok((protocol, request))
+}
+
+fn validate_mlx_chat_tool_choice_support(
+    metadata: &BackendModelMetadata,
+    request: &BackendRequest,
+) -> Result<(), BackendError> {
+    let Some(chat) = request.as_chat() else {
+        return Ok(());
+    };
+    let Some(choice) = chat.required_tool_choice.as_ref() else {
+        return Ok(());
+    };
+    if metadata_family(metadata)? != Some(ModelFamily::Gemma) {
+        return Ok(());
+    }
+    Err(BackendError::unsupported_request(format!(
+        "MLX Gemma required tool_choice is not supported for model `{}` \
+         (backend `{}`, family `{}`); required tool choice {} cannot be enforced",
+        metadata.id,
+        metadata.backend,
+        metadata.family.as_deref().unwrap_or("unknown"),
+        required_tool_choice_label(choice)
+    )))
+}
+
+fn metadata_family(metadata: &BackendModelMetadata) -> Result<Option<ModelFamily>, BackendError> {
+    metadata
+        .family
+        .as_deref()
+        .map(ModelFamily::parse_slug)
+        .transpose()
+        .map_err(|err| BackendError::unsupported_request(err.to_string()))
+}
+
+fn required_tool_choice_label(choice: &BackendToolChoice) -> String {
+    match choice {
+        BackendToolChoice::RequiredAny => "any declared tool".to_owned(),
+        BackendToolChoice::RequiredFunction(name) => format!("function `{name}`"),
+        other => format!("{other:?}"),
+    }
 }
 
 #[derive(Debug, Serialize)]

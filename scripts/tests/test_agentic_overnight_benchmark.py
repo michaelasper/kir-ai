@@ -100,6 +100,38 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
         self.assertEqual(diagnostics["invalid_json_arguments"], 0)
         self.assertEqual(diagnostics["names"], ["record_agentic_observation"])
 
+    def test_sse_error_events_are_recorded_with_stable_metadata(self):
+        bench = load_module()
+        result = {"errors": []}
+
+        handled = bench.record_sse_error_event(
+            result,
+            {
+                "error": {
+                    "message": "invalid request: MLX Gemma required tool_choice is not supported for model `local-gemma4-e2b`",
+                    "code": "invalid_request",
+                    "phase": "request_validation",
+                    "retryable": False,
+                    "type": "llm_engine_error",
+                }
+            },
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            result["errors"],
+            [
+                {
+                    "kind": "sse_error",
+                    "message": "invalid request: MLX Gemma required tool_choice is not supported for model `local-gemma4-e2b`",
+                    "code": "invalid_request",
+                    "phase": "request_validation",
+                    "retryable": False,
+                    "type": "llm_engine_error",
+                }
+            ],
+        )
+
     def test_opencode_command_diagnostics_counts_parseable_shell_commands(self):
         bench = load_module()
 

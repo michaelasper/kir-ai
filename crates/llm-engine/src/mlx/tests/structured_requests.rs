@@ -152,6 +152,54 @@ fn mlx_request_builder_does_not_parse_cache_tool_schema_as_request_tools() {
     assert!(request.get("tools").is_none());
 }
 
+#[test]
+fn mlx_request_builder_rejects_gemma_required_tool_choice_with_attribution() {
+    let client = reqwest::Client::new();
+    let endpoint = Url::parse("http://127.0.0.1:54321").expect("valid loopback endpoint");
+    let metadata = BackendModelMetadata::new("local-gemma4-e2b", "mlx").with_family("gemma");
+    let request = BackendRequest::chat_completion(
+        "local-gemma4-e2b",
+        "<bos><|turn>user\nrecord observation<turn|>\n<|turn>model\n",
+        backend_chat_context_with_tools(
+            vec![ChatMessage::user("record observation")],
+            vec![BackendToolDefinition::function(
+                "record_agentic_observation",
+                "Record a structured benchmark observation.",
+                serde_json::json!({}),
+            )],
+        ),
+        Some(12),
+        SamplingConfig::Greedy,
+        Some(llm_backend_contracts::BackendToolChoice::RequiredFunction(
+            "record_agentic_observation".to_owned(),
+        )),
+        false,
+        BackendCacheContext::chat_template(
+            "gemma/text-it/v1",
+            Some("tool-schema-compatibility-v1".to_owned()),
+        ),
+    );
+
+    let err = super::request::build_upstream_request(
+        &client,
+        &endpoint,
+        "/tmp/local-gemma4-e2b",
+        &metadata,
+        &request,
+        true,
+        true,
+    )
+    .expect_err("Gemma MLX required tool choice must fail closed before upstream proxying");
+
+    assert!(err.is_unsupported_request());
+    let message = err.to_string();
+    assert!(message.contains("MLX Gemma"));
+    assert!(message.contains("model `local-gemma4-e2b`"));
+    assert!(message.contains("backend `mlx`"));
+    assert!(message.contains("family `gemma`"));
+    assert!(message.contains("record_agentic_observation"));
+}
+
 #[tokio::test]
 async fn mlx_backend_routes_deepseek_chat_to_chat_completion_endpoint() {
     let server = FakeMlxServer::start(

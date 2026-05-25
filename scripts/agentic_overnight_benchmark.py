@@ -412,6 +412,8 @@ def stream_chat_completion(
                 result["errors"].append({"kind": "json_decode", "line": line[:500]})
                 continue
             result["chunks"] += 1
+            if record_sse_error_event(result, event):
+                continue
             if event.get("usage"):
                 result["usage"] = event["usage"]
             for choice in event.get("choices", []):
@@ -538,6 +540,23 @@ def tool_call_diagnostics_from_fragments(tool_fragments: list[Any]) -> dict[str,
         "invalid_json_arguments": invalid_json_arguments,
         "names": names,
     }
+
+
+def record_sse_error_event(result: dict[str, Any], event: dict[str, Any]) -> bool:
+    error = event.get("error")
+    if not isinstance(error, dict):
+        return False
+    result.setdefault("errors", []).append(
+        {
+            "kind": "sse_error",
+            "message": error.get("message"),
+            "code": error.get("code"),
+            "phase": error.get("phase"),
+            "retryable": error.get("retryable"),
+            "type": error.get("type"),
+        }
+    )
+    return True
 
 
 def command_strings_from_event(event: Any) -> list[str]:
