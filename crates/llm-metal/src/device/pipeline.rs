@@ -1,4 +1,7 @@
-use super::shaders::METAL_SOURCE;
+use super::shaders::{
+    METAL_SOURCE, SHADER_SOURCE_SHA256, ShaderLibraryLoadCandidate, embedded_metallib,
+    shader_library_load_plan,
+};
 use super::{MetalDevice, MetalError};
 use metal::{CommandQueue, CompileOptions, ComputePipelineState, Device};
 use std::sync::Arc;
@@ -23,9 +26,7 @@ impl MetalDevice {
     }
 
     fn new(device: Device) -> Result<Self, MetalError> {
-        let library = device
-            .new_library_with_source(METAL_SOURCE, &CompileOptions::new())
-            .map_err(MetalError::Compile)?;
+        let library = Self::shader_library(&device)?;
         let command_queue = Arc::new(device.new_command_queue());
         let vector_add = Self::kernel(&device, &library, &command_queue, "vector_add")?;
         let rms_norm_f32_kernel = Self::kernel(&device, &library, &command_queue, "rms_norm_f32")?;
@@ -116,6 +117,39 @@ impl MetalDevice {
         })
     }
 
+    fn shader_library(device: &Device) -> Result<metal::Library, MetalError> {
+        let mut embedded_error = None;
+        for candidate in shader_library_load_plan() {
+            match candidate {
+                ShaderLibraryLoadCandidate::EmbeddedMetallib => {
+                    let Some(bytes) = embedded_metallib() else {
+                        continue;
+                    };
+                    match device.new_library_with_data(bytes) {
+                        Ok(library) => return Ok(library),
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                shader_source_sha256 = SHADER_SOURCE_SHA256,
+                                "failed to load embedded Metal shader library; falling back to source compilation"
+                            );
+                            embedded_error = Some(err);
+                        }
+                    }
+                }
+                ShaderLibraryLoadCandidate::Source => {
+                    return device
+                        .new_library_with_source(METAL_SOURCE, &CompileOptions::new())
+                        .map_err(|err| source_compile_error(err, embedded_error.as_deref()));
+                }
+            }
+        }
+
+        device
+            .new_library_with_source(METAL_SOURCE, &CompileOptions::new())
+            .map_err(MetalError::Compile)
+    }
+
     fn kernel(
         device: &Device,
         library: &metal::Library,
@@ -132,6 +166,15 @@ impl MetalDevice {
             pipeline,
             queue: Arc::clone(queue),
         }))
+    }
+}
+
+fn source_compile_error(err: String, embedded_error: Option<&str>) -> MetalError {
+    match embedded_error {
+        Some(embedded_error) => MetalError::Compile(format!(
+            "embedded metallib load failed ({embedded_error}); source fallback failed: {err}"
+        )),
+        None => MetalError::Compile(err),
     }
 }
 
