@@ -1,6 +1,6 @@
 use super::command::finish_command_buffer_async;
 use super::{MetalDevice, MetalError, metal_buffer_byte_len};
-use metal::{MTLResourceOptions, MTLSize};
+use metal::MTLSize;
 use std::ffi::c_void;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,18 +42,9 @@ impl MetalDevice {
             metal_buffer_byte_len::<u32>(chunk_count, "argmax chunk indices")?;
         let chunk_values_byte_len =
             metal_buffer_byte_len::<f32>(chunk_count, "argmax chunk values")?;
-        let logits_buffer = self.device.new_buffer_with_data(
-            logits.as_ptr().cast::<c_void>(),
-            logits_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let chunk_indices_buffer = self.device.new_buffer(
-            chunk_indices_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let chunk_values_buffer = self
-            .device
-            .new_buffer(chunk_values_byte_len, MTLResourceOptions::StorageModeShared);
+        let logits_buffer = self.take_scratch_f32_buffer(logits);
+        let chunk_indices_buffer = self.take_scratch_buffer(chunk_indices_byte_len);
+        let chunk_values_buffer = self.take_scratch_buffer(chunk_values_byte_len);
 
         let command_buffer = self.argmax_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -92,24 +83,30 @@ impl MetalDevice {
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly chunk_count values. The command buffer has completed.
-        let (chunk_indices, chunk_values) = unsafe {
-            let indices_ptr = chunk_indices_buffer.contents().cast::<u32>();
-            let values_ptr = chunk_values_buffer.contents().cast::<f32>();
-            (
-                std::slice::from_raw_parts(indices_ptr, chunk_count),
-                std::slice::from_raw_parts(values_ptr, chunk_count),
-            )
-        };
-        let mut best = ArgmaxResult {
-            index: chunk_indices[0] as usize,
-            value: chunk_values[0],
-        };
-        for (&index, &value) in chunk_indices.iter().zip(chunk_values).skip(1) {
-            let index = index as usize;
-            if value > best.value || (value == best.value && index < best.index) {
-                best = ArgmaxResult { index, value };
+        let best = {
+            let (chunk_indices, chunk_values) = unsafe {
+                let indices_ptr = chunk_indices_buffer.contents().cast::<u32>();
+                let values_ptr = chunk_values_buffer.contents().cast::<f32>();
+                (
+                    std::slice::from_raw_parts(indices_ptr, chunk_count),
+                    std::slice::from_raw_parts(values_ptr, chunk_count),
+                )
+            };
+            let mut best = ArgmaxResult {
+                index: chunk_indices[0] as usize,
+                value: chunk_values[0],
+            };
+            for (&index, &value) in chunk_indices.iter().zip(chunk_values).skip(1) {
+                let index = index as usize;
+                if value > best.value || (value == best.value && index < best.index) {
+                    best = ArgmaxResult { index, value };
+                }
             }
-        }
+            best
+        };
+        self.return_scratch_buffer(logits_byte_len, logits_buffer);
+        self.return_scratch_buffer(chunk_indices_byte_len, chunk_indices_buffer);
+        self.return_scratch_buffer(chunk_values_byte_len, chunk_values_buffer);
         Ok(best)
     }
 
@@ -163,17 +160,9 @@ impl MetalDevice {
             metal_buffer_byte_len::<u32>(candidate_count, "top-k candidate indices")?;
         let values_byte_len =
             metal_buffer_byte_len::<f32>(candidate_count, "top-k candidate values")?;
-        let logits_buffer = self.device.new_buffer_with_data(
-            logits.as_ptr().cast::<c_void>(),
-            logits_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let indices_buffer = self
-            .device
-            .new_buffer(indices_byte_len, MTLResourceOptions::StorageModeShared);
-        let values_buffer = self
-            .device
-            .new_buffer(values_byte_len, MTLResourceOptions::StorageModeShared);
+        let logits_buffer = self.take_scratch_f32_buffer(logits);
+        let indices_buffer = self.take_scratch_buffer(indices_byte_len);
+        let values_buffer = self.take_scratch_buffer(values_byte_len);
 
         let command_buffer = self.top_k_f32.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -217,17 +206,23 @@ impl MetalDevice {
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly candidate_count values. The command buffer has completed.
-        let mut candidates = unsafe {
-            let indices_ptr = indices_buffer.contents().cast::<u32>();
-            let values_ptr = values_buffer.contents().cast::<f32>();
-            std::slice::from_raw_parts(indices_ptr, candidate_count)
+        let mut candidates = {
+            let (indices, values) = unsafe {
+                (
+                    std::slice::from_raw_parts(
+                        indices_buffer.contents().cast::<u32>(),
+                        candidate_count,
+                    ),
+                    std::slice::from_raw_parts(
+                        values_buffer.contents().cast::<f32>(),
+                        candidate_count,
+                    ),
+                )
+            };
+            indices
                 .iter()
                 .copied()
-                .zip(
-                    std::slice::from_raw_parts(values_ptr, candidate_count)
-                        .iter()
-                        .copied(),
-                )
+                .zip(values.iter().copied())
                 .filter_map(|(index, value)| {
                     (index != u32::MAX).then_some(TopKResult {
                         index: index as usize,
@@ -236,6 +231,9 @@ impl MetalDevice {
                 })
                 .collect::<Vec<_>>()
         };
+        self.return_scratch_buffer(logits_byte_len, logits_buffer);
+        self.return_scratch_buffer(indices_byte_len, indices_buffer);
+        self.return_scratch_buffer(values_byte_len, values_buffer);
         candidates.sort_by(|left, right| {
             right
                 .value
@@ -245,5 +243,44 @@ impl MetalDevice {
         candidates.truncate(final_k);
         output[..final_k].copy_from_slice(&candidates);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MetalDevice;
+
+    #[tokio::test]
+    async fn argmax_f32_reuses_transient_scratch_buffers() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+        let mut logits = vec![-1.0; 600];
+        logits[42] = 4.5;
+        logits[311] = 4.5;
+        logits[599] = 3.25;
+
+        let first = device
+            .argmax_f32(&logits)
+            .await
+            .expect("first argmax succeeds");
+        let second = device
+            .argmax_f32(&logits)
+            .await
+            .expect("second argmax succeeds");
+
+        assert_eq!(first.index, 42);
+        assert_eq!(second.index, 42);
+        assert_eq!(second.value, 4.5);
+        assert_eq!(
+            device.scratch_buffer_count_for_test(600 * std::mem::size_of::<f32>() as u64),
+            1
+        );
+        assert_eq!(
+            device.scratch_buffer_count_for_test(3 * std::mem::size_of::<u32>() as u64),
+            2
+        );
     }
 }

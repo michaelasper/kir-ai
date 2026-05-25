@@ -1,6 +1,6 @@
 use super::command::finish_command_buffer_async;
 use super::{F32Buffer, MetalDevice, MetalError, metal_buffer_byte_len, power_of_two_at_most};
-use metal::{MTLResourceOptions, MTLSize};
+use metal::MTLSize;
 use std::ffi::c_void;
 
 impl MetalDevice {
@@ -74,19 +74,9 @@ impl MetalDevice {
             ))
         })?;
         let byte_len = std::mem::size_of_val(input) as u64;
-        let input_buffer = self.device.new_buffer_with_data(
-            input.as_ptr().cast::<c_void>(),
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let weight_buffer = self.device.new_buffer_with_data(
-            weight.as_ptr().cast::<c_void>(),
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
+        let input_buffer = self.take_scratch_f32_buffer(input);
+        let weight_buffer = self.take_scratch_f32_buffer(weight);
+        let output_buffer = self.take_scratch_buffer(byte_len);
 
         let command_buffer = self.rms_norm_f32_kernel.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -136,6 +126,9 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, input.len());
             output[..input.len()].copy_from_slice(values);
         };
+        self.return_scratch_buffer(byte_len, input_buffer);
+        self.return_scratch_buffer(byte_len, weight_buffer);
+        self.return_scratch_buffer(byte_len, output_buffer);
         Ok(())
     }
 
@@ -184,19 +177,9 @@ impl MetalDevice {
         let input_byte_len = std::mem::size_of_val(window) as u64;
         let output_byte_len =
             metal_buffer_byte_len::<f32>(conv_dim, "linear attention conv output")?;
-        let window_buffer = self.device.new_buffer_with_data(
-            window.as_ptr().cast::<c_void>(),
-            input_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let weight_buffer = self.device.new_buffer_with_data(
-            weights.as_ptr().cast::<c_void>(),
-            input_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(output_byte_len, MTLResourceOptions::StorageModeShared);
+        let window_buffer = self.take_scratch_f32_buffer(window);
+        let weight_buffer = self.take_scratch_f32_buffer(weights);
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
 
         let command_buffer = self
             .linear_attention_conv1d_silu_f32
@@ -248,6 +231,9 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, conv_dim);
             output[..conv_dim].copy_from_slice(values);
         };
+        self.return_scratch_buffer(input_byte_len, window_buffer);
+        self.return_scratch_buffer(input_byte_len, weight_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }
 
@@ -317,29 +303,11 @@ impl MetalDevice {
         let state_byte_len = std::mem::size_of_val(state) as u64;
         let key_byte_len = std::mem::size_of_val(key) as u64;
         let value_byte_len = std::mem::size_of_val(value) as u64;
-        let state_buffer = self.device.new_buffer_with_data(
-            state.as_ptr().cast::<c_void>(),
-            state_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let key_buffer = self.device.new_buffer_with_data(
-            key.as_ptr().cast::<c_void>(),
-            key_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let value_buffer = self.device.new_buffer_with_data(
-            value.as_ptr().cast::<c_void>(),
-            value_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let memory_buffer = self.device.new_buffer_with_data(
-            memory.as_ptr().cast::<c_void>(),
-            value_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let output_buffer = self
-            .device
-            .new_buffer(state_byte_len, MTLResourceOptions::StorageModeShared);
+        let state_buffer = self.take_scratch_f32_buffer(state);
+        let key_buffer = self.take_scratch_f32_buffer(key);
+        let value_buffer = self.take_scratch_f32_buffer(value);
+        let memory_buffer = self.take_scratch_f32_buffer(memory);
+        let output_buffer = self.take_scratch_buffer(state_byte_len);
 
         let command_buffer = self
             .linear_attention_recurrent_update_f32
@@ -403,6 +371,11 @@ impl MetalDevice {
             let values = std::slice::from_raw_parts(ptr, element_count);
             output[..element_count].copy_from_slice(values);
         };
+        self.return_scratch_buffer(state_byte_len, state_buffer);
+        self.return_scratch_buffer(key_byte_len, key_buffer);
+        self.return_scratch_buffer(value_byte_len, value_buffer);
+        self.return_scratch_buffer(value_byte_len, memory_buffer);
+        self.return_scratch_buffer(state_byte_len, output_buffer);
         Ok(())
     }
 
@@ -483,21 +456,9 @@ impl MetalDevice {
         })?;
         let key_byte_len = std::mem::size_of_val(key) as u64;
         let value_byte_len = std::mem::size_of_val(value) as u64;
-        let key_buffer = self.device.new_buffer_with_data(
-            key.as_ptr().cast::<c_void>(),
-            key_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let value_buffer = self.device.new_buffer_with_data(
-            value.as_ptr().cast::<c_void>(),
-            value_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let memory_buffer = self.device.new_buffer_with_data(
-            memory.as_ptr().cast::<c_void>(),
-            value_byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let key_buffer = self.take_scratch_f32_buffer(key);
+        let value_buffer = self.take_scratch_f32_buffer(value);
+        let memory_buffer = self.take_scratch_f32_buffer(memory);
 
         let command_buffer = self
             .linear_attention_recurrent_update_state_f32
@@ -558,12 +519,16 @@ impl MetalDevice {
             "linear_attention_recurrent_update_state_f32",
         )
         .await?;
+        self.return_scratch_buffer(key_byte_len, key_buffer);
+        self.return_scratch_buffer(value_byte_len, value_buffer);
+        self.return_scratch_buffer(value_byte_len, memory_buffer);
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::MetalDevice;
     use super::super::power_of_two_at_most;
     use super::super::shaders::METAL_SOURCE;
 
@@ -606,5 +571,34 @@ mod tests {
         assert_eq!(power_of_two_at_most(3), 2);
         assert_eq!(power_of_two_at_most(1023), 512);
         assert_eq!(power_of_two_at_most(1024), 1024);
+    }
+
+    #[tokio::test]
+    async fn rms_norm_f32_reuses_transient_scratch_buffers() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let input = [3.0, 4.0];
+        let weight = [1.5, 2.5];
+        let mut output = vec![0.0; 2];
+
+        device
+            .rms_norm_f32(&input, &weight, 0.0, &mut output)
+            .await
+            .expect("first RMS norm succeeds");
+        device
+            .rms_norm_f32(&input, &weight, 0.0, &mut output)
+            .await
+            .expect("second RMS norm succeeds");
+
+        assert_eq!(
+            device.scratch_buffer_count_for_test(2 * std::mem::size_of::<f32>() as u64),
+            3
+        );
+        assert!((output[0] - 1.2727922).abs() < 1e-6);
+        assert!((output[1] - 2.828427).abs() < 1e-6);
     }
 }
