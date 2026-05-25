@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.6](https://github.com/michaelasper/kir-ai/compare/v1.56.5...v1.56.6) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-493:** enable bench-server cargo fallback ([17fb763](https://github.com/michaelasper/kir-ai/commit/17fb763ab2e9c6031db8fd0f4d614747a287f688))
+* **COR-493:** gate heavy benchmark and hub dependencies ([7c21083](https://github.com/michaelasper/kir-ai/commit/7c2108357bc32f0c803f6e560da400b0eb4ea674))
+
 ## [1.56.5](https://github.com/michaelasper/kir-ai/compare/v1.56.4...v1.56.5) (2026-05-24)
 
 ### Bug Fixes
