@@ -17,6 +17,10 @@ use llm_backend::native::{
     qwen_prefill_sequence_with_cache, qwen_static_f32_tensors_for_spec,
 };
 use llm_backend_contracts::{BackendCacheContext, BackendToolChoice};
+use llm_test_support::safetensors::{
+    TinyBf16Tensor, TinySafetensorsSnapshot, tiny_multi_safetensors_bf16,
+    tiny_owned_multi_safetensors_bf16, tiny_safetensors_index_json,
+};
 use llm_models::QwenModelSpec;
 use llm_models::{ModelFamilyAdapter, QwenFamilyAdapter};
 use std::path::PathBuf;
@@ -25,7 +29,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-type TinyBf16Tensor = (String, Vec<usize>, Vec<f32>);
 type TinyBf16ShardMap = std::collections::BTreeMap<String, Vec<TinyBf16Tensor>>;
 
 fn test_runtime() -> tokio::runtime::Runtime {

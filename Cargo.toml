@@ -15,6 +15,7 @@ members = [
   "crates/llm-sampler",
   "crates/llm-server",
   "crates/llm-telemetry",
+  "crates/llm-test-support",
   "crates/llm-tokenizer",
   "crates/llm-tool-parser",
   "crates/llm-util",

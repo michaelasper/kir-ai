@@ -5,6 +5,9 @@ use llm_backend::native::{
     qwen_layer_moe_forward, qwen_layer0_moe_router, qwen_prefill_sequence_with_cache,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
+use llm_test_support::safetensors::{
+    TinySafetensorsSnapshot, tiny_safetensors_bf16, tiny_safetensors_f32,
+};
 use std::fmt;
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -213,21 +216,15 @@ fn safetensors_header_rejects_non_integer_shape_dimension() {
 #[test]
 fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
     let root = temp_snapshot_dir("f32-cache-trace");
-    std::fs::create_dir_all(&root).expect("snapshot dir");
-    std::fs::write(
-        root.join("model.safetensors.index.json"),
-        serde_json::json!({
-            "metadata": { "total_size": 12 },
-            "weight_map": { "embed.weight": "model-00001-of-00001.safetensors" }
-        })
-        .to_string(),
-    )
-    .expect("index");
-    std::fs::write(
-        root.join("model-00001-of-00001.safetensors"),
-        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
-    )
-    .expect("shard");
+    TinySafetensorsSnapshot::new()
+        .with_bf16_tensor(
+            "model-00001-of-00001.safetensors",
+            "embed.weight",
+            [2, 3],
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        )
+        .write(&root)
+        .expect("snapshot");
 
     let store = SafeTensorShardStore::open(&root).expect("store opens");
 
@@ -516,233 +513,175 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
 }
 
 fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
-    std::fs::create_dir_all(root).expect("snapshot dir");
-    std::fs::write(
-        root.join("model.safetensors.index.json"),
-        serde_json::json!({
-            "metadata": { "total_size": 256 },
-            "weight_map": {
-                "model.language_model.embed_tokens.weight": "embed.safetensors",
-                "model.language_model.layers.0.input_layernorm.weight": "input_norm.safetensors",
-                "model.language_model.layers.0.linear_attn.in_proj_qkv.weight": "qkv.safetensors",
-                "model.language_model.layers.0.linear_attn.in_proj_z.weight": "z.safetensors",
-                "model.language_model.layers.0.linear_attn.in_proj_b.weight": "b.safetensors",
-                "model.language_model.layers.0.linear_attn.in_proj_a.weight": "a.safetensors",
-                "model.language_model.layers.0.linear_attn.dt_bias": "dt.safetensors",
-                "model.language_model.layers.0.linear_attn.A_log": "a_log.safetensors",
-                "model.language_model.layers.0.linear_attn.conv1d.weight": "conv.safetensors",
-                "model.language_model.layers.0.linear_attn.norm.weight": "attn_norm.safetensors",
-                "model.language_model.layers.0.linear_attn.out_proj.weight": "out.safetensors",
-                "model.language_model.layers.0.post_attention_layernorm.weight": "post_norm.safetensors",
-                "model.language_model.layers.0.mlp.gate.weight": "router.safetensors",
-                "model.language_model.layers.0.mlp.experts.gate_up_proj": "experts_gate_up.safetensors",
-                "model.language_model.layers.0.mlp.experts.down_proj": "experts_down.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight": "shared_gate.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.up_proj.weight": "shared_up.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.down_proj.weight": "shared_down.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert_gate.weight": "shared_expert_gate.safetensors"
-            }
-        })
-        .to_string(),
-    )
-    .expect("index");
-    for (filename, tensor, shape, values) in [
-        (
+    TinySafetensorsSnapshot::new()
+        .with_bf16_tensor(
             "embed.safetensors",
             "model.language_model.embed_tokens.weight",
-            vec![2, 2],
-            vec![1.0, 0.0, 0.0, 1.0],
-        ),
-        (
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
             "input_norm.safetensors",
             "model.language_model.layers.0.input_layernorm.weight",
-            vec![2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "qkv.safetensors",
             "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
-            vec![4, 2],
-            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 4.0],
-        ),
-        (
+            [4, 2],
+            [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 4.0],
+        )
+        .with_bf16_tensor(
             "z.safetensors",
             "model.language_model.layers.0.linear_attn.in_proj_z.weight",
-            vec![2, 2],
-            vec![1.0, 0.0, 0.0, 1.0],
-        ),
-        (
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
             "b.safetensors",
             "model.language_model.layers.0.linear_attn.in_proj_b.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "a.safetensors",
             "model.language_model.layers.0.linear_attn.in_proj_a.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "dt.safetensors",
             "model.language_model.layers.0.linear_attn.dt_bias",
-            vec![1],
-            vec![0.0],
-        ),
-        (
+            [1],
+            [0.0],
+        )
+        .with_bf16_tensor(
             "a_log.safetensors",
             "model.language_model.layers.0.linear_attn.A_log",
-            vec![1],
-            vec![0.0],
-        ),
-        (
+            [1],
+            [0.0],
+        )
+        .with_bf16_tensor(
             "conv.safetensors",
             "model.language_model.layers.0.linear_attn.conv1d.weight",
-            vec![4, 1],
-            vec![1.0, 1.0, 1.0, 1.0],
-        ),
-        (
+            [4, 1],
+            [1.0, 1.0, 1.0, 1.0],
+        )
+        .with_bf16_tensor(
             "attn_norm.safetensors",
             "model.language_model.layers.0.linear_attn.norm.weight",
-            vec![2],
-            vec![1.0, 1.0],
-        ),
-        (
+            [2],
+            [1.0, 1.0],
+        )
+        .with_bf16_tensor(
             "out.safetensors",
             "model.language_model.layers.0.linear_attn.out_proj.weight",
-            vec![2, 2],
-            vec![1.0, 0.0, 0.0, 1.0],
-        ),
-        (
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
             "post_norm.safetensors",
             "model.language_model.layers.0.post_attention_layernorm.weight",
-            vec![2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "router.safetensors",
             "model.language_model.layers.0.mlp.gate.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "experts_gate_up.safetensors",
             "model.language_model.layers.0.mlp.experts.gate_up_proj",
-            vec![2, 2],
-            vec![0.0, 0.0, 0.0, 0.0],
-        ),
-        (
+            [2, 2],
+            [0.0, 0.0, 0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "experts_down.safetensors",
             "model.language_model.layers.0.mlp.experts.down_proj",
-            vec![2, 1],
-            vec![0.0, 0.0],
-        ),
-        (
+            [2, 1],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_gate.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_up.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_down.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
-            vec![2, 1],
-            vec![0.0, 0.0],
-        ),
-        (
+            [2, 1],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_expert_gate.safetensors",
             "model.language_model.layers.0.mlp.shared_expert_gate.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-    ] {
-        std::fs::write(
-            root.join(filename),
-            tiny_safetensors_bf16(tensor, &shape, &values),
+            [1, 2],
+            [0.0, 0.0],
         )
-        .expect("tensor");
-    }
+        .write(root)
+        .expect("snapshot");
 }
 
 fn write_tiny_moe_forward_snapshot(root: &std::path::Path) {
-    std::fs::create_dir_all(root).expect("snapshot dir");
-    std::fs::write(
-        root.join("model.safetensors.index.json"),
-        serde_json::json!({
-            "metadata": { "total_size": 104 },
-            "weight_map": {
-                "model.language_model.layers.0.mlp.gate.weight": "router.safetensors",
-                "model.language_model.layers.0.mlp.experts.gate_up_proj": "gate_up.safetensors",
-                "model.language_model.layers.0.mlp.experts.down_proj": "down.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight": "shared_gate.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.up_proj.weight": "shared_up.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert.down_proj.weight": "shared_down.safetensors",
-                "model.language_model.layers.0.mlp.shared_expert_gate.weight": "shared_expert_gate.safetensors"
-            }
-        })
-        .to_string(),
-    )
-    .expect("index");
-    for (filename, tensor, shape, values) in [
-        (
+    TinySafetensorsSnapshot::new()
+        .with_bf16_tensor(
             "router.safetensors",
             "model.language_model.layers.0.mlp.gate.weight",
-            vec![3, 2],
-            vec![1.0, 0.0, 0.0, 2.0, 1.0, 1.0],
-        ),
-        (
+            [3, 2],
+            [1.0, 0.0, 0.0, 2.0, 1.0, 1.0],
+        )
+        .with_bf16_tensor(
             "gate_up.safetensors",
             "model.language_model.layers.0.mlp.experts.gate_up_proj",
-            vec![2, 2, 2],
-            vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
-        ),
-        (
+            [2, 2, 2],
+            [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        )
+        .with_bf16_tensor(
             "down.safetensors",
             "model.language_model.layers.0.mlp.experts.down_proj",
-            vec![2, 2, 1],
-            vec![1.0, 2.0, 3.0, 4.0],
-        ),
-        (
+            [2, 2, 1],
+            [1.0, 2.0, 3.0, 4.0],
+        )
+        .with_bf16_tensor(
             "shared_gate.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_up.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-        (
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_down.safetensors",
             "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
-            vec![2, 1],
-            vec![0.0, 0.0],
-        ),
-        (
+            [2, 1],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
             "shared_expert_gate.safetensors",
             "model.language_model.layers.0.mlp.shared_expert_gate.weight",
-            vec![1, 2],
-            vec![0.0, 0.0],
-        ),
-    ] {
-        std::fs::write(
-            root.join(filename),
-            tiny_safetensors_bf16(tensor, &shape, &values),
+            [1, 2],
+            [0.0, 0.0],
         )
-        .expect("tensor");
-    }
+        .write(root)
+        .expect("snapshot");
 }
 
 fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("llm-backend-{label}-{}", std::process::id()))
+    llm_test_support::safetensors::temp_snapshot_dir("llm-backend", label)
 }
 
 fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
@@ -773,42 +712,6 @@ fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
         vocab_size: 2,
         layer_kinds: vec![kind],
     }
-}
-
-fn tiny_safetensors_bf16(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
-    let mut data = Vec::with_capacity(values.len() * 2);
-    for value in values {
-        data.extend_from_slice(&f32_to_bf16_bits(*value).to_le_bytes());
-    }
-    tiny_safetensors(name, "BF16", shape, &data)
-}
-
-fn tiny_safetensors_f32(name: &str, shape: &[usize], values: &[f32]) -> Vec<u8> {
-    let mut data = Vec::with_capacity(std::mem::size_of_val(values));
-    for value in values {
-        data.extend_from_slice(&value.to_le_bytes());
-    }
-    tiny_safetensors(name, "F32", shape, &data)
-}
-
-fn tiny_safetensors(name: &str, dtype: &str, shape: &[usize], data: &[u8]) -> Vec<u8> {
-    let header = serde_json::json!({
-        name: {
-            "dtype": dtype,
-            "shape": shape,
-            "data_offsets": [0, data.len()]
-        }
-    })
-    .to_string();
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(header.as_bytes());
-    bytes.extend_from_slice(data);
-    bytes
-}
-
-fn f32_to_bf16_bits(value: f32) -> u16 {
-    (value.to_bits() >> 16) as u16
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {

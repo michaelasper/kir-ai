@@ -24,6 +24,7 @@ tracing.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+llm-test-support = { path = "../llm-test-support" }
 tokio = { workspace = true, features = ["full"] }
 
 [[bench]]

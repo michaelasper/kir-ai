@@ -1050,6 +1050,7 @@ dependencies = [
  "llm-backend-contracts",
  "llm-kv-cache",
  "llm-models",
+ "llm-test-support",
  "memmap2",
  "safetensors",
  "serde",
@@ -1207,6 +1208,7 @@ dependencies = [
  "llm-metal",
  "llm-models",
  "llm-sampler",
+ "llm-test-support",
  "llm-tokenizer",
  "llm-util",
  "rand",
@@ -1280,6 +1282,13 @@ dependencies = [
 [[package]]
 name = "llm-telemetry"
 version = "0.1.0"
+
+[[package]]
+name = "llm-test-support"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "llm-tokenizer"
