@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.56.7](https://github.com/michaelasper/kir-ai/compare/v1.56.6...v1.56.7) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-474:** pool bf16 matvec buffers ([92a7e1a](https://github.com/michaelasper/kir-ai/commit/92a7e1af26b9a17765c5f7707cf295b043492499))
+
 ## [1.56.6](https://github.com/michaelasper/kir-ai/compare/v1.56.5...v1.56.6) (2026-05-25)
 
 ### Bug Fixes
