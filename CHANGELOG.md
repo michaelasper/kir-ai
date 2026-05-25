@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.7](https://github.com/michaelasper/kir-ai/compare/v1.57.6...v1.57.7) (2026-05-25)
+
+### Performance Improvements
+
+* **COR-446:** move decode qk rms norm to CPU ([bf24188](https://github.com/michaelasper/kir-ai/commit/bf24188503c4d09c2056d8352945c1ebc8ae116e))
+
 ## [1.57.6](https://github.com/michaelasper/kir-ai/compare/v1.57.5...v1.57.6) (2026-05-25)
 
 ### Bug Fixes
