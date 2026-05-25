@@ -422,6 +422,37 @@ async fn select_head_rows_f16_buffered_matches_reference_values() {
 }
 
 #[tokio::test]
+async fn select_head_rows_f32_reuses_transient_scratch_buffers() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let values = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
+    let mut output = vec![0.0; 4];
+
+    device
+        .select_head_rows_f32(&values, 2, 4, 1, 2, &mut output)
+        .await
+        .expect("first f32 head row selection succeeds");
+    device
+        .select_head_rows_f32(&values, 2, 4, 1, 2, &mut output)
+        .await
+        .expect("second f32 head row selection succeeds");
+
+    assert_eq!(
+        device.scratch_buffer_count_for_test(8 * std::mem::size_of::<f32>() as u64),
+        1
+    );
+    assert_eq!(
+        device.scratch_buffer_count_for_test(4 * std::mem::size_of::<f32>() as u64),
+        1
+    );
+    assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
+}
+
+#[tokio::test]
 async fn select_head_rows_f16_buffered_reuses_output_buffer() {
     let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
     else {

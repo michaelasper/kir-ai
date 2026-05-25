@@ -1,10 +1,10 @@
-use super::command::finish_command_buffer_async;
+use super::command::{MetalBufferHazard, finish_command_buffer_async};
 use super::{
     F16Buffer, F32Buffer, I8Buffer, MetalDevice, MetalError, metal_buffer_byte_len,
     power_of_two_at_most,
 };
 use metal::MTLSize;
-use std::ffi::c_void;
+use std::{ffi::c_void, sync::Arc};
 
 impl MetalDevice {
     pub async fn add_f32(
@@ -1158,16 +1158,43 @@ impl MetalDevice {
         head_len: usize,
         output: &mut [f32],
     ) -> Result<(), MetalError> {
-        let values_buffer = self.new_f32_buffer(values)?;
-        self.select_head_rows_f32_buffered(
-            &values_buffer,
-            row_count,
-            row_len,
-            head_start,
-            head_len,
-            output,
-        )
-        .await
+        if values.is_empty() {
+            let values_buffer = self.new_f32_buffer(values)?;
+            return self
+                .select_head_rows_f32_buffered(
+                    &values_buffer,
+                    row_count,
+                    row_len,
+                    head_start,
+                    head_len,
+                    output,
+                )
+                .await;
+        }
+
+        let values_byte_len = std::mem::size_of_val(values);
+        let scratch_buffer = self.take_scratch_f32_buffer(values);
+        let values_buffer = F32Buffer {
+            buffer: Some(scratch_buffer),
+            hazard: Arc::new(MetalBufferHazard::new()),
+            len: values.len(),
+            byte_len: values_byte_len,
+        };
+        let result = self
+            .select_head_rows_f32_buffered(
+                &values_buffer,
+                row_count,
+                row_len,
+                head_start,
+                head_len,
+                output,
+            )
+            .await;
+        let F32Buffer { buffer, .. } = values_buffer;
+        if let Some(buffer) = buffer {
+            self.return_scratch_buffer(values_byte_len as u64, buffer);
+        }
+        result
     }
 
     pub async fn select_head_rows_f32_buffered(
