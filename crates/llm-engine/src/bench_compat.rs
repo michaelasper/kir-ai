@@ -9,12 +9,16 @@ pub(crate) fn run(args: Vec<String>) -> anyhow::Result<()> {
         let mut command = Command::new(bench_bin);
         command.args(&args);
         run_child(command, "llm-bench")
+    } else if let Some(workspace_root) = workspace_root() {
+        run_with_cargo(&workspace_root, &args)
     } else if let Some(bench_bin) = sibling_bench_binary()? {
         let mut command = Command::new(bench_bin);
         command.args(&args);
         run_child(command, "llm-bench")
     } else {
-        run_with_cargo(&args)
+        anyhow::bail!(
+            "locate kir-ai workspace root for llm-bench; set {BENCH_BIN_ENV} to a built llm-bench binary"
+        )
     }?;
 
     if status.success() {
@@ -37,17 +41,22 @@ fn sibling_bench_binary() -> anyhow::Result<Option<PathBuf>> {
     Ok(candidate.is_file().then_some(candidate))
 }
 
-fn run_with_cargo(args: &[String]) -> anyhow::Result<ExitStatus> {
-    let workspace_root = workspace_root().context(
-        "locate kir-ai workspace root for llm-bench; set LLM_ENGINE_BENCH_BIN to a built llm-bench binary",
-    )?;
+fn run_with_cargo(workspace_root: &Path, args: &[String]) -> anyhow::Result<ExitStatus> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
         .current_dir(workspace_root)
-        .args(["run", "--quiet", "-p", "llm-bench", "--"])
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "llm-bench",
+            "--features",
+            "bench-server",
+            "--",
+        ])
         .args(args);
-    run_child(command, "cargo run -p llm-bench")
+    run_child(command, "cargo run -p llm-bench --features bench-server")
 }
 
 fn run_child(mut command: Command, program: &str) -> anyhow::Result<ExitStatus> {

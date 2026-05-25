@@ -5,6 +5,10 @@ The `llm-engine` binary is the HTTP server and model tooling CLI. The
 compatibility launcher. Argument parsing is manual. Flags use `--flag value`;
 boolean flags are present or absent.
 
+Benchmark subcommands require an `llm-bench` binary built with the
+`bench-server` feature. Local Cargo runs must pass `--features bench-server`;
+the default Cargo target stays thin for dependency hygiene.
+
 ## Synopsis
 
 ```sh
@@ -26,7 +30,7 @@ When running through Cargo:
 cargo run -p llm-engine --features test-utils -- serve \
   --protocol-test-backend \
   --i-understand-this-is-not-real-inference
-cargo run -p llm-bench -- qwen-long-context --dry-run --profile all
+cargo run -p llm-bench --features bench-server -- qwen-long-context --dry-run --profile all
 cargo run -p llm-engine -- model list
 ```
 
@@ -138,7 +142,9 @@ snapshots.
 
 Runs or plans the Qwen long-context promotion and characterization benchmark.
 `llm-engine bench qwen-long-context` remains available as a compatibility
-launcher and delegates to the `llm-bench` binary.
+launcher. An explicit `LLM_ENGINE_BENCH_BIN` override is used as-is. Otherwise,
+in a source checkout the launcher invokes Cargo with `--features bench-server`;
+outside the workspace it delegates to a sibling `llm-bench` binary.
 
 Single-lane usage keeps the original flags:
 
@@ -212,7 +218,9 @@ optional snapshot identity, declared MLX-LM sweep knobs, repo revision metadata,
 measured cache phase, aggregate summary rows, and the structured
 `prefill_concurrency`, `prefill_sweep`, and `stable_prefix` ranking reports.
 `llm-engine bench qwen-mlx-tool-normalized` remains available as a compatibility
-launcher and delegates to the `llm-bench` binary.
+launcher. An explicit `LLM_ENGINE_BENCH_BIN` override is used as-is. Otherwise,
+in a source checkout the launcher invokes Cargo with `--features bench-server`;
+outside the workspace it delegates to a sibling `llm-bench` binary.
 
 Start the sidecars in separate terminals. Direct MLX-LM lanes for Qwen must
 disable thinking with `--chat-template-args '{"enable_thinking":false}'` or an

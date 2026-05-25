@@ -23,6 +23,82 @@ fn model_lifecycle_parser_is_exposed_from_cli_model_module() {
 }
 
 #[test]
+#[cfg(all(feature = "bench", unix))]
+fn bench_compat_cargo_fallback_enables_bench_server_feature() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let engine_bin = temp
+        .path()
+        .join(format!("llm-engine{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_llm-engine"), &engine_bin).expect("copy llm-engine binary");
+    let mut permissions = std::fs::metadata(&engine_bin)
+        .expect("copied engine metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&engine_bin, permissions).expect("mark copied engine executable");
+
+    let thin_sibling_bench = temp
+        .path()
+        .join(format!("llm-bench{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &thin_sibling_bench,
+        "#!/bin/sh\necho 'thin sibling llm-bench should not be selected' >&2\nexit 67\n",
+    )
+    .expect("write thin sibling bench shim");
+    let mut permissions = std::fs::metadata(&thin_sibling_bench)
+        .expect("thin sibling bench metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&thin_sibling_bench, permissions)
+        .expect("mark thin sibling bench executable");
+
+    let cargo_shim = temp.path().join("cargo-shim");
+    let arg_log = temp.path().join("cargo-args.txt");
+    std::fs::write(
+        &cargo_shim,
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$ARG_LOG"
+case " $* " in
+  *" --features bench-server "*) exit 0 ;;
+  *) echo "missing --features bench-server: $*" >&2; exit 66 ;;
+esac
+"#,
+    )
+    .expect("write cargo shim");
+    let mut permissions = std::fs::metadata(&cargo_shim)
+        .expect("cargo shim metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&cargo_shim, permissions).expect("mark cargo shim executable");
+
+    let output = Command::new(&engine_bin)
+        .env("CARGO", &cargo_shim)
+        .env("ARG_LOG", &arg_log)
+        .env_remove("LLM_ENGINE_BENCH_BIN")
+        .args([
+            "bench",
+            "qwen-long-context",
+            "--dry-run",
+            "--profile",
+            "135k",
+            "--snapshot",
+            "/tmp/kir-ai-review-snapshot",
+        ])
+        .output()
+        .expect("run copied llm-engine bench fallback");
+
+    assert!(
+        output.status.success(),
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}\ncargo args:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        std::fs::read_to_string(&arg_log).unwrap_or_default()
+    );
+}
+
+#[test]
 #[cfg(feature = "bench")]
 fn long_context_bench_dry_run_defines_qwen_promotion_profiles() {
     let temp = tempfile::tempdir().expect("tempdir");
