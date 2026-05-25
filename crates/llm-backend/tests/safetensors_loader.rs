@@ -28,6 +28,7 @@ struct RecordingMatvecBackend {
     conv1d_calls: AtomicUsize,
     dense_f32_calls: AtomicUsize,
     recurrent_cache_update_calls: AtomicUsize,
+    rms_norm_calls: AtomicUsize,
     softmax_top_k_calls: AtomicUsize,
 }
 
@@ -167,6 +168,10 @@ impl RecordingMatvecBackend {
 
     fn recurrent_cache_update_calls(&self) -> usize {
         self.recurrent_cache_update_calls.load(Ordering::Relaxed)
+    }
+
+    fn rms_norm_calls(&self) -> usize {
+        self.rms_norm_calls.load(Ordering::Relaxed)
     }
 
     fn softmax_top_k_calls(&self) -> usize {
@@ -381,8 +386,22 @@ impl NativeMatvecBackend for RecordingMatvecBackend {
         eps: f32,
         output: &mut [f32],
     ) -> Result<(), MathError> {
+        self.rms_norm_calls.fetch_add(1, Ordering::Relaxed);
         CpuNativeMatvecBackend
             .rms_norm_one_centered_f32_in_place(input, weight, eps, output)
+            .await
+    }
+
+    async fn rms_norm_f32_in_place(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        eps: f32,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        self.rms_norm_calls.fetch_add(1, Ordering::Relaxed);
+        CpuNativeMatvecBackend
+            .rms_norm_f32_in_place(input, weight, eps, output)
             .await
     }
 
@@ -632,6 +651,84 @@ fn write_tiny_linear_decoder_snapshot(root: &std::path::Path) {
         .expect("snapshot");
 }
 
+fn write_tiny_qwen3_dense_decoder_snapshot(root: &std::path::Path) {
+    TinySafetensorsSnapshot::new()
+        .with_bf16_tensor(
+            "embed.safetensors",
+            "model.embed_tokens.weight",
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "input_norm.safetensors",
+            "model.layers.0.input_layernorm.weight",
+            [2],
+            [1.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "q.safetensors",
+            "model.layers.0.self_attn.q_proj.weight",
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "k.safetensors",
+            "model.layers.0.self_attn.k_proj.weight",
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "v.safetensors",
+            "model.layers.0.self_attn.v_proj.weight",
+            [2, 2],
+            [2.0, 0.0, 0.0, 4.0],
+        )
+        .with_bf16_tensor(
+            "q_norm.safetensors",
+            "model.layers.0.self_attn.q_norm.weight",
+            [2],
+            [1.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "k_norm.safetensors",
+            "model.layers.0.self_attn.k_norm.weight",
+            [2],
+            [1.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "o.safetensors",
+            "model.layers.0.self_attn.o_proj.weight",
+            [2, 2],
+            [1.0, 0.0, 0.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "post_norm.safetensors",
+            "model.layers.0.post_attention_layernorm.weight",
+            [2],
+            [1.0, 1.0],
+        )
+        .with_bf16_tensor(
+            "gate.safetensors",
+            "model.layers.0.mlp.gate_proj.weight",
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
+            "up.safetensors",
+            "model.layers.0.mlp.up_proj.weight",
+            [1, 2],
+            [0.0, 0.0],
+        )
+        .with_bf16_tensor(
+            "down.safetensors",
+            "model.layers.0.mlp.down_proj.weight",
+            [2, 1],
+            [0.0, 0.0],
+        )
+        .write(root)
+        .expect("snapshot");
+}
+
 fn write_tiny_moe_forward_snapshot(root: &std::path::Path) {
     TinySafetensorsSnapshot::new()
         .with_bf16_tensor(
@@ -711,6 +808,36 @@ fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
         max_position_embeddings: 128,
         vocab_size: 2,
         layer_kinds: vec![kind],
+    }
+}
+
+fn tiny_qwen3_dense_spec() -> QwenModelSpec {
+    QwenModelSpec {
+        family: ModelFamily::Qwen,
+        architecture: "Qwen3ForCausalLM".to_owned(),
+        model_type: "qwen3".to_owned(),
+        text_model_type: "qwen3".to_owned(),
+        hidden_size: 2,
+        rms_norm_eps: 1e-6,
+        tie_word_embeddings: true,
+        rope_theta: 10_000.0,
+        partial_rotary_factor: 1.0,
+        num_hidden_layers: 1,
+        num_attention_heads: 1,
+        num_key_value_heads: 1,
+        head_dim: 2,
+        linear_num_key_heads: 0,
+        linear_num_value_heads: 0,
+        linear_key_head_dim: 0,
+        linear_value_head_dim: 0,
+        linear_conv_kernel_dim: 0,
+        num_experts: 0,
+        num_experts_per_tok: 0,
+        moe_intermediate_size: 1,
+        shared_expert_intermediate_size: 0,
+        max_position_embeddings: 128,
+        vocab_size: 2,
+        layer_kinds: vec![AttentionKind::FullAttention],
     }
 }
 

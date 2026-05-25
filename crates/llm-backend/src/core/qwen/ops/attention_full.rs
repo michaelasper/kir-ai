@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
 use super::super::super::math::{
-    InferenceScratchpad, MathError, apply_rope_to_head, require_len, sigmoid_f32,
+    InferenceScratchpad, MathError, apply_rope_to_head, require_len,
+    rms_norm_f32_in_place as cpu_rms_norm_f32_in_place,
+    rms_norm_one_centered_f32_in_place as cpu_rms_norm_one_centered_f32_in_place, sigmoid_f32,
 };
 use super::super::super::native_attention::{
     NativeF32Rows, NativeFullAttentionDims, NativeFullAttentionSequenceParts,
@@ -97,6 +99,19 @@ async fn qwen_attention_rms_norm(
             .await
     } else {
         rms_norm_f32(input, weight, config.rms_norm_eps, matvec).await
+    }
+}
+
+fn qwen_attention_rms_norm_cpu_in_place(
+    input: &[f32],
+    weight: &[f32],
+    config: QwenFullAttentionSequenceConfig,
+    output: &mut [f32],
+) -> Result<(), MathError> {
+    if config.one_centered_rms_norm {
+        cpu_rms_norm_one_centered_f32_in_place(input, weight, config.rms_norm_eps, output)
+    } else {
+        cpu_rms_norm_f32_in_place(input, weight, config.rms_norm_eps, output)
     }
 }
 
@@ -241,14 +256,12 @@ pub(crate) async fn qwen_full_attention_step_with_cache_from_parts(
             head * dims.head_dim
         };
         let q_start = head * dims.head_dim;
-        let normalized = qwen_attention_rms_norm(
+        qwen_attention_rms_norm_cpu_in_place(
             &parts.q_proj[projected_head_start..projected_head_start + dims.head_dim],
             parts.q_norm_weight,
             config,
-            matvec,
-        )
-        .await?;
-        query[q_start..q_start + dims.head_dim].copy_from_slice(&normalized);
+            &mut query[q_start..q_start + dims.head_dim],
+        )?;
         if config.q_projection_gate {
             gate[q_start..q_start + dims.head_dim].copy_from_slice(
                 &parts.q_proj[projected_head_start + dims.head_dim
@@ -266,14 +279,12 @@ pub(crate) async fn qwen_full_attention_step_with_cache_from_parts(
     let mut key = vec![0.0; key_value_dim];
     for head in 0..dims.num_key_value_heads {
         let head_start = head * dims.head_dim;
-        let normalized = qwen_attention_rms_norm(
+        qwen_attention_rms_norm_cpu_in_place(
             &parts.k_proj[head_start..head_start + dims.head_dim],
             parts.k_norm_weight,
             config,
-            matvec,
-        )
-        .await?;
-        key[head_start..head_start + dims.head_dim].copy_from_slice(&normalized);
+            &mut key[head_start..head_start + dims.head_dim],
+        )?;
         apply_rope_to_head(
             &mut key[head_start..head_start + dims.head_dim],
             position,
