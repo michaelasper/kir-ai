@@ -89,7 +89,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "matvec_f32").await?;
+        finish_command_buffer_async(&[], command_buffer, "matvec_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -229,8 +229,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "matvec_bf16_f32")
-            .await?;
+        finish_command_buffer_async(&[], command_buffer, "matvec_bf16_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per requested matrix row.
@@ -359,12 +358,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(
-            &self.synchronization,
-            command_buffer,
-            "batched_matvec_bf16_f32",
-        )
-        .await?;
+        finish_command_buffer_async(&[], command_buffer, "batched_matvec_bf16_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing vector_count * rows f32 values in input-major order.

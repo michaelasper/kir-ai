@@ -10,14 +10,14 @@ const COMMAND_BUFFER_TIMEOUT_MS_ENV: &str = "LLM_ENGINE_METAL_COMMAND_BUFFER_TIM
 static COMMAND_BUFFER_TIMEOUT: CommandBufferTimeout = CommandBufferTimeout::new();
 
 pub(crate) async fn finish_command_buffer_async(
-    synchronization: &Arc<MetalSynchronization>,
+    hazards: &[&Arc<MetalBufferHazard>],
     command_buffer: &CommandBufferRef,
     kernel_name: &str,
 ) -> Result<(), MetalError> {
     let rx = {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = std::sync::Mutex::new(Some(tx));
-        let in_flight = std::sync::Mutex::new(Some(synchronization.begin_command()));
+        let in_flight = std::sync::Mutex::new(Some(MetalCommandInFlight::begin(hazards)));
         let kernel_name = kernel_name.to_owned();
         let block = block::ConcreteBlock::new(move |cb: &CommandBufferRef| {
             report_command_buffer_status(&tx, cb.status(), &kernel_name);
@@ -91,39 +91,39 @@ fn finish_in_flight_command(in_flight: &Mutex<Option<MetalCommandInFlight>>, ker
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct MetalSynchronization {
-    state: Mutex<MetalSynchronizationState>,
+pub(crate) struct MetalBufferHazard {
+    state: Mutex<MetalBufferHazardState>,
     idle: Condvar,
 }
 
-impl MetalSynchronization {
+impl MetalBufferHazard {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn begin_command(self: &Arc<Self>) -> MetalCommandInFlight {
+    pub(crate) fn begin_command(self: &Arc<Self>) -> MetalBufferCommandInFlight {
         let mut state = self.lock_state();
         while state.cpu_accessing {
             state = self.wait(state);
         }
         state.in_flight_commands += 1;
-        MetalCommandInFlight {
-            synchronization: Arc::clone(self),
+        MetalBufferCommandInFlight {
+            hazard: Arc::clone(self),
         }
     }
 
     pub(crate) fn begin_cpu_access(self: &Arc<Self>) -> MetalCpuAccessGuard {
         let mut state = self.lock_state();
         // StorageModeShared buffers are visible to both the CPU and GPU. Treat
-        // active CPU copies as a device-wide critical section. CPU copies wait
-        // for already-submitted commands to finish, but pending CPU access does
-        // not block new GPU submissions on the token hot path.
+        // active CPU copies as a buffer-local critical section. CPU copies wait
+        // for already-submitted commands touching the same buffer to finish,
+        // but pending CPU access does not block new GPU submissions.
         while state.cpu_accessing || state.in_flight_commands > 0 {
             state = self.wait(state);
         }
         state.cpu_accessing = true;
         MetalCpuAccessGuard {
-            synchronization: Arc::clone(self),
+            hazard: Arc::clone(self),
         }
     }
 
@@ -141,7 +141,7 @@ impl MetalSynchronization {
         self.idle.notify_all();
     }
 
-    fn lock_state(&self) -> MutexGuard<'_, MetalSynchronizationState> {
+    fn lock_state(&self) -> MutexGuard<'_, MetalBufferHazardState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -149,8 +149,8 @@ impl MetalSynchronization {
 
     fn wait<'a>(
         &self,
-        state: MutexGuard<'a, MetalSynchronizationState>,
-    ) -> MutexGuard<'a, MetalSynchronizationState> {
+        state: MutexGuard<'a, MetalBufferHazardState>,
+    ) -> MutexGuard<'a, MetalBufferHazardState> {
         self.idle
             .wait(state)
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -158,30 +158,46 @@ impl MetalSynchronization {
 }
 
 #[derive(Debug, Default)]
-struct MetalSynchronizationState {
+struct MetalBufferHazardState {
     in_flight_commands: usize,
     cpu_accessing: bool,
 }
 
 #[derive(Debug)]
 pub(crate) struct MetalCommandInFlight {
-    synchronization: Arc<MetalSynchronization>,
+    _guards: Vec<MetalBufferCommandInFlight>,
 }
 
-impl Drop for MetalCommandInFlight {
+impl MetalCommandInFlight {
+    fn begin(hazards: &[&Arc<MetalBufferHazard>]) -> Self {
+        Self {
+            _guards: hazards
+                .iter()
+                .map(|hazard| hazard.begin_command())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct MetalBufferCommandInFlight {
+    hazard: Arc<MetalBufferHazard>,
+}
+
+impl Drop for MetalBufferCommandInFlight {
     fn drop(&mut self) {
-        self.synchronization.finish_command();
+        self.hazard.finish_command();
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct MetalCpuAccessGuard {
-    synchronization: Arc<MetalSynchronization>,
+    hazard: Arc<MetalBufferHazard>,
 }
 
 impl Drop for MetalCpuAccessGuard {
     fn drop(&mut self) {
-        self.synchronization.finish_cpu_access();
+        self.hazard.finish_cpu_access();
     }
 }
 
@@ -339,14 +355,14 @@ mod tests {
     }
 
     #[test]
-    fn cpu_access_waits_for_in_flight_command() {
-        let synchronization = Arc::new(MetalSynchronization::new());
-        let in_flight = synchronization.begin_command();
+    fn cpu_access_waits_for_in_flight_command_on_same_buffer() {
+        let hazard = Arc::new(MetalBufferHazard::new());
+        let in_flight = hazard.begin_command();
         let (tx, rx) = mpsc::channel();
-        let worker_sync = Arc::clone(&synchronization);
+        let worker_hazard = Arc::clone(&hazard);
 
         let worker = std::thread::spawn(move || {
-            let _guard = worker_sync.begin_cpu_access();
+            let _guard = worker_hazard.begin_cpu_access();
             tx.send(()).expect("signal sends");
         });
 
@@ -358,14 +374,31 @@ mod tests {
     }
 
     #[test]
-    fn command_submission_waits_for_cpu_access() {
-        let synchronization = Arc::new(MetalSynchronization::new());
-        let cpu_access = synchronization.begin_cpu_access();
+    fn cpu_access_does_not_wait_for_in_flight_command_on_unrelated_buffer() {
+        let command_hazard = Arc::new(MetalBufferHazard::new());
+        let cpu_hazard = Arc::new(MetalBufferHazard::new());
+        let _in_flight = command_hazard.begin_command();
         let (tx, rx) = mpsc::channel();
-        let worker_sync = Arc::clone(&synchronization);
 
         let worker = std::thread::spawn(move || {
-            let _in_flight = worker_sync.begin_command();
+            let _guard = cpu_hazard.begin_cpu_access();
+            tx.send(()).expect("signal sends");
+        });
+
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("unrelated cpu access should not wait for another buffer's command");
+        worker.join().expect("worker joins");
+    }
+
+    #[test]
+    fn command_submission_waits_for_cpu_access_on_same_buffer() {
+        let hazard = Arc::new(MetalBufferHazard::new());
+        let cpu_access = hazard.begin_cpu_access();
+        let (tx, rx) = mpsc::channel();
+        let worker_hazard = Arc::clone(&hazard);
+
+        let worker = std::thread::spawn(move || {
+            let _in_flight = worker_hazard.begin_command();
             tx.send(()).expect("signal sends");
         });
 
@@ -377,23 +410,40 @@ mod tests {
     }
 
     #[test]
-    fn pending_cpu_access_does_not_block_command_submission() {
-        let synchronization = Arc::new(MetalSynchronization::new());
-        let in_flight = synchronization.begin_command();
+    fn command_submission_does_not_wait_for_cpu_access_on_unrelated_buffer() {
+        let cpu_hazard = Arc::new(MetalBufferHazard::new());
+        let command_hazard = Arc::new(MetalBufferHazard::new());
+        let _cpu_access = cpu_hazard.begin_cpu_access();
+        let (tx, rx) = mpsc::channel();
+
+        let command_worker = std::thread::spawn(move || {
+            let _in_flight = command_hazard.begin_command();
+            tx.send(()).expect("command signal sends");
+        });
+
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("unrelated command submission should not wait for another buffer's cpu access");
+        command_worker.join().expect("command worker joins");
+    }
+
+    #[test]
+    fn pending_cpu_access_does_not_block_command_submission_on_same_buffer() {
+        let hazard = Arc::new(MetalBufferHazard::new());
+        let in_flight = hazard.begin_command();
         let (cpu_tx, cpu_rx) = mpsc::channel();
-        let worker_sync = Arc::clone(&synchronization);
+        let worker_hazard = Arc::clone(&hazard);
 
         let cpu_worker = std::thread::spawn(move || {
-            let _guard = worker_sync.begin_cpu_access();
+            let _guard = worker_hazard.begin_cpu_access();
             cpu_tx.send(()).expect("cpu signal sends");
         });
 
         assert!(cpu_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         let (command_tx, command_rx) = mpsc::channel();
-        let command_sync = Arc::clone(&synchronization);
+        let command_hazard = Arc::clone(&hazard);
         let command_worker = std::thread::spawn(move || {
-            let _in_flight = command_sync.begin_command();
+            let _in_flight = command_hazard.begin_command();
             command_tx.send(()).expect("command signal sends");
         });
 

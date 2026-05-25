@@ -117,7 +117,7 @@ impl MetalDevice {
         };
         encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "rms_norm_f32").await?;
+        finish_command_buffer_async(&[], command_buffer, "rms_norm_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input slice.
@@ -217,12 +217,8 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(
-            &self.synchronization,
-            command_buffer,
-            "linear_attention_conv1d_silu_f32",
-        )
-        .await?;
+        finish_command_buffer_async(&[], command_buffer, "linear_attention_conv1d_silu_f32")
+            .await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per convolution channel.
@@ -357,12 +353,8 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(
-            &self.synchronization,
-            command_buffer,
-            "linear_attention_recurrent_update_f32",
-        )
-        .await?;
+        finish_command_buffer_async(&[], command_buffer, "linear_attention_recurrent_update_f32")
+            .await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per recurrent-state element.
@@ -514,7 +506,7 @@ impl MetalDevice {
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&state.hazard],
             command_buffer,
             "linear_attention_recurrent_update_state_f32",
         )

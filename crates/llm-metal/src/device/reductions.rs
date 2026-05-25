@@ -79,7 +79,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "argmax_f32").await?;
+        finish_command_buffer_async(&[], command_buffer, "argmax_f32").await?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly chunk_count values. The command buffer has completed.
@@ -202,7 +202,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "top_k_f32").await?;
+        finish_command_buffer_async(&[], command_buffer, "top_k_f32").await?;
 
         // SAFETY: both output buffers are StorageModeShared buffers sized for
         // exactly candidate_count values. The command buffer has completed.

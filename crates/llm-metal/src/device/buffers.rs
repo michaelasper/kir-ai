@@ -1,6 +1,9 @@
-use super::{MetalDevice, MetalError, command::finish_command_buffer_async};
+use super::{
+    MetalDevice, MetalError,
+    command::{MetalBufferHazard, finish_command_buffer_async},
+};
 use metal::{Buffer, MTLResourceOptions};
-use std::{collections::HashMap, ffi::c_void};
+use std::{collections::HashMap, ffi::c_void, sync::Arc};
 
 #[derive(Debug, Default)]
 pub(crate) struct MetalBufferPool {
@@ -55,6 +58,7 @@ impl Bf16MatrixBuffer {
 #[derive(Debug, Clone)]
 pub struct F32Buffer {
     pub(crate) buffer: Option<Buffer>,
+    pub(crate) hazard: Arc<MetalBufferHazard>,
     pub(crate) len: usize,
     pub(crate) byte_len: usize,
 }
@@ -76,6 +80,7 @@ impl F32Buffer {
 #[derive(Debug, Clone)]
 pub struct F16Buffer {
     pub(crate) buffer: Option<Buffer>,
+    pub(crate) hazard: Arc<MetalBufferHazard>,
     pub(crate) len: usize,
     pub(crate) byte_len: usize,
 }
@@ -97,6 +102,7 @@ impl F16Buffer {
 #[derive(Debug, Clone)]
 pub struct I8Buffer {
     pub(crate) buffer: Option<Buffer>,
+    pub(crate) hazard: Arc<MetalBufferHazard>,
     pub(crate) len: usize,
     pub(crate) byte_len: usize,
 }
@@ -274,6 +280,7 @@ impl MetalDevice {
         };
         Ok(F32Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len: values.len(),
             byte_len,
         })
@@ -293,6 +300,7 @@ impl MetalDevice {
         };
         Ok(F32Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len,
             byte_len,
         })
@@ -321,6 +329,7 @@ impl MetalDevice {
         };
         Ok(F16Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len: values.len(),
             byte_len,
         })
@@ -340,6 +349,7 @@ impl MetalDevice {
         };
         Ok(F16Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len,
             byte_len,
         })
@@ -363,6 +373,7 @@ impl MetalDevice {
         };
         Ok(I8Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len: values.len(),
             byte_len,
         })
@@ -382,6 +393,7 @@ impl MetalDevice {
         };
         Ok(I8Buffer {
             buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
             len,
             byte_len,
         })
@@ -410,11 +422,11 @@ impl MetalDevice {
                 "non-empty i8 buffer range write requires a Metal buffer".to_owned(),
             ));
         };
-        let _cpu_access = self.synchronization.begin_cpu_access();
+        let _cpu_access = buffer.hazard.begin_cpu_access();
         // SAFETY: the destination range is bounds-checked above against the i8
         // element length used to allocate the StorageModeShared buffer. The
-        // synchronization guard waits for in-flight GPU commands and prevents
-        // new submissions during this copy.
+        // buffer hazard guard waits for in-flight GPU commands touching this
+        // buffer and prevents same-buffer submissions during this copy.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 values.as_ptr(),
@@ -491,7 +503,7 @@ impl MetalDevice {
         );
         encoder.end_encoding();
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&source.hazard, &destination.hazard],
             command_buffer,
             "copy_i8_buffer_range",
         )
@@ -526,11 +538,11 @@ impl MetalDevice {
             .copied()
             .map(f32_to_f16_bits)
             .collect::<Vec<_>>();
-        let _cpu_access = self.synchronization.begin_cpu_access();
+        let _cpu_access = buffer.hazard.begin_cpu_access();
         // SAFETY: the destination range is bounds-checked above against the
         // f16 element length used to allocate the StorageModeShared buffer. The
-        // synchronization guard waits for in-flight GPU commands and prevents
-        // new submissions during this copy.
+        // buffer hazard guard waits for in-flight GPU commands touching this
+        // buffer and prevents same-buffer submissions during this copy.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 bits.as_ptr(),
@@ -619,7 +631,7 @@ impl MetalDevice {
         );
         encoder.end_encoding();
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&source.hazard, &destination.hazard],
             command_buffer,
             "copy_f16_buffer_range",
         )
@@ -642,10 +654,11 @@ impl MetalDevice {
                 "non-empty f32 buffer write requires a Metal buffer".to_owned(),
             ));
         };
-        let _cpu_access = self.synchronization.begin_cpu_access();
+        let _cpu_access = buffer.hazard.begin_cpu_access();
         // SAFETY: metal_buffer was allocated with byte_len bytes for len f32
-        // values. The device synchronization guard above waits for in-flight
-        // GPU commands and prevents new command submissions during this copy.
+        // values. The buffer hazard guard above waits for in-flight GPU
+        // commands touching this buffer and prevents same-buffer submissions
+        // during this copy.
         // The caller provides exactly len f32 values above, and both pointers
         // remain valid for the duration of this copy.
         unsafe {
@@ -681,12 +694,12 @@ impl MetalDevice {
                 "non-empty f32 buffer range write requires a Metal buffer".to_owned(),
             ));
         };
-        let _cpu_access = self.synchronization.begin_cpu_access();
+        let _cpu_access = buffer.hazard.begin_cpu_access();
         // SAFETY: the destination range is bounds-checked above against the
-        // f32 length used to allocate the StorageModeShared buffer. The device
-        // synchronization guard waits for in-flight GPU commands and prevents
-        // new command submissions during this copy. Both pointers remain valid
-        // for values.len() f32 values.
+        // f32 length used to allocate the StorageModeShared buffer. The buffer
+        // hazard guard waits for in-flight GPU commands touching this buffer
+        // and prevents same-buffer submissions during this copy. Both pointers
+        // remain valid for values.len() f32 values.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 values.as_ptr(),
@@ -790,7 +803,7 @@ impl MetalDevice {
         );
         encoder.end_encoding();
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&source.hazard, &destination.hazard],
             command_buffer,
             "copy_f32_buffer_range",
         )
@@ -827,11 +840,11 @@ impl MetalDevice {
                 "non-empty f32 buffer read requires a Metal buffer".to_owned(),
             ));
         };
-        let _cpu_access = self.synchronization.begin_cpu_access();
+        let _cpu_access = buffer.hazard.begin_cpu_access();
         // SAFETY: the requested range is bounds-checked above against the f32
-        // length used to allocate the StorageModeShared buffer. The device
-        // synchronization guard above waits for in-flight GPU commands and
-        // prevents new command submissions during this copy.
+        // length used to allocate the StorageModeShared buffer. The buffer
+        // hazard guard above waits for in-flight GPU commands touching this
+        // buffer and prevents same-buffer submissions during this copy.
         unsafe {
             let ptr = metal_buffer.contents().cast::<f32>().add(start);
             let values = std::slice::from_raw_parts(ptr, len);

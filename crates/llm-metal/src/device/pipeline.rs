@@ -88,7 +88,6 @@ impl MetalDevice {
         let top_k_f32 = Self::kernel(&device, &library, &command_queue, "top_k_f32")?;
         Ok(Self {
             device,
-            synchronization: Arc::new(super::command::MetalSynchronization::new()),
             scratch_buffers: Arc::new(std::sync::Mutex::new(
                 super::buffers::MetalBufferPool::default(),
             )),

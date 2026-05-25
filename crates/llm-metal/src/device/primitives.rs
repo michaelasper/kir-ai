@@ -57,7 +57,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "vector_add").await?;
+        finish_command_buffer_async(&[], command_buffer, "vector_add").await?;
 
         // SAFETY: output_buffer is a StorageModeShared Metal buffer allocated with
         // byte_len bytes above. The command buffer has completed, and the buffer
@@ -138,7 +138,7 @@ impl MetalDevice {
         };
         encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "softmax_f32").await?;
+        finish_command_buffer_async(&[], command_buffer, "softmax_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // with the same byte length as the input scores.
@@ -230,8 +230,7 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(&self.synchronization, command_buffer, "weighted_sum_f32")
-            .await?;
+        finish_command_buffer_async(&[], command_buffer, "weighted_sum_f32").await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per output column.
@@ -482,7 +481,7 @@ impl MetalDevice {
         sum_encoder.end_encoding();
 
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&keys.hazard, &values.hazard],
             command_buffer,
             "full_attention_cache_mix_f32",
         )
@@ -781,7 +780,7 @@ impl MetalDevice {
         sum_encoder.end_encoding();
 
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&keys.hazard, &values.hazard],
             command_buffer,
             "full_attention_cache_mix_f16",
         )
@@ -1125,7 +1124,12 @@ impl MetalDevice {
         sum_encoder.end_encoding();
 
         finish_command_buffer_async(
-            &self.synchronization,
+            &[
+                &keys.hazard,
+                &key_scales.hazard,
+                &values.hazard,
+                &value_scales.hazard,
+            ],
             command_buffer,
             "full_attention_cache_mix_int8",
         )
@@ -1267,12 +1271,8 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(
-            &self.synchronization,
-            command_buffer,
-            "select_head_rows_f32",
-        )
-        .await?;
+        finish_command_buffer_async(&[&values.hazard], command_buffer, "select_head_rows_f32")
+            .await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per selected row element.
@@ -1386,12 +1386,8 @@ impl MetalDevice {
         };
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
-        finish_command_buffer_async(
-            &self.synchronization,
-            command_buffer,
-            "select_head_rows_f16",
-        )
-        .await?;
+        finish_command_buffer_async(&[&values.hazard], command_buffer, "select_head_rows_f16")
+            .await?;
 
         // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
         // containing one f32 per selected row element.
@@ -1524,7 +1520,7 @@ impl MetalDevice {
         encoder.dispatch_threads(threads, threads_per_group);
         encoder.end_encoding();
         finish_command_buffer_async(
-            &self.synchronization,
+            &[&values.hazard, &scales.hazard],
             command_buffer,
             "select_head_rows_int8",
         )
