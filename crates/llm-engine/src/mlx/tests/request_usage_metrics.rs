@@ -1,5 +1,12 @@
 use super::*;
 
+fn non_progress_chunk_count(chunks: &[BackendStreamChunk]) -> usize {
+    chunks
+        .iter()
+        .filter(|chunk| chunk.progress.is_none())
+        .count()
+}
+
 #[tokio::test]
 async fn mlx_backend_posts_prompt_to_completion_endpoint() {
     let server = FakeMlxServer::start(
@@ -304,7 +311,7 @@ async fn mlx_backend_streaming_completion_requests_include_usage_by_default() {
         .collect::<Result<Vec<_>, _>>()
         .expect("mlx stream succeeds");
 
-    assert_eq!(chunks.len(), 1);
+    assert_eq!(non_progress_chunk_count(&chunks), 1);
     assert_eq!(server.received_path(), "/v1/completions");
     let request = server.received_body();
     assert_eq!(request["stream"], true);
@@ -345,7 +352,7 @@ async fn mlx_backend_streaming_chat_requests_include_usage_by_default() {
         .collect::<Result<Vec<_>, _>>()
         .expect("mlx stream succeeds");
 
-    assert_eq!(chunks.len(), 1);
+    assert_eq!(non_progress_chunk_count(&chunks), 1);
     assert_eq!(server.received_path(), "/v1/chat/completions");
     let request = server.received_body();
     assert_eq!(request["stream"], true);
@@ -383,7 +390,7 @@ async fn mlx_backend_streaming_requests_omit_usage_when_disabled() {
         .collect::<Result<Vec<_>, _>>()
         .expect("mlx stream succeeds");
 
-    assert_eq!(chunks.len(), 1);
+    assert_eq!(non_progress_chunk_count(&chunks), 1);
     let request = server.received_body();
     assert_eq!(request["stream"], true);
     assert!(
@@ -540,11 +547,16 @@ async fn mlx_backend_metrics_record_dropped_streams() {
         Some(12),
         SamplingConfig::Greedy,
     ));
-    let first = stream
-        .next()
-        .await
-        .expect("first stream item")
-        .expect("first chunk");
+    let first = loop {
+        let chunk = stream
+            .next()
+            .await
+            .expect("stream item before first content chunk")
+            .expect("stream chunk before first content chunk");
+        if chunk.progress.is_none() {
+            break chunk;
+        }
+    };
     assert_eq!(first.text, "one ");
     drop(stream);
 
@@ -581,11 +593,16 @@ async fn mlx_backend_metrics_record_success_when_stream_stops_after_finish_chunk
         Some(12),
         SamplingConfig::Greedy,
     ));
-    let chunk = stream
-        .next()
-        .await
-        .expect("stream item")
-        .expect("finish chunk");
+    let chunk = loop {
+        let chunk = stream
+            .next()
+            .await
+            .expect("stream item before finish chunk")
+            .expect("stream chunk before finish chunk");
+        if chunk.progress.is_none() {
+            break chunk;
+        }
+    };
     assert_eq!(chunk.finish_reason, Some(BackendFinishReason::Stop));
     drop(stream);
 
