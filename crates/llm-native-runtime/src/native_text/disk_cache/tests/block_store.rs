@@ -38,20 +38,15 @@ async fn block_store_writes_only_terminal_block_payload_not_accumulated_prefix()
     let config = NativeTextDiskCacheConfig::for_root(temp.path())
         .with_writer_queue_depth(4)
         .with_block_token_count(2);
-    let namespace = namespace("block-payload", "test");
-    let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "test");
-    let disk = NativeTextDiskCache::<DummyCache>::open(config, identity.clone())
+    let namespace = namespace("block-payload", "qwen");
+    let identity = NativeTextDiskCacheIdentity::from_namespace(&namespace, "qwen");
+    let disk = NativeTextDiskCache::<QwenLayerCache>::open(config, identity.clone())
         .await
         .expect("cache opens");
     let first_hidden = vec![1.0];
     let second_hidden = vec![2.0];
-    let first_states = vec![DummyCache { marker: 1 }, DummyCache { marker: 2 }];
-    let second_states = vec![
-        DummyCache { marker: 1 },
-        DummyCache { marker: 2 },
-        DummyCache { marker: 3 },
-        DummyCache { marker: 4 },
-    ];
+    let first_states = qwen_full_states(4, 2, 1.0);
+    let second_states = qwen_full_states(4, 4, 1.0);
 
     assert_eq!(
         disk.queue_store(&namespace, &[31, 32], &first_hidden, &first_states),
@@ -78,10 +73,13 @@ async fn block_store_writes_only_terminal_block_payload_not_accumulated_prefix()
         .expect("first block exists");
     let second_bytes = std::fs::read(disk.path_for_descriptor_for_test(&second_descriptor))
         .expect("second block exists");
-    let first_block =
-        NativeTextDiskCacheBlock::<DummyCache>::decode(&first_bytes, &identity, &first_descriptor)
-            .expect("first block decodes");
-    let second_block = NativeTextDiskCacheBlock::<DummyCache>::decode(
+    let first_block = NativeTextDiskCacheBlock::<QwenLayerCache>::decode(
+        &first_bytes,
+        &identity,
+        &first_descriptor,
+    )
+    .expect("first block decodes");
+    let second_block = NativeTextDiskCacheBlock::<QwenLayerCache>::decode(
         &second_bytes,
         &identity,
         &second_descriptor,
@@ -90,12 +88,11 @@ async fn block_store_writes_only_terminal_block_payload_not_accumulated_prefix()
 
     assert_eq!(first_block.block_start, 0);
     assert_eq!(first_block.token_count, 2);
-    assert_eq!(first_block.states, first_states);
+    assert_qwen_full_states_match(&first_block.states, &first_states);
     assert_eq!(second_block.block_start, 2);
     assert_eq!(second_block.token_count, 2);
-    assert_eq!(
-        second_block.states,
-        vec![DummyCache { marker: 3 }, DummyCache { marker: 4 }],
-        "later block files must not duplicate the earlier prefix payload"
+    assert_qwen_full_states_match(
+        &second_block.states,
+        &qwen_full_block_states(4, 2, 2, 1.0, 4),
     );
 }

@@ -109,6 +109,53 @@ fn qwen_mlx_tool_normalized_canonical_and_permuted_schema_hashes_capture_equival
 }
 
 #[test]
+fn qwen_mlx_tool_normalized_measured_probe_ids_are_bound_to_sample_and_request_context() {
+    let case = NormalizedCaseKind::OmpRepeatedPrefix;
+    let static_case_probe_id = case.probe_id();
+    let sequential_prompt = ProbePrompt::measured(128, 1, None);
+    let first_concurrent_prompt = ProbePrompt::measured(128, 1, Some(0));
+    let second_concurrent_prompt = ProbePrompt::measured(128, 2, Some(0));
+
+    let sequential_probe_id = sequential_prompt.probe_id(case);
+    let first_concurrent_probe_id = first_concurrent_prompt.probe_id(case);
+    let second_concurrent_probe_id = second_concurrent_prompt.probe_id(case);
+
+    assert_ne!(sequential_probe_id, static_case_probe_id);
+    assert_ne!(first_concurrent_probe_id, static_case_probe_id);
+    assert_ne!(sequential_probe_id, first_concurrent_probe_id);
+    assert_ne!(first_concurrent_probe_id, second_concurrent_probe_id);
+    assert!(
+        first_concurrent_prompt
+            .user_prompt(case)
+            .contains(&first_concurrent_probe_id),
+        "prompt must require the per-request probe id"
+    );
+
+    let hardcoded_response = json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "tool_calls": [{
+                    "function": {
+                        "name": "record_qwen_tool_probe",
+                        "arguments": json!({
+                            "probe_id": static_case_probe_id,
+                            "case": case.name()
+                        }).to_string()
+                    }
+                }]
+            }
+        }]
+    });
+    let err = validate_buffered_probe(case, &hardcoded_response, &first_concurrent_probe_id)
+        .expect_err("static fixture probe ids must not validate measured requests");
+    assert!(
+        err.contains("probe_id"),
+        "validation error should explain the mismatched probe id: {err}"
+    );
+}
+
+#[test]
 fn qwen_mlx_tool_normalized_request_bodies_cover_tool_stream_and_json_with_default_no_thinking_kwargs()
  {
     let lane = lane("name=direct,endpoint=http://127.0.0.1:8080/v1,model=qwen,kind=direct_mlx");
@@ -176,14 +223,17 @@ fn qwen_mlx_tool_normalized_request_bodies_cover_tool_stream_and_json_with_defau
                 .contains("KIR_QWEN_MLX_TOOL_NORMALIZED_JSON_OBJECT"))
     );
 
+    let synthetic_case = NormalizedCaseKind::OmpRepeatedPrefix;
+    let synthetic_prompt = ProbePrompt::measured(512, 7, Some(2));
+    let synthetic_probe_id = synthetic_prompt.probe_id(synthetic_case);
     let synthetic = probe_request_body(
         &lane,
         NormalizedProbePlan::new(
-            NormalizedCaseKind::OmpRepeatedPrefix,
+            synthetic_case,
             SchemaVariant::BaselinePermutedEquivalent,
             ToolChoiceVariant::Function,
         ),
-        ProbePrompt::measured(512, 7, Some(2)),
+        synthetic_prompt.clone(),
     );
     let messages = synthetic["messages"].as_array().expect("OMP messages");
     assert_eq!(
@@ -198,13 +248,22 @@ fn qwen_mlx_tool_normalized_request_bodies_cover_tool_stream_and_json_with_defau
         messages[2]["tool_calls"][0]["function"]["name"],
         "record_qwen_tool_probe"
     );
+    let history_args: Value = serde_json::from_str(
+        messages[2]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("history arguments"),
+    )
+    .expect("history arguments are JSON");
+    assert_eq!(
+        history_args["probe_id"],
+        format!("{synthetic_probe_id}_HISTORY")
+    );
     assert_eq!(
         messages[3]["tool_call_id"],
         messages[2]["tool_calls"][0]["id"]
     );
     let final_user = messages[4]["content"].as_str().expect("final OMP user");
-    assert!(final_user.contains("OMP final delta"));
-    assert!(final_user.contains("sample=7 request=2"));
+    assert_eq!(final_user, synthetic_prompt.user_prompt(synthetic_case));
     assert_eq!(
         synthetic["tool_choice"],
         json!({"type":"function","function":{"name":"record_qwen_tool_probe"}})
@@ -272,14 +331,16 @@ fn qwen_mlx_tool_normalized_prefill_sweep_stream_bodies_use_expected_tools_and_m
                 .contains("KIR_LONG_CONTEXT_135K_CONTEXT_RECALL_STREAM_135K_QUARTZ_2741"))
     );
 
+    let warm_prefix_case = NormalizedCaseKind::WarmPrefixRepeatedTurnStream;
+    let warm_prefix_prompt = ProbePrompt::measured(256, 3, Some(1));
     let warm_prefix = probe_request_body(
         &lane,
         NormalizedProbePlan::new(
-            NormalizedCaseKind::WarmPrefixRepeatedTurnStream,
+            warm_prefix_case,
             SchemaVariant::CanonicalCurrent,
             ToolChoiceVariant::Required,
         ),
-        ProbePrompt::measured(256, 3, Some(1)),
+        warm_prefix_prompt.clone(),
     );
     assert_eq!(warm_prefix["stream"], true);
     assert_eq!(warm_prefix["stream_options"]["include_usage"], true);
@@ -297,11 +358,9 @@ fn qwen_mlx_tool_normalized_prefill_sweep_stream_bodies_use_expected_tools_and_m
             .collect::<Vec<_>>(),
         ["system", "user", "assistant", "tool", "user"]
     );
-    assert!(
-        messages[4]["content"]
-            .as_str()
-            .expect("final user")
-            .contains("sample=3 request=1")
+    assert_eq!(
+        messages[4]["content"].as_str().expect("final user"),
+        warm_prefix_prompt.user_prompt(warm_prefix_case)
     );
 }
 

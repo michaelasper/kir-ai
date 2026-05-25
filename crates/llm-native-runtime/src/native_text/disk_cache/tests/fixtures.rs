@@ -4,7 +4,8 @@ use crate::native_text::{
     NativeTextPrefixCacheValue,
 };
 use llm_backend::native::{
-    GemmaLayerCache, LayerKvCache, LinearAttentionCache, QwenLayerCache,
+    GemmaLayerCache, LayerKvCache, LayerKvCacheSnapshot, LinearAttentionCache, QwenLayerCache,
+    QwenLayerCachePrefixState, QwenLayerCacheSnapshot,
 };
 use llm_backend_contracts::BackendModelMetadata;
 use std::{
@@ -50,6 +51,92 @@ fn filled_layer_cache(max_tokens: usize) -> LayerKvCache {
         )
         .expect("second token appends");
     cache
+}
+
+fn qwen_full_cache(max_tokens: usize, token_count: usize, seed: f32) -> QwenLayerCache {
+    let mut cache = LayerKvCache::new(max_tokens, 2, 3).expect("layer cache shape is valid");
+    for token_index in 0..token_count {
+        let keys = qwen_token_values(seed, token_index, 0.0);
+        let values = qwen_token_values(seed, token_index, 1000.0);
+        cache.append(&keys, &values).expect("token appends");
+    }
+    QwenLayerCache::Full(cache)
+}
+
+fn qwen_full_states(
+    max_tokens: usize,
+    token_count: usize,
+    seed: f32,
+) -> Vec<QwenLayerCachePrefixState> {
+    vec![qwen_full_cache(max_tokens, token_count, seed).prefix_cache_state()]
+}
+
+fn qwen_full_block_states(
+    max_tokens: usize,
+    block_start: usize,
+    block_token_count: usize,
+    seed: f32,
+    tokens_seen: usize,
+) -> Vec<QwenLayerCachePrefixState> {
+    let keys = (block_start..block_start + block_token_count)
+        .flat_map(|token_index| qwen_token_values(seed, token_index, 0.0))
+        .collect::<Vec<_>>();
+    let values = (block_start..block_start + block_token_count)
+        .flat_map(|token_index| qwen_token_values(seed, token_index, 1000.0))
+        .collect::<Vec<_>>();
+    let config = LayerKvCache::new(max_tokens, 2, 3)
+        .expect("layer cache shape is valid")
+        .snapshot()
+        .config;
+    let snapshot = LayerKvCacheSnapshot {
+        revision: tokens_seen as u64,
+        config,
+        max_tokens,
+        key_value_heads: 2,
+        head_dim: 3,
+        token_count: block_token_count,
+        tokens_seen,
+        keys,
+        values,
+    };
+    vec![
+        QwenLayerCache::Full(
+            LayerKvCache::from_snapshot(snapshot).expect("block snapshot restores"),
+        )
+        .prefix_cache_state(),
+    ]
+}
+
+fn qwen_token_values(seed: f32, token_index: usize, offset: f32) -> Vec<f32> {
+    (0..6)
+        .map(|element| seed + offset + token_index as f32 * 10.0 + element as f32)
+        .collect()
+}
+
+fn assert_qwen_full_states_match(
+    actual: &[QwenLayerCachePrefixState],
+    expected: &[QwenLayerCachePrefixState],
+) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(
+            qwen_full_snapshot_from_state(actual),
+            qwen_full_snapshot_from_state(expected)
+        );
+    }
+}
+
+fn assert_qwen_full_caches_match(actual: &[QwenLayerCache], expected: &[QwenLayerCache]) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(actual.snapshot(), expected.snapshot());
+    }
+}
+
+fn qwen_full_snapshot_from_state(state: &QwenLayerCachePrefixState) -> QwenLayerCacheSnapshot {
+    QwenLayerCache::from_prefix_cache_state(state)
+        .expect("qwen prefix state restores")
+        .snapshot()
 }
 
 fn filled_linear_cache() -> LinearAttentionCache {
@@ -106,80 +193,4 @@ where
             .is_err(),
         "blocks for another cache layout must not decode"
     );
-}
-
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DummyCache {
-    marker: u32,
-}
-
-impl NativeTextPrefixCacheValue for DummyCache {
-    type PrefixCacheState = Self;
-
-    fn prefix_cache_state(caches: &[Self]) -> Vec<Self::PrefixCacheState> {
-        caches.to_vec()
-    }
-
-    fn prefix_cache_from_state(states: &[Self::PrefixCacheState]) -> Option<Vec<Self>> {
-        Some(states.to_vec())
-    }
-
-    fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
-        std::mem::size_of_val(hidden) as u64
-            + states.len() as u64 * std::mem::size_of::<Self>() as u64
-    }
-}
-
-impl NativeTextDiskCacheValue for DummyCache {
-    fn encode_disk_block_states(
-        states: &[Self::PrefixCacheState],
-        block_start: usize,
-        block_token_count: usize,
-        sink: &mut NativeTextDiskCacheTensorSink,
-    ) -> Result<Vec<NativeTextDiskCacheLayerLayout>, NativeTextDiskCacheError> {
-        let values = states[block_start..block_start + block_token_count]
-            .iter()
-            .map(|state| state.marker as f32)
-            .collect::<Vec<_>>();
-        sink.push_f32("dummy.markers", vec![values.len()], values)?;
-        Ok(vec![NativeTextDiskCacheLayerLayout::test_marker_tensor(
-            "dummy.markers",
-        )])
-    }
-
-    fn decode_disk_states(
-        layouts: &[NativeTextDiskCacheLayerLayout],
-        archive: &NativeTextDiskCacheTensorArchive<'_>,
-    ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
-        let Some(layout) = layouts.first() else {
-            return Err(NativeTextDiskCacheError::integrity("missing dummy layout"));
-        };
-        let tensor = layout
-            .test_marker_tensor_name()
-            .ok_or_else(|| NativeTextDiskCacheError::integrity("wrong dummy layout"))?;
-        archive
-            .f32_tensor(tensor)?
-            .into_iter()
-            .map(|marker| {
-                if marker.fract() != 0.0 || marker < 0.0 {
-                    return Err(NativeTextDiskCacheError::integrity(
-                        "dummy marker must be a non-negative integer",
-                    ));
-                }
-                Ok(DummyCache {
-                    marker: marker as u32,
-                })
-            })
-            .collect()
-    }
-
-    fn assemble_disk_block_states(
-        blocks: &[NativeTextDiskCacheStateBlock<Self::PrefixCacheState>],
-    ) -> Result<Vec<Self::PrefixCacheState>, NativeTextDiskCacheError> {
-        Ok(blocks
-            .iter()
-            .flat_map(|block| block.states.iter().cloned())
-            .collect())
-    }
 }

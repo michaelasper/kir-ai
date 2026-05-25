@@ -56,7 +56,8 @@ fn probe_messages(case: NormalizedCaseKind, prompt: ProbePrompt) -> Value {
         case,
         NormalizedCaseKind::OmpRepeatedPrefix | NormalizedCaseKind::WarmPrefixRepeatedTurnStream
     ) {
-        let history_probe_id = format!("{}_HISTORY", case.probe_id());
+        let final_probe_id = prompt.probe_id(case);
+        let history_probe_id = format!("{final_probe_id}_HISTORY");
         let history_arguments =
             json!({"probe_id": history_probe_id.clone(), "case": case.name()}).to_string();
         return json!([
@@ -1012,7 +1013,13 @@ impl ProbePrompt {
 
     pub(in crate::qwen_mlx_tool) fn probe_id(&self, case: NormalizedCaseKind) -> String {
         match self.variant {
-            ProbePromptVariant::Measured => case.probe_id().to_owned(),
+            ProbePromptVariant::Measured => {
+                let request = self
+                    .request_index
+                    .map(|index| format!("REQUEST_{index}"))
+                    .unwrap_or_else(|| "SEQUENTIAL".to_owned());
+                format!("{}_SAMPLE_{}_{}", case.probe_id(), self.sample_index, request)
+            }
             ProbePromptVariant::SchemaWarmup(index) => {
                 format!("{}_SCHEMA_WARMUP_{index}", case.probe_id())
             }

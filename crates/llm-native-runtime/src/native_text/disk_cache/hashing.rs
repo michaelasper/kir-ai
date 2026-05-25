@@ -7,8 +7,8 @@ const NATIVE_TEXT_DISK_CACHE_ROOT_BLOCK_HASH: &str =
 #[cfg(test)]
 pub(super) fn native_text_disk_model_hash_from_namespace(
     namespace: &NativeTextPrefixCacheNamespace,
+    snapshot_hash: &str,
 ) -> String {
-    let snapshot_hash = native_text_disk_snapshot_hash(Some("test-snapshot"));
     native_text_disk_model_hash(NativeTextDiskModelHashParts {
         model_id: &namespace.model_id,
         backend: &namespace.backend,
@@ -17,8 +17,16 @@ pub(super) fn native_text_disk_model_hash_from_namespace(
         repo_id: namespace.repo_id.as_deref(),
         resolved_commit: namespace.resolved_commit.as_deref(),
         profile: namespace.profile.as_deref(),
-        snapshot_hash: &snapshot_hash,
+        snapshot_hash,
     })
+}
+
+#[cfg(test)]
+pub(super) fn native_text_disk_snapshot_hash_from_namespace(
+    namespace: &NativeTextPrefixCacheNamespace,
+) -> String {
+    let namespace_hash = native_text_disk_namespace_hash(namespace);
+    native_text_disk_snapshot_hash(Some(&namespace_hash))
 }
 
 pub(super) fn native_text_disk_snapshot_hash(snapshot_identity: Option<&str>) -> String {

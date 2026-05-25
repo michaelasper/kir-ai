@@ -7,7 +7,9 @@ mod tests;
 mod writer;
 
 #[cfg(test)]
-use self::hashing::native_text_disk_model_hash_from_namespace;
+use self::hashing::{
+    native_text_disk_model_hash_from_namespace, native_text_disk_snapshot_hash_from_namespace,
+};
 pub(crate) use self::{
     codec::NativeTextDiskCacheLayerLayout,
     io::{NativeTextDiskCacheTensorArchive, NativeTextDiskCacheTensorSink},
@@ -102,9 +104,10 @@ impl NativeTextDiskCacheIdentity {
         namespace: &NativeTextPrefixCacheNamespace,
         model_family: &str,
     ) -> Self {
+        let snapshot_hash = native_text_disk_snapshot_hash_from_namespace(namespace);
         Self {
-            model_hash: native_text_disk_model_hash_from_namespace(namespace),
-            snapshot_hash: native_text_disk_snapshot_hash(Some("test-snapshot")),
+            model_hash: native_text_disk_model_hash_from_namespace(namespace, &snapshot_hash),
+            snapshot_hash,
             model_family: model_family.to_owned(),
             allowed_namespace_hash: Some(native_text_disk_namespace_hash(namespace)),
         }
@@ -128,16 +131,6 @@ impl NativeTextDiskCacheIdentity {
                 snapshot_hash: &snapshot_hash,
             }),
             snapshot_hash,
-            model_family: model_family.to_owned(),
-            allowed_namespace_hash: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(model_hash: &str, model_family: &str) -> Self {
-        Self {
-            model_hash: model_hash.to_owned(),
-            snapshot_hash: native_text_disk_snapshot_hash(Some("test-snapshot")),
             model_family: model_family.to_owned(),
             allowed_namespace_hash: None,
         }

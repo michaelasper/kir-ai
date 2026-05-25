@@ -84,14 +84,14 @@ fn queue_store_drops_before_encoding_when_writer_queue_is_full() {
 
     ENCODE_CALLS.store(0, Ordering::SeqCst);
     let (writer, _rx) = NativeTextDiskCacheWriter::detached_for_test(1);
+    let namespace = namespace("encoding-probe", "test");
     let cache = NativeTextDiskCache::<EncodingProbeCache> {
         config: NativeTextDiskCacheConfig::for_root("unused").with_block_token_count(2),
-        identity: NativeTextDiskCacheIdentity::for_test("model", "test"),
+        identity: NativeTextDiskCacheIdentity::from_namespace(&namespace, "test"),
         index: NativeTextDiskCacheIndex::default(),
         writer,
         _cache: PhantomData,
     };
-    let namespace = namespace("encoding-probe", "test");
     let hidden = [1.0, 2.0];
     let states = vec![
         EncodingProbeCache { marker: 1 },

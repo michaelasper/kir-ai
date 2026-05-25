@@ -10,6 +10,21 @@ fn snapshot_codec_round_trips_qwen_full_qwen_linear_and_gemma_attention_blocks()
     round_trip::<GemmaLayerCache>("gemma", vec![gemma_attention]);
 }
 
+#[test]
+fn test_identity_snapshot_hash_is_derived_from_namespace_fixture_context() {
+    let first_namespace = namespace("first-snapshot", "qwen");
+    let second_namespace = namespace("second-snapshot", "qwen");
+
+    let first_identity = NativeTextDiskCacheIdentity::from_namespace(&first_namespace, "qwen");
+    let second_identity = NativeTextDiskCacheIdentity::from_namespace(&second_namespace, "qwen");
+
+    assert_ne!(
+        first_identity.snapshot_hash(),
+        second_identity.snapshot_hash()
+    );
+    assert_ne!(first_identity.model_hash(), second_identity.model_hash());
+}
+
 #[tokio::test]
 async fn startup_reindex_ignores_wrong_namespace_model_layout_version_and_corrupt_files() {
     let temp = tempfile::tempdir().expect("temp dir exists");
@@ -46,7 +61,9 @@ async fn startup_reindex_ignores_wrong_namespace_model_layout_version_and_corrup
             .expect("wrong namespace block encodes"),
     )
     .expect("wrong namespace file writes");
-    let wrong_model = NativeTextDiskCacheIdentity::for_test("wrong-model", "qwen");
+    let mut wrong_model_namespace = valid_namespace.clone();
+    wrong_model_namespace.model_id = "wrong-model".to_owned();
+    let wrong_model = NativeTextDiskCacheIdentity::from_namespace(&wrong_model_namespace, "qwen");
     let wrong_model_descriptor =
         NativeTextDiskCacheBlockDescriptor::new(&wrong_model, &valid_namespace, 0, &[11, 12])
             .expect("wrong model descriptor builds");
