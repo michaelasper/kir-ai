@@ -79,6 +79,9 @@ fn accept_hub_request(listener: &TcpListener) -> (String, TcpStream) {
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("test hub stream blocking");
                 let mut buffer = [0_u8; 4096];
                 let read = stream.read(&mut buffer).expect("read hub request");
                 return (
@@ -96,6 +99,39 @@ fn accept_hub_request(listener: &TcpListener) -> (String, TcpStream) {
             Err(err) => panic!("accept hub request failed: {err}"),
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn accept_hub_request_returns_blocking_stream_from_nonblocking_listener() {
+    use std::os::fd::AsRawFd;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+    listener
+        .set_nonblocking(true)
+        .expect("test listener nonblocking");
+    let mut client = TcpStream::connect(listener.local_addr().expect("local addr"))
+        .expect("connect to test listener");
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+        .expect("write request");
+
+    let (request, stream) = accept_hub_request(&listener);
+
+    assert!(request.starts_with("GET / HTTP/1.1"), "request: {request}");
+    // SAFETY: `stream.as_raw_fd()` is a valid descriptor for the live TcpStream.
+    let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+    assert_ne!(
+        flags,
+        -1,
+        "fcntl F_GETFL failed: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(
+        flags & libc::O_NONBLOCK,
+        0,
+        "accepted hub stream should be blocking"
+    );
 }
 
 fn write_json_response(stream: &mut TcpStream, body: &str) {
