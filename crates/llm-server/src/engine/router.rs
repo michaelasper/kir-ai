@@ -9,6 +9,7 @@ use super::{
     config::{EngineConfigError, EngineOptions, configured_hub_client, default_model_home},
     inference::{chat_completions, completions},
     lifecycle,
+    rate_limit::{PublicInferenceClientKey, RateLimitRejection, RateLimitSnapshot},
     requests::ActiveRequestRegistry,
     scheduler::{GenerationPhaseMetrics, ModelScheduler, ModelSchedulerOptions},
     state::AppState,
@@ -19,7 +20,7 @@ use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
     http::{
-        Request,
+        HeaderMap, HeaderValue, Request,
         header::{HeaderName, RETRY_AFTER},
     },
     middleware::{self, Next},
@@ -247,26 +248,93 @@ async fn enforce_public_inference_rate_limit(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    match state.public_inference_rate_limiter.acquire() {
-        Ok(()) => next.run(request).await,
-        Err(retry_after) => rate_limited_response(retry_after),
+    let client_key = public_inference_client_key(request.headers());
+    match state.public_inference_rate_limiter.acquire(&client_key) {
+        Ok(snapshot) => {
+            let mut response = next.run(request).await;
+            insert_rate_limit_headers(response.headers_mut(), snapshot);
+            response
+        }
+        Err(rejection) => rate_limited_response(rejection),
     }
 }
 
-fn rate_limited_response(retry_after: Duration) -> Response {
-    let mut response = super::EngineError::RateLimited.into_response();
-    let seconds = retry_after_seconds(retry_after);
-    if let Ok(value) = seconds.to_string().parse() {
-        response.headers_mut().insert(RETRY_AFTER, value);
+fn public_inference_client_key(headers: &HeaderMap) -> PublicInferenceClientKey {
+    if let Some(client_ip) =
+        trimmed_header_value(headers, "x-forwarded-for").and_then(first_forwarded_for_value)
+    {
+        return PublicInferenceClientKey::new(format!("xff:{client_ip}"));
     }
+
+    if let Some(client_ip) = trimmed_header_value(headers, "x-real-ip") {
+        return PublicInferenceClientKey::new(format!("x-real-ip:{client_ip}"));
+    }
+
+    if let Some(authorization) = trimmed_header_value(headers, "authorization") {
+        return PublicInferenceClientKey::hashed("authorization", authorization);
+    }
+
+    PublicInferenceClientKey::anonymous()
+}
+
+fn trimmed_header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn first_forwarded_for_value(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+fn rate_limited_response(rejection: RateLimitRejection) -> Response {
+    let mut response = super::EngineError::RateLimited.into_response();
+    insert_header(
+        response.headers_mut(),
+        RETRY_AFTER,
+        retry_after_seconds(rejection.retry_after).to_string(),
+    );
+    insert_rate_limit_headers(response.headers_mut(), rejection.snapshot);
     response
 }
 
+fn insert_rate_limit_headers(headers: &mut HeaderMap, snapshot: RateLimitSnapshot) {
+    insert_header(
+        headers,
+        HeaderName::from_static("x-ratelimit-limit-requests"),
+        snapshot.limit_requests.to_string(),
+    );
+    insert_header(
+        headers,
+        HeaderName::from_static("x-ratelimit-remaining-requests"),
+        snapshot.remaining_requests.to_string(),
+    );
+    insert_header(
+        headers,
+        HeaderName::from_static("x-ratelimit-reset-requests"),
+        ceil_duration_seconds(snapshot.reset_after).to_string(),
+    );
+}
+
+fn insert_header(headers: &mut HeaderMap, name: HeaderName, value: String) {
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        headers.insert(name, value);
+    }
+}
+
 fn retry_after_seconds(duration: Duration) -> u64 {
+    ceil_duration_seconds(duration).max(1)
+}
+
+fn ceil_duration_seconds(duration: Duration) -> u64 {
     duration
         .as_secs()
         .saturating_add(u64::from(duration.subsec_nanos() > 0))
-        .max(1)
 }
 
 async fn log_http_request(

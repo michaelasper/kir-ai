@@ -731,7 +731,7 @@ Response shape:
 
 ## Error Shape
 
-Public inference endpoints (`/v1/chat/completions` and `/v1/completions`) are rate-limited globally. When the limit is exceeded, the server returns `429`, includes `Retry-After`, and does not parse or validate the request body.
+Public inference endpoints (`/v1/chat/completions` and `/v1/completions`) use a per-client sliding-window rate limit. Client identity is selected from the first non-empty `X-Forwarded-For` address, then `X-Real-IP`, then the `Authorization` header; requests without those headers share an anonymous bucket. Rate-limited responses return `429`, include `Retry-After`, and do not parse or validate the request body. Public inference responses include `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and `x-ratelimit-reset-requests`.
 
 All engine errors use this body shape:
 

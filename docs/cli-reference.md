@@ -68,7 +68,7 @@ llm-engine serve \
 | `--max-json-body-bytes <usize>` | `16777216` | HTTP JSON request body cap for API and admin JSON routes. Values below `1` are rejected. |
 | `--max-message-content-bytes <usize>` | `8388608` | Per-message chat `content` byte cap after JSON parsing. Values below `1` are rejected. |
 | `--max-completion-prompt-bytes <usize>` | `8388608` | Text completion `prompt` byte cap after JSON parsing. Values below `1` are rejected. |
-| `--max-public-inference-requests-per-second <usize>` | `60` | Global fixed-window rate limit for public `/v1/chat/completions` and `/v1/completions` requests. Values below `1` are rejected. Exceeded requests return `429` with `Retry-After`. |
+| `--max-public-inference-requests-per-second <usize>` | `60` | Per-client sliding-window rate limit for public `/v1/chat/completions` and `/v1/completions` requests. Values below `1` are rejected. Exceeded requests return `429` with `Retry-After` and `x-ratelimit-*` headers. |
 | `--admin-token <token>` | generated for loopback binds; required for non-loopback binds | Bearer token required by `/admin/*` routes. If omitted on a loopback bind, `serve` generates a temporary token for that process and prints the required `Authorization: Bearer <token>` header at startup. |
 | `--mlx-endpoint <url>` | `http://127.0.0.1:8080/v1` | Loopback `mlx_lm.server` or `mlx_vlm.server` `/v1` endpoint for MLX manifests. Remote endpoints are rejected. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-prefix-cache-bytes <u64>` | `536870912` | Per-backend native Qwen/Gemma prefix-cache budget. Set `0` to reject stores while still allowing generation without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when this flag is omitted. |
