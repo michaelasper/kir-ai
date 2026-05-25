@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.8](https://github.com/michaelasper/kir-ai/compare/v1.57.7...v1.57.8) (2026-05-25)
+
+### Performance Improvements
+
+* **COR-447:** load embedded Metal shader library ([0abaa11](https://github.com/michaelasper/kir-ai/commit/0abaa113e9d099b8d97ecb298dd48e7a389d8ae2))
+
 ## [1.57.7](https://github.com/michaelasper/kir-ai/compare/v1.57.6...v1.57.7) (2026-05-25)
 
 ### Performance Improvements
