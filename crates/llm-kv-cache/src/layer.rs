@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::block::RetainedCacheBlock;
 use crate::format::{KvCacheFormatMetricParts, LayerInt8KvStore, LayerQuantizedValueStore};
@@ -25,8 +25,8 @@ pub struct LayerKvCache {
     block_table: BlockTable,
     blocks: Vec<CacheBlock>,
     // Primary ring storage followed by mirrored slots for contiguous logical views.
-    key_stage: Vec<f32>,
-    value_stage: Vec<f32>,
+    key_stage: Arc<Vec<f32>>,
+    value_stage: Arc<Vec<f32>>,
     int8_storage: Option<LayerInt8KvStore>,
     quantized_values: Option<LayerQuantizedValueStore>,
 }
@@ -250,8 +250,8 @@ impl Clone for LayerKvCache {
             window_start: self.window_start,
             block_table: self.block_table.clone(),
             blocks: self.blocks.clone(),
-            key_stage: self.key_stage.clone(),
-            value_stage: self.value_stage.clone(),
+            key_stage: Arc::clone(&self.key_stage),
+            value_stage: Arc::clone(&self.value_stage),
             int8_storage: self.int8_storage.clone(),
             quantized_values: self.quantized_values.clone(),
         }
@@ -322,8 +322,8 @@ impl LayerKvCache {
             window_start: 0,
             block_table,
             blocks,
-            key_stage: vec![0.0; stage_len],
-            value_stage: vec![0.0; stage_len],
+            key_stage: Arc::new(vec![0.0; stage_len]),
+            value_stage: Arc::new(vec![0.0; stage_len]),
             int8_storage,
             quantized_values,
         })
@@ -508,8 +508,8 @@ impl LayerKvCache {
     /// Returns bytes retained by compatibility staging and block key/value storage.
     pub fn resident_bytes(&self) -> u64 {
         let f32_bytes = self.blocks.iter().fold(
-            f32_resident_bytes(&self.key_stage)
-                .saturating_add(f32_resident_bytes(&self.value_stage)),
+            f32_resident_bytes(self.key_stage.as_slice())
+                .saturating_add(f32_resident_bytes(self.value_stage.as_slice())),
             |resident_bytes, block| {
                 resident_bytes
                     .saturating_add(f32_resident_bytes(block.key_storage()))
@@ -565,8 +565,8 @@ impl LayerKvCache {
 
     pub fn format_metrics(&self) -> Result<KvCacheFormatMetrics, KvCacheError> {
         let f32_residency = self.blocks.iter().fold(
-            f32_resident_bytes(&self.key_stage)
-                .saturating_add(f32_resident_bytes(&self.value_stage)),
+            f32_resident_bytes(self.key_stage.as_slice())
+                .saturating_add(f32_resident_bytes(self.value_stage.as_slice())),
             |resident_bytes, block| {
                 resident_bytes
                     .saturating_add(f32_resident_bytes(block.key_storage()))
@@ -890,8 +890,7 @@ impl LayerKvCache {
         if let Some(int8_storage) = self.int8_storage.as_mut() {
             int8_storage.clear();
         }
-        self.key_stage.fill(0.0);
-        self.value_stage.fill(0.0);
+        self.clear_stage_storage();
         self.revision = self.revision.saturating_add(1);
     }
 
@@ -992,17 +991,18 @@ impl LayerKvCache {
         let vector_len = self.vector_len();
         let start = token_index * vector_len;
         let end = start + vector_len;
-        self.key_stage[start..end].copy_from_slice(key);
-        self.value_stage[start..end].copy_from_slice(value);
         let mirror_start = (token_index + self.max_tokens) * vector_len;
         let mirror_end = mirror_start + vector_len;
-        self.key_stage[mirror_start..mirror_end].copy_from_slice(key);
-        self.value_stage[mirror_start..mirror_end].copy_from_slice(value);
+        let key_stage = Arc::make_mut(&mut self.key_stage);
+        key_stage[start..end].copy_from_slice(key);
+        key_stage[mirror_start..mirror_end].copy_from_slice(key);
+        let value_stage = Arc::make_mut(&mut self.value_stage);
+        value_stage[start..end].copy_from_slice(value);
+        value_stage[mirror_start..mirror_end].copy_from_slice(value);
     }
 
     fn rebuild_stage_from_blocks(&mut self) -> Result<(), KvCacheError> {
-        self.key_stage.fill(0.0);
-        self.value_stage.fill(0.0);
+        self.clear_stage_storage();
         for logical_token_index in 0..self.token_count {
             let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
             let (block_index, block_token_index) = self
@@ -1190,6 +1190,19 @@ impl LayerKvCache {
     fn stage_storage_len(&self) -> usize {
         self.max_tokens * self.vector_len()
     }
+
+    fn clear_stage_storage(&mut self) {
+        if let Some(key_stage) = Arc::get_mut(&mut self.key_stage) {
+            key_stage.fill(0.0);
+        } else {
+            self.key_stage = Arc::new(vec![0.0; self.key_stage.len()]);
+        }
+        if let Some(value_stage) = Arc::get_mut(&mut self.value_stage) {
+            value_stage.fill(0.0);
+        } else {
+            self.value_stage = Arc::new(vec![0.0; self.value_stage.len()]);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1285,6 +1298,49 @@ mod tests {
         assert_eq!(clone.token_count(), cache.token_count());
         assert_eq!(clone.keys(), cache.keys());
         assert_eq!(clone.values(), cache.values());
+    }
+
+    #[test]
+    fn layer_kv_cache_clone_shares_stage_until_write_and_preserves_isolation() {
+        let mut cache = LayerKvCache::new(3, 1, 1).expect("cache shape is valid");
+        cache.append(&[1.0], &[10.0]).expect("first token fits");
+        cache.append(&[2.0], &[20.0]).expect("second token fits");
+
+        let original_key_stage = cache.key_storage().as_ptr();
+        let original_value_stage = cache.value_storage().as_ptr();
+        let mut clone = cache.clone();
+
+        assert_eq!(
+            clone.key_storage().as_ptr(),
+            original_key_stage,
+            "cloning should share stage key storage instead of deep-copying it"
+        );
+        assert_eq!(
+            clone.value_storage().as_ptr(),
+            original_value_stage,
+            "cloning should share stage value storage instead of deep-copying it"
+        );
+
+        clone
+            .append(&[3.0], &[30.0])
+            .expect("clone suffix token fits");
+
+        assert_eq!(cache.keys(), &[1.0, 2.0]);
+        assert_eq!(cache.values(), &[10.0, 20.0]);
+        assert_eq!(clone.keys(), &[1.0, 2.0, 3.0]);
+        assert_eq!(clone.values(), &[10.0, 20.0, 30.0]);
+        assert_eq!(cache.key_storage().as_ptr(), original_key_stage);
+        assert_eq!(cache.value_storage().as_ptr(), original_value_stage);
+        assert_ne!(
+            clone.key_storage().as_ptr(),
+            original_key_stage,
+            "writing through the clone should fork stage key storage"
+        );
+        assert_ne!(
+            clone.value_storage().as_ptr(),
+            original_value_stage,
+            "writing through the clone should fork stage value storage"
+        );
     }
 
     #[test]
