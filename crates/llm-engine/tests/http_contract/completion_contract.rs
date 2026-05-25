@@ -110,6 +110,7 @@ async fn completions_endpoint_honors_custom_prompt_limit() {
         json_body_bytes: 4096,
         message_content_bytes: 4096,
         completion_prompt_bytes: 32,
+        ..llm_api::RequestLimits::default()
     };
     let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
         Box::new(StaticBackend {

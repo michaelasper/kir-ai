@@ -1,4 +1,4 @@
-use llm_api::RequestLimits;
+use llm_api::{MAX_TOOL_SCHEMA_DEPTH, RequestLimits};
 use llm_engine::{
     DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit,
     SnapshotBackendLoader, SnapshotBackendOptions, cli, open_snapshot_backend,
@@ -443,6 +443,7 @@ Options:
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
+  --max-tool-schema-depth <depth>            Maximum nested JSON Schema object depth below a tool parameters root [default: {}]
   --max-public-inference-requests-per-second <n>
                                              Public chat/completion requests per second [default: 60]
   --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
@@ -465,7 +466,7 @@ Options:
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
   --canonical-tool-schemas                   Canonicalize tool schemas before runtime prompt/cache use [env: LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1]
   -h, --help                                 Print help",
-        DEFAULT_MODEL_ID
+        DEFAULT_MODEL_ID, MAX_TOOL_SCHEMA_DEPTH
     );
 }
 
@@ -545,6 +546,11 @@ fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
             args,
             "--max-completion-prompt-bytes",
             defaults.completion_prompt_bytes,
+        )?,
+        tool_schema_depth: parse_positive_usize_flag(
+            args,
+            "--max-tool-schema-depth",
+            defaults.tool_schema_depth,
         )?,
     })
 }
@@ -954,6 +960,29 @@ mod serve_arg_tests {
         assert!(
             too_high.to_string().contains("--max-concurrent-requests"),
             "error: {too_high}"
+        );
+    }
+
+    #[test]
+    fn request_limits_parse_tool_schema_depth() {
+        assert_eq!(
+            request_limits_from_args(&args(&[]))
+                .expect("default request limits parse")
+                .tool_schema_depth,
+            MAX_TOOL_SCHEMA_DEPTH
+        );
+        assert_eq!(
+            request_limits_from_args(&args(&["--max-tool-schema-depth", "7"]))
+                .expect("custom tool schema depth parses")
+                .tool_schema_depth,
+            7
+        );
+
+        let zero = request_limits_from_args(&args(&["--max-tool-schema-depth", "0"]))
+            .expect_err("zero tool schema depth fails");
+        assert!(
+            zero.to_string().contains("--max-tool-schema-depth"),
+            "error: {zero}"
         );
     }
 

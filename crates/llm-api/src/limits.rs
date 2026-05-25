@@ -14,6 +14,8 @@ pub const MAX_TOOLS: usize = 128;
 pub const MAX_TOOL_DESCRIPTION_BYTES: usize = 1024 * 1024;
 /// Maximum serialized JSON byte length for one tool schema.
 pub const MAX_TOOL_SCHEMA_BYTES: usize = 1024 * 1024;
+/// Maximum nested JSON Schema object depth below a tool `parameters` root.
+pub const MAX_TOOL_SCHEMA_DEPTH: usize = 16;
 /// Maximum number of tool calls accepted on one assistant message.
 pub const MAX_TOOL_CALLS_PER_MESSAGE: usize = 128;
 /// Maximum serialized JSON byte length for one tool call argument object.
@@ -39,6 +41,8 @@ pub struct RequestLimits {
     pub message_content_bytes: usize,
     /// Maximum UTF-8 byte length for a legacy completion prompt.
     pub completion_prompt_bytes: usize,
+    /// Maximum nested JSON Schema object depth below a tool `parameters` root.
+    pub tool_schema_depth: usize,
 }
 
 impl Default for RequestLimits {
@@ -47,6 +51,7 @@ impl Default for RequestLimits {
             json_body_bytes: MAX_JSON_BODY_BYTES,
             message_content_bytes: MAX_MESSAGE_CONTENT_BYTES,
             completion_prompt_bytes: MAX_COMPLETION_PROMPT_BYTES,
+            tool_schema_depth: MAX_TOOL_SCHEMA_DEPTH,
         }
     }
 }

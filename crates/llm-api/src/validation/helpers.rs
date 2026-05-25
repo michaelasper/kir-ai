@@ -235,7 +235,10 @@ fn reject_non_tool_message_while_tool_calls_pending(
     Ok(())
 }
 
-pub(super) fn validate_tools(tools: &[ToolDefinition]) -> Result<(), ApiError> {
+pub(super) fn validate_tools(
+    tools: &[ToolDefinition],
+    limits: RequestLimits,
+) -> Result<(), ApiError> {
     for (index, tool) in tools.iter().enumerate() {
         validate_non_empty_string(
             &format!("tools[{index}].function.name"),
@@ -261,6 +264,7 @@ pub(super) fn validate_tools(tools: &[ToolDefinition]) -> Result<(), ApiError> {
         validate_tool_schema_shape(
             &format!("tools[{index}].function.parameters"),
             &tool.function.parameters,
+            limits.tool_schema_depth,
         )?;
     }
     Ok(())
@@ -319,16 +323,30 @@ fn validate_json_bytes_at_most(label: &str, value: &Value, max: usize) -> Result
     }
 }
 
-fn validate_tool_schema_shape(label: &str, value: &Value) -> Result<(), ApiError> {
+fn validate_tool_schema_shape(
+    label: &str,
+    value: &Value,
+    max_depth: usize,
+) -> Result<(), ApiError> {
     let Some(schema) = value.as_object() else {
         return Err(ApiError::invalid_request(format!(
             "{label} must be a JSON object"
         )));
     };
-    validate_schema_object(label, schema)
+    validate_schema_object(label, schema, 0, max_depth)
 }
 
-fn validate_schema_object(label: &str, schema: &Map<String, Value>) -> Result<(), ApiError> {
+fn validate_schema_object(
+    label: &str,
+    schema: &Map<String, Value>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<(), ApiError> {
+    if depth > max_depth {
+        return Err(ApiError::invalid_request(format!(
+            "{label} schema depth {depth} exceeds maximum {max_depth}"
+        )));
+    }
     if let Some(schema_type) = schema.get("type") {
         validate_schema_type(label, schema_type)?;
     }
@@ -358,11 +376,21 @@ fn validate_schema_object(label: &str, schema: &Map<String, Value>) -> Result<()
             )));
         };
         for (name, property_schema) in properties {
-            validate_nested_schema_object(&format!("{label}.properties.{name}"), property_schema)?;
+            validate_nested_schema_object(
+                &format!("{label}.properties.{name}"),
+                property_schema,
+                depth.saturating_add(1),
+                max_depth,
+            )?;
         }
     }
     if let Some(items) = schema.get("items") {
-        validate_nested_schema_object(&format!("{label}.items"), items)?;
+        validate_nested_schema_object(
+            &format!("{label}.items"),
+            items,
+            depth.saturating_add(1),
+            max_depth,
+        )?;
     }
     Ok(())
 }
@@ -402,13 +430,18 @@ fn validate_schema_type_name(label: &str, type_name: &str) -> Result<(), ApiErro
     )))
 }
 
-fn validate_nested_schema_object(label: &str, value: &Value) -> Result<(), ApiError> {
+fn validate_nested_schema_object(
+    label: &str,
+    value: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<(), ApiError> {
     let Some(schema) = value.as_object() else {
         return Err(ApiError::invalid_request(format!(
             "{label} must be a JSON object"
         )));
     };
-    validate_schema_object(label, schema)
+    validate_schema_object(label, schema, depth, max_depth)
 }
 
 struct JsonByteCounter {

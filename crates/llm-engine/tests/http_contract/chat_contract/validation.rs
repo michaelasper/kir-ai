@@ -238,11 +238,39 @@ async fn chat_completions_rejects_unknown_tool_schema_type() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_tool_schema_over_depth_limit() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "lookup rust"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": nested_properties_tool_schema(llm_api::MAX_TOOL_SCHEMA_DEPTH + 1)
+            }
+        }],
+        "tool_choice": "required"
+    }))
+    .await;
+
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("schema depth"),
+        "deep schema should report the depth limit: {body}"
+    );
+    assert!(
+        message.contains(&format!("maximum {}", llm_api::MAX_TOOL_SCHEMA_DEPTH)),
+        "deep schema should report the configured maximum: {body}"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_body_above_json_body_limit() {
     let request_limits = llm_api::RequestLimits {
         json_body_bytes: 512,
         message_content_bytes: 4096,
         completion_prompt_bytes: 4096,
+        ..llm_api::RequestLimits::default()
     };
     let oversized_content = "x".repeat(request_limits.json_body_bytes);
     let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
@@ -316,6 +344,7 @@ async fn chat_completions_honors_custom_message_content_limit() {
         json_body_bytes: 4096,
         message_content_bytes: 32,
         completion_prompt_bytes: 4096,
+        ..llm_api::RequestLimits::default()
     };
     let response = build_router_with_backend_and_options_allowing_unauthenticated_admin(
         Box::new(StaticBackend {
@@ -587,4 +616,17 @@ async fn chat_completions_rejects_chatml_control_token_in_message_content() {
     assert_eq!(body["error"]["code"], "chat_template_failed");
     assert_eq!(body["error"]["phase"], "prompt_rendering");
     assert_eq!(body["error"]["retryable"], false);
+}
+
+fn nested_properties_tool_schema(depth: usize) -> Value {
+    let mut schema = json!({ "type": "string" });
+    for index in (0..depth).rev() {
+        schema = json!({
+            "type": "object",
+            "properties": {
+                format!("level_{index}"): schema,
+            },
+        });
+    }
+    schema
 }

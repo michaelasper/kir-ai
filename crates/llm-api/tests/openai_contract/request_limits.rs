@@ -242,6 +242,110 @@ fn rejects_malformed_tool_schema_items_keyword() {
 }
 
 #[test]
+fn rejects_tool_schema_properties_over_default_depth_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            nested_properties_tool_schema(MAX_TOOL_SCHEMA_DEPTH + 1),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("deeply nested properties schemas must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("schema depth"));
+    assert!(
+        err.message()
+            .contains(&format!("maximum {MAX_TOOL_SCHEMA_DEPTH}"))
+    );
+}
+
+#[test]
+fn rejects_tool_schema_items_over_default_depth_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            nested_items_tool_schema(MAX_TOOL_SCHEMA_DEPTH + 1),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("deeply nested items schemas must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("schema depth"));
+    assert!(
+        err.message()
+            .contains(&format!("maximum {MAX_TOOL_SCHEMA_DEPTH}"))
+    );
+}
+
+#[test]
+fn accepts_tool_schema_at_default_depth_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![
+            ToolDefinition::function(
+                "lookup_properties",
+                "lookup docs",
+                nested_properties_tool_schema(MAX_TOOL_SCHEMA_DEPTH),
+            ),
+            ToolDefinition::function(
+                "lookup_items",
+                "lookup docs",
+                nested_items_tool_schema(MAX_TOOL_SCHEMA_DEPTH),
+            ),
+        ],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("schemas at the default depth limit remain valid");
+}
+
+#[test]
+fn custom_request_limits_reject_lower_tool_schema_depth() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            nested_properties_tool_schema(5),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("default tool schema depth accepts this schema");
+
+    let err = request
+        .validate_with_limits(RequestLimits {
+            tool_schema_depth: 4,
+            ..RequestLimits::default()
+        })
+        .expect_err("custom lower schema depth rejects the same request");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("schema depth"));
+    assert!(err.message().contains("maximum 4"));
+}
+
+#[test]
 fn accepts_supported_tool_schema_types_and_unions() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -413,6 +517,30 @@ fn request_limits_reject_oversized_completion_prompt() {
 
     assert_eq!(err.code(), "invalid_request");
     assert!(err.message().contains("prompt"));
+}
+
+fn nested_properties_tool_schema(depth: usize) -> serde_json::Value {
+    let mut schema = json!({ "type": "string" });
+    for index in (0..depth).rev() {
+        schema = json!({
+            "type": "object",
+            "properties": {
+                format!("level_{index}"): schema,
+            },
+        });
+    }
+    schema
+}
+
+fn nested_items_tool_schema(depth: usize) -> serde_json::Value {
+    let mut schema = json!({ "type": "string" });
+    for _ in 0..depth {
+        schema = json!({
+            "type": "array",
+            "items": schema,
+        });
+    }
+    schema
 }
 
 #[test]

@@ -88,7 +88,7 @@ impl ValidateRequest for ChatCompletionRequest {
         validate_len_at_most("messages", self.messages.len(), MAX_CHAT_MESSAGES)?;
         validate_chat_messages(&self.messages, limits)?;
         validate_len_at_most("tools", self.tools.len(), MAX_TOOLS)?;
-        validate_tools(&self.tools)?;
+        validate_tools(&self.tools, limits)?;
         validate_stop_sequence_values(&self.stop)?;
         if matches!(
             self.response_format,
