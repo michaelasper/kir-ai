@@ -46,7 +46,7 @@ pub fn build_router_with_protocol_test_backend() -> ServerRouter {
 pub fn build_router_with_backend(
     backend: Box<dyn ModelBackend>,
 ) -> Result<ServerRouter, EngineConfigError> {
-    router_builder(backend).with_concurrency(1).build()
+    router_builder(backend).build()
 }
 
 #[deprecated(note = "use router_builder(backend).with_concurrency(limit).build()")]

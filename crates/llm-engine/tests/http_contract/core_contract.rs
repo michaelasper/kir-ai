@@ -68,11 +68,19 @@ async fn concurrent_generation_queues_once_then_returns_model_overloaded_when_fu
     let order = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
-    let app = build_router_with_unauthenticated_admin(Box::new(FairnessBackend {
-        order: order.clone(),
-        entered: entered.clone(),
-        release: release.clone(),
-    }));
+    let app = build_router_with_unauthenticated_admin_and_options(
+        Box::new(FairnessBackend {
+            order: order.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        EngineOptions {
+            concurrency_limit: 1,
+            scheduler_queue_limit: 1,
+            ..EngineOptions::default()
+        },
+    )
+    .expect("router builds");
     let first = tokio::spawn(app.clone().oneshot(chat_request_body("first-long")));
     wait_for_order_len(&order, 1).await;
 
@@ -100,6 +108,37 @@ async fn concurrent_generation_queues_once_then_returns_model_overloaded_when_fu
     assert_eq!(first.status(), StatusCode::OK);
     wait_for_order_len(&order, 2).await;
     release.add_permits(1);
+    let second = second.await.expect("second task").expect("second response");
+    assert_eq!(second.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn default_router_admits_concurrent_decode_requests_without_queueing() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let app = build_router_with_unauthenticated_admin(Box::new(FairnessBackend {
+        order: order.clone(),
+        entered,
+        release: release.clone(),
+    }));
+
+    let first = tokio::spawn(app.clone().oneshot(chat_request_body("first-long")));
+    wait_for_order_len(&order, 1).await;
+    let second = tokio::spawn(app.clone().oneshot(chat_request_body("third-short")));
+
+    tokio::time::timeout(Duration::from_millis(200), wait_for_order_len(&order, 2))
+        .await
+        .expect("default scheduler admits a second decode while the first is active");
+    let metrics = wait_for_metrics(&app, |body| {
+        body["active_decode_requests"] == 2 && body["queued_requests"] == 0
+    })
+    .await;
+    assert_eq!(metrics["queued_decode_requests"], 0);
+
+    release.add_permits(2);
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::OK);
     let second = second.await.expect("second task").expect("second response");
     assert_eq!(second.status(), StatusCode::OK);
 }

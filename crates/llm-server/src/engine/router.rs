@@ -124,7 +124,7 @@ pub fn build_router_with_protocol_test_backend() -> Router {
 pub fn build_router_with_backend(
     backend: Box<dyn ModelBackend>,
 ) -> Result<Router, EngineConfigError> {
-    RouterBuilder::new(backend).with_concurrency(1).build()
+    RouterBuilder::new(backend).build()
 }
 
 #[deprecated(note = "use RouterBuilder::new(backend).with_concurrency(limit).build()")]

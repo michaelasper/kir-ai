@@ -1,8 +1,8 @@
 use llm_api::RequestLimits;
 use llm_engine::{
-    DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit, SnapshotBackendLoader,
-    SnapshotBackendOptions, cli, open_snapshot_backend, parse_snapshot_model_family,
-    router_builder,
+    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit,
+    SnapshotBackendLoader, SnapshotBackendOptions, cli, open_snapshot_backend,
+    parse_snapshot_model_family, router_builder,
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
             let max_concurrent_requests = flag_value(&serve_args, "--max-concurrent-requests")
                 .map(str::parse::<usize>)
                 .transpose()?
-                .unwrap_or(1);
+                .unwrap_or(DEFAULT_INFERENCE_CONCURRENCY_LIMIT);
             let configured_admin_token = flag_value(&serve_args, "--admin-token")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_ENGINE_ADMIN_TOKEN").ok());
@@ -314,7 +314,7 @@ Options:
                                              Raw native snapshots infer Qwen/Gemma from config.json; raw MLX requires --family
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text prefill chunk size [default: 2048; lower only for memory-constrained correctness probes]
-  --max-concurrent-requests <n>              Maximum concurrent requests [default: 1]
+  --max-concurrent-requests <n>              Maximum concurrent requests [default: 4]
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]

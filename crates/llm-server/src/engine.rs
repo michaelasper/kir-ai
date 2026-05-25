@@ -18,7 +18,8 @@ mod state;
 mod streaming;
 
 pub use config::{
-    EngineConfigError, EngineOptions, PublicInferenceRateLimit, configured_hub_client,
+    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, EngineConfigError, EngineOptions,
+    PublicInferenceRateLimit, configured_hub_client,
 };
 #[cfg(feature = "test-utils")]
 pub use router::build_router_with_protocol_test_backend;
