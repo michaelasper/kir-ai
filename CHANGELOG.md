@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.1](https://github.com/michaelasper/kir-ai/compare/v1.57.0...v1.57.1) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-355:** mark public enums non-exhaustive ([073a72f](https://github.com/michaelasper/kir-ai/commit/073a72f0171967190ec0c5f69ed95f7378f817a5))
+
 ## [1.57.0](https://github.com/michaelasper/kir-ai/compare/v1.56.8...v1.57.0) (2026-05-25)
 
 ### Features
