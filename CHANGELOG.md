@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.12](https://github.com/michaelasper/kir-ai/compare/v1.57.11...v1.57.12) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-405:** enable concurrent scheduler admission by default ([a1d6b57](https://github.com/michaelasper/kir-ai/commit/a1d6b57e7b06270f7441dd9dc889e6a6c1cc9765))
+
 ## [1.57.11](https://github.com/michaelasper/kir-ai/compare/v1.57.10...v1.57.11) (2026-05-25)
 
 ### Bug Fixes
