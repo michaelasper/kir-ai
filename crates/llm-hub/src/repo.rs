@@ -78,6 +78,7 @@ fn is_safe_repo_component(component: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RepoType {
     Model,
 }

@@ -179,6 +179,7 @@ pub fn select_argmax(logits: &[f32]) -> Result<usize, SamplerError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SamplerError {
     EmptyLogits,
     NonFiniteLogit { index: usize },

@@ -23,10 +23,16 @@ pub(super) fn build_upstream_request(
     stream: bool,
     include_stream_usage: bool,
 ) -> Result<(MlxUpstreamProtocol, reqwest::RequestBuilder), BackendError> {
-    let protocol = mlx_upstream_protocol_for_request(metadata, request);
+    let protocol = mlx_upstream_protocol_for_request(metadata, request)?;
     let (temperature, top_p) = match request.sampling {
         SamplingConfig::Greedy => (0.0, 1.0),
         SamplingConfig::TopP { temperature, top_p } => (temperature, top_p),
+        _ => {
+            return Err(BackendError::unsupported_request(format!(
+                "unsupported MLX sampling config `{:?}`",
+                request.sampling
+            )));
+        }
     };
     let stream_options = (stream && include_stream_usage).then_some(MlxStreamOptions {
         include_usage: true,
@@ -43,9 +49,9 @@ pub(super) fn build_upstream_request(
             stream_options,
         }),
         MlxUpstreamProtocol::ChatCompletions => {
-            let messages = mlx_chat_messages(request);
+            let messages = mlx_chat_messages(request)?;
             let tools = mlx_tools(request);
-            let tool_choice = mlx_tool_choice(request);
+            let tool_choice = mlx_tool_choice(request)?;
             let response_format = mlx_response_format(request);
             let chat_template_kwargs = mlx_effective_chat_template_kwargs(metadata, request);
             client.post(upstream_url).json(&MlxChatCompletionRequest {
@@ -103,7 +109,7 @@ struct MlxStreamOptions {
     include_usage: bool,
 }
 
-fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {
+fn mlx_chat_messages(request: &BackendRequest) -> Result<Vec<ChatMessage>, BackendError> {
     if let Some(chat) = request.as_chat() {
         return chat
             .chat_context
@@ -112,40 +118,56 @@ fn mlx_chat_messages(request: &BackendRequest) -> Vec<ChatMessage> {
             .map(mlx_chat_message)
             .collect();
     }
-    vec![ChatMessage::user(request.prompt().to_owned())]
+    Ok(vec![ChatMessage::user(request.prompt().to_owned())])
 }
 
-fn mlx_chat_message(message: &BackendChatMessage) -> ChatMessage {
-    ChatMessage {
-        role: mlx_chat_role(&message.role),
+fn mlx_chat_message(message: &BackendChatMessage) -> Result<ChatMessage, BackendError> {
+    Ok(ChatMessage {
+        role: mlx_chat_role(&message.role)?,
         content: message.content.clone(),
         name: message.name.clone(),
         tool_call_id: message.tool_call_id.clone(),
-        tool_calls: message.tool_calls.iter().map(mlx_tool_call).collect(),
-    }
+        tool_calls: message
+            .tool_calls
+            .iter()
+            .map(mlx_tool_call)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
-fn mlx_chat_role(role: &BackendChatRole) -> llm_api::ChatRole {
-    match role {
+fn mlx_chat_role(role: &BackendChatRole) -> Result<llm_api::ChatRole, BackendError> {
+    Ok(match role {
         BackendChatRole::System => llm_api::ChatRole::System,
         BackendChatRole::User => llm_api::ChatRole::User,
         BackendChatRole::Assistant => llm_api::ChatRole::Assistant,
         BackendChatRole::Tool => llm_api::ChatRole::Tool,
-    }
+        _ => {
+            return Err(BackendError::unsupported_request(format!(
+                "unsupported MLX chat role `{role:?}`"
+            )));
+        }
+    })
 }
 
-fn mlx_tool_call(tool_call: &BackendToolCall) -> llm_api::ToolCall {
-    llm_api::ToolCall {
+fn mlx_tool_call(tool_call: &BackendToolCall) -> Result<llm_api::ToolCall, BackendError> {
+    Ok(llm_api::ToolCall {
         id: tool_call.id.clone(),
-        call_type: mlx_tool_call_type(&tool_call.call_type),
+        call_type: mlx_tool_call_type(&tool_call.call_type)?,
         function: mlx_tool_call_function(&tool_call.function),
-    }
+    })
 }
 
-fn mlx_tool_call_type(call_type: &BackendToolCallType) -> llm_api::ToolCallType {
-    match call_type {
+fn mlx_tool_call_type(
+    call_type: &BackendToolCallType,
+) -> Result<llm_api::ToolCallType, BackendError> {
+    Ok(match call_type {
         BackendToolCallType::Function => llm_api::ToolCallType::Function,
-    }
+        _ => {
+            return Err(BackendError::unsupported_request(format!(
+                "unsupported MLX tool call type `{call_type:?}`"
+            )));
+        }
+    })
 }
 
 fn mlx_tool_call_function(function: &BackendToolCallFunction) -> llm_api::ToolCallFunction {
@@ -162,21 +184,31 @@ fn mlx_tools(request: &BackendRequest) -> Option<&[BackendToolDefinition]> {
         .filter(|tools| !tools.is_empty())
 }
 
-fn mlx_tool_choice(request: &BackendRequest) -> Option<Value> {
+fn mlx_tool_choice(request: &BackendRequest) -> Result<Option<Value>, BackendError> {
     request
         .as_chat()
         .and_then(|chat| chat.required_tool_choice.as_ref())
-        .map(|choice| match choice {
-            llm_backend_contracts::BackendToolChoice::RequiredAny => {
-                Value::String("required".to_owned())
-            }
-            llm_backend_contracts::BackendToolChoice::RequiredFunction(name) => serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": name,
-                },
-            }),
+        .map(|choice| {
+            Ok(match choice {
+                llm_backend_contracts::BackendToolChoice::RequiredAny => {
+                    Value::String("required".to_owned())
+                }
+                llm_backend_contracts::BackendToolChoice::RequiredFunction(name) => {
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                        },
+                    })
+                }
+                _ => {
+                    return Err(BackendError::unsupported_request(format!(
+                        "unsupported MLX tool choice `{choice:?}`"
+                    )));
+                }
+            })
         })
+        .transpose()
 }
 
 fn mlx_response_format(request: &BackendRequest) -> Option<Value> {

@@ -67,6 +67,7 @@ pub struct QuarantinedSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnapshotReadinessMode {
     Fast,
     Deep,
@@ -92,6 +93,7 @@ impl SnapshotReadinessMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnapshotReadiness {
     Ready,
     MetadataOnly { reason: String },

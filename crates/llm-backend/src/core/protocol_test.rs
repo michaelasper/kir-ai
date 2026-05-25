@@ -160,6 +160,7 @@ fn protocol_test_tool_call_from_tools(
             tools.iter().find(|tool| tool.function.name == *name)?
         }
         Some(BackendToolChoice::RequiredAny) => select_required_any_tool(user, tools)?,
+        Some(_) => return None,
         None => select_auto_tool(user, tools)?,
     };
     Some((
@@ -193,6 +194,7 @@ fn rendered_tool_definitions(
             "<|eot_id|>",
         ),
         ModelFamily::Gemma => None,
+        _ => None,
     }
 }
 
@@ -463,6 +465,11 @@ fn render_tool_call(family: ModelFamily, name: &str, arguments: &serde_json::Val
             "arguments": arguments,
         })
         .to_string(),
+        _ => serde_json::json!({
+            "name": name,
+            "arguments": arguments,
+        })
+        .to_string(),
     }
 }
 
@@ -509,6 +516,7 @@ fn last_user_message(family: ModelFamily, prompt: &str) -> String {
             "<|start_header_id|>user<|end_header_id|>\n\n",
             &["<|eot_id|>"],
         ),
+        _ => prompt.to_owned(),
     }
 }
 
@@ -590,5 +598,6 @@ fn prompt_control_tokens(family: ModelFamily) -> &'static [&'static str] {
             "<|eot_id|>",
             "<|eom_id|>",
         ],
+        _ => &[],
     }
 }

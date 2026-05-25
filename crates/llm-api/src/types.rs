@@ -8,6 +8,7 @@ use serde_json::Value;
 /// Role assigned to a chat message in the OpenAI wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ChatRole {
     /// System instruction message.
     System,
@@ -124,6 +125,7 @@ impl ChatMessage {
 /// validation until schema-constrained generation is implemented.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ResponseFormat {
     /// Default free-form text response.
     Text,
@@ -136,6 +138,7 @@ pub enum ResponseFormat {
 /// OpenAI-compatible reason that generation stopped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FinishReason {
     /// Generation stopped naturally or due to a client stop sequence.
     Stop,

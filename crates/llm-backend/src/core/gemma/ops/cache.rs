@@ -5,16 +5,19 @@ use super::attention::GemmaAttentionDims;
 use llm_models::{GemmaAttentionKind, GemmaModelSpec};
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum GemmaLayerCache {
     Attention(LayerKvCache),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum GemmaLayerCacheSnapshot {
     Attention(LayerKvCacheSnapshot),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum GemmaLayerCachePrefixState {
     Attention(LayerKvCachePrefixState),
 }
@@ -80,6 +83,11 @@ fn gemma_layer_cache_for_spec(
             max_tokens.min(sliding_window).max(1)
         }
         GemmaAttentionKind::FullAttention => max_tokens.max(1),
+        _ => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Gemma layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+            )));
+        }
     };
     LayerKvCache::new(max_tokens, dims.num_key_value_heads, dims.head_dim)
         .map(GemmaLayerCache::Attention)

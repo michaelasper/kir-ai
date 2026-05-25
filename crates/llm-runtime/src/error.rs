@@ -13,6 +13,7 @@ use crate::NoProgressClass;
 /// validation, or no-progress classification. The server layer maps these into
 /// stable OpenAI-compatible error bodies.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RuntimeError {
     /// Request failed public API validation.
     #[error(transparent)]
@@ -97,6 +98,9 @@ impl From<BackendError> for RuntimeError {
             BackendErrorDomain::InvalidRequest { reason } => Self::InvalidRequest { reason },
             BackendErrorDomain::Cancelled => Self::Cancelled,
             BackendErrorDomain::BackendFailure(source) => Self::BackendFailed { source },
+            _ => Self::BackendFailed {
+                source: BackendError::other("backend error domain is not supported by runtime"),
+            },
         }
     }
 }

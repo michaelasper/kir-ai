@@ -221,6 +221,7 @@ fn record_tool_stage_metrics(
             record_tool_schema_validation_metrics(state, latency);
             tool_stream.record_tool_schema_validation(latency);
         }
+        _ => {}
     }
 }
 
@@ -711,6 +712,7 @@ impl EngineStreamEvent for ChatCompletionStreamEvent {
             Self::InternalProgress { bytes } => EngineStreamStep::InternalProgress { bytes },
             Self::Stage(stage) => EngineStreamStep::ToolStage(stage),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
+            _ => EngineStreamStep::InternalProgress { bytes: 0 },
         }
     }
 }
@@ -724,6 +726,7 @@ impl EngineStreamEvent for CompletionStreamEvent {
             Self::Chunk(chunk) => EngineStreamStep::Chunk { chunk, progress },
             Self::Progress(progress) => EngineStreamStep::Progress(progress),
             Self::Complete(usage) => EngineStreamStep::Complete(usage),
+            _ => EngineStreamStep::InternalProgress { bytes: 0 },
         }
     }
 }

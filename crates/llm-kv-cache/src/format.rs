@@ -1,6 +1,7 @@
 use crate::KvCacheError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvCacheFormat {
     F32,
     F16,
@@ -20,6 +21,7 @@ impl std::fmt::Display for KvCacheFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvCacheValueQuantizationBits {
     Three,
     Four,

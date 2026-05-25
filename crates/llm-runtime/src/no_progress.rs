@@ -15,6 +15,7 @@ use crate::response_validation::schema_requires_string_intent_argument;
 /// These classes are observable through runtime errors and server error codes,
 /// so new variants should represent distinct client-actionable failure modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NoProgressClass {
     /// The backend returned no visible content.
     EmptyCompletion,

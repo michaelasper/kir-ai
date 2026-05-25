@@ -409,6 +409,7 @@ fn hash_tool_choice(choice: &BackendToolChoice) -> Option<String> {
                 "name": name,
             },
         }),
+        _ => return None,
     };
     hash_json(&value)
 }

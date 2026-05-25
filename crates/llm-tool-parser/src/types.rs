@@ -72,11 +72,19 @@ impl ParserError {
             message: message.into(),
         }
     }
+
+    pub(crate) fn unsupported_model_family(family: &str) -> Self {
+        Self {
+            code: "unsupported_model_family",
+            message: format!("model family `{family}` does not have a parser"),
+        }
+    }
 }
 
 /// Parser dialect selection compatible with vLLM tool parser names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ToolParserFamily {
     /// Detect parser from known output markers.
     Auto,

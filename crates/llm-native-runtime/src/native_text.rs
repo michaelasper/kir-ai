@@ -399,6 +399,12 @@ impl NativeTextBackend {
                     );
                 }
             }
+            family => {
+                anyhow::bail!(
+                    "native text execution for family `{}` is not supported",
+                    family.canonical_slug()
+                );
+            }
         }
     }
 

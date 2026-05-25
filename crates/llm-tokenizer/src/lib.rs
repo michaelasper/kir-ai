@@ -147,6 +147,7 @@ impl HuggingFaceDecodeStream<'_> {
 
 /// Error returned while loading, encoding, or decoding tokenizer data.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TokenizerError {
     /// Tokenizer JSON could not be read or parsed.
     #[error("failed to load tokenizer: {0}")]

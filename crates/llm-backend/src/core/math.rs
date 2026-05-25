@@ -8,6 +8,7 @@ use thiserror::Error;
 const TOP_K_BOUNDED_INSERTION_LIMIT: usize = 16;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MathError {
     #[error("invalid math shape: {0}")]
     InvalidShape(String),

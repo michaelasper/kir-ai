@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub type ModelPlanOptions = ModelLifecyclePlanOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PruneMode {
     DryRun,
     ConfirmDelete,

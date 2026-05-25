@@ -188,7 +188,7 @@ pub(crate) trait ChatAdapter {
         self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> BackendChatContext;
+    ) -> Result<BackendChatContext, RuntimeError>;
     fn render_prompt(
         self,
         messages: &[ChatMessage],
@@ -213,11 +213,14 @@ impl ChatAdapter for SelectedChatAdapter {
         self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> BackendChatContext {
-        BackendChatContext {
-            messages: messages.iter().map(backend_chat_message).collect(),
-            tools: crate::backend_request::backend_tool_definitions(tools),
-        }
+    ) -> Result<BackendChatContext, RuntimeError> {
+        Ok(BackendChatContext {
+            messages: messages
+                .iter()
+                .map(backend_chat_message)
+                .collect::<Result<Vec<_>, _>>()?,
+            tools: crate::backend_request::backend_tool_definitions(tools)?,
+        })
     }
 
     fn render_prompt(
@@ -242,6 +245,7 @@ impl ChatAdapter for SelectedChatAdapter {
             ModelFamily::Qwen | ModelFamily::Llama => ToolMarkupPolicy::new(&JSON_TOOL_MARKERS),
             ModelFamily::DeepSeek => ToolMarkupPolicy::new(&DEEPSEEK_TOOL_MARKERS),
             ModelFamily::Gemma => ToolMarkupPolicy::new(&GEMMA_TOOL_MARKERS),
+            _ => ToolMarkupPolicy::new(&[]),
         }
     }
 
@@ -249,6 +253,7 @@ impl ChatAdapter for SelectedChatAdapter {
         match self.family {
             ModelFamily::Llama => &LLAMA_UNMARKED_JSON_TRUNCATION_TOKENS,
             ModelFamily::Qwen | ModelFamily::DeepSeek | ModelFamily::Gemma => &[],
+            _ => &[],
         }
     }
 }
@@ -263,6 +268,7 @@ impl SelectedChatAdapter {
             ModelFamily::DeepSeek => Some(DEEPSEEK_TOOL_INSTRUCTION),
             ModelFamily::Llama => Some(LLAMA_TOOL_INSTRUCTION),
             ModelFamily::Gemma => None,
+            _ => None,
         }
     }
 
@@ -291,40 +297,55 @@ fn parse_metadata_family(family: &str) -> Result<ModelFamily, RuntimeError> {
         .map_err(|err| ApiError::unsupported_capability(format!("{err} for chat rendering")).into())
 }
 
-fn backend_chat_message(message: &ChatMessage) -> BackendChatMessage {
-    BackendChatMessage {
-        role: backend_chat_role(&message.role),
+fn backend_chat_message(message: &ChatMessage) -> Result<BackendChatMessage, RuntimeError> {
+    Ok(BackendChatMessage {
+        role: backend_chat_role(&message.role)?,
         content: message.content.clone(),
         name: message.name.clone(),
         tool_call_id: message.tool_call_id.clone(),
         tool_calls: message
             .tool_calls
             .iter()
-            .map(|tool_call| BackendToolCall {
-                id: tool_call.id.clone(),
-                call_type: backend_tool_call_type(&tool_call.call_type),
-                function: BackendToolCallFunction {
-                    name: tool_call.function.name.clone(),
-                    arguments: tool_call.function.arguments.clone(),
-                },
+            .map(|tool_call| {
+                Ok(BackendToolCall {
+                    id: tool_call.id.clone(),
+                    call_type: backend_tool_call_type(&tool_call.call_type)?,
+                    function: BackendToolCallFunction {
+                        name: tool_call.function.name.clone(),
+                        arguments: tool_call.function.arguments.clone(),
+                    },
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<Vec<_>, RuntimeError>>()?,
+    })
 }
 
-fn backend_chat_role(role: &llm_api::ChatRole) -> BackendChatRole {
-    match role {
+fn backend_chat_role(role: &llm_api::ChatRole) -> Result<BackendChatRole, RuntimeError> {
+    Ok(match role {
         llm_api::ChatRole::System => BackendChatRole::System,
         llm_api::ChatRole::User => BackendChatRole::User,
         llm_api::ChatRole::Assistant => BackendChatRole::Assistant,
         llm_api::ChatRole::Tool => BackendChatRole::Tool,
-    }
+        _ => {
+            return Err(RuntimeError::invalid_request(format!(
+                "unsupported chat role `{}`",
+                role.as_str()
+            )));
+        }
+    })
 }
 
-fn backend_tool_call_type(tool_type: &llm_api::ToolCallType) -> BackendToolCallType {
-    match tool_type {
+fn backend_tool_call_type(
+    tool_type: &llm_api::ToolCallType,
+) -> Result<BackendToolCallType, RuntimeError> {
+    Ok(match tool_type {
         llm_api::ToolCallType::Function => BackendToolCallType::Function,
-    }
+        _ => {
+            return Err(RuntimeError::invalid_request(format!(
+                "unsupported tool call type `{tool_type:?}`"
+            )));
+        }
+    })
 }
 
 #[cfg(test)]

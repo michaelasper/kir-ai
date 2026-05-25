@@ -46,6 +46,26 @@ fn auto_tool_choice_is_distinct_from_none() {
 }
 
 #[test]
+fn unknown_protocol_enum_values_fail_closed_at_deserialization_boundary() {
+    let role_err = serde_json::from_value::<ChatMessage>(json!({
+        "role": "developer",
+        "content": "hello"
+    }))
+    .expect_err("unknown chat roles must not deserialize as supported roles");
+    assert!(role_err.to_string().contains("unknown variant"));
+
+    let response_format_err = serde_json::from_value::<ResponseFormat>(json!({
+        "type": "json_schema_v2"
+    }))
+    .expect_err("unknown response formats must not deserialize as supported formats");
+    assert!(response_format_err.to_string().contains("unknown variant"));
+
+    let tool_call_type_err = serde_json::from_value::<llm_api::ToolCallType>(json!("web_search"))
+        .expect_err("unknown tool call types must not deserialize as supported types");
+    assert!(tool_call_type_err.to_string().contains("unknown variant"));
+}
+
+#[test]
 fn chat_completion_stop_accepts_string_or_array() {
     let single: ChatCompletionRequest = serde_json::from_value(json!({
         "model": "local-qwen36",

@@ -7,18 +7,21 @@ use super::attention_linear::QwenLinearAttentionDims;
 use llm_models::{AttentionKind, QwenModelSpec};
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum QwenLayerCache {
     Linear(LinearAttentionCache),
     Full(LayerKvCache),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum QwenLayerCacheSnapshot {
     Linear(LinearAttentionCacheSnapshot),
     Full(LayerKvCacheSnapshot),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum QwenLayerCachePrefixState {
     Linear(LinearAttentionCacheSnapshot),
     Full(LayerKvCachePrefixState),
@@ -120,5 +123,8 @@ fn qwen_layer_cache_for_kind(
                     ))
                 })
         }
+        _ => Err(TensorLoadError::unsupported(format!(
+            "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+        ))),
     }
 }

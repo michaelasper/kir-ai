@@ -61,6 +61,7 @@ pub fn qwen_static_f32_tensors_for_spec(spec: &QwenModelSpec) -> Vec<String> {
                 tensors.push(spec.self_attn_tensor(layer_idx, "q_norm.weight"));
                 tensors.push(spec.self_attn_tensor(layer_idx, "k_norm.weight"));
             }
+            _ => {}
         }
     }
     tensors

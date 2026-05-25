@@ -8,6 +8,7 @@ pub const INVALID_TEMPERATURE_MESSAGE: &str = "temperature must be finite and in
 pub const INVALID_TOP_P_MESSAGE: &str = "top_p must be finite and in (0, 1]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SamplingValidationError {
     InvalidTemperature,
     InvalidTopP,

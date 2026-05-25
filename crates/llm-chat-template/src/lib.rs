@@ -27,6 +27,7 @@ pub struct LlamaPromptOptions {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TemplateError {
     #[error("tool serialization failed: {0}")]
     ToolSerialization(#[from] serde_json::Error),
@@ -100,6 +101,11 @@ fn render_qwen_chatml_with_tool_instruction(
             ChatRole::User => render_plain(&mut out, "user", message)?,
             ChatRole::Tool => render_plain(&mut out, "tool", message)?,
             ChatRole::Assistant => render_assistant(&mut out, message)?,
+            _ => {
+                return Err(TemplateError::UnsupportedRole(
+                    message.role.as_str().to_owned(),
+                ));
+            }
         }
     }
 
@@ -178,6 +184,11 @@ fn render_gemma4_chat_template_with_tool_instruction(
             ChatRole::User => render_gemma4_turn(&mut out, "user", message)?,
             ChatRole::Assistant => render_gemma4_assistant_turn(&mut out, message)?,
             ChatRole::Tool => render_gemma4_tool_response(&mut out, message, &tool_names_by_id)?,
+            _ => {
+                return Err(TemplateError::UnsupportedRole(
+                    message.role.as_str().to_owned(),
+                ));
+            }
         }
     }
 
@@ -248,6 +259,11 @@ fn render_deepseek_chat_template_with_tool_instruction(
             ChatRole::Tool => {
                 render_deepseek_tool_response(&mut out, message, &mut tool_output_open)?;
             }
+            _ => {
+                return Err(TemplateError::UnsupportedRole(
+                    message.role.as_str().to_owned(),
+                ));
+            }
         }
     }
 
@@ -316,6 +332,11 @@ fn render_llama3_chat_template_with_tool_instruction(
             ChatRole::User => render_llama3_plain_turn(&mut out, "user", message)?,
             ChatRole::Assistant => render_llama3_assistant_turn(&mut out, message)?,
             ChatRole::Tool => render_llama3_tool_response(&mut out, message)?,
+            _ => {
+                return Err(TemplateError::UnsupportedRole(
+                    message.role.as_str().to_owned(),
+                ));
+            }
         }
     }
 
@@ -376,6 +397,7 @@ pub fn render_family_chat_template_with_tool_instruction(
             },
             tool_instruction,
         ),
+        _ => Err(TemplateError::UnsupportedFamily(family.display_name())),
     }
 }
 

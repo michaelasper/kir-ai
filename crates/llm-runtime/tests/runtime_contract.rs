@@ -225,6 +225,7 @@ fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefiniti
         .map(|tool| BackendToolDefinition {
             tool_type: match &tool.tool_type {
                 llm_api::ToolCallType::Function => BackendToolType::Function,
+                other => panic!("unsupported test tool type: {other:?}"),
             },
             function: BackendToolFunctionDefinition {
                 name: tool.function.name.clone(),

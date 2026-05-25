@@ -121,6 +121,7 @@ impl<'a> CompletionStream<'a> {
 
 /// Event emitted while producing a streaming chat completion.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ChatCompletionStreamEvent {
     /// OpenAI-compatible chunk safe to send to the client.
     Chunk(ChatCompletionStreamResponse),
@@ -149,6 +150,7 @@ impl ChatCompletionStreamEvent {
 
 /// Observable validation milestones for streaming chat tool calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChatCompletionStreamStage {
     /// Tool arguments have been assembled into complete JSON values.
     ToolArgumentAssemblyComplete,
@@ -160,6 +162,7 @@ pub enum ChatCompletionStreamStage {
 
 /// Event emitted while producing a streaming legacy text completion.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum CompletionStreamEvent {
     /// OpenAI-compatible chunk safe to send to the client.
     Chunk(CompletionStreamResponse),
@@ -329,6 +332,7 @@ pub(crate) fn api_finish_reason(reason: BackendFinishReason) -> llm_api::FinishR
         BackendFinishReason::ToolCalls => llm_api::FinishReason::ToolCalls,
         BackendFinishReason::ContentFilter => llm_api::FinishReason::ContentFilter,
         BackendFinishReason::Error => llm_api::FinishReason::Error,
+        _ => llm_api::FinishReason::Error,
     }
 }
 
@@ -575,7 +579,7 @@ pub(crate) fn streaming_chat_stream<'a>(
                     .tool_call_deltas
                     .into_iter()
                     .map(api_tool_call_delta)
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, _>>()?;
                 for delta in &api_tool_call_deltas {
                     structured_tool_assembler.push(delta)?;
                 }
@@ -861,13 +865,15 @@ pub(crate) fn streaming_chat_stream<'a>(
     ChatCompletionStream::new(events.boxed())
 }
 
-fn api_tool_call_delta(delta: BackendToolCallDelta) -> llm_api::ToolCallDelta {
-    llm_api::ToolCallDelta {
+fn api_tool_call_delta(
+    delta: BackendToolCallDelta,
+) -> Result<llm_api::ToolCallDelta, RuntimeError> {
+    Ok(llm_api::ToolCallDelta {
         index: delta.index,
         id: delta.id,
-        call_type: delta.call_type.map(api_tool_call_type),
+        call_type: delta.call_type.map(api_tool_call_type).transpose()?,
         function: delta.function.map(api_tool_call_function_delta),
-    }
+    })
 }
 
 fn internal_progress_bytes(chunk: &BackendStreamChunk) -> usize {
@@ -885,10 +891,17 @@ fn internal_progress_bytes(chunk: &BackendStreamChunk) -> usize {
             .sum::<usize>()
 }
 
-fn api_tool_call_type(call_type: BackendToolCallType) -> llm_api::ToolCallType {
-    match call_type {
+fn api_tool_call_type(
+    call_type: BackendToolCallType,
+) -> Result<llm_api::ToolCallType, RuntimeError> {
+    Ok(match call_type {
         BackendToolCallType::Function => llm_api::ToolCallType::Function,
-    }
+        _ => {
+            return Err(RuntimeError::invalid_request(format!(
+                "unsupported backend tool call type `{call_type:?}`"
+            )));
+        }
+    })
 }
 
 fn api_tool_call_function_delta(

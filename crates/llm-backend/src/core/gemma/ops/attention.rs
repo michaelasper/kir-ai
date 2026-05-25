@@ -160,7 +160,7 @@ pub(crate) async fn gemma_layer_attention_sequence_with_cache(
     } else {
         cache.next_position()
     };
-    let rotary = gemma_rotary_config(spec, kind);
+    let rotary = gemma_rotary_config(spec, kind)?;
     let q_proj_rows = NativeF32Rows::from_batched_matvec(&q_proj).map_err(|err| {
         TensorLoadError::integrity(format!("Gemma q projection rows failed: {err}"))
     })?;
@@ -431,8 +431,11 @@ impl GemmaRotaryConfig {
     }
 }
 
-fn gemma_rotary_config(spec: &GemmaModelSpec, kind: GemmaAttentionKind) -> GemmaRotaryConfig {
-    match kind {
+fn gemma_rotary_config(
+    spec: &GemmaModelSpec,
+    kind: GemmaAttentionKind,
+) -> Result<GemmaRotaryConfig, TensorLoadError> {
+    Ok(match kind {
         GemmaAttentionKind::SlidingAttention => GemmaRotaryConfig {
             theta: spec.sliding_rope_theta,
             partial_rotary_factor: 1.0,
@@ -441,5 +444,10 @@ fn gemma_rotary_config(spec: &GemmaModelSpec, kind: GemmaAttentionKind) -> Gemma
             theta: spec.full_rope_theta,
             partial_rotary_factor: spec.full_partial_rotary_factor,
         },
-    }
+        _ => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Gemma uses unsupported attention kind `{kind:?}`"
+            )));
+        }
+    })
 }

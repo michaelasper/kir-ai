@@ -74,6 +74,7 @@ impl NativeTextPrefixCacheValue for QwenLayerCache {
                     ((state.conv_window.len() + state.recurrent_state.len())
                         * std::mem::size_of::<f32>()) as u64
                 }
+                _ => 0,
             })
         })
     }

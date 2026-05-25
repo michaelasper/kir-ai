@@ -31,6 +31,9 @@ pub fn parse_assistant_for_family(
         ModelFamily::DeepSeek => DeepSeekParser.parse_complete(text),
         ModelFamily::Gemma => GemmaParser.parse_complete(text),
         ModelFamily::Llama => LlamaParser.parse_complete(text),
+        _ => Err(ParserError::unsupported_model_family(
+            family.canonical_slug(),
+        )),
     }?;
     tracing::trace!(
         operation = "parse_assistant",

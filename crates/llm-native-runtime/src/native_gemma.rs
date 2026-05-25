@@ -94,17 +94,20 @@ impl NativeTextPrefixCacheValue for GemmaLayerCache {
     fn prefix_cache_entry_bytes(hidden: &[f32], states: &[Self::PrefixCacheState]) -> u64 {
         let hidden_bytes = std::mem::size_of_val(hidden) as u64;
         states.iter().fold(hidden_bytes, |total, state| {
-            total.saturating_add(match state {
-                GemmaLayerCachePrefixState::Attention(state) => state.metadata_bytes(),
-            })
+            let state_bytes = if let GemmaLayerCachePrefixState::Attention(state) = state {
+                state.metadata_bytes()
+            } else {
+                0
+            };
+            total.saturating_add(state_bytes)
         })
     }
 }
 
 impl NativeTextCacheMirrorSource for GemmaLayerCache {
     fn append_cache_mirror_ids(&self, ids: &mut NativeTextCacheMirrorIds) {
-        match self {
-            GemmaLayerCache::Attention(cache) => ids.push_kv_cache(cache),
+        if let GemmaLayerCache::Attention(cache) = self {
+            ids.push_kv_cache(cache);
         }
     }
 }
@@ -359,8 +362,11 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         states: &[GemmaLayerCachePrefixState],
         cache_tokens: usize,
     ) -> bool {
-        states.iter().all(|state| match state {
-            GemmaLayerCachePrefixState::Attention(state) => state.max_tokens() >= cache_tokens,
+        states.iter().all(|state| {
+            matches!(
+                state,
+                GemmaLayerCachePrefixState::Attention(state) if state.max_tokens() >= cache_tokens
+            )
         })
     }
 
@@ -748,6 +754,7 @@ mod tests {
                 );
                 assert_eq!(cache.token_count(), 1);
             }
+            other => panic!("unexpected Gemma cache variant: {other:?}"),
         }
 
         let incompatible_namespace = NativeTextPrefixCacheNamespace {
@@ -824,8 +831,10 @@ mod tests {
     }
 
     fn retained_block_ref_count(caches: &[GemmaLayerCache], block_id: BlockId) -> Option<usize> {
-        match &caches[0] {
-            GemmaLayerCache::Attention(cache) => cache.retained_block_ref_count(block_id),
+        if let GemmaLayerCache::Attention(cache) = &caches[0] {
+            cache.retained_block_ref_count(block_id)
+        } else {
+            None
         }
     }
 

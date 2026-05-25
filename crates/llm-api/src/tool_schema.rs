@@ -22,6 +22,7 @@ pub fn generated_tool_call_id() -> String {
 /// Supported OpenAI tool call type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ToolCallType {
     /// Function call tool.
     Function,
@@ -140,6 +141,7 @@ pub struct FunctionDefinition {
 
 /// Client policy for whether and which tool the assistant should call.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ToolChoice {
     /// Let the model decide whether to call a tool.
     #[default]

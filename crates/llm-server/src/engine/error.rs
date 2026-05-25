@@ -197,6 +197,12 @@ pub(super) fn runtime_error_metadata(err: &RuntimeError) -> RuntimeErrorMetadata
             "response_validation",
             false,
         ),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "response_validation",
+            false,
+        ),
     };
     RuntimeErrorMetadata {
         status,
@@ -241,7 +247,7 @@ fn backend_failure_metadata(
         Some(BackendFailureClass::InternalInvariant) => {
             (StatusCode::INTERNAL_SERVER_ERROR, code, "decode", false)
         }
-        Some(BackendFailureClass::BackendExecution) | None => (
+        Some(BackendFailureClass::BackendExecution) | Some(_) | None => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "backend_execution_failed",
             "decode",

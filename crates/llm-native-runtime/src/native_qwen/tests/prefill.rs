@@ -30,6 +30,7 @@ async fn native_qwen_start_decode_session_prefills_full_context_with_bounded_cac
     match &decode.caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
     std::fs::remove_dir_all(snapshot).ok();
 }
@@ -86,6 +87,7 @@ fn native_qwen_start_decode_session_reuses_shared_prefix_across_requests() {
     match &second.caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
 
     let mut expected_caches = qwen_layer_caches_for_spec(
@@ -179,6 +181,7 @@ fn native_qwen_prefill_context_uses_sequence_cache_path_for_full_context() {
     match &caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 3),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
     std::fs::remove_dir_all(snapshot).ok();
 }
@@ -223,6 +226,7 @@ fn native_qwen_prefill_context_checks_cancellation_between_chunks() {
     match &caches[0] {
         QwenLayerCache::Linear(cache) => assert_eq!(cache.token_count(), 1),
         QwenLayerCache::Full(_) => panic!("layer 0 should be linear attention"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
     std::fs::remove_dir_all(snapshot).ok();
 }
@@ -282,6 +286,7 @@ async fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
     match &decode.caches[0] {
         QwenLayerCache::Full(cache) => assert_eq!(cache.token_count(), 2),
         QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
     std::fs::remove_dir_all(snapshot).ok();
 }
@@ -320,6 +325,7 @@ async fn native_qwen_full_attention_prefill_keeps_context_beyond_chunk_size() {
             );
         }
         QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
     std::fs::remove_dir_all(snapshot).ok();
 }

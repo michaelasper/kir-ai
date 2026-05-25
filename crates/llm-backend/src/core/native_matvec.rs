@@ -694,6 +694,7 @@ pub trait NativeMatvecBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NativeKvCacheTensor {
     Key,
     Value,

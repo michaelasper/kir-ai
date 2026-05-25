@@ -208,6 +208,7 @@ impl PartialEq for BackendPrefillChunkAdmissionHook {
 
 /// Backend request payload variants.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum BackendRequestKind {
     /// Raw text prompt without chat semantics.
     RawCompletion(BackendCompletionRequest),
@@ -266,6 +267,7 @@ pub struct BackendChatMessage {
 /// Chat message role in backend context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendChatRole {
     /// System instruction message.
     System,
@@ -291,6 +293,7 @@ pub struct BackendToolCall {
 /// Tool call type supported by backends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendToolCallType {
     /// Function call.
     Function,
@@ -308,6 +311,7 @@ pub struct BackendToolCallFunction {
 /// Tool definition kind supported by backends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendToolType {
     /// Function tool.
     Function,
@@ -467,6 +471,7 @@ fn update_cache_key_component(hasher: &mut Sha256, name: &str, value: Option<&st
 
 /// Required tool-call policy after runtime request validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendToolChoice {
     /// At least one declared tool must be called.
     RequiredAny,
@@ -477,6 +482,7 @@ pub enum BackendToolChoice {
 /// Backend stop reason normalized for runtime response mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendFinishReason {
     /// Generation stopped naturally.
     Stop,
@@ -538,6 +544,7 @@ impl Default for BackendCapabilities {
 
 /// Sampling strategy normalized from API controls.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub enum SamplingConfig {
     /// Deterministic greedy decoding.
     #[default]
@@ -627,6 +634,7 @@ pub struct BackendStreamChunk {
 /// Backend progress event carried alongside streaming chunks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendStreamProgress {
     /// Prefill progress for prompt ingestion.
     PrefillProgress {
@@ -651,6 +659,7 @@ pub enum BackendStreamProgress {
 /// Timing milestone names emitted by streaming backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BackendStreamTimingMilestone {
     /// Response headers have been produced.
     ResponseHeaders,
@@ -728,6 +737,7 @@ impl BackendModelMetadata {
 
 /// Readiness state reported by a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendHealthStatus {
     /// Backend is ready to accept generation requests.
     Ready,
@@ -932,6 +942,7 @@ const SCHEDULER_OVERLOADED_CODE: &str = "model_overloaded";
 
 /// Coarse failure class for backend errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendFailureClass {
     /// Generic backend execution failure.
     BackendExecution,
@@ -1011,6 +1022,7 @@ pub(crate) enum BackendErrorKind {
 
 /// Domain projection used by the runtime when mapping backend errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendErrorDomain {
     /// Requested model is not the backend's loaded model.
     ModelNotFound {

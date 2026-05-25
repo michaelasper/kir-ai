@@ -287,6 +287,27 @@ fn builtin_profile_names_match_lookup_table() {
 }
 
 #[test]
+fn profile_artifact_sets_do_not_default_future_families_to_qwen() {
+    let source = include_str!("../src/profile.rs");
+    let production_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let artifact_lookup = production_source
+        .split("fn artifact_set_for_family")
+        .nth(1)
+        .and_then(|source| source.split("mod model_family_slug").next())
+        .expect("profile artifact-set lookup should be present");
+
+    assert!(
+        !artifact_lookup.contains("_ => ProfileArtifactSet::Qwen")
+            && !artifact_lookup.contains("_ => Some(ProfileArtifactSet::Qwen)"),
+        "future non-exhaustive model families must not silently use Qwen artifact patterns"
+    );
+    assert!(
+        artifact_lookup.contains("_ => None"),
+        "future non-exhaustive model families must be left without an artifact-set mapping"
+    );
+}
+
+#[test]
 fn builtin_profile_fields_are_typed_but_serialize_as_profile_slugs() {
     let profile = ModelProfile::qwen36_safetensors_bf16();
 

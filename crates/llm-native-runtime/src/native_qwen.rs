@@ -97,6 +97,7 @@ impl NativeTextPrefixCacheValue for QwenLayerCache {
                 QwenLayerCachePrefixState::Linear(state) => {
                     linear_attention_snapshot_bytes(&state.conv_window, &state.recurrent_state)
                 }
+                _ => 0,
             })
         })
     }
@@ -111,6 +112,7 @@ impl NativeTextCacheMirrorSource for QwenLayerCache {
         match self {
             QwenLayerCache::Full(cache) => ids.push_kv_cache(cache),
             QwenLayerCache::Linear(cache) => ids.push_linear(cache.id()),
+            _ => {}
         }
     }
 }
@@ -330,6 +332,7 @@ impl NativeTextAdapter for NativeQwenAdapter {
         states.iter().all(|state| match state {
             QwenLayerCachePrefixState::Full(state) => state.max_tokens() >= cache_tokens,
             QwenLayerCachePrefixState::Linear(_) => true,
+            _ => false,
         })
     }
 

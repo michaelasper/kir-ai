@@ -36,6 +36,11 @@ pub async fn qwen_linear_decoder_layer_first_token(
                 "Qwen layer {layer_idx} is full attention, not linear attention"
             )));
         }
+        Some(kind) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+            )));
+        }
         None => {
             return Err(TensorLoadError::missing(format!(
                 "Qwen layer {layer_idx} is outside configured layer count"
@@ -92,6 +97,11 @@ pub(crate) async fn qwen_full_decoder_layer_first_token(
                 "Qwen layer {layer_idx} is linear attention, not full attention"
             )));
         }
+        Some(kind) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+            )));
+        }
         None => {
             return Err(TensorLoadError::missing(format!(
                 "Qwen layer {layer_idx} is outside configured layer count"
@@ -146,6 +156,9 @@ pub async fn qwen_decoder_layer_first_token(
         Some(AttentionKind::FullAttention) => {
             qwen_full_decoder_layer_first_token(store, spec, layer_idx, hidden_states, matvec).await
         }
+        Some(kind) => Err(TensorLoadError::unsupported(format!(
+            "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+        ))),
         None => Err(TensorLoadError::missing(format!(
             "Qwen layer {layer_idx} is outside configured layer count"
         ))),
@@ -256,6 +269,11 @@ pub(crate) async fn qwen_decoder_layer_step_with_cache(
                 )));
             }
         },
+        Some(kind) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+            )));
+        }
         None => {
             return Err(TensorLoadError::missing(format!(
                 "Qwen layer {layer_idx} is outside configured layer count"
@@ -365,6 +383,11 @@ async fn qwen_decoder_layer_sequence_impl(
                 .await?
             }
         },
+        Some(kind) => {
+            return Err(TensorLoadError::unsupported(format!(
+                "Qwen layer {layer_idx} uses unsupported attention kind `{kind:?}`"
+            )));
+        }
         None => {
             return Err(TensorLoadError::missing(format!(
                 "Qwen layer {layer_idx} is outside configured layer count"

@@ -106,6 +106,12 @@ pub async fn open_snapshot_backend(
                 );
             }
         }
+        loader => {
+            anyhow::bail!(
+                "snapshot loader `{}` is not supported by llm-engine",
+                loader.canonical_slug()
+            );
+        }
     }
 }
 

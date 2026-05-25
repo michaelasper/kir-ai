@@ -90,6 +90,7 @@ impl KvCacheBudget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvCacheError {
     CapacityExceeded { requested: usize, available: usize },
     ShapeMismatch { expected: usize, actual: usize },

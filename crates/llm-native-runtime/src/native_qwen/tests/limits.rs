@@ -77,6 +77,7 @@ fn native_qwen_cache_capacity_preserves_prompt_and_generation_budget() {
     match &caches[0] {
         QwenLayerCache::Full(cache) => assert_eq!(cache.max_tokens(), 48),
         QwenLayerCache::Linear(_) => panic!("expected full-attention cache"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
 }
 

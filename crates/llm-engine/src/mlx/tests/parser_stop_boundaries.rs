@@ -112,3 +112,39 @@ fn mlx_production_module_does_not_depend_on_protocol_test_backend() {
         }
     }
 }
+
+#[test]
+fn mlx_control_stop_tokens_do_not_default_future_families_to_qwen() {
+    let source = include_str!("../protocol.rs");
+    let production_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let control_lookup = production_source
+        .split("pub(super) fn mlx_control_stop_tokens_for_metadata")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("pub(super) fn mlx_tool_markup_for_metadata")
+                .next()
+        })
+        .expect("MLX control stop-token lookup should be present");
+
+    assert!(
+        !control_lookup.contains("Some(_)"),
+        "future non-exhaustive model families must not silently use Qwen MLX control stop tokens"
+    );
+    assert!(
+        control_lookup.contains("Ok(Some(family))"),
+        "future non-exhaustive model families must route to an explicit unsupported-family error"
+    );
+}
+
+#[test]
+fn mlx_control_stop_tokens_reject_unknown_family_metadata() {
+    let metadata = BackendModelMetadata::new("local-glm", "mlx").with_family("glm");
+    let err = super::super::protocol::mlx_control_stop_tokens_for_metadata(&metadata)
+        .expect_err("unknown family metadata must not use Qwen control stop tokens");
+
+    assert!(
+        err.to_string().contains("unsupported model family `glm`"),
+        "error should preserve unsupported family detail: {err}"
+    );
+}

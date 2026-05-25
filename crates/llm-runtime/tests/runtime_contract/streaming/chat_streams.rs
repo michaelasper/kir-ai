@@ -31,6 +31,7 @@ async fn streaming_json_object_response_format_rejects_text_content() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };

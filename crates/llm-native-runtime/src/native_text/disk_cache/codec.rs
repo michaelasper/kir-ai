@@ -361,6 +361,9 @@ impl NativeTextDiskCacheValue for QwenLayerCache {
                     )
                     .map(NativeTextDiskCacheLayerLayout::QwenLinear)
                 }
+                _ => Err(NativeTextDiskCacheError::integrity(
+                    "unsupported Qwen prefix cache layer state",
+                )),
             })
             .collect()
     }
@@ -434,6 +437,11 @@ impl NativeTextDiskCacheValue for QwenLayerCache {
                     };
                     assembled.push(QwenLayerCachePrefixState::Linear(snapshot.clone()));
                 }
+                _ => {
+                    return Err(NativeTextDiskCacheError::integrity(
+                        "unsupported Qwen disk block layer layout",
+                    ));
+                }
             }
         }
         Ok(assembled)
@@ -461,6 +469,9 @@ impl NativeTextDiskCacheValue for GemmaLayerCache {
                     )
                     .map(NativeTextDiskCacheLayerLayout::GemmaFull)
                 }
+                _ => Err(NativeTextDiskCacheError::integrity(
+                    "unsupported Gemma prefix cache layer state",
+                )),
             })
             .collect()
     }

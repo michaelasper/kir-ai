@@ -72,6 +72,7 @@ fn backend_message(message: ChatMessage) -> BackendChatMessage {
             llm_api::ChatRole::User => BackendChatRole::User,
             llm_api::ChatRole::Assistant => BackendChatRole::Assistant,
             llm_api::ChatRole::Tool => BackendChatRole::Tool,
+            other => panic!("unsupported test chat role: {other:?}"),
         },
         content: message.content,
         name: message.name,
@@ -83,6 +84,7 @@ fn backend_message(message: ChatMessage) -> BackendChatMessage {
                 id: tool_call.id,
                 call_type: match tool_call.call_type {
                     llm_api::ToolCallType::Function => BackendToolCallType::Function,
+                    other => panic!("unsupported test tool call type: {other:?}"),
                 },
                 function: BackendToolCallFunction {
                     name: tool_call.function.name,

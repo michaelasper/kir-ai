@@ -35,6 +35,7 @@ use request::build_upstream_request;
 use sse::{MlxSseParser, parse_mlx_completion_body_with_tools};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MlxToolParserMode {
     #[default]
     Auto,
@@ -132,7 +133,7 @@ impl MlxBackend {
         let snapshot_path = snapshot_path.as_ref();
         let upstream_model = snapshot_path.canonicalize()?.to_string_lossy().into_owned();
         let metadata = mlx_metadata(&model_id, &identity)?;
-        let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata);
+        let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata)?;
         let tool_markup =
             mlx_tool_markup_for_metadata(&metadata, Some(snapshot_path), options.tool_parser)?;
         let client = build_http_client(options.timeouts);

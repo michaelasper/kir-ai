@@ -1305,6 +1305,11 @@ impl NativeTextMetalState {
             let (values, scales) = match tensor {
                 NativeKvCacheTensor::Key => (keys, key_scales),
                 NativeKvCacheTensor::Value => (values, value_scales),
+                _ => {
+                    return Err(llm_metal::MetalError::InvalidInput(
+                        "unsupported KV cache tensor for Metal INT8 row selection".to_owned(),
+                    ));
+                }
             };
             return self
                 .device
@@ -1323,6 +1328,11 @@ impl NativeTextMetalState {
         let values = match tensor {
             NativeKvCacheTensor::Key => keys,
             NativeKvCacheTensor::Value => values,
+            _ => {
+                return Err(llm_metal::MetalError::InvalidInput(
+                    "unsupported KV cache tensor for Metal F16 row selection".to_owned(),
+                ));
+            }
         };
         self.device
             .select_head_rows_f16_buffered(

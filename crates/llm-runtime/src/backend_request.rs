@@ -28,7 +28,7 @@ where
             chat_context,
             request.effective_max_tokens(),
             SamplingConfig::from_openai_controls(request.temperature, request.top_p)?,
-            required_backend_tool_choice(request),
+            required_backend_tool_choice(request)?,
             matches!(
                 request.response_format.as_ref(),
                 Some(ResponseFormat::JsonObject)
@@ -47,7 +47,7 @@ where
         let cache_context = adapter.cache_context(tool_schema);
         let prompt = adapter.render_prompt(&request.messages, effective_tools.as_ref())?;
         let chat_context =
-            adapter.backend_chat_context(&request.messages, effective_tools.as_ref());
+            adapter.backend_chat_context(&request.messages, effective_tools.as_ref())?;
         Ok((cache_context, prompt, chat_context))
     }
 
@@ -63,7 +63,7 @@ where
             return Ok(None);
         }
         let effective_tools = self.effective_tools(tools);
-        let backend_tools = backend_tool_definitions(effective_tools.as_ref());
+        let backend_tools = backend_tool_definitions(effective_tools.as_ref())?;
         let schema = match self.options.tool_schema_normalization {
             ToolSchemaNormalization::Preserve => serde_json::to_string(&backend_tools)?,
             ToolSchemaNormalization::Canonical => {
@@ -86,23 +86,30 @@ pub(crate) fn completion_backend_request(
     ))
 }
 
-pub(crate) fn backend_tool_definitions(tools: &[ToolDefinition]) -> Vec<BackendToolDefinition> {
+pub(crate) fn backend_tool_definitions(
+    tools: &[ToolDefinition],
+) -> Result<Vec<BackendToolDefinition>, RuntimeError> {
     tools.iter().map(backend_tool_definition).collect()
 }
 
-fn backend_tool_definition(tool: &ToolDefinition) -> BackendToolDefinition {
-    BackendToolDefinition {
-        tool_type: backend_tool_type(&tool.tool_type),
+fn backend_tool_definition(tool: &ToolDefinition) -> Result<BackendToolDefinition, RuntimeError> {
+    Ok(BackendToolDefinition {
+        tool_type: backend_tool_type(&tool.tool_type)?,
         function: BackendToolFunctionDefinition {
             name: tool.function.name.clone(),
             description: tool.function.description.clone(),
             parameters: tool.function.parameters.clone(),
         },
-    }
+    })
 }
 
-fn backend_tool_type(tool_type: &ToolCallType) -> BackendToolType {
-    match tool_type {
+fn backend_tool_type(tool_type: &ToolCallType) -> Result<BackendToolType, RuntimeError> {
+    Ok(match tool_type {
         ToolCallType::Function => BackendToolType::Function,
-    }
+        _ => {
+            return Err(RuntimeError::invalid_request(format!(
+                "unsupported tool type `{tool_type:?}`"
+            )));
+        }
+    })
 }

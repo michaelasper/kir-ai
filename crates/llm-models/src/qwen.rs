@@ -5,6 +5,7 @@ use thiserror::Error;
 /// Attention implementation used by a Qwen decoder layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AttentionKind {
     /// Linear attention layer.
     LinearAttention,

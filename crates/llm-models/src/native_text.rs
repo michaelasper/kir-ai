@@ -8,6 +8,7 @@ use crate::{
 /// value but still must dispatch to family-specific tensor naming and shape
 /// rules.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum NativeTextModelSpec {
     /// Qwen native text spec.
     Qwen(QwenModelSpec),

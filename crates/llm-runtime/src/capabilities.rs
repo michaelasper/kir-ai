@@ -77,6 +77,7 @@ fn validate_sampling_capability(
             "backend does not advertise top-p sampling support; use temperature 0 for greedy decoding",
         ),
         SamplingConfig::Greedy | SamplingConfig::TopP { .. } => Ok(()),
+        _ => unsupported("backend sampling configuration is not supported by runtime"),
     }
 }
 

@@ -178,6 +178,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool call should arrive before completion")
                 }
+                Ok(other) => panic!("unexpected stream event: {other:?}"),
                 Err(err) => panic!("stream failed before tool boundary delta: {err}"),
             }
         }
@@ -216,6 +217,7 @@ async fn runtime_streams_tool_call_delta_before_backend_finish() {
             llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. } => {}
             llm_runtime::ChatCompletionStreamEvent::Stage(_) => {}
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
+            other => panic!("unexpected stream event: {other:?}"),
         }
     }
     assert!(saw_finish, "stream ends with tool_calls finish reason");
@@ -278,6 +280,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("partial tool delta should arrive before completion")
                 }
+                Ok(other) => panic!("unexpected stream event: {other:?}"),
                 Err(err) => panic!("partial structured tool delta failed early: {err}"),
             }
         }
@@ -316,6 +319,7 @@ async fn runtime_streams_structured_tool_delta_before_validated_finish() {
                 usage = Some(final_usage);
                 break;
             }
+            other => panic!("unexpected stream event: {other:?}"),
         }
     }
     assert!(
@@ -400,6 +404,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
                 Ok(llm_runtime::ChatCompletionStreamEvent::Complete(_)) => {
                     panic!("tool progress should arrive before completion")
                 }
+                Ok(other) => panic!("unexpected stream event: {other:?}"),
                 Err(err) => panic!("stream failed before structured tool progress: {err}"),
             }
         }
@@ -458,6 +463,7 @@ async fn runtime_buffers_structured_omp_arguments_until_validated_finish() {
             llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. } => {}
             llm_runtime::ChatCompletionStreamEvent::Stage(stage) => stages.push(stage),
             llm_runtime::ChatCompletionStreamEvent::Complete(_) => break,
+            other => panic!("unexpected stream event: {other:?}"),
         }
     }
 
@@ -577,6 +583,7 @@ async fn runtime_rejects_invalid_structured_omp_args_without_argument_delta_or_f
             }
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };

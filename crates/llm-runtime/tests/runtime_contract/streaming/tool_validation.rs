@@ -34,6 +34,7 @@ async fn runtime_chat_stream_withholds_undeclared_tool_markup() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };
@@ -80,6 +81,7 @@ async fn streaming_required_tool_rejects_text_fallback_without_emitting_content(
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };
@@ -140,6 +142,7 @@ async fn streaming_tool_call_rejects_missing_required_schema_argument() {
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };
@@ -193,6 +196,7 @@ async fn streaming_repeated_empty_required_tool_call_fifth_attempt_returns_no_pr
             Ok(llm_runtime::ChatCompletionStreamEvent::Progress(_)) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::InternalProgress { .. }) => {}
             Ok(llm_runtime::ChatCompletionStreamEvent::Stage(_)) => {}
+            Ok(other) => panic!("unexpected stream event: {other:?}"),
             Err(err) => break err,
         }
     };

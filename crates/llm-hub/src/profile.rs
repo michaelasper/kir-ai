@@ -96,7 +96,7 @@ impl ModelProfile {
             .iter()
             .copied()
             .find(|profile| profile.name == name)
-            .map(Self::from_builtin)
+            .and_then(Self::from_builtin)
     }
 
     pub fn builtin_names() -> impl Iterator<Item = &'static str> {
@@ -143,8 +143,8 @@ impl ModelProfile {
             .expect("built-in Llama 3.2 3B Instruct MLX 4-bit profile")
     }
 
-    fn from_builtin(profile: BuiltinProfile) -> Self {
-        let (allow_patterns, ignore_patterns) = match artifact_set_for_family(profile.family) {
+    fn from_builtin(profile: BuiltinProfile) -> Option<Self> {
+        let (allow_patterns, ignore_patterns) = match artifact_set_for_family(profile.family)? {
             ProfileArtifactSet::Qwen => (
                 qwen_static_and_safetensors_patterns(),
                 qwen_ignore_patterns(),
@@ -158,14 +158,14 @@ impl ModelProfile {
                 llama_text_ignore_patterns(),
             ),
         };
-        Self {
+        Some(Self {
             name: profile.name.to_owned(),
             family: profile.family,
             loader: profile.loader,
             quantization: profile.quantization.to_owned(),
             allow_patterns,
             ignore_patterns,
-        }
+        })
     }
 
     pub fn family_slug(&self) -> &'static str {
@@ -177,11 +177,12 @@ impl ModelProfile {
     }
 }
 
-fn artifact_set_for_family(family: ModelFamily) -> ProfileArtifactSet {
+fn artifact_set_for_family(family: ModelFamily) -> Option<ProfileArtifactSet> {
     match family {
-        ModelFamily::Qwen | ModelFamily::DeepSeek => ProfileArtifactSet::Qwen,
-        ModelFamily::Gemma => ProfileArtifactSet::Gemma,
-        ModelFamily::Llama => ProfileArtifactSet::Llama,
+        ModelFamily::Qwen | ModelFamily::DeepSeek => Some(ProfileArtifactSet::Qwen),
+        ModelFamily::Gemma => Some(ProfileArtifactSet::Gemma),
+        ModelFamily::Llama => Some(ProfileArtifactSet::Llama),
+        _ => None,
     }
 }
 

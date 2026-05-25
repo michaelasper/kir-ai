@@ -14,6 +14,7 @@ use llm_models::{ModelFamily, ModelSpec};
 
 pub use llm_models::NativeTextModelSpec;
 
+#[non_exhaustive]
 pub enum NativeTextLayerCaches {
     Qwen(Vec<QwenLayerCache>),
     Gemma(Vec<GemmaLayerCache>),
@@ -28,6 +29,7 @@ impl NativeTextLayerCaches {
     }
 }
 
+#[non_exhaustive]
 pub enum NativeTextLayerCachesMut<'a> {
     Qwen(&'a mut [QwenLayerCache]),
     Gemma(&'a mut [GemmaLayerCache]),
@@ -43,9 +45,11 @@ impl NativeTextLayerCachesMut<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum NativeTextModelSpecRef<'a> {
     Qwen(&'a llm_models::QwenModelSpec),
     Gemma(&'a llm_models::GemmaModelSpec),
+    Unsupported(ModelFamily),
 }
 
 impl<'a> From<&'a NativeTextModelSpec> for NativeTextModelSpecRef<'a> {
@@ -53,6 +57,7 @@ impl<'a> From<&'a NativeTextModelSpec> for NativeTextModelSpecRef<'a> {
         match spec {
             NativeTextModelSpec::Qwen(spec) => Self::Qwen(spec),
             NativeTextModelSpec::Gemma(spec) => Self::Gemma(spec),
+            _ => Self::Unsupported(spec.family()),
         }
     }
 }
@@ -74,6 +79,7 @@ impl NativeTextModelSpecRef<'_> {
         match self {
             Self::Qwen(spec) => spec.family(),
             Self::Gemma(spec) => spec.family(),
+            Self::Unsupported(family) => *family,
         }
     }
 
@@ -81,6 +87,7 @@ impl NativeTextModelSpecRef<'_> {
         match self {
             Self::Qwen(spec) => spec.vocab_size(),
             Self::Gemma(spec) => spec.vocab_size(),
+            Self::Unsupported(_) => 0,
         }
     }
 }
@@ -96,6 +103,10 @@ pub fn native_layer_caches_for_spec(
         NativeTextModelSpec::Gemma(spec) => {
             gemma_layer_caches_for_spec(spec, max_tokens).map(NativeTextLayerCaches::Gemma)
         }
+        _ => Err(unsupported_native_text_spec(
+            "cache allocation",
+            spec.family(),
+        )),
     }
 }
 
@@ -201,6 +212,9 @@ pub async fn native_final_norm_for_spec_ref(
             gemma_final_norm_for_spec(store, spec, hidden_states, &mut output).await?;
             Ok(output)
         }
+        NativeTextModelSpecRef::Unsupported(family) => {
+            Err(unsupported_native_text_spec("final norm", family))
+        }
     }
 }
 
@@ -231,6 +245,9 @@ pub async fn native_lm_head_top_k_for_spec_ref(
         NativeTextModelSpecRef::Gemma(spec) => {
             gemma_lm_head_top_k_for_spec(store, spec, hidden_states, top_k, chunk_rows, matvec)
                 .await
+        }
+        NativeTextModelSpecRef::Unsupported(family) => {
+            Err(unsupported_native_text_spec("lm head top-k", family))
         }
     }
 }
@@ -269,7 +286,17 @@ pub async fn native_lm_head_logits_for_spec_ref(
             .await?;
             Ok(output)
         }
+        NativeTextModelSpecRef::Unsupported(family) => {
+            Err(unsupported_native_text_spec("lm head logits", family))
+        }
     }
+}
+
+fn unsupported_native_text_spec(operation: &str, family: ModelFamily) -> TensorLoadError {
+    TensorLoadError::unsupported(format!(
+        "native text {operation} does not support `{}` specs",
+        family.canonical_slug()
+    ))
 }
 
 fn cache_family_mismatch(

@@ -5,6 +5,7 @@ use thiserror::Error;
 /// Supported model families with stable API/configuration slugs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ModelFamily {
     /// Qwen dense and mixture-of-experts text models.
     Qwen,
@@ -79,6 +80,7 @@ pub struct ModelFamilyParseError {
 
 /// Backend implementation families accepted by model profiles and loaders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum BackendKind {
     /// Native Rust/Metal tensor execution backend.
     #[serde(rename = "native-metal", alias = "native_metal")]
@@ -138,6 +140,7 @@ pub struct BackendKindParseError {
 /// Release readiness stage for a model family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PromotionStage {
     /// Family is available for normal production use.
     Production,

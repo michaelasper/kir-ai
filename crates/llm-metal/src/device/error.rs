@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MetalError {
     #[error("invalid Metal input shape: {0}")]
     InvalidShape(String),

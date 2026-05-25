@@ -1,5 +1,5 @@
 use super::MlxToolParserMode;
-use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
+use llm_backend_contracts::{BackendError, BackendModelMetadata, BackendRequest};
 use llm_models::ModelFamily;
 use serde_json::Value;
 use std::path::Path;
@@ -37,12 +37,19 @@ pub(super) enum MlxToolMarkup {
 
 pub(super) fn mlx_control_stop_tokens_for_metadata(
     metadata: &BackendModelMetadata,
-) -> &'static [&'static str] {
+) -> anyhow::Result<&'static [&'static str]> {
     match metadata_family(metadata) {
-        Some(ModelFamily::DeepSeek) => MLX_DEEPSEEK_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Gemma) => MLX_GEMMA_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Llama) => MLX_LLAMA_CONTROL_STOP_TOKENS,
-        Some(ModelFamily::Qwen) | None => MLX_QWEN_CONTROL_STOP_TOKENS,
+        Ok(Some(ModelFamily::DeepSeek)) => Ok(MLX_DEEPSEEK_CONTROL_STOP_TOKENS),
+        Ok(Some(ModelFamily::Gemma)) => Ok(MLX_GEMMA_CONTROL_STOP_TOKENS),
+        Ok(Some(ModelFamily::Llama)) => Ok(MLX_LLAMA_CONTROL_STOP_TOKENS),
+        Ok(Some(ModelFamily::Qwen)) | Ok(None) => Ok(MLX_QWEN_CONTROL_STOP_TOKENS),
+        Ok(Some(family)) => {
+            anyhow::bail!(
+                "MLX control stop tokens do not support model family `{}`",
+                family.canonical_slug()
+            );
+        }
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -51,12 +58,18 @@ pub(super) fn mlx_tool_markup_for_metadata(
     snapshot_path: Option<&Path>,
     mode: MlxToolParserMode,
 ) -> anyhow::Result<MlxToolMarkup> {
-    let family = metadata_family(metadata);
+    let family = metadata_family(metadata)?;
     match mode {
         MlxToolParserMode::Json => Ok(match family {
             Some(ModelFamily::DeepSeek) => MlxToolMarkup::DeepSeek,
             Some(ModelFamily::Gemma) => MlxToolMarkup::Gemma,
             Some(ModelFamily::Qwen) | Some(ModelFamily::Llama) | None => MlxToolMarkup::Json,
+            Some(family) => {
+                anyhow::bail!(
+                    "MLX JSON tool parser does not support model family `{}`",
+                    family.canonical_slug()
+                );
+            }
         }),
         MlxToolParserMode::QwenXml => {
             if !matches!(family, Some(ModelFamily::Qwen) | None) {
@@ -77,6 +90,12 @@ pub(super) fn mlx_tool_markup_for_metadata(
                     MlxToolMarkup::Json
                 }
             }
+            Some(family) => {
+                anyhow::bail!(
+                    "MLX auto tool parser does not support model family `{}`",
+                    family.canonical_slug()
+                );
+            }
         }),
     }
 }
@@ -84,7 +103,10 @@ pub(super) fn mlx_tool_markup_for_metadata(
 pub(super) fn mlx_chat_template_kwargs_for_metadata(
     metadata: &BackendModelMetadata,
 ) -> Option<Value> {
-    metadata_family(metadata).and_then(mlx_chat_template_kwargs_for_family)
+    metadata_family(metadata)
+        .ok()
+        .flatten()
+        .and_then(mlx_chat_template_kwargs_for_family)
 }
 
 pub(super) fn mlx_effective_chat_template_kwargs(
@@ -109,7 +131,7 @@ fn mlx_chat_template_kwargs_for_family(family: ModelFamily) -> Option<Value> {
 }
 
 fn mlx_tool_logits_bias_applies(metadata: &BackendModelMetadata, request: &BackendRequest) -> bool {
-    if metadata_family(metadata) != Some(ModelFamily::Qwen) {
+    if metadata_family(metadata).ok().flatten() != Some(ModelFamily::Qwen) {
         return false;
     }
     request.as_chat().is_some_and(|chat| {
@@ -120,26 +142,42 @@ fn mlx_tool_logits_bias_applies(metadata: &BackendModelMetadata, request: &Backe
 pub(super) fn mlx_upstream_protocol_for_request(
     metadata: &BackendModelMetadata,
     request: &BackendRequest,
-) -> MlxUpstreamProtocol {
+) -> Result<MlxUpstreamProtocol, BackendError> {
     match &request.kind {
-        llm_backend_contracts::BackendRequestKind::Chat(_) => MlxUpstreamProtocol::ChatCompletions,
+        llm_backend_contracts::BackendRequestKind::Chat(_) => {
+            Ok(MlxUpstreamProtocol::ChatCompletions)
+        }
         llm_backend_contracts::BackendRequestKind::RawCompletion(_) => {
-            match metadata_family(metadata) {
+            let family = metadata_family(metadata)
+                .map_err(|err| BackendError::unsupported_request(err.to_string()))?;
+            Ok(match family {
                 Some(ModelFamily::Gemma) => MlxUpstreamProtocol::ChatCompletions,
                 Some(ModelFamily::Qwen)
                 | Some(ModelFamily::DeepSeek)
                 | Some(ModelFamily::Llama)
                 | None => MlxUpstreamProtocol::Completions,
-            }
+                Some(family) => {
+                    return Err(BackendError::unsupported_request(format!(
+                        "MLX raw completion protocol does not support model family `{}`",
+                        family.canonical_slug()
+                    )));
+                }
+            })
         }
+        _ => Err(BackendError::unsupported_request(
+            "unsupported MLX backend request kind",
+        )),
     }
 }
 
-fn metadata_family(metadata: &BackendModelMetadata) -> Option<ModelFamily> {
+fn metadata_family(
+    metadata: &BackendModelMetadata,
+) -> Result<Option<ModelFamily>, llm_models::ModelFamilyParseError> {
     metadata
         .family
         .as_deref()
-        .and_then(|family| ModelFamily::parse_slug(family).ok())
+        .map(ModelFamily::parse_slug)
+        .transpose()
 }
 
 fn metadata_looks_like_qwen_xml_model(

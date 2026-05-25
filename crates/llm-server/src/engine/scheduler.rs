@@ -791,6 +791,7 @@ fn estimated_tool_definition_tokens(tool: &ToolDefinition) -> usize {
 fn estimated_tool_call_type_tokens(tool_type: &ToolCallType) -> usize {
     match tool_type {
         ToolCallType::Function => estimated_json_string_tokens("function"),
+        _ => 0,
     }
 }
 

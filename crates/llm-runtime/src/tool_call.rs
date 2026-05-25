@@ -9,6 +9,7 @@ use llm_tool_parser::{ParsedAssistant, split_reasoning};
 
 /// Controls how declared tool schemas are serialized for prompt/cache use.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToolSchemaNormalization {
     /// Preserve caller-provided JSON member ordering.
     #[default]
@@ -247,14 +248,19 @@ pub(crate) fn request_requires_tool_choice(request: &ChatCompletionRequest) -> b
 
 pub(crate) fn required_backend_tool_choice(
     request: &ChatCompletionRequest,
-) -> Option<BackendToolChoice> {
-    match &request.tool_choice {
+) -> Result<Option<BackendToolChoice>, RuntimeError> {
+    Ok(match &request.tool_choice {
         Some(ToolChoice::Required) => Some(BackendToolChoice::RequiredAny),
         Some(ToolChoice::Function { name }) => {
             Some(BackendToolChoice::RequiredFunction(name.clone()))
         }
         Some(ToolChoice::Auto | ToolChoice::None) | None => None,
-    }
+        Some(_) => {
+            return Err(RuntimeError::invalid_request(
+                "unsupported required tool choice",
+            ));
+        }
+    })
 }
 
 #[cfg(test)]

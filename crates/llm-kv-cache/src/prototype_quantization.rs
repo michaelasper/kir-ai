@@ -11,6 +11,7 @@ use std::{fmt, hint::black_box, time::Instant};
 const DECODE_BENCH_REPETITIONS: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvQuantizationBits {
     Three,
     Four,
@@ -40,12 +41,14 @@ impl KvQuantizationBits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvQuantizationScheme {
     UniformAffine,
     LloydMaxCodebook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvQuantizationScope {
     ModelFamily,
     Layer,
@@ -632,6 +635,7 @@ pub fn evaluate_kv_quantization_fixture(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KvQuantizationPrototypeError {
     EmptyInput,
     NonFiniteValue,

@@ -158,6 +158,9 @@ pub(crate) fn sample_token_id_with_draw_with_scratch(
                 .sample_with_scratch(logits, draw, top_p_scratch)
                 .map_err(|err| BackendError::sampler(err.to_string()))
         }
+        _ => Err(BackendError::invalid_sampling_config(
+            "unsupported sampling configuration",
+        )),
     }
 }
 

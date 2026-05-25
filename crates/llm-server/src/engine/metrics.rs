@@ -342,6 +342,7 @@ impl PendingToolStreamObservation {
             BackendStreamTimingMilestone::UpstreamComplete => {
                 set_once(&mut self.mlx_upstream_complete_ms, *latency_ms);
             }
+            _ => return false,
         }
         true
     }

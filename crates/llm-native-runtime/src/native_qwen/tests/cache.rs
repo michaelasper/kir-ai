@@ -56,6 +56,7 @@ fn native_qwen_prefix_cache_reuses_longest_compatible_prefix() {
             assert_eq!(cache.token_count(), 1);
         }
         QwenLayerCache::Linear(_) => panic!("expected full-attention cache"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
     }
 
     let incompatible_namespace = NativeQwenPrefixCacheNamespace {

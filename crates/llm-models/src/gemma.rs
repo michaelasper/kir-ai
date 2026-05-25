@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 /// Attention implementation used by a Gemma decoder layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GemmaAttentionKind {
     /// Sliding-window local attention.
     SlidingAttention,
@@ -14,6 +15,7 @@ pub enum GemmaAttentionKind {
 /// Safetensors naming/layout flavor for Gemma artifacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GemmaWeightLayout {
     /// Conditional generation model with a nested text model.
     ConditionalLanguageModel,
