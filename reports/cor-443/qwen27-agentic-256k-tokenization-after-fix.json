@@ -1,0 +1,17 @@
+{
+  "captured_at": "2026-05-25T06:44:06Z",
+  "context_window_tokens": 262144,
+  "fits_context_window": true,
+  "message_content_chars": 1278812,
+  "model": "local-qwen36-27b-mlx",
+  "previous_failure": {
+    "context_window_tokens": 262144,
+    "source": "target/cor-443/agentic-smoke-real/qwen27-mlx-8bit/sidecar.log",
+    "tokenized_prompt_tokens": 426156
+  },
+  "probe": "direct_stable_prefix_256k",
+  "snapshot": "/Users/michaelasper/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-MLX-8bit/snapshots/78067073d2bf9795e5aabcfcd647bd36cf43c0b5",
+  "stable_prefix_sections_per_k": 20,
+  "tokenized_prompt_tokens": 236930,
+  "tokenizer_class": "TokenizersBackend"
+}

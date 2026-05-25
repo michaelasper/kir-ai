@@ -35,7 +35,7 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
         self.assertEqual(bench.context_sizes_for_lane(gemma, (8, 256)), (8, 128))
         self.assertIn("direct_stable_prefix_128k", bench.direct_probe_names((8, 128)))
 
-    def test_gemma_vlm_sidecar_command_omits_unsupported_max_tokens(self):
+    def test_gemma_vlm_sidecar_command_omits_unsupported_generation_flags(self):
         bench = load_module()
         gemma_lanes = [lane for lane in bench.LANES if lane.sidecar_kind == "vlm"]
 
@@ -43,9 +43,13 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
         for lane in gemma_lanes:
             command = bench.sidecar_command(lane, 8123)
             self.assertIn("mlx_vlm.server", command)
-            self.assertIn("--prompt-cache-size", command)
             self.assertIn("--prefill-step-size", command)
+            self.assertNotIn("--prompt-cache-size", command)
             self.assertNotIn("--max-tokens", command)
+
+            invalid_lane = dataclasses.replace(lane, sidecar_extra=("--prompt-cache-size", "16"))
+            with self.assertRaisesRegex(ValueError, "does not support --prompt-cache-size"):
+                bench.sidecar_command(invalid_lane, 8123)
 
             invalid_lane = dataclasses.replace(lane, sidecar_extra=("--max-tokens", "2048"))
             with self.assertRaisesRegex(ValueError, "does not support --max-tokens"):
@@ -63,6 +67,13 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
             {"type": "function", "function": {"name": "record_agentic_observation"}},
         )
         self.assertIn("stable-prefix-32k-shared-marker", body["messages"][1]["content"])
+
+    def test_direct_stable_prefix_256k_stays_below_known_qwen_tokenizer_overflow_size(self):
+        bench = load_module()
+
+        body = bench.direct_body("local-qwen36-27b-mlx", "direct_stable_prefix_256k")
+
+        self.assertLess(len(body["messages"][1]["content"]), 1_450_000)
 
     def test_tool_fragment_diagnostics_assembles_streamed_arguments(self):
         bench = load_module()

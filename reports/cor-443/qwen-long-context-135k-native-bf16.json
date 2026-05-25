@@ -1,0 +1,1000 @@
+{
+  "gate": "qwen-long-context",
+  "status": "failed",
+  "generated_at_unix_ms": 1779691982573,
+  "trace_output_path": "reports/cor-443/qwen-long-context-135k-native-bf16.json",
+  "model": {
+    "id": "local-qwen36",
+    "endpoint": "http://127.0.0.1:3000",
+    "snapshot_path": "/Users/michaelasper/source/kir-ai/.llm-models-full/huggingface/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "repo_id": "Qwen/Qwen3.6-35B-A3B",
+    "requested_revision": "main",
+    "resolved_commit": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+    "profile": "qwen36-safetensors-bf16",
+    "family": "qwen",
+    "loader": "native-metal",
+    "quantization": "bf16",
+    "manifest_digest": "51c51803934d7ea6ca0daec589bf12bb9ebd9cb7892f95b6b9a0111ecc984ad8"
+  },
+  "hardware": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu": "Apple M3 Ultra"
+  },
+  "cache_policy": {
+    "cache_layout": "shared-prefix-v1",
+    "prompt_template": "chatml/qwen/v1",
+    "namespace_fields": [
+      "model_id",
+      "backend",
+      "family",
+      "quantization",
+      "repo_id",
+      "resolved_commit",
+      "profile",
+      "prompt_cache_key",
+      "tool_schema",
+      "request_mode",
+      "cache_layout_version",
+      "cache_capacity_bucket",
+      "max_prefill_tokens"
+    ],
+    "benchmark_metrics": [
+      "prefix_cache_hit_rate",
+      "prefix_cache_hit_tokens",
+      "prefix_cache_miss_tokens",
+      "prefix_cache_residency",
+      "weight_cache_hit_rate",
+      "weight_cache_residency",
+      "kv_cache_residency",
+      "kv_cache_precision_residency",
+      "kv_cache_precision_uploads",
+      "linear_attention_cache_residency",
+      "eviction_churn"
+    ],
+    "env": {}
+  },
+  "run_controls": {
+    "warmup_count": 0,
+    "repetitions": 1,
+    "timeout_ms": 900000,
+    "connect_timeout_ms": 10000,
+    "max_tokens": 32,
+    "latency_regression_threshold": 0.2
+  },
+  "scheduler": {
+    "source": "serve_defaults",
+    "concurrency_limit": 1,
+    "queue_limit": 1,
+    "queue_timeout_ms": 30000,
+    "prefill_threshold_chars": 4096,
+    "prefill_burst": 1
+  },
+  "baseline": {
+    "path": null,
+    "status": "not_configured",
+    "latency_regression_threshold": 0.2
+  },
+  "profiles": [
+    {
+      "name": "qwen-135k-promotion",
+      "target_tokens": 135000,
+      "release_blocking": true,
+      "status": "failed",
+      "cases": [
+        {
+          "name": "plain-recall",
+          "mode": "chat",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "assistant content must contain the target marker",
+          "request_count": 1,
+          "marker": "KIR_LONG_CONTEXT_135K_PLAIN_RECALL_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "plain-recall",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_PLAIN_RECALL_QUARTZ_2741",
+            "prompt_hash": "sha256:7966fcf37f464f6af9b0fc1a39c118cf6bc487bc44937049f0b178b3d56601bb",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 135328,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 900013,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 900013,
+            "latency_ms_p95": 900013,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 135328,
+          "latency_ms": 900013,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "json-object-recall",
+          "mode": "chat-json-object",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "assistant content must be a JSON object with marker, profile, and case",
+          "request_count": 1,
+          "marker": "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "json-object-recall",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741",
+            "prompt_hash": "sha256:c68f5b95f20fb8a25e948aaa3f0291a751c3a10197407cdf1397a73de4472579",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 135329,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 900014,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 900014,
+            "latency_ms_p95": 900014,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 135329,
+          "latency_ms": 900014,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "required-tool-recall",
+          "mode": "chat-required-tool",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "assistant must finish with tool_calls and call report_long_context_recall with marker, profile, and case arguments",
+          "request_count": 1,
+          "marker": "KIR_LONG_CONTEXT_135K_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "required-tool-recall",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+            "prompt_hash": "sha256:118fa1b10f56b6ebdac2e04b0b907552e351d8ad9c5e1a2a0b7d61efefba3bea",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 135329,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 900017,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 900017,
+            "latency_ms_p95": 900017,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 135329,
+          "latency_ms": 900017,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "streamed-required-tool-recall",
+          "mode": "chat-stream-required-tool",
+          "target_tokens": 135000,
+          "stream": true,
+          "response_contract": "SSE deltas must finish with tool_calls and assemble to report_long_context_recall with marker, profile, and case arguments",
+          "request_count": 1,
+          "marker": "KIR_LONG_CONTEXT_135K_STREAMED_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "streamed-required-tool-recall",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_STREAMED_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+            "prompt_hash": "sha256:3166afb243228f81d4488ff0dafad704612636ef9c5013ed4173c17734a949cf",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "stream_http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 135332,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 42,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 42,
+            "latency_ms_p95": 42,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 135332,
+          "latency_ms": 42,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "multi-turn-lifecycle",
+          "mode": "chat-multi-turn",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "multi-message chat response must recall the target marker from the first turn",
+          "request_count": 1,
+          "marker": "KIR_LONG_CONTEXT_135K_MULTI_TURN_LIFECYCLE_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "multi-turn-lifecycle",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_MULTI_TURN_LIFECYCLE_QUARTZ_2741",
+            "prompt_hash": "sha256:293ffeb3e9180c4acef0b439ed6ad9664244d4fccf63cac07ed7e26db48c4853",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 135332,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 900017,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 900017,
+            "latency_ms_p95": 900017,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 135332,
+          "latency_ms": 900017,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "same-long-prompt-twice",
+          "mode": "chat-warm-prefix-repeat",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "two identical long-prompt chat requests must recall the marker and increase prefix cache hit tokens",
+          "request_count": 2,
+          "marker": "KIR_LONG_CONTEXT_135K_SAME_LONG_PROMPT_TWICE_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "same-long-prompt-twice",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_SAME_LONG_PROMPT_TWICE_QUARTZ_2741",
+            "prompt_hash": "sha256:d371b7467ac38b3bed043856f96ff34ce6d540bcc0b54599e6f0e13236e14584",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 270594,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 1800033,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 1800033,
+            "latency_ms_p95": 1800033,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 270594,
+          "latency_ms": 1800033,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        },
+        {
+          "name": "shared-prefix-short-suffix-variation",
+          "mode": "chat-shared-prefix-short-suffix",
+          "target_tokens": 135000,
+          "stream": false,
+          "response_contract": "two chat requests with a shared long prefix and short suffix variation must recall the marker and increase prefix cache hit tokens",
+          "request_count": 2,
+          "marker": "KIR_LONG_CONTEXT_135K_SHARED_PREFIX_SHORT_SUFFIX_VARIATION_QUARTZ_2741",
+          "prompt_identity": {
+            "profile": "qwen-135k-promotion",
+            "case": "shared-prefix-short-suffix-variation",
+            "context_tokens": 135000,
+            "marker": "KIR_LONG_CONTEXT_135K_SHARED_PREFIX_SHORT_SUFFIX_VARIATION_QUARTZ_2741",
+            "prompt_hash": "sha256:ee9e57f505b003b372b7bf16a057838255cf7fe41bcf2bd01ab55894e0b3a94c",
+            "prompt_hash_source": "prompt_body"
+          },
+          "status": "failed",
+          "classification": "http_request_failed",
+          "prefill": {
+            "planned_prompt_tokens": 270596,
+            "prompt_tokens": null,
+            "cached_tokens": null,
+            "uncached_tokens": null,
+            "time_to_first_token_ms": null
+          },
+          "decode": {
+            "max_tokens": 32,
+            "completion_tokens": null,
+            "total_latency_ms": 1800033,
+            "time_to_first_token_ms": null,
+            "tokens_per_second": null
+          },
+          "cache": {
+            "cached_tokens_status": null,
+            "cached_tokens": null,
+            "reused_tokens": null,
+            "lookup_result": null
+          },
+          "summary": {
+            "sample_count": 1,
+            "latency_ms_p50": 1800033,
+            "latency_ms_p95": 1800033,
+            "tokens_per_second_p50": null,
+            "tokens_per_second_p95": null,
+            "ttft_ms_p50": null,
+            "ttft_ms_p95": null
+          },
+          "planned_prompt_tokens": 270596,
+          "latency_ms": 1800033,
+          "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+          "admin_metrics": {
+            "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+          }
+        }
+      ]
+    }
+  ],
+  "lanes": [
+    {
+      "name": "primary",
+      "status": "failed",
+      "model": {
+        "id": "local-qwen36",
+        "endpoint": "http://127.0.0.1:3000",
+        "snapshot_path": "/Users/michaelasper/source/kir-ai/.llm-models-full/huggingface/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0",
+        "repo_id": "Qwen/Qwen3.6-35B-A3B",
+        "requested_revision": "main",
+        "resolved_commit": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+        "profile": "qwen36-safetensors-bf16",
+        "family": "qwen",
+        "loader": "native-metal",
+        "quantization": "bf16",
+        "manifest_digest": "51c51803934d7ea6ca0daec589bf12bb9ebd9cb7892f95b6b9a0111ecc984ad8"
+      },
+      "profiles": [
+        {
+          "name": "qwen-135k-promotion",
+          "target_tokens": 135000,
+          "release_blocking": true,
+          "status": "failed",
+          "cases": [
+            {
+              "name": "plain-recall",
+              "mode": "chat",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "assistant content must contain the target marker",
+              "request_count": 1,
+              "marker": "KIR_LONG_CONTEXT_135K_PLAIN_RECALL_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "plain-recall",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_PLAIN_RECALL_QUARTZ_2741",
+                "prompt_hash": "sha256:7966fcf37f464f6af9b0fc1a39c118cf6bc487bc44937049f0b178b3d56601bb",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 135328,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 900013,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 900013,
+                "latency_ms_p95": 900013,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 135328,
+              "latency_ms": 900013,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "json-object-recall",
+              "mode": "chat-json-object",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "assistant content must be a JSON object with marker, profile, and case",
+              "request_count": 1,
+              "marker": "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "json-object-recall",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_JSON_OBJECT_RECALL_QUARTZ_2741",
+                "prompt_hash": "sha256:c68f5b95f20fb8a25e948aaa3f0291a751c3a10197407cdf1397a73de4472579",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 135329,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 900014,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 900014,
+                "latency_ms_p95": 900014,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 135329,
+              "latency_ms": 900014,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "required-tool-recall",
+              "mode": "chat-required-tool",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "assistant must finish with tool_calls and call report_long_context_recall with marker, profile, and case arguments",
+              "request_count": 1,
+              "marker": "KIR_LONG_CONTEXT_135K_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "required-tool-recall",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+                "prompt_hash": "sha256:118fa1b10f56b6ebdac2e04b0b907552e351d8ad9c5e1a2a0b7d61efefba3bea",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 135329,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 900017,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 900017,
+                "latency_ms_p95": 900017,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 135329,
+              "latency_ms": 900017,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "streamed-required-tool-recall",
+              "mode": "chat-stream-required-tool",
+              "target_tokens": 135000,
+              "stream": true,
+              "response_contract": "SSE deltas must finish with tool_calls and assemble to report_long_context_recall with marker, profile, and case arguments",
+              "request_count": 1,
+              "marker": "KIR_LONG_CONTEXT_135K_STREAMED_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "streamed-required-tool-recall",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_STREAMED_REQUIRED_TOOL_RECALL_QUARTZ_2741",
+                "prompt_hash": "sha256:3166afb243228f81d4488ff0dafad704612636ef9c5013ed4173c17734a949cf",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "stream_http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 135332,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 42,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 42,
+                "latency_ms_p95": 42,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 135332,
+              "latency_ms": 42,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "multi-turn-lifecycle",
+              "mode": "chat-multi-turn",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "multi-message chat response must recall the target marker from the first turn",
+              "request_count": 1,
+              "marker": "KIR_LONG_CONTEXT_135K_MULTI_TURN_LIFECYCLE_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "multi-turn-lifecycle",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_MULTI_TURN_LIFECYCLE_QUARTZ_2741",
+                "prompt_hash": "sha256:293ffeb3e9180c4acef0b439ed6ad9664244d4fccf63cac07ed7e26db48c4853",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 135332,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 900017,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 900017,
+                "latency_ms_p95": 900017,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 135332,
+              "latency_ms": 900017,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "same-long-prompt-twice",
+              "mode": "chat-warm-prefix-repeat",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "two identical long-prompt chat requests must recall the marker and increase prefix cache hit tokens",
+              "request_count": 2,
+              "marker": "KIR_LONG_CONTEXT_135K_SAME_LONG_PROMPT_TWICE_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "same-long-prompt-twice",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_SAME_LONG_PROMPT_TWICE_QUARTZ_2741",
+                "prompt_hash": "sha256:d371b7467ac38b3bed043856f96ff34ce6d540bcc0b54599e6f0e13236e14584",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 270594,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 1800033,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 1800033,
+                "latency_ms_p95": 1800033,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 270594,
+              "latency_ms": 1800033,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            },
+            {
+              "name": "shared-prefix-short-suffix-variation",
+              "mode": "chat-shared-prefix-short-suffix",
+              "target_tokens": 135000,
+              "stream": false,
+              "response_contract": "two chat requests with a shared long prefix and short suffix variation must recall the marker and increase prefix cache hit tokens",
+              "request_count": 2,
+              "marker": "KIR_LONG_CONTEXT_135K_SHARED_PREFIX_SHORT_SUFFIX_VARIATION_QUARTZ_2741",
+              "prompt_identity": {
+                "profile": "qwen-135k-promotion",
+                "case": "shared-prefix-short-suffix-variation",
+                "context_tokens": 135000,
+                "marker": "KIR_LONG_CONTEXT_135K_SHARED_PREFIX_SHORT_SUFFIX_VARIATION_QUARTZ_2741",
+                "prompt_hash": "sha256:ee9e57f505b003b372b7bf16a057838255cf7fe41bcf2bd01ab55894e0b3a94c",
+                "prompt_hash_source": "prompt_body"
+              },
+              "status": "failed",
+              "classification": "http_request_failed",
+              "prefill": {
+                "planned_prompt_tokens": 270596,
+                "prompt_tokens": null,
+                "cached_tokens": null,
+                "uncached_tokens": null,
+                "time_to_first_token_ms": null
+              },
+              "decode": {
+                "max_tokens": 32,
+                "completion_tokens": null,
+                "total_latency_ms": 1800033,
+                "time_to_first_token_ms": null,
+                "tokens_per_second": null
+              },
+              "cache": {
+                "cached_tokens_status": null,
+                "cached_tokens": null,
+                "reused_tokens": null,
+                "lookup_result": null
+              },
+              "summary": {
+                "sample_count": 1,
+                "latency_ms_p50": 1800033,
+                "latency_ms_p95": 1800033,
+                "tokens_per_second_p50": null,
+                "tokens_per_second_p95": null,
+                "ttft_ms_p50": null,
+                "ttft_ms_p95": null
+              },
+              "planned_prompt_tokens": 270596,
+              "latency_ms": 1800033,
+              "error": "error sending request for url (http://127.0.0.1:3000/v1/chat/completions)",
+              "admin_metrics": {
+                "error": "before admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics); after admin metrics failed: admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+              }
+            }
+          ]
+        }
+      ],
+      "admin_metrics_error": "admin metrics request failed: error sending request for url (http://127.0.0.1:3000/admin/metrics)"
+    }
+  ],
+  "failure_classification": "release_blocking_case_failed",
+  "comparison": {
+    "status": "single_lane",
+    "artifact_identity_match": true,
+    "cases": [
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "plain-recall",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 900013,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "json-object-recall",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 900014,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "required-tool-recall",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 900017,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "streamed-required-tool-recall",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 42,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "stream_http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "multi-turn-lifecycle",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 900017,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "same-long-prompt-twice",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 1800033,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      },
+      {
+        "profile": "qwen-135k-promotion",
+        "case": "shared-prefix-short-suffix-variation",
+        "lanes": [
+          {
+            "lane": "primary",
+            "status": "failed",
+            "latency_ms": 1800033,
+            "tokens_per_second": null,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "classification": "http_request_failed"
+          }
+        ],
+        "fastest_lane": null
+      }
+    ]
+  }
+}
