@@ -5,8 +5,8 @@ use crate::kv_sync::{
     int8_kv_cache_block_pair_mirror_byte_len, int8_kv_cache_blocks_needing_sync_from_active,
     int8_kv_stage_writes_from_active_blocks, int8_stage_copy_bytes,
     kv_cache_block_pair_mirror_byte_len, kv_cache_blocks_needing_sync_from_active,
-    kv_cache_shape_error, kv_cache_stage_element_len, kv_stage_sync_plan,
-    kv_stage_writes_from_active_blocks,
+    kv_cache_shape_error, kv_cache_stage_element_len, kv_stage_destination_starts,
+    kv_stage_sync_plan, kv_stage_writes_from_active_blocks,
 };
 #[cfg(feature = "metal")]
 use crate::native_metrics::native_text_metal_metrics;
@@ -19,9 +19,9 @@ use llm_backend::native::{
 };
 #[cfg(feature = "metal")]
 use llm_backend::native::{
-    KvCacheFormat, LayerKvCacheBlock, LayerKvCacheInt8Block, LinearAttentionCache,
-    NativeBatchedMatvecInputBuffer, NativeBatchedMatvecOutput, NativeKvCacheTensor, TopKLogit,
-    TopKWeight,
+    KvCacheFormat, LayerKvCacheAppend, LayerKvCacheAppendTarget, LayerKvCacheBlock,
+    LayerKvCacheInt8Block, LinearAttentionCache, NativeBatchedMatvecInputBuffer,
+    NativeBatchedMatvecOutput, NativeKvCacheTensor, TopKLogit, TopKWeight,
 };
 #[cfg(any(feature = "metal", test))]
 use std::collections::HashMap;
@@ -569,6 +569,375 @@ impl NativeTextMetalState {
         if residency_changed {
             self.record_int8_kv_cache_residency_locked(&mirrors);
         }
+        Ok(())
+    }
+
+    fn append_kv_cache_sliding_direct(
+        &self,
+        cache: &mut LayerKvCache,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), llm_metal::MetalError> {
+        if cache.format() == KvCacheFormat::Int8 {
+            return self.append_int8_kv_cache_sliding_direct(cache, key, value);
+        }
+        self.append_f16_kv_cache_sliding_direct(cache, key, value)
+    }
+
+    fn append_f16_kv_cache_sliding_direct(
+        &self,
+        cache: &mut LayerKvCache,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), llm_metal::MetalError> {
+        cache
+            .validate_sliding_append(key, value)
+            .map_err(kv_cache_shape_error)?;
+        let target = cache
+            .sliding_append_target()
+            .map_err(kv_cache_shape_error)?;
+        let vector_len = cache.vector_len();
+        let stage_len = kv_cache_stage_element_len(cache)?;
+        let active_blocks = cache.active_blocks().map_err(kv_cache_shape_error)?;
+        let (keys, values, rebuild_writes, changed_residency) = {
+            let mut stages = self.kv_stages.lock_or_panic("Metal KV stage mirror");
+            let mut changed_residency = false;
+            let stage = match stages.get_mut(&cache.id()) {
+                Some(stage)
+                    if stage.cache_id == cache.id()
+                        && stage.max_tokens == cache.max_tokens()
+                        && stage.vector_len == vector_len
+                        && stage.keys.len() == stage_len
+                        && stage.values.len() == stage_len =>
+                {
+                    stage
+                }
+                Some(stage) => {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "Metal KV direct append stage residency mismatch for cache {}: stage cache_id={}, max_tokens={}, vector_len={}, key_len={}, value_len={}",
+                        cache.id(),
+                        stage.cache_id,
+                        stage.max_tokens,
+                        stage.vector_len,
+                        stage.keys.len(),
+                        stage.values.len()
+                    )));
+                }
+                None => {
+                    stages.insert(
+                        cache.id(),
+                        MetalLayerKvStageMirror {
+                            cache_id: cache.id(),
+                            keys: self.device.new_f16_buffer_len(stage_len)?,
+                            values: self.device.new_f16_buffer_len(stage_len)?,
+                            revision_at_last_sync: None,
+                            tokens_seen_at_last_sync: 0,
+                            token_count_at_last_sync: 0,
+                            max_tokens: cache.max_tokens(),
+                            vector_len,
+                        },
+                    );
+                    changed_residency = true;
+                    stages.get_mut(&cache.id()).ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "new Metal KV direct append stage was not retained".to_owned(),
+                        )
+                    })?
+                }
+            };
+            let rebuild_writes = if stage.revision_at_last_sync == Some(cache.revision()) {
+                Vec::new()
+            } else {
+                kv_stage_writes_from_active_blocks(
+                    &active_blocks,
+                    0,
+                    cache.token_count(),
+                    vector_len,
+                    cache.max_tokens(),
+                )?
+            };
+            (
+                stage.keys.clone(),
+                stage.values.clone(),
+                rebuild_writes,
+                changed_residency,
+            )
+        };
+
+        let mut rebuilt_bytes = 0_u64;
+        for write in &rebuild_writes {
+            self.device.write_f16_buffer_range_from_f32(
+                &keys,
+                write.destination_start,
+                write.source_keys,
+            )?;
+            self.device.write_f16_buffer_range_from_f32(
+                &values,
+                write.destination_start,
+                write.source_values,
+            )?;
+            rebuilt_bytes = rebuilt_bytes.saturating_add(f16_stage_copy_bytes(write.element_count));
+        }
+
+        let destination_starts = kv_stage_destination_starts(
+            target.physical_token_index(),
+            1,
+            vector_len,
+            cache.max_tokens(),
+            "direct KV cache stage append",
+        )?;
+        for destination_start in destination_starts {
+            self.device
+                .write_f16_buffer_range_from_f32(&keys, destination_start, key)?;
+            self.device
+                .write_f16_buffer_range_from_f32(&values, destination_start, value)?;
+        }
+
+        let append = cache
+            .append_sliding_with_metadata(key, value)
+            .map_err(kv_cache_shape_error)?;
+        verify_direct_append_metadata(cache.max_tokens(), target, append)?;
+        self.mark_f16_stage_synced(cache, append)?;
+        let metrics = native_text_metal_metrics();
+        if rebuilt_bytes > 0 {
+            metrics.record_kv_cache_stage_rebuild(rebuilt_bytes);
+        }
+        metrics
+            .record_kv_cache_stage_direct_write(f16_stage_copy_bytes(vector_len).saturating_mul(2));
+        if changed_residency {
+            self.record_kv_stage_residency();
+        }
+        Ok(())
+    }
+
+    fn append_int8_kv_cache_sliding_direct(
+        &self,
+        cache: &mut LayerKvCache,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), llm_metal::MetalError> {
+        let direct_token = cache
+            .int8_direct_append_token(key, value)
+            .map_err(kv_cache_shape_error)?
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 direct append requires an INT8 KV cache".to_owned(),
+                )
+            })?;
+        let target = cache
+            .sliding_append_target()
+            .map_err(kv_cache_shape_error)?;
+        let vector_len = cache.vector_len();
+        let stage_len = kv_cache_stage_element_len(cache)?;
+        let scale_stage_len = cache.max_tokens().checked_mul(2).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(
+                "INT8 KV direct append scale stage length overflows usize".to_owned(),
+            )
+        })?;
+        let active_blocks = cache
+            .active_int8_blocks()
+            .map_err(kv_cache_shape_error)?
+            .ok_or_else(|| {
+                llm_metal::MetalError::InvalidShape(
+                    "INT8 KV cache format has no INT8 block storage".to_owned(),
+                )
+            })?;
+        let (keys, key_scales, values, value_scales, rebuild_writes, changed_residency) = {
+            let mut stages = self
+                .kv_int8_stages
+                .lock_or_panic("Metal INT8 KV stage mirror");
+            let mut changed_residency = false;
+            let stage = match stages.get_mut(&cache.id()) {
+                Some(stage)
+                    if stage.cache_id == cache.id()
+                        && stage.max_tokens == cache.max_tokens()
+                        && stage.vector_len == vector_len
+                        && stage.keys.len() == stage_len
+                        && stage.values.len() == stage_len
+                        && stage.key_scales.len() == scale_stage_len
+                        && stage.value_scales.len() == scale_stage_len =>
+                {
+                    stage
+                }
+                Some(stage) => {
+                    return Err(llm_metal::MetalError::InvalidShape(format!(
+                        "Metal INT8 KV direct append stage residency mismatch for cache {}: stage cache_id={}, max_tokens={}, vector_len={}, key_len={}, value_len={}, key_scale_len={}, value_scale_len={}",
+                        cache.id(),
+                        stage.cache_id,
+                        stage.max_tokens,
+                        stage.vector_len,
+                        stage.keys.len(),
+                        stage.values.len(),
+                        stage.key_scales.len(),
+                        stage.value_scales.len()
+                    )));
+                }
+                None => {
+                    stages.insert(
+                        cache.id(),
+                        MetalLayerInt8KvStageMirror {
+                            cache_id: cache.id(),
+                            keys: self.device.new_i8_buffer_len(stage_len)?,
+                            key_scales: self.device.new_f32_buffer_len(scale_stage_len)?,
+                            values: self.device.new_i8_buffer_len(stage_len)?,
+                            value_scales: self.device.new_f32_buffer_len(scale_stage_len)?,
+                            revision_at_last_sync: None,
+                            tokens_seen_at_last_sync: 0,
+                            token_count_at_last_sync: 0,
+                            max_tokens: cache.max_tokens(),
+                            vector_len,
+                        },
+                    );
+                    changed_residency = true;
+                    stages.get_mut(&cache.id()).ok_or_else(|| {
+                        llm_metal::MetalError::InvalidShape(
+                            "new Metal INT8 KV direct append stage was not retained".to_owned(),
+                        )
+                    })?
+                }
+            };
+            let rebuild_writes = if stage.revision_at_last_sync == Some(cache.revision()) {
+                Vec::new()
+            } else {
+                int8_kv_stage_writes_from_active_blocks(
+                    &active_blocks,
+                    0,
+                    cache.token_count(),
+                    vector_len,
+                    cache.max_tokens(),
+                )?
+            };
+            (
+                stage.keys.clone(),
+                stage.key_scales.clone(),
+                stage.values.clone(),
+                stage.value_scales.clone(),
+                rebuild_writes,
+                changed_residency,
+            )
+        };
+
+        let mut rebuilt_bytes = 0_u64;
+        for write in &rebuild_writes {
+            self.device
+                .write_i8_buffer_range(&keys, write.destination_start, write.source_keys)?;
+            self.device.write_i8_buffer_range(
+                &values,
+                write.destination_start,
+                write.source_values,
+            )?;
+            self.device.write_f32_buffer_range(
+                &key_scales,
+                write.destination_scale_start,
+                write.source_key_scales,
+            )?;
+            self.device.write_f32_buffer_range(
+                &value_scales,
+                write.destination_scale_start,
+                write.source_value_scales,
+            )?;
+            rebuilt_bytes = rebuilt_bytes.saturating_add(int8_stage_copy_bytes(
+                write.element_count,
+                write.token_count,
+            ));
+        }
+
+        let destination_starts = kv_stage_destination_starts(
+            target.physical_token_index(),
+            1,
+            vector_len,
+            cache.max_tokens(),
+            "direct INT8 KV cache stage append",
+        )?;
+        let scale_destination_starts = [
+            target.physical_token_index(),
+            target
+                .physical_token_index()
+                .checked_add(cache.max_tokens())
+                .ok_or_else(|| {
+                    llm_metal::MetalError::InvalidShape(
+                        "direct INT8 KV cache scale mirror destination overflows usize".to_owned(),
+                    )
+                })?,
+        ];
+        for (destination_start, destination_scale_start) in
+            destination_starts.into_iter().zip(scale_destination_starts)
+        {
+            self.device.write_i8_buffer_range(
+                &keys,
+                destination_start,
+                direct_token.key_codes(),
+            )?;
+            self.device.write_i8_buffer_range(
+                &values,
+                destination_start,
+                direct_token.value_codes(),
+            )?;
+            self.device.write_f32_buffer_range(
+                &key_scales,
+                destination_scale_start,
+                direct_token.key_scales(),
+            )?;
+            self.device.write_f32_buffer_range(
+                &value_scales,
+                destination_scale_start,
+                direct_token.value_scales(),
+            )?;
+        }
+
+        let append = cache
+            .append_sliding_with_metadata(key, value)
+            .map_err(kv_cache_shape_error)?;
+        verify_direct_append_metadata(cache.max_tokens(), target, append)?;
+        self.mark_int8_stage_synced(cache, append)?;
+        let metrics = native_text_metal_metrics();
+        if rebuilt_bytes > 0 {
+            metrics.record_kv_cache_stage_rebuild(rebuilt_bytes);
+        }
+        metrics.record_kv_cache_stage_direct_write(
+            int8_stage_copy_bytes(vector_len, 1).saturating_mul(2),
+        );
+        if changed_residency {
+            self.record_kv_stage_residency();
+        }
+        Ok(())
+    }
+
+    fn mark_f16_stage_synced(
+        &self,
+        cache: &LayerKvCache,
+        append: LayerKvCacheAppend,
+    ) -> Result<(), llm_metal::MetalError> {
+        let mut stages = self.kv_stages.lock_or_panic("Metal KV stage mirror");
+        let stage = stages.get_mut(&cache.id()).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "missing Metal KV direct append stage for cache {}",
+                cache.id()
+            ))
+        })?;
+        stage.revision_at_last_sync = Some(append.revision());
+        stage.tokens_seen_at_last_sync = append.tokens_seen();
+        stage.token_count_at_last_sync = append.token_count();
+        Ok(())
+    }
+
+    fn mark_int8_stage_synced(
+        &self,
+        cache: &LayerKvCache,
+        append: LayerKvCacheAppend,
+    ) -> Result<(), llm_metal::MetalError> {
+        let mut stages = self
+            .kv_int8_stages
+            .lock_or_panic("Metal INT8 KV stage mirror");
+        let stage = stages.get_mut(&cache.id()).ok_or_else(|| {
+            llm_metal::MetalError::InvalidShape(format!(
+                "missing Metal INT8 KV direct append stage for cache {}",
+                cache.id()
+            ))
+        })?;
+        stage.revision_at_last_sync = Some(append.revision());
+        stage.tokens_seen_at_last_sync = append.tokens_seen();
+        stage.token_count_at_last_sync = append.token_count();
         Ok(())
     }
 
@@ -1545,6 +1914,34 @@ fn cache_resident_byte_len(elements: usize) -> Result<u64, llm_metal::MetalError
     cache_resident_byte_len_for::<f32>(elements)
 }
 
+#[cfg(feature = "metal")]
+fn verify_direct_append_metadata(
+    max_tokens: usize,
+    target: LayerKvCacheAppendTarget,
+    append: LayerKvCacheAppend,
+) -> Result<(), llm_metal::MetalError> {
+    let expected_token_count = if target.previous_token_count() < max_tokens {
+        target.previous_token_count().saturating_add(1)
+    } else {
+        max_tokens
+    };
+    if append.token_index() != target.token_index()
+        || append.physical_token_index() != target.physical_token_index()
+        || append.token_count() != expected_token_count
+    {
+        return Err(llm_metal::MetalError::InvalidShape(format!(
+            "KV cache direct append metadata mismatch: target token={}, physical={}, previous_count={}, expected_count={expected_token_count}; append token={}, physical={}, token_count={}",
+            target.token_index(),
+            target.physical_token_index(),
+            target.previous_token_count(),
+            append.token_index(),
+            append.physical_token_index(),
+            append.token_count()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(all(test, feature = "metal"))]
 mod kv_cache_sync_tests {
     use super::*;
@@ -1844,6 +2241,196 @@ mod kv_cache_sync_tests {
     }
 
     #[tokio::test]
+    async fn metal_f16_direct_append_writes_stage_without_cpu_stage_sync() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 direct append test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let before_direct = kv_stage_direct_bytes_copied();
+        let before_sync = kv_stage_sync_bytes_copied();
+        let before_rebuild = kv_stage_rebuild_bytes_copied();
+
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.2, -0.4], &[0.7, -0.1])
+            .expect("direct f16 append succeeds");
+
+        assert_eq!(cache.token_count(), 1);
+        assert_eq!(
+            kv_stage_direct_bytes_copied().saturating_sub(before_direct),
+            f16_stage_copy_bytes(cache.vector_len()).saturating_mul(2)
+        );
+        assert_eq!(kv_stage_sync_bytes_copied(), before_sync);
+        assert_eq!(kv_stage_rebuild_bytes_copied(), before_rebuild);
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal attention uses direct stage");
+
+        assert_attention_close(&output, [0.7, -0.1], 1e-2);
+        assert_eq!(kv_stage_sync_bytes_copied(), before_sync);
+        assert_eq!(kv_stage_rebuild_bytes_copied(), before_rebuild);
+        let stages = state.kv_stages.lock_or_panic("Metal KV stage mirror");
+        let stage = stages.get(&cache.id()).expect("stage exists");
+        assert_eq!(stage.revision_at_last_sync, Some(cache.revision()));
+        assert_eq!(stage.tokens_seen_at_last_sync, cache.next_position());
+        assert_eq!(stage.token_count_at_last_sync, cache.token_count());
+    }
+
+    #[tokio::test]
+    async fn metal_f16_direct_append_updates_mirrored_wrap_row() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 direct wrap test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let initial_keys = [[0.9, -0.1], [0.2, 0.8], [-0.7, 0.4], [0.3, -0.5]];
+        let initial_values = [[0.4, -0.6], [-0.3, 0.7], [0.8, 0.2], [-0.9, 0.5]];
+        for (key, value) in initial_keys.iter().zip(&initial_values) {
+            state
+                .append_kv_cache_sliding_direct(&mut cache, key, value)
+                .expect("direct prefix append succeeds");
+        }
+        let before_direct = kv_stage_direct_bytes_copied();
+
+        let wrapped_key = [-0.4, 0.6];
+        let wrapped_value = [0.1, -0.8];
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &wrapped_key, &wrapped_value)
+            .expect("direct wrap append succeeds");
+
+        assert_eq!(
+            kv_stage_direct_bytes_copied().saturating_sub(before_direct),
+            f16_stage_copy_bytes(cache.vector_len()).saturating_mul(2),
+            "direct wrap append should write only the dirty physical row and mirrored row"
+        );
+
+        let active_keys = [
+            initial_keys[1],
+            initial_keys[2],
+            initial_keys[3],
+            wrapped_key,
+        ];
+        let active_values = [
+            initial_values[1],
+            initial_values[2],
+            initial_values[3],
+            wrapped_value,
+        ];
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 4, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal attention uses direct wrapped stage");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &active_keys, &active_values, score_scale),
+            1e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_f16_direct_append_rebuilds_prefix_then_writes_suffix() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 direct prefix test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        let prefix_key = [0.9, -0.1];
+        let prefix_value = [0.4, -0.6];
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &prefix_key, &prefix_value)
+            .expect("direct prefix append succeeds");
+        let prefix_state = cache.prefix_cache_state();
+        let mut hit_cache =
+            LayerKvCache::from_prefix_cache_state(&prefix_state).expect("prefix state restores");
+        let before_direct = kv_stage_direct_bytes_copied();
+        let before_rebuild = kv_stage_rebuild_bytes_copied();
+
+        let suffix_key = [0.2, 0.8];
+        let suffix_value = [-0.3, 0.7];
+        state
+            .append_kv_cache_sliding_direct(&mut hit_cache, &suffix_key, &suffix_value)
+            .expect("direct suffix append succeeds after prefix hit");
+
+        assert_eq!(
+            kv_stage_rebuild_bytes_copied().saturating_sub(before_rebuild),
+            f16_stage_copy_bytes(hit_cache.vector_len()).saturating_mul(2),
+            "prefix hit should rebuild the retained prefix row explicitly"
+        );
+        assert_eq!(
+            kv_stage_direct_bytes_copied().saturating_sub(before_direct),
+            f16_stage_copy_bytes(hit_cache.vector_len()).saturating_mul(2),
+            "suffix row should still use direct write-through"
+        );
+
+        let keys = [prefix_key, suffix_key];
+        let values = [prefix_value, suffix_value];
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&hit_cache, &query, 2, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal attention uses rebuilt prefix and direct suffix");
+
+        assert_attention_close(
+            &output,
+            reference_attention(&query, &keys, &values, score_scale),
+            1e-2,
+        );
+    }
+
+    #[tokio::test]
+    async fn metal_f16_direct_append_fails_closed_on_stage_residency_mismatch() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping f16 direct mismatch test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache = LayerKvCache::new(4, 1, 2).expect("cache shape is valid");
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.2, -0.4], &[0.7, -0.1])
+            .expect("direct f16 append seeds stage");
+        let token_count = cache.token_count();
+        let revision = cache.revision();
+        {
+            let mut stages = state.kv_stages.lock_or_panic("Metal KV stage mirror");
+            let stage = stages.get_mut(&cache.id()).expect("stage exists");
+            stage.vector_len = stage.vector_len.saturating_add(1);
+        }
+
+        let err = state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.1, 0.3], &[0.4, -0.2])
+            .expect_err("stage residency mismatch fails closed");
+
+        assert!(
+            format!("{err}").contains("stage residency mismatch"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(cache.token_count(), token_count);
+        assert_eq!(cache.revision(), revision);
+    }
+
+    #[tokio::test]
     async fn metal_int8_stage_updates_mirrored_wrap_row_for_larger_source_count() {
         let Some(device) =
             llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
@@ -1946,10 +2533,105 @@ mod kv_cache_sync_tests {
         );
     }
 
+    #[tokio::test]
+    async fn metal_int8_direct_append_writes_quantized_stage_without_cpu_stage_sync() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 direct append test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache =
+            LayerKvCache::new_with_config(4, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+        let before_direct = kv_stage_direct_bytes_copied();
+        let before_sync = kv_stage_sync_bytes_copied();
+        let before_rebuild = kv_stage_rebuild_bytes_copied();
+
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.2, -0.4], &[0.7, -0.1])
+            .expect("direct int8 append succeeds");
+
+        assert_eq!(
+            kv_stage_direct_bytes_copied().saturating_sub(before_direct),
+            int8_stage_copy_bytes(cache.vector_len(), 1).saturating_mul(2)
+        );
+        assert_eq!(kv_stage_sync_bytes_copied(), before_sync);
+        assert_eq!(kv_stage_rebuild_bytes_copied(), before_rebuild);
+
+        let query = [0.6, -0.2];
+        let score_scale = 0.9;
+        let mut output = vec![0.0; 2];
+        state
+            .full_attention_cache_mix(&cache, &query, 1, 1, 1, 2, score_scale, &mut output)
+            .await
+            .expect("Metal INT8 attention uses direct stage");
+
+        assert_attention_close(&output, [0.7, -0.1], 4e-2);
+        assert_eq!(kv_stage_sync_bytes_copied(), before_sync);
+        assert_eq!(kv_stage_rebuild_bytes_copied(), before_rebuild);
+    }
+
+    #[tokio::test]
+    async fn metal_int8_direct_append_fails_closed_on_stage_residency_mismatch() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping INT8 direct mismatch test");
+            return;
+        };
+        let state = NativeTextMetalState::new(device, 0);
+        let mut cache =
+            LayerKvCache::new_with_config(4, 1, 2, llm_backend::native::KvCacheConfig::int8())
+                .expect("cache shape is valid");
+        state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.2, -0.4], &[0.7, -0.1])
+            .expect("direct int8 append seeds stage");
+        let token_count = cache.token_count();
+        let revision = cache.revision();
+        {
+            let mut stages = state
+                .kv_int8_stages
+                .lock_or_panic("Metal INT8 KV stage mirror");
+            let stage = stages.get_mut(&cache.id()).expect("stage exists");
+            stage.vector_len = stage.vector_len.saturating_add(1);
+        }
+
+        let err = state
+            .append_kv_cache_sliding_direct(&mut cache, &[0.1, 0.3], &[0.4, -0.2])
+            .expect_err("INT8 stage residency mismatch fails closed");
+
+        assert!(
+            format!("{err}").contains("stage residency mismatch"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(cache.token_count(), token_count);
+        assert_eq!(cache.revision(), revision);
+    }
+
     fn kv_stage_bytes_copied() -> u64 {
         native_text_metal_metrics().snapshot()["kv_cache"]["stage_bytes_copied"]
             .as_u64()
             .expect("stage_bytes_copied is reported as u64")
+    }
+
+    fn kv_stage_direct_bytes_copied() -> u64 {
+        native_text_metal_metrics().snapshot()["kv_cache"]["stage_direct_bytes_copied"]
+            .as_u64()
+            .expect("stage_direct_bytes_copied is reported as u64")
+    }
+
+    fn kv_stage_sync_bytes_copied() -> u64 {
+        native_text_metal_metrics().snapshot()["kv_cache"]["stage_sync_bytes_copied"]
+            .as_u64()
+            .expect("stage_sync_bytes_copied is reported as u64")
+    }
+
+    fn kv_stage_rebuild_bytes_copied() -> u64 {
+        native_text_metal_metrics().snapshot()["kv_cache"]["stage_rebuild_bytes_copied"]
+            .as_u64()
+            .expect("stage_rebuild_bytes_copied is reported as u64")
     }
 
     fn assert_attention_close(actual: &[f32], expected: [f32; 2], tolerance: f32) {
@@ -3541,6 +4223,26 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 }
                 Ok(())
             }
+        }
+    }
+
+    async fn append_kv_cache_sliding_f32(
+        &self,
+        cache: &mut LayerKvCache,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), MathError> {
+        match self {
+            Self::Cpu => {
+                Self::cpu()
+                    .append_kv_cache_sliding_f32(cache, key, value)
+                    .await
+            }
+            Self::Metal(metal) => metal
+                .append_kv_cache_sliding_direct(cache, key, value)
+                .map_err(|err| {
+                    MathError::InvalidShape(format!("KV cache direct Metal append failed: {err}"))
+                }),
         }
     }
 

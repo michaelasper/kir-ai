@@ -1,6 +1,7 @@
 pub use llm_kv_cache::{
-    BlockId, KvCacheConfig, KvCacheError, KvCacheFormat, LayerKvCache, LayerKvCacheBlock,
-    LayerKvCacheInt8Block, LayerKvCachePrefixState, LayerKvCacheSnapshot, LinearAttentionCache,
+    BlockId, KvCacheConfig, KvCacheError, KvCacheFormat, LayerInt8KvToken, LayerKvCache,
+    LayerKvCacheAppend, LayerKvCacheAppendTarget, LayerKvCacheBlock, LayerKvCacheInt8Block,
+    LayerKvCachePrefixState, LayerKvCacheSnapshot, LinearAttentionCache,
     LinearAttentionCacheSnapshot,
 };
 

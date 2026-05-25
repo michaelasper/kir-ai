@@ -582,6 +582,18 @@ pub trait NativeMatvecBackend {
         .await
     }
 
+    async fn append_kv_cache_sliding_f32(
+        &self,
+        cache: &mut LayerKvCache,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), MathError> {
+        cache
+            .append_sliding(key, value)
+            .map(|_| ())
+            .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn full_attention_cache_mix_f32_in_place(
         &self,

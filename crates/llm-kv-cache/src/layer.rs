@@ -1,7 +1,9 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::block::RetainedCacheBlock;
-use crate::format::{KvCacheFormatMetricParts, LayerInt8KvStore, LayerQuantizedValueStore};
+use crate::format::{
+    KvCacheFormatMetricParts, LayerInt8KvStore, LayerInt8KvToken, LayerQuantizedValueStore,
+};
 use crate::{
     BlockId, BlockTable, CacheBlock, KvCacheConfig, KvCacheError, KvCacheFormat,
     KvCacheFormatMetrics, KvCacheReconstructionError, f32_resident_bytes, next_cache_id,
@@ -59,6 +61,58 @@ pub struct LayerKvCachePrefixState {
     tokens_seen: usize,
     window_start: usize,
     blocks: Vec<LayerKvCachePrefixBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerKvCacheAppendTarget {
+    token_index: usize,
+    physical_token_index: usize,
+    previous_token_count: usize,
+}
+
+impl LayerKvCacheAppendTarget {
+    pub fn token_index(self) -> usize {
+        self.token_index
+    }
+
+    pub fn physical_token_index(self) -> usize {
+        self.physical_token_index
+    }
+
+    pub fn previous_token_count(self) -> usize {
+        self.previous_token_count
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerKvCacheAppend {
+    token_index: usize,
+    physical_token_index: usize,
+    token_count: usize,
+    tokens_seen: usize,
+    revision: u64,
+}
+
+impl LayerKvCacheAppend {
+    pub fn token_index(self) -> usize {
+        self.token_index
+    }
+
+    pub fn physical_token_index(self) -> usize {
+        self.physical_token_index
+    }
+
+    pub fn token_count(self) -> usize {
+        self.token_count
+    }
+
+    pub fn tokens_seen(self) -> usize {
+        self.tokens_seen
+    }
+
+    pub fn revision(self) -> u64 {
+        self.revision
+    }
 }
 
 impl LayerKvCachePrefixState {
@@ -620,6 +674,15 @@ impl LayerKvCache {
     }
 
     pub fn append(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
+        self.append_with_metadata(key, value)
+            .map(LayerKvCacheAppend::token_index)
+    }
+
+    pub fn append_with_metadata(
+        &mut self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<LayerKvCacheAppend, KvCacheError> {
         self.validate_token_shape(key, value)?;
         self.validate_compressed_token_payload(key, value)?;
         if self.token_count == self.max_tokens {
@@ -628,34 +691,23 @@ impl LayerKvCache {
                 available: 0,
             });
         }
-        let tokens_seen = self
-            .tokens_seen
-            .checked_add(1)
-            .ok_or(KvCacheError::InvalidShape)?;
-        let token_index = self.token_count;
-        self.append_block_token(token_index, key, value)?;
-        self.write_stage_token(token_index, key, value);
-        self.token_count += 1;
-        self.tokens_seen = tokens_seen;
-        self.revision = self.revision.saturating_add(1);
-        tracing::trace!(
-            operation = "layer_kv_cache_append",
-            cache_id = self.id,
-            revision = self.revision,
-            token_index,
-            token_count = self.token_count,
-            max_tokens = self.max_tokens,
-            "layer KV cache token appended"
-        );
-        Ok(token_index)
+        self.append_at_end_validated(key, value)
     }
 
     pub fn append_sliding(&mut self, key: &[f32], value: &[f32]) -> Result<usize, KvCacheError> {
-        self.validate_token_shape(key, value)?;
+        self.append_sliding_with_metadata(key, value)
+            .map(LayerKvCacheAppend::token_index)
+    }
+
+    pub fn append_sliding_with_metadata(
+        &mut self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<LayerKvCacheAppend, KvCacheError> {
+        self.validate_sliding_append(key, value)?;
         if self.token_count < self.max_tokens {
-            return self.append(key, value);
+            return self.append_at_end_validated(key, value);
         }
-        self.validate_compressed_token_payload(key, value)?;
         let tokens_seen = self
             .tokens_seen
             .checked_add(1)
@@ -678,7 +730,87 @@ impl LayerKvCache {
             max_tokens = self.max_tokens,
             "layer KV cache sliding token appended"
         );
-        Ok(token_index)
+        Ok(LayerKvCacheAppend {
+            token_index,
+            physical_token_index,
+            token_count: self.token_count,
+            tokens_seen: self.tokens_seen,
+            revision: self.revision,
+        })
+    }
+
+    pub fn validate_sliding_append(&self, key: &[f32], value: &[f32]) -> Result<(), KvCacheError> {
+        self.validate_token_shape(key, value)?;
+        self.validate_compressed_token_payload(key, value)
+    }
+
+    pub fn sliding_append_target(&self) -> Result<LayerKvCacheAppendTarget, KvCacheError> {
+        let (token_index, physical_token_index) = if self.token_count < self.max_tokens {
+            (self.token_count, self.token_count)
+        } else {
+            (self.max_tokens - 1, self.window_start)
+        };
+        if physical_token_index >= self.max_tokens {
+            return Err(KvCacheError::InvalidShape);
+        }
+        Ok(LayerKvCacheAppendTarget {
+            token_index,
+            physical_token_index,
+            previous_token_count: self.token_count,
+        })
+    }
+
+    pub fn int8_direct_append_token(
+        &self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<Option<LayerInt8KvToken>, KvCacheError> {
+        if self.format() != KvCacheFormat::Int8 {
+            return Ok(None);
+        }
+        self.validate_sliding_append(key, value)?;
+        LayerInt8KvToken::quantize(key, value, self.vector_len()).map(Some)
+    }
+
+    fn append_at_end_validated(
+        &mut self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<LayerKvCacheAppend, KvCacheError> {
+        if self.token_count == self.max_tokens {
+            return Err(KvCacheError::CapacityExceeded {
+                requested: 1,
+                available: 0,
+            });
+        }
+        let tokens_seen = self
+            .tokens_seen
+            .checked_add(1)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let token_index = self.token_count;
+        let physical_token_index = token_index;
+        self.append_block_token(token_index, key, value)?;
+        self.write_stage_token(token_index, key, value);
+        self.token_count += 1;
+        self.tokens_seen = tokens_seen;
+        self.revision = self.revision.saturating_add(1);
+        tracing::trace!(
+            operation = "layer_kv_cache_append",
+            cache_id = self.id,
+            revision = self.revision,
+            token_index,
+            physical_token_index,
+            token_count = self.token_count,
+            max_tokens = self.max_tokens,
+            "layer KV cache token appended"
+        );
+        Ok(LayerKvCacheAppend {
+            token_index,
+            physical_token_index,
+            token_count: self.token_count,
+            tokens_seen: self.tokens_seen,
+            revision: self.revision,
+        })
     }
 
     pub fn key(&self, token_index: usize) -> Option<&[f32]> {
@@ -1481,6 +1613,77 @@ mod tests {
         assert_eq!(cache.value(2), Some(&[40.0][..]));
         assert_eq!(cache.key_storage(), &[4.0, 2.0, 3.0]);
         assert_eq!(cache.value_storage(), &[40.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn layer_kv_cache_sliding_append_metadata_reports_physical_slot() {
+        let mut cache = LayerKvCache::new(3, 1, 1).expect("cache shape is valid");
+
+        let first_target = cache
+            .sliding_append_target()
+            .expect("first append target is available");
+        assert_eq!(first_target.token_index(), 0);
+        assert_eq!(first_target.physical_token_index(), 0);
+        assert_eq!(first_target.previous_token_count(), 0);
+
+        let first = cache
+            .append_sliding_with_metadata(&[1.0], &[10.0])
+            .expect("first token fits");
+        assert_eq!(first.token_index(), 0);
+        assert_eq!(first.physical_token_index(), 0);
+        assert_eq!(first.token_count(), 1);
+        assert_eq!(first.tokens_seen(), 1);
+        assert_eq!(first.revision(), cache.revision());
+
+        cache
+            .append_sliding_with_metadata(&[2.0], &[20.0])
+            .expect("second token fits");
+        cache
+            .append_sliding_with_metadata(&[3.0], &[30.0])
+            .expect("third token fits");
+
+        let wrap_target = cache
+            .sliding_append_target()
+            .expect("wrap append target is available");
+        assert_eq!(wrap_target.token_index(), 2);
+        assert_eq!(wrap_target.physical_token_index(), 0);
+        assert_eq!(wrap_target.previous_token_count(), 3);
+
+        let wrapped = cache
+            .append_sliding_with_metadata(&[4.0], &[40.0])
+            .expect("full cache recycles oldest slot");
+        assert_eq!(wrapped.token_index(), 2);
+        assert_eq!(wrapped.physical_token_index(), 0);
+        assert_eq!(wrapped.token_count(), 3);
+        assert_eq!(wrapped.tokens_seen(), 4);
+        assert_eq!(wrapped.revision(), cache.revision());
+        assert_eq!(cache.keys(), &[2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn int8_direct_append_token_quantization_matches_cache_boundary() {
+        let mut cache = LayerKvCache::new_with_config(2, 1, 3, KvCacheConfig::int8())
+            .expect("cache shape is valid");
+        let key = [-1.0, 0.0, 1.0];
+        let value = [0.25, -0.5, 0.75];
+
+        let direct = cache
+            .int8_direct_append_token(&key, &value)
+            .expect("direct token quantizes")
+            .expect("int8 direct token is produced for int8 cache");
+        cache
+            .append_sliding_with_metadata(&key, &value)
+            .expect("cpu cache append succeeds");
+        let block = cache
+            .active_int8_blocks()
+            .expect("active int8 blocks are valid")
+            .expect("int8 blocks are present")
+            .remove(0);
+
+        assert_eq!(direct.key_codes(), block.key_codes_storage());
+        assert_eq!(direct.value_codes(), block.value_codes_storage());
+        assert_eq!(direct.key_scales(), block.key_scales_storage());
+        assert_eq!(direct.value_scales(), block.value_scales_storage());
     }
 
     #[test]

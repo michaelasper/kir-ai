@@ -336,6 +336,50 @@ pub(crate) struct Int8KvBlock {
     value_codes: Vec<i8>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerInt8KvToken {
+    key_codes: Vec<i8>,
+    value_codes: Vec<i8>,
+    key_scales: Vec<f32>,
+    value_scales: Vec<f32>,
+}
+
+impl LayerInt8KvToken {
+    pub(crate) fn quantize(
+        key: &[f32],
+        value: &[f32],
+        vector_len: usize,
+    ) -> Result<Self, KvCacheError> {
+        if key.len() != vector_len || value.len() != vector_len {
+            return Err(KvCacheError::InvalidShape);
+        }
+        let (key_codes, key_scales) = quantize_int8_rows(key, vector_len)?;
+        let (value_codes, value_scales) = quantize_int8_rows(value, vector_len)?;
+        Ok(Self {
+            key_codes,
+            value_codes,
+            key_scales,
+            value_scales,
+        })
+    }
+
+    pub fn key_codes(&self) -> &[i8] {
+        &self.key_codes
+    }
+
+    pub fn value_codes(&self) -> &[i8] {
+        &self.value_codes
+    }
+
+    pub fn key_scales(&self) -> &[f32] {
+        &self.key_scales
+    }
+
+    pub fn value_scales(&self) -> &[f32] {
+        &self.value_scales
+    }
+}
+
 impl Int8KvBlock {
     fn quantize(keys: &[f32], values: &[f32], vector_len: usize) -> Result<Self, KvCacheError> {
         if keys.is_empty()

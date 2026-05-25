@@ -24,7 +24,8 @@ pub mod native {
     pub use super::core::{
         BlockId, CpuNativeMatvecBackend, F32TensorCacheWarmup, GemmaLayerCache,
         GemmaLayerCachePrefixState, GemmaLayerCacheSnapshot, InferenceScratchpad, KvCacheConfig,
-        KvCacheError, KvCacheFormat, LayerKvCache, LayerKvCacheBlock, LayerKvCacheInt8Block,
+        KvCacheError, KvCacheFormat, LayerInt8KvToken, LayerKvCache, LayerKvCacheAppend,
+        LayerKvCacheAppendTarget, LayerKvCacheBlock, LayerKvCacheInt8Block,
         LayerKvCachePrefixState, LayerKvCacheSnapshot, LinearAttentionCache,
         LinearAttentionCacheSnapshot, MathError, NativeBatchedMatvecInputBuffer,
         NativeBatchedMatvecOutput, NativeBatchedMatvecRows, NativeKvCacheTensor,

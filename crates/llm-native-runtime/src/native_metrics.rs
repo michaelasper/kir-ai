@@ -31,10 +31,15 @@ struct MetalCacheCounters {
     syncs: u64,
     skipped_syncs: u64,
     evictions: u64,
+    stage_direct_write_throughs: u64,
+    stage_syncs: u64,
     stage_rebuilds: u64,
     bytes_uploaded: u64,
     bytes_evicted: u64,
     stage_bytes_copied: u64,
+    stage_direct_bytes_copied: u64,
+    stage_sync_bytes_copied: u64,
+    stage_rebuild_bytes_copied: u64,
     resident_bytes: u64,
     resident_buffers: u64,
     stage_resident_bytes: u64,
@@ -217,12 +222,25 @@ impl MetalBackendMetrics {
     pub(crate) fn record_kv_cache_stage_rebuild(&self, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
             cache.stage_rebuilds = cache.stage_rebuilds.saturating_add(1);
+            cache.stage_rebuild_bytes_copied =
+                cache.stage_rebuild_bytes_copied.saturating_add(byte_len);
             cache.stage_bytes_copied = cache.stage_bytes_copied.saturating_add(byte_len);
         });
     }
 
     pub(crate) fn record_kv_cache_stage_sync(&self, byte_len: u64) {
         self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.stage_syncs = cache.stage_syncs.saturating_add(1);
+            cache.stage_sync_bytes_copied = cache.stage_sync_bytes_copied.saturating_add(byte_len);
+            cache.stage_bytes_copied = cache.stage_bytes_copied.saturating_add(byte_len);
+        });
+    }
+
+    pub(crate) fn record_kv_cache_stage_direct_write(&self, byte_len: u64) {
+        self.update_cache_counter(CacheMetricKind::Kv, |cache| {
+            cache.stage_direct_write_throughs = cache.stage_direct_write_throughs.saturating_add(1);
+            cache.stage_direct_bytes_copied =
+                cache.stage_direct_bytes_copied.saturating_add(byte_len);
             cache.stage_bytes_copied = cache.stage_bytes_copied.saturating_add(byte_len);
         });
     }
@@ -415,10 +433,15 @@ fn cache_counters_json(counters: MetalCacheCounters) -> Value {
         "syncs": counters.syncs,
         "skipped_syncs": counters.skipped_syncs,
         "evictions": counters.evictions,
+        "stage_direct_write_throughs": counters.stage_direct_write_throughs,
+        "stage_syncs": counters.stage_syncs,
         "stage_rebuilds": counters.stage_rebuilds,
         "bytes_uploaded": counters.bytes_uploaded,
         "bytes_evicted": counters.bytes_evicted,
         "stage_bytes_copied": counters.stage_bytes_copied,
+        "stage_direct_bytes_copied": counters.stage_direct_bytes_copied,
+        "stage_sync_bytes_copied": counters.stage_sync_bytes_copied,
+        "stage_rebuild_bytes_copied": counters.stage_rebuild_bytes_copied,
         "resident_bytes": counters.resident_bytes,
         "resident_buffers": counters.resident_buffers,
         "stage_resident_bytes": counters.stage_resident_bytes,
@@ -550,12 +573,23 @@ mod tests {
     }
 
     #[test]
-    fn metal_metrics_snapshot_exposes_staged_kv_cache_residency() {
-        let snapshot = MetalBackendMetrics::default().snapshot();
+    fn metal_metrics_snapshot_distinguishes_staged_kv_cache_transfer_paths() {
+        let metrics = MetalBackendMetrics::default();
+
+        metrics.record_kv_cache_stage_direct_write(11);
+        metrics.record_kv_cache_stage_sync(13);
+        metrics.record_kv_cache_stage_rebuild(17);
+
+        let snapshot = metrics.snapshot();
         let kv_cache = &snapshot["kv_cache"];
 
-        assert!(kv_cache["stage_rebuilds"].is_number());
-        assert!(kv_cache["stage_bytes_copied"].is_number());
+        assert_eq!(kv_cache["stage_direct_write_throughs"], 1);
+        assert_eq!(kv_cache["stage_syncs"], 1);
+        assert_eq!(kv_cache["stage_rebuilds"], 1);
+        assert_eq!(kv_cache["stage_direct_bytes_copied"], 11);
+        assert_eq!(kv_cache["stage_sync_bytes_copied"], 13);
+        assert_eq!(kv_cache["stage_rebuild_bytes_copied"], 17);
+        assert_eq!(kv_cache["stage_bytes_copied"], 41);
         assert!(kv_cache["stage_resident_bytes"].is_number());
         assert!(kv_cache["stage_resident_buffers"].is_number());
     }

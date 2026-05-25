@@ -13,11 +13,11 @@ pub use block_pool::BlockPool;
 pub use block_table::{BlockTable, SessionBlockTable, SessionId};
 pub use format::{
     AsymmetricVqCacheConfig, KvCacheConfig, KvCacheFormat, KvCacheFormatMetrics,
-    KvCacheReconstructionError, KvCacheValueQuantizationBits,
+    KvCacheReconstructionError, KvCacheValueQuantizationBits, LayerInt8KvToken,
 };
 pub use layer::{
-    LayerKvCache, LayerKvCacheBlock, LayerKvCacheInt8Block, LayerKvCachePrefixState,
-    LayerKvCacheSnapshot,
+    LayerKvCache, LayerKvCacheAppend, LayerKvCacheAppendTarget, LayerKvCacheBlock,
+    LayerKvCacheInt8Block, LayerKvCachePrefixState, LayerKvCacheSnapshot,
 };
 pub use linear::{LinearAttentionCache, LinearAttentionCacheSnapshot};
 

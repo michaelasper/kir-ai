@@ -501,7 +501,7 @@ fn intersect_stage_logical_range(
     }))
 }
 
-fn kv_stage_destination_starts(
+pub(crate) fn kv_stage_destination_starts(
     physical_token_start: usize,
     token_count: usize,
     vector_len: usize,

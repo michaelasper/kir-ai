@@ -291,9 +291,9 @@ pub(crate) async fn native_full_attention_step_with_cache_from_parts_in_place(
         shape.attention_dim,
     )?;
 
-    cache
-        .append_sliding(parts.key, parts.value)
-        .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
+    matvec
+        .append_kv_cache_sliding_f32(cache, parts.key, parts.value)
+        .await?;
     let attended = native_full_attention_mix_from_cache(
         dims,
         shape,
@@ -368,9 +368,13 @@ async fn native_full_attention_sequence_impl(
         let query = parts.queries.row(token_idx);
         let gate = parts.gates.map(|gates| gates.row(token_idx));
         let attended = if let Some(cache) = cache.as_deref_mut() {
-            cache
-                .append_sliding(parts.keys.row(token_idx), parts.values.row(token_idx))
-                .map_err(|err| MathError::InvalidShape(format!("KV cache append failed: {err}")))?;
+            matvec
+                .append_kv_cache_sliding_f32(
+                    cache,
+                    parts.keys.row(token_idx),
+                    parts.values.row(token_idx),
+                )
+                .await?;
             native_full_attention_mix_from_cache(
                 dims,
                 shape,
@@ -1170,6 +1174,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct FusedCacheMixBackend {
+        append_calls: AtomicUsize,
         fused_calls: AtomicUsize,
         per_head_calls: AtomicUsize,
     }
@@ -1312,6 +1317,18 @@ mod tests {
                 .await
         }
 
+        async fn append_kv_cache_sliding_f32(
+            &self,
+            cache: &mut LayerKvCache,
+            key: &[f32],
+            value: &[f32],
+        ) -> Result<(), MathError> {
+            self.append_calls.fetch_add(1, Ordering::SeqCst);
+            CpuNativeMatvecBackend
+                .append_kv_cache_sliding_f32(cache, key, value)
+                .await
+        }
+
         async fn full_attention_cache_mix_f32_in_place(
             &self,
             _cache: &LayerKvCache,
@@ -1323,7 +1340,7 @@ mod tests {
             _score_scale: f32,
             output: &mut [f32],
         ) -> Result<bool, MathError> {
-            assert_eq!(row_count, 2);
+            assert!(row_count > 0);
             assert_eq!(num_attention_heads, 2);
             assert_eq!(num_key_value_heads, 1);
             assert_eq!(head_dim, 1);
@@ -1372,5 +1389,36 @@ mod tests {
         assert_eq!(backend.per_head_calls.load(Ordering::SeqCst), 0);
         assert_close(output[0][0], 11.0);
         assert_close(output[0][1], 22.0);
+    }
+
+    #[tokio::test]
+    async fn native_full_attention_sequence_with_cache_routes_appends_through_backend() {
+        let dims = NativeFullAttentionDims {
+            hidden_size: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let queries = vec![vec![1.0, 2.0], vec![2.0, 1.0]];
+        let keys = vec![vec![1.0], vec![2.0]];
+        let values = vec![vec![10.0], vec![20.0]];
+        let output_projection = vec![1.0, 0.0, 0.0, 1.0];
+        let parts = NativeFullAttentionSequenceParts {
+            queries: NativeF32Rows::from_rows(&queries),
+            keys: NativeF32Rows::from_rows(&keys),
+            values: NativeF32Rows::from_rows(&values),
+            gates: None,
+            output_projection: NativeOutputProjection::F32(&output_projection),
+            score_scale: 1.0,
+        };
+        let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
+        let backend = FusedCacheMixBackend::default();
+
+        native_full_attention_sequence_with_cache_from_parts(dims, &parts, &mut cache, &backend)
+            .await
+            .expect("cached sequence succeeds");
+
+        assert_eq!(backend.append_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(cache.token_count(), 2);
     }
 }
