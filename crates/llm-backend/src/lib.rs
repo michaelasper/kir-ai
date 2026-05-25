@@ -1,14 +1,35 @@
+//! Public facade for backend contracts and native execution helpers.
+//!
+//! `contracts` exposes the backend protocol types shared with runtime crates,
+//! `traits` keeps the historical trait-focused import path, and `native`
+//! exposes the native tensor/KV-cache helpers used by native runtimes and
+//! diagnostics. The root contract re-exports are compatibility shims and are
+//! kept explicit so the public API remains auditable.
+
 mod core;
 
+/// Backend protocol contracts shared between runtime and backend crates.
 pub mod contracts {
-    pub use llm_backend_contracts::*;
+    pub use llm_backend_contracts::{
+        BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
+        BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
+        BackendError, BackendErrorDomain, BackendFailureClass, BackendFinishReason, BackendHealth,
+        BackendHealthStatus, BackendModelMetadata, BackendOutput, BackendPrefillChunkAdmission,
+        BackendPrefillChunkAdmissionHook, BackendRequest, BackendRequestKind, BackendStreamChunk,
+        BackendStreamProgress, BackendStreamTimingMilestone, BackendToolCall, BackendToolCallDelta,
+        BackendToolCallFunction, BackendToolCallFunctionDelta, BackendToolCallType,
+        BackendToolChoice, BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType,
+        ModelBackend, SamplingConfig,
+    };
 }
 
 #[cfg(feature = "test-utils")]
+/// Test backend used by runtime and HTTP contract tests.
 pub mod protocol_test {
     pub use super::core::ProtocolTestBackend;
 }
 
+/// Compatibility import path for the backend trait and request/response types.
 pub mod traits {
     pub use super::contracts::{
         BackendCacheKey, BackendCapabilities, BackendChatRequest, BackendCompletionRequest,
@@ -20,6 +41,7 @@ pub mod traits {
     };
 }
 
+/// Native tensor, safetensors, and KV-cache helpers for local execution paths.
 pub mod native {
     pub use super::core::{
         BlockId, CpuNativeMatvecBackend, F32TensorCacheWarmup, GemmaLayerCache,
@@ -52,7 +74,17 @@ pub mod native {
     };
 }
 
-pub use contracts::*;
+pub use contracts::{
+    BackendCacheContext, BackendCacheKey, BackendCapabilities, BackendChatContext,
+    BackendChatMessage, BackendChatRequest, BackendChatRole, BackendCompletionRequest,
+    BackendError, BackendErrorDomain, BackendFailureClass, BackendFinishReason, BackendHealth,
+    BackendHealthStatus, BackendModelMetadata, BackendOutput, BackendPrefillChunkAdmission,
+    BackendPrefillChunkAdmissionHook, BackendRequest, BackendRequestKind, BackendStreamChunk,
+    BackendStreamProgress, BackendStreamTimingMilestone, BackendToolCall, BackendToolCallDelta,
+    BackendToolCallFunction, BackendToolCallFunctionDelta, BackendToolCallType, BackendToolChoice,
+    BackendToolDefinition, BackendToolFunctionDefinition, BackendToolType, ModelBackend,
+    SamplingConfig,
+};
 
 #[cfg(feature = "test-utils")]
 pub use core::ProtocolTestBackend;
