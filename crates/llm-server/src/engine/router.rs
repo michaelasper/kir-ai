@@ -18,7 +18,7 @@ use crate::{NoopServerBackendMetrics, ServerBackendMetrics};
 use axum::{
     Router,
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderValue, Request,
         header::{HeaderName, RETRY_AFTER},
@@ -32,6 +32,7 @@ use llm_hub::HubClient;
 use llm_runtime::{Runtime, RuntimeOptions, ToolSchemaNormalization};
 use llm_telemetry::ServerMetrics;
 use std::{
+    net::SocketAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -248,7 +249,11 @@ async fn enforce_public_inference_rate_limit(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let client_key = public_inference_client_key(request.headers());
+    let peer_addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
+    let client_key = public_inference_client_key(request.headers(), peer_addr);
     match state.public_inference_rate_limiter.acquire(&client_key) {
         Ok(snapshot) => {
             let mut response = next.run(request).await;
@@ -259,19 +264,16 @@ async fn enforce_public_inference_rate_limit(
     }
 }
 
-fn public_inference_client_key(headers: &HeaderMap) -> PublicInferenceClientKey {
-    if let Some(client_ip) =
-        trimmed_header_value(headers, "x-forwarded-for").and_then(first_forwarded_for_value)
-    {
-        return PublicInferenceClientKey::new(format!("xff:{client_ip}"));
-    }
-
-    if let Some(client_ip) = trimmed_header_value(headers, "x-real-ip") {
-        return PublicInferenceClientKey::new(format!("x-real-ip:{client_ip}"));
-    }
-
+fn public_inference_client_key(
+    headers: &HeaderMap,
+    peer_addr: Option<SocketAddr>,
+) -> PublicInferenceClientKey {
     if let Some(authorization) = trimmed_header_value(headers, "authorization") {
         return PublicInferenceClientKey::hashed("authorization", authorization);
+    }
+
+    if let Some(peer_addr) = peer_addr {
+        return PublicInferenceClientKey::new(format!("peer:{}", peer_addr.ip()));
     }
 
     PublicInferenceClientKey::anonymous()
@@ -283,13 +285,6 @@ fn trimmed_header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Optio
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-fn first_forwarded_for_value(value: &str) -> Option<&str> {
-    value
-        .split(',')
-        .map(str::trim)
-        .find(|value| !value.is_empty())
 }
 
 fn rate_limited_response(rejection: RateLimitRejection) -> Response {

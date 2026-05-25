@@ -2,7 +2,7 @@ mod engine;
 mod sync_ext;
 
 pub use axum::Router as ServerRouter;
-use axum::serve::Listener;
+use axum::serve::{Listener, ListenerExt};
 pub use engine::*;
 pub use llm_util::defaults::DEFAULT_MODEL_ID;
 use serde_json::Value;
@@ -275,7 +275,11 @@ async fn handle_accept_error(err: io::Error) {
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, router: ServerRouter) -> io::Result<()> {
-    axum::serve(listener, router).await
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 pub async fn serve_tls(
@@ -287,5 +291,9 @@ pub async fn serve_tls(
         .await
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let tls_listener = TlsListener::new(listener, TlsAcceptor::from(server_config));
-    axum::serve(tls_listener, router).await
+    axum::serve(
+        tls_listener.tap_io(|_| {}),
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
