@@ -1,3 +1,10 @@
+use std::{
+    collections::HashSet,
+    sync::{Arc, Barrier, Mutex},
+    thread,
+    time::Duration,
+};
+
 use llm_kv_cache::{
     BlockId, BlockPool, BlockTable, CacheBlock, KvCacheError, cache_block_chain_hash,
 };
@@ -218,8 +225,81 @@ fn block_pool_allocates_deallocates_and_reuses_free_blocks() {
 }
 
 #[test]
+fn cloned_block_pool_views_share_allocator_state() {
+    let first_view = BlockPool::new(1, 4, 3).expect("pool shape is valid");
+    let second_view = first_view.clone();
+
+    let block = first_view.allocate().expect("only block is available");
+
+    assert_eq!(second_view.allocate(), None);
+    assert_eq!(second_view.allocated_blocks(), 1);
+    assert_eq!(second_view.free_blocks(), 0);
+
+    assert!(second_view.deallocate(block));
+    assert_eq!(first_view.allocated_blocks(), 0);
+    assert_eq!(first_view.free_blocks(), 1);
+}
+
+#[test]
+fn cloned_block_pool_coordinates_concurrent_allocation_and_release() {
+    const WORKERS: usize = 8;
+    const ITERATIONS: usize = 64;
+
+    let pool = BlockPool::new(WORKERS, 2, 2).expect("pool shape is valid");
+    let active_blocks = Arc::new(Mutex::new(HashSet::<BlockId>::new()));
+    let start = Arc::new(Barrier::new(WORKERS));
+    let mut handles = Vec::with_capacity(WORKERS);
+
+    for _ in 0..WORKERS {
+        let pool = pool.clone();
+        let active_blocks = Arc::clone(&active_blocks);
+        let start = Arc::clone(&start);
+        handles.push(thread::spawn(move || {
+            start.wait();
+            for _ in 0..ITERATIONS {
+                let block = loop {
+                    if let Some(block) = pool.allocate() {
+                        break block;
+                    }
+                    thread::yield_now();
+                };
+                {
+                    let mut active_blocks = active_blocks
+                        .lock()
+                        .expect("active block set lock is not poisoned");
+                    assert!(
+                        active_blocks.insert(block),
+                        "block {block} was allocated concurrently more than once"
+                    );
+                }
+
+                thread::sleep(Duration::from_micros(50));
+
+                {
+                    let mut active_blocks = active_blocks
+                        .lock()
+                        .expect("active block set lock is not poisoned");
+                    assert!(
+                        active_blocks.remove(&block),
+                        "block {block} was missing from active set before release"
+                    );
+                }
+                assert!(pool.deallocate(block), "allocated block should release");
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("allocation worker should not panic");
+    }
+
+    assert_eq!(pool.allocated_blocks(), 0);
+    assert_eq!(pool.free_blocks(), WORKERS);
+}
+
+#[test]
 fn block_pool_maintains_lru_access_order_for_allocated_blocks() {
-    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
     let first = pool.allocate().expect("first block is available");
     let second = pool.allocate().expect("second block is available");
     let third = pool.allocate().expect("third block is available");
@@ -244,7 +324,7 @@ fn block_pool_maintains_lru_access_order_for_allocated_blocks() {
 
 #[test]
 fn block_pool_creates_sessions_and_release_returns_owned_blocks() {
-    let mut pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
     let first_session = pool.create_session().expect("session id is available");
     let second_session = pool.create_session().expect("session id is available");
 
@@ -417,7 +497,7 @@ fn block_pool_prefix_attach_misses_when_intermediate_block_is_reused_with_differ
 
 #[test]
 fn releasing_session_decrements_owned_shared_block_refcounts_once() {
-    let mut pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
     let owner = pool.create_session().expect("session id is available");
     let reader = pool.create_session().expect("session id is available");
     let shared_block = pool
@@ -545,7 +625,7 @@ fn copy_on_write_session_block_clones_shared_prefix_on_first_write() {
 
 #[test]
 fn releasing_last_session_after_cow_returns_all_blocks_to_free_list() {
-    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
     let reader = pool.create_session().expect("session id is available");
     let writer = pool.create_session().expect("session id is available");
     let shared_block = pool.allocate_for_session(reader).expect("reader allocates");
@@ -578,7 +658,7 @@ fn releasing_last_session_after_cow_returns_all_blocks_to_free_list() {
 
 #[test]
 fn full_pool_evicts_least_recently_used_session_before_allocating() {
-    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
     let cold = pool.create_session().expect("session id is available");
     let hot = pool.create_session().expect("session id is available");
     let cold_block = pool.allocate_for_session(cold).expect("cold allocates");
@@ -727,7 +807,7 @@ fn block_pool_metrics_track_sharing_cow_eviction_and_utilization() {
 
 #[test]
 fn block_pool_metrics_reset_when_pool_is_recreated() {
-    let mut pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(1, 2, 2).expect("pool shape is valid");
     let session = pool.create_session().expect("session id is available");
 
     pool.allocate_for_session(session)
@@ -751,7 +831,7 @@ fn block_pool_metrics_reset_when_pool_is_recreated() {
 
 #[test]
 fn block_pool_admin_snapshot_includes_session_block_tables_and_refcounts() {
-    let mut pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
+    let pool = BlockPool::new(2, 2, 2).expect("pool shape is valid");
     let owner = pool
         .create_session()
         .expect("owner session id is available");

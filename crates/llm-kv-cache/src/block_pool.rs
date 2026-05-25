@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 
 use crate::{BlockId, CacheBlock, CacheBlockHash, KvCacheError, SessionBlockTable, SessionId};
 use serde::Serialize;
@@ -27,8 +30,13 @@ struct PrefixBlockSnapshot {
     content_hash: CacheBlockHash,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct BlockPool {
+    inner: Arc<Mutex<BlockPoolInner>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BlockPoolInner {
     blocks: HashMap<BlockId, CacheBlock>,
     free_list: Vec<BlockId>,
     prefixes: HashMap<CacheBlockHash, PrefixEntry>,
@@ -144,6 +152,192 @@ pub struct CacheBlockSnapshot {
 }
 
 impl BlockPool {
+    pub fn new(
+        block_count: usize,
+        block_capacity_tokens: usize,
+        vector_len: usize,
+    ) -> Result<Self, KvCacheError> {
+        Ok(Self {
+            inner: Arc::new(Mutex::new(BlockPoolInner::new(
+                block_count,
+                block_capacity_tokens,
+                vector_len,
+            )?)),
+        })
+    }
+
+    pub fn total_blocks(&self) -> usize {
+        self.lock_inner().total_blocks()
+    }
+
+    pub fn free_blocks(&self) -> usize {
+        self.lock_inner().free_blocks()
+    }
+
+    pub fn allocated_blocks(&self) -> usize {
+        self.lock_inner().allocated_blocks()
+    }
+
+    pub fn metrics_snapshot(&self) -> PagedKvCacheMetricsSnapshot {
+        self.lock_inner().metrics_snapshot()
+    }
+
+    pub fn snapshot(&self) -> BlockPoolSnapshot {
+        self.lock_inner().snapshot()
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.lock_inner().session_count()
+    }
+
+    pub fn session(&self, session_id: SessionId) -> Option<SessionBlockTable> {
+        self.lock_inner().session(session_id).cloned()
+    }
+
+    pub fn create_session(&self) -> Result<SessionId, KvCacheError> {
+        self.lock_inner().create_session()
+    }
+
+    pub fn release_session(&self, session_id: SessionId) -> bool {
+        self.lock_inner().release_session(session_id)
+    }
+
+    pub fn allocate_for_session(&self, session_id: SessionId) -> Option<BlockId> {
+        self.lock_inner().allocate_for_session(session_id)
+    }
+
+    pub fn append_block_to_session(
+        &self,
+        session_id: SessionId,
+        block_id: BlockId,
+    ) -> Result<(), KvCacheError> {
+        self.lock_inner()
+            .append_block_to_session(session_id, block_id)
+    }
+
+    pub fn read_session_block(&self, session_id: SessionId, index: usize) -> Option<BlockId> {
+        self.lock_inner().read_session_block(session_id, index)
+    }
+
+    pub fn register_prefix(&self, prefix_hash: CacheBlockHash, block_ids: Vec<BlockId>) {
+        self.lock_inner().register_prefix(prefix_hash, block_ids);
+    }
+
+    pub fn lookup_prefix(&self, prefix_hash: &CacheBlockHash) -> Option<Vec<BlockId>> {
+        self.lock_inner().lookup_prefix(prefix_hash)
+    }
+
+    pub fn attach_prefix_to_session(
+        &self,
+        session_id: SessionId,
+        prefix_hash: &CacheBlockHash,
+    ) -> Option<Vec<BlockId>> {
+        self.lock_inner()
+            .attach_prefix_to_session(session_id, prefix_hash)
+    }
+
+    pub fn copy_on_write_session_block(
+        &self,
+        session_id: SessionId,
+        index: usize,
+    ) -> Result<BlockId, KvCacheError> {
+        self.lock_inner()
+            .copy_on_write_session_block(session_id, index)
+    }
+
+    pub fn lru_session(&self) -> Option<SessionId> {
+        self.lock_inner().lru_session()
+    }
+
+    pub fn allocate(&self) -> Option<BlockId> {
+        self.lock_inner().allocate()
+    }
+
+    pub fn deallocate(&self, block_id: BlockId) -> bool {
+        self.lock_inner().deallocate(block_id)
+    }
+
+    pub fn retain(&self, block_id: BlockId) -> bool {
+        self.lock_inner().retain(block_id)
+    }
+
+    pub fn release(&self, block_id: BlockId) -> bool {
+        self.lock_inner().release(block_id)
+    }
+
+    pub fn touch(&self, block_id: BlockId) -> Option<()> {
+        self.lock_inner().touch(block_id)
+    }
+
+    pub fn lru_block(&self) -> Option<BlockId> {
+        self.lock_inner().lru_block()
+    }
+
+    pub fn block(&self, block_id: BlockId) -> Option<CacheBlock> {
+        self.lock_inner().block(block_id).cloned()
+    }
+
+    pub fn block_mut(&mut self, block_id: BlockId) -> Option<&mut CacheBlock> {
+        self.unique_inner_mut()?.block_mut(block_id)
+    }
+
+    pub fn with_block_mut<R>(
+        &self,
+        block_id: BlockId,
+        f: impl FnOnce(&mut CacheBlock) -> R,
+    ) -> Option<R> {
+        let mut inner = self.lock_inner();
+        let block = inner.block_mut(block_id)?;
+        Some(f(block))
+    }
+
+    pub fn with_block<R>(&self, block_id: BlockId, f: impl FnOnce(&CacheBlock) -> R) -> Option<R> {
+        let inner = self.lock_inner();
+        let block = inner.block(block_id)?;
+        Some(f(block))
+    }
+
+    fn lock_inner(&self) -> MutexGuard<'_, BlockPoolInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => recover_poisoned_lock(poisoned),
+        }
+    }
+
+    fn unique_inner_mut(&mut self) -> Option<&mut BlockPoolInner> {
+        let inner = Arc::get_mut(&mut self.inner)?;
+        Some(match inner.get_mut() {
+            Ok(inner) => inner,
+            Err(poisoned) => recover_poisoned_lock(poisoned),
+        })
+    }
+}
+
+impl PartialEq for BlockPool {
+    fn eq(&self, other: &Self) -> bool {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return true;
+        }
+        let self_addr = Arc::as_ptr(&self.inner) as usize;
+        let other_addr = Arc::as_ptr(&other.inner) as usize;
+        if self_addr < other_addr {
+            let self_inner = self.lock_inner();
+            let other_inner = other.lock_inner();
+            *self_inner == *other_inner
+        } else {
+            let other_inner = other.lock_inner();
+            let self_inner = self.lock_inner();
+            *self_inner == *other_inner
+        }
+    }
+}
+
+fn recover_poisoned_lock<T>(poisoned: PoisonError<T>) -> T {
+    tracing::warn!("block pool mutex poisoned; recovering allocator state");
+    poisoned.into_inner()
+}
+
+impl BlockPoolInner {
     pub fn new(
         block_count: usize,
         block_capacity_tokens: usize,
