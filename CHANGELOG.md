@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.5](https://github.com/michaelasper/kir-ai/compare/v1.57.4...v1.57.5) (2026-05-25)
+
+### Performance Improvements
+
+* **COR-517:** pool Metal transient buffers ([99b93e5](https://github.com/michaelasper/kir-ai/commit/99b93e5976e97337bd990ca914533b8b00b286b3))
+
 ## [1.57.4](https://github.com/michaelasper/kir-ai/compare/v1.57.3...v1.57.4) (2026-05-25)
 
 ### Performance Improvements
