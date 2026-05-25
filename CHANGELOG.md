@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.17](https://github.com/michaelasper/kir-ai/compare/v1.57.16...v1.57.17) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-449:** validate startup config and honor rust log ([1720cd0](https://github.com/michaelasper/kir-ai/commit/1720cd0cbbd5b8537aeae74993fc8d76163280e8))
+
 ## [1.57.16](https://github.com/michaelasper/kir-ai/compare/v1.57.15...v1.57.16) (2026-05-25)
 
 ### Bug Fixes
