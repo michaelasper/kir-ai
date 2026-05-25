@@ -64,6 +64,14 @@ fn serve_help_prints_without_backend_validation() {
         "stdout should make low native prefill chunks an explicit probe-only override: {stdout}"
     );
     assert!(
+        stdout.contains("--log-level <level>"),
+        "serve help should document startup log-level override: {stdout}"
+    );
+    assert!(
+        stdout.contains("RUST_LOG"),
+        "serve help should document RUST_LOG support: {stdout}"
+    );
+    assert!(
         stdout.contains("--native-prefix-cache-bytes <bytes>"),
         "serve help should document native prefix cache sizing: {stdout}"
     );
@@ -115,6 +123,135 @@ fn serve_help_prints_without_backend_validation() {
     assert!(
         !stderr.contains("requires --snapshot"),
         "stderr unexpectedly validated backend: {stderr}"
+    );
+}
+
+#[test]
+fn serve_rejects_invalid_rust_log_before_backend_validation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .env("RUST_LOG", "[invalid")
+        .args(["serve", "--addr", "127.0.0.1:0"])
+        .output()
+        .expect("run serve with invalid RUST_LOG");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("RUST_LOG"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "RUST_LOG validation should happen before backend validation: {stderr}"
+    );
+}
+
+#[test]
+fn serve_log_level_flag_takes_precedence_over_rust_log() {
+    let output = Command::new(env!("CARGO_BIN_EXE_llm-engine"))
+        .env("RUST_LOG", "info")
+        .args([
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--log-level",
+            "definitely-not-a-level",
+        ])
+        .output()
+        .expect("run serve with invalid --log-level");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--log-level"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "--log-level validation should happen before backend validation: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn serve_rejects_startup_numeric_config_outside_supported_ranges() {
+    assert_invalid_serve_config(
+        &["--max-concurrent-requests", "0"],
+        "--max-concurrent-requests",
+    );
+    assert_invalid_serve_config(
+        &["--max-concurrent-requests", "257"],
+        "--max-concurrent-requests",
+    );
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let snapshot = temp.path().join("raw-native");
+    tokio::fs::create_dir_all(&snapshot)
+        .await
+        .expect("snapshot dir");
+    let snapshot = snapshot.to_string_lossy().into_owned();
+    assert_invalid_serve_config(
+        &[
+            "--snapshot",
+            snapshot.as_str(),
+            "--loader",
+            "native-metal",
+            "--family",
+            "qwen",
+            "--max-new-tokens",
+            "0",
+        ],
+        "--max-new-tokens",
+    );
+    assert_invalid_serve_config(
+        &[
+            "--snapshot",
+            snapshot.as_str(),
+            "--loader",
+            "native-metal",
+            "--family",
+            "qwen",
+            "--max-new-tokens",
+            "65537",
+        ],
+        "--max-new-tokens",
+    );
+    assert_invalid_serve_config(
+        &[
+            "--snapshot",
+            snapshot.as_str(),
+            "--loader",
+            "native-metal",
+            "--family",
+            "qwen",
+            "--max-prefill-tokens",
+            "0",
+        ],
+        "--max-prefill-tokens",
+    );
+    assert_invalid_serve_config(
+        &[
+            "--snapshot",
+            snapshot.as_str(),
+            "--loader",
+            "native-metal",
+            "--family",
+            "qwen",
+            "--max-prefill-tokens",
+            "262145",
+        ],
+        "--max-prefill-tokens",
+    );
+}
+
+fn assert_invalid_serve_config(extra_args: &[&str], expected_flag: &str) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_llm-engine"));
+    command.args(["serve", "--addr", "127.0.0.1:0"]);
+    command.args(extra_args);
+    let output = command.output().expect("run serve with invalid config");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(expected_flag),
+        "stderr should mention {expected_flag}: {stderr}"
+    );
+    assert!(
+        !stderr.contains("requires --snapshot"),
+        "startup config validation should happen before backend validation: {stderr}"
     );
 }
 

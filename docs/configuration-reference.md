@@ -10,6 +10,7 @@ generation options.
 | Variable | Used By | Description |
 | --- | --- | --- |
 | `HF_TOKEN` | `serve`, `model plan`, `model pull` | Hugging Face bearer token for gated or private repositories. Anonymous access is used when unset. When any command uses a configured Hub endpoint with this token, the endpoint must be HTTPS. |
+| `RUST_LOG` | `serve`, `model`, `bench` | Tracing filter directives for process logs. Defaults to `info` when unset; `serve --log-level` takes precedence when provided. |
 | `LLM_HUB_ENDPOINT` | `serve`, `model plan`, `model pull` | Hugging Face-compatible Hub endpoint for admin model plan/pull routes and CLI model acquisition when `--hub-endpoint` is not passed. Tokenless local HTTP mirrors are allowed; endpoints used with `HF_TOKEN` must be HTTPS. |
 | `LLM_MODEL_HOME` | `model list`, `model pull` | Model store root when `--model-home` is not passed. Defaults to `.llm-models`. |
 | `LLM_ENGINE_SNAPSHOT` | `mise run run-inference` | Raw snapshot path to serve. Mutually exclusive with `LLM_ENGINE_SNAPSHOT_ALIAS`. |
@@ -61,8 +62,10 @@ Mise tasks:
 | `--family` | `qwen`, `deep_seek`, `gemma`, or `llama` | manifest metadata or native `config.json` detection | Supplies model-family metadata for raw snapshots. Raw native snapshots infer Qwen or Gemma from `config.json` when omitted. Raw MLX snapshots must set this explicitly. Conflicting manifest metadata is rejected. |
 | `--model-id` | string | `local-qwen36` | Served model id for snapshot mode. |
 | `--hub-endpoint` | URL | `https://huggingface.co` | Hugging Face-compatible Hub endpoint for serve/admin and CLI model plan/pull routes. `LLM_HUB_ENDPOINT` is used when omitted. If `HF_TOKEN` is set, this endpoint must be HTTPS; omit `HF_TOKEN` for tokenless local HTTP mirrors. |
-| `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Clamped to at least `1`. |
-| `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Clamped to at least `1`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
+| `--max-new-tokens` | `u32` | `256` | Native backend generation cap. Startup rejects values outside `1..=65536`. |
+| `--max-prefill-tokens` | `usize` | `2048` | Native prefill chunk size. Long-context native serving depends on keeping this large enough to avoid thousands of tiny prefill steps. Startup rejects values outside `1..=262144`; context retention is allocated from prompt length plus generation budget and rejects requests beyond the model context limit. |
+| `--max-concurrent-requests` | `usize` | `4` | Maximum in-flight inference requests admitted by the scheduler. Startup rejects values outside `1..=256`. |
+| `--log-level` | `trace`, `debug`, `info`, `warn`, `error`, or `off` | `RUST_LOG` or `info` | Serve-specific log-level override. Takes precedence over `RUST_LOG`. |
 | `--max-public-inference-requests-per-second` | `usize` | `60` | Per-client sliding-window rate limit for `/v1/chat/completions` and `/v1/completions`. Values below `1` are rejected. |
 | `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Chat requests use `/v1/chat/completions` with lossless OpenAI message history; legacy text completions use a completions-capable sidecar endpoint when the selected family exposes one. Qwen, DeepSeek, and Llama use `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-prefix-cache-bytes` | `u64` | `536870912` | Per-backend Qwen/Gemma prefix-cache budget. Set `0` to reject stores while generation continues without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when omitted. |

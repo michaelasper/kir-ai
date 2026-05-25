@@ -179,14 +179,14 @@ so the sidecar cache can match common prefixes when enabled.
 ## Choose Generation Bounds
 
 `--max-new-tokens` caps native generation per request. It defaults to `256` and
-is clamped to at least `1`.
+startup rejects values outside `1..=65536`.
 
 `--max-prefill-tokens` controls the native prefill chunk size. It defaults to
-`2048` and is clamped to at least `1`. Long-context native serving depends on a
-large value here because prompt prefill runs sequentially by chunk. Native text
-backends retain the accepted prompt context by sizing full-attention caches from
-prompt length plus generation budget, and reject requests that exceed the model
-context limit.
+`2048` and startup rejects values outside `1..=262144`. Long-context native
+serving depends on a large value here because prompt prefill runs sequentially
+by chunk. Native text backends retain the accepted prompt context by sizing
+full-attention caches from prompt length plus generation budget, and reject
+requests that exceed the model context limit.
 
 `--native-prefix-cache-bytes` controls the per-backend Qwen/Gemma prefix-cache
 budget. It defaults to `536870912` bytes. Set `0` to reject prefix-cache stores

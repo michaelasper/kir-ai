@@ -13,6 +13,7 @@ use llm_engine::{
 use llm_engine::{MlxBackendOptions, MlxTimeouts, MlxToolParserMode};
 use llm_hub::{ModelStore, SnapshotReadiness};
 use std::{future::Future, net::SocketAddr};
+use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "bench")]
 mod bench_compat;
@@ -20,20 +21,26 @@ mod bench_compat;
 const PROTOCOL_TEST_BACKEND_FLAG: &str = "--protocol-test-backend";
 const DETERMINISTIC_TEST_BACKEND_FLAG: &str = "--deterministic-test-backend";
 const PROTOCOL_TEST_BACKEND_ACK_FLAG: &str = "--i-understand-this-is-not-real-inference";
+const DEFAULT_LOG_FILTER: &str = "info";
+const MAX_INFERENCE_CONCURRENCY_LIMIT: usize = 256;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+const MAX_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 65_536;
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+const MAX_NATIVE_TEXT_MAX_PREFILL_TOKENS: usize = 262_144;
 #[cfg(feature = "test-utils")]
 const PROTOCOL_TEST_BACKEND_WARNING: &str =
     "WARNING: SERVING WITH HARDCODED PROTOCOL TEST BACKEND - NOT REAL INFERENCE";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    let args = std::env::args().collect::<Vec<_>>();
+    let command = args.get(1).map(String::as_str).unwrap_or("serve");
+    let command_args = args.get(2..).unwrap_or(&[]);
+    init_tracing(command, command_args)?;
     ignore_sigpipe();
-    let command = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "serve".to_owned());
-    match command.as_str() {
+    match command {
         "serve" => {
-            let serve_args = std::env::args().skip(2).collect::<Vec<_>>();
+            let serve_args = command_args.to_vec();
             if has_flag(&serve_args, "--help") || has_flag(&serve_args, "-h") {
                 print_serve_help();
                 return Ok(());
@@ -48,10 +55,7 @@ async fn main() -> anyhow::Result<()> {
             let addr = flag_value(&serve_args, "--addr")
                 .unwrap_or("127.0.0.1:3000")
                 .parse::<SocketAddr>()?;
-            let max_concurrent_requests = flag_value(&serve_args, "--max-concurrent-requests")
-                .map(str::parse::<usize>)
-                .transpose()?
-                .unwrap_or(DEFAULT_INFERENCE_CONCURRENCY_LIMIT);
+            let max_concurrent_requests = max_concurrent_requests_from_args(&serve_args)?;
             let configured_admin_token = flag_value(&serve_args, "--admin-token")
                 .map(str::to_owned)
                 .or_else(|| std::env::var("LLM_ENGINE_ADMIN_TOKEN").ok());
@@ -115,15 +119,9 @@ async fn main() -> anyhow::Result<()> {
                     .or(snapshot_alias)
                     .unwrap_or(DEFAULT_MODEL_ID);
                 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-                let max_new_tokens = flag_value(&serve_args, "--max-new-tokens")
-                    .map(str::parse::<u32>)
-                    .transpose()?
-                    .unwrap_or(DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS);
+                let max_new_tokens = native_text_max_new_tokens_from_args(&serve_args)?;
                 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
-                let max_prefill_tokens = flag_value(&serve_args, "--max-prefill-tokens")
-                    .map(str::parse::<usize>)
-                    .transpose()?
-                    .unwrap_or(DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS);
+                let max_prefill_tokens = native_text_max_prefill_tokens_from_args(&serve_args)?;
                 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
                 let native_metal_weight_cache_bytes =
                     flag_value(&serve_args, "--native-metal-weight-cache-bytes")
@@ -291,15 +289,60 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         #[cfg(feature = "bench")]
-        "bench" => bench_compat::run(std::env::args().skip(2).collect())?,
+        "bench" => bench_compat::run(command_args.to_vec())?,
         #[cfg(not(feature = "bench"))]
         "bench" => anyhow::bail!(
             "the bench command requires the llm-engine `bench` feature; rebuild with --features bench"
         ),
-        "model" => cli::model::run(std::env::args().skip(2).collect()).await?,
+        "model" => cli::model::run(command_args.to_vec()).await?,
         other => anyhow::bail!("unknown command `{other}`"),
     }
     Ok(())
+}
+
+fn init_tracing(command: &str, args: &[String]) -> anyhow::Result<()> {
+    let filter = tracing_env_filter(command, args, std::env::var("RUST_LOG").ok().as_deref())?;
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    Ok(())
+}
+
+fn tracing_env_filter(
+    command: &str,
+    args: &[String],
+    rust_log: Option<&str>,
+) -> anyhow::Result<EnvFilter> {
+    let directive = tracing_filter_directive(command, args, rust_log)?;
+    EnvFilter::try_new(&directive)
+        .map_err(|err| anyhow::anyhow!("invalid tracing filter `{directive}`: {err}"))
+}
+
+fn tracing_filter_directive(
+    command: &str,
+    args: &[String],
+    rust_log: Option<&str>,
+) -> anyhow::Result<String> {
+    if command == "serve"
+        && let Some(level) = flag_value(args, "--log-level")
+    {
+        validate_log_level(level)?;
+        return Ok(level.to_owned());
+    }
+    let rust_log = rust_log.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(directive) = rust_log {
+        EnvFilter::try_new(directive)
+            .map_err(|err| anyhow::anyhow!("invalid RUST_LOG `{directive}`: {err}"))?;
+        return Ok(directive.to_owned());
+    }
+    Ok(DEFAULT_LOG_FILTER.to_owned())
+}
+
+fn validate_log_level(level: &str) -> anyhow::Result<()> {
+    match level {
+        "trace" | "debug" | "info" | "warn" | "error" | "off" => Ok(()),
+        other => {
+            anyhow::bail!("--log-level must be trace|debug|info|warn|error|off, got `{other}`")
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -396,6 +439,7 @@ Options:
   --max-new-tokens <n>                       Native text maximum generated tokens [default: 256]
   --max-prefill-tokens <n>                   Native text prefill chunk size [default: 2048; lower only for memory-constrained correctness probes]
   --max-concurrent-requests <n>              Maximum concurrent requests [default: 4]
+  --log-level <level>                        Startup log level override for serve; one of trace|debug|info|warn|error|off [default: RUST_LOG or info]
   --max-json-body-bytes <bytes>              Maximum JSON request body bytes [default: 16777216]
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
@@ -505,6 +549,38 @@ fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
     })
 }
 
+fn max_concurrent_requests_from_args(args: &[String]) -> anyhow::Result<usize> {
+    parse_bounded_usize_flag(
+        args,
+        "--max-concurrent-requests",
+        DEFAULT_INFERENCE_CONCURRENCY_LIMIT,
+        1,
+        MAX_INFERENCE_CONCURRENCY_LIMIT,
+    )
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn native_text_max_new_tokens_from_args(args: &[String]) -> anyhow::Result<u32> {
+    parse_bounded_u32_flag(
+        args,
+        "--max-new-tokens",
+        DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS,
+        1,
+        MAX_NATIVE_TEXT_MAX_NEW_TOKENS,
+    )
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn native_text_max_prefill_tokens_from_args(args: &[String]) -> anyhow::Result<usize> {
+    parse_bounded_usize_flag(
+        args,
+        "--max-prefill-tokens",
+        DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS,
+        1,
+        MAX_NATIVE_TEXT_MAX_PREFILL_TOKENS,
+    )
+}
+
 fn public_inference_rate_limit_from_args(
     args: &[String],
 ) -> anyhow::Result<PublicInferenceRateLimit> {
@@ -517,6 +593,51 @@ fn public_inference_rate_limit_from_args(
         )?,
         window: defaults.window,
     })
+}
+
+fn parse_bounded_usize_flag(
+    args: &[String],
+    flag: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> anyhow::Result<usize> {
+    let Some(value) = flag_value(args, flag) else {
+        return Ok(default);
+    };
+    let parsed = value.parse::<usize>().map_err(|err| {
+        anyhow::anyhow!("{flag} must be an integer between {min} and {max}: {err}")
+    })?;
+    ensure_inclusive_range(flag, parsed, min, max)?;
+    Ok(parsed)
+}
+
+#[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+fn parse_bounded_u32_flag(
+    args: &[String],
+    flag: &str,
+    default: u32,
+    min: u32,
+    max: u32,
+) -> anyhow::Result<u32> {
+    let Some(value) = flag_value(args, flag) else {
+        return Ok(default);
+    };
+    let parsed = value.parse::<u32>().map_err(|err| {
+        anyhow::anyhow!("{flag} must be an integer between {min} and {max}: {err}")
+    })?;
+    ensure_inclusive_range(flag, parsed, min, max)?;
+    Ok(parsed)
+}
+
+fn ensure_inclusive_range<T>(name: &str, value: T, min: T, max: T) -> anyhow::Result<()>
+where
+    T: Copy + Ord + std::fmt::Display,
+{
+    if value < min || value > max {
+        anyhow::bail!("{name} must be between {min} and {max}, got {value}");
+    }
+    Ok(())
 }
 
 fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> anyhow::Result<usize> {
@@ -759,6 +880,136 @@ mod serve_arg_tests {
             err.to_string()
                 .contains("non-loopback address requires --admin-token"),
             "error: {err}"
+        );
+    }
+
+    #[test]
+    fn tracing_filter_defaults_to_info_and_honors_rust_log() {
+        assert_eq!(
+            tracing_filter_directive("serve", &args(&[]), None).expect("default filter"),
+            "info"
+        );
+        assert_eq!(
+            tracing_filter_directive("serve", &args(&[]), Some("llm_engine=debug"))
+                .expect("RUST_LOG filter"),
+            "llm_engine=debug"
+        );
+    }
+
+    #[test]
+    fn serve_log_level_overrides_rust_log() {
+        assert_eq!(
+            tracing_filter_directive(
+                "serve",
+                &args(&["--log-level", "trace"]),
+                Some("llm_engine=info"),
+            )
+            .expect("CLI log level wins"),
+            "trace"
+        );
+        assert_eq!(
+            tracing_filter_directive("serve", &args(&["--log-level", "info"]), Some("[invalid"))
+                .expect("CLI log level overrides invalid RUST_LOG"),
+            "info"
+        );
+
+        let err = tracing_filter_directive(
+            "serve",
+            &args(&["--log-level", "verbose"]),
+            Some("llm_engine=info"),
+        )
+        .expect_err("invalid CLI log level fails before RUST_LOG");
+        assert!(err.to_string().contains("--log-level"), "error: {err}");
+    }
+
+    #[test]
+    fn rust_log_filter_rejects_invalid_directives() {
+        let err = tracing_filter_directive("serve", &args(&[]), Some("[invalid"))
+            .expect_err("invalid RUST_LOG fails");
+
+        assert!(err.to_string().contains("RUST_LOG"), "error: {err}");
+    }
+
+    #[test]
+    fn max_concurrent_requests_rejects_values_outside_startup_range() {
+        assert_eq!(
+            max_concurrent_requests_from_args(&args(&[])).expect("default concurrency"),
+            DEFAULT_INFERENCE_CONCURRENCY_LIMIT
+        );
+        assert_eq!(
+            max_concurrent_requests_from_args(&args(&["--max-concurrent-requests", "256"]))
+                .expect("upper bound accepted"),
+            256
+        );
+
+        let zero = max_concurrent_requests_from_args(&args(&["--max-concurrent-requests", "0"]))
+            .expect_err("zero concurrency fails");
+        assert!(
+            zero.to_string().contains("--max-concurrent-requests"),
+            "error: {zero}"
+        );
+        let too_high =
+            max_concurrent_requests_from_args(&args(&["--max-concurrent-requests", "257"]))
+                .expect_err("high concurrency fails");
+        assert!(
+            too_high.to_string().contains("--max-concurrent-requests"),
+            "error: {too_high}"
+        );
+    }
+
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+    #[test]
+    fn native_text_generation_limits_reject_values_outside_startup_range() {
+        assert_eq!(
+            native_text_max_new_tokens_from_args(&args(&[])).expect("default max new tokens"),
+            DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS
+        );
+        assert_eq!(
+            native_text_max_new_tokens_from_args(&args(&["--max-new-tokens", "65536"]))
+                .expect("max new tokens upper bound"),
+            65_536
+        );
+
+        let zero = native_text_max_new_tokens_from_args(&args(&["--max-new-tokens", "0"]))
+            .expect_err("zero max new tokens fails");
+        assert!(
+            zero.to_string().contains("--max-new-tokens"),
+            "error: {zero}"
+        );
+        let too_high = native_text_max_new_tokens_from_args(&args(&["--max-new-tokens", "65537"]))
+            .expect_err("high max new tokens fails");
+        assert!(
+            too_high.to_string().contains("--max-new-tokens"),
+            "error: {too_high}"
+        );
+    }
+
+    #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
+    #[test]
+    fn native_text_prefill_limits_reject_values_outside_startup_range() {
+        assert_eq!(
+            native_text_max_prefill_tokens_from_args(&args(&[]))
+                .expect("default max prefill tokens"),
+            DEFAULT_NATIVE_TEXT_MAX_PREFILL_TOKENS
+        );
+        assert_eq!(
+            native_text_max_prefill_tokens_from_args(&args(&["--max-prefill-tokens", "262144"]))
+                .expect("prefill upper bound"),
+            262_144
+        );
+
+        let zero = native_text_max_prefill_tokens_from_args(&args(&["--max-prefill-tokens", "0"]))
+            .expect_err("zero prefill tokens fails");
+        assert!(
+            zero.to_string().contains("--max-prefill-tokens"),
+            "error: {zero}"
+        );
+        let too_high =
+            native_text_max_prefill_tokens_from_args(&args(&["--max-prefill-tokens", "262145"]))
+                .expect_err("high prefill tokens fails");
+        assert!(
+            too_high.to_string().contains("--max-prefill-tokens"),
+            "error: {too_high}"
         );
     }
 
