@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.0](https://github.com/michaelasper/kir-ai/compare/v1.56.8...v1.57.0) (2026-05-25)
+
+### Features
+
+* **COR-444:** write kv appends into metal stage buffers ([02b4be1](https://github.com/michaelasper/kir-ai/commit/02b4be1446bbfb0848e380dc3e3336d33939c0a4))
+
 ## [1.56.8](https://github.com/michaelasper/kir-ai/compare/v1.56.7...v1.56.8) (2026-05-25)
 
 ### Bug Fixes
