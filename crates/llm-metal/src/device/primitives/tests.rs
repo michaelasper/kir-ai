@@ -1,5 +1,6 @@
 use super::super::shaders::METAL_SOURCE;
-use super::MetalDevice;
+use super::{MetalDevice, can_return_pooled_input_after_select_result};
+use crate::device::MetalError;
 
 fn softmax_shader_source() -> &'static str {
     let start = METAL_SOURCE
@@ -450,6 +451,20 @@ async fn select_head_rows_f32_reuses_transient_scratch_buffers() {
         1
     );
     assert_eq!(output, [2.0, 3.0, 20.0, 30.0]);
+}
+
+#[test]
+fn select_head_rows_f32_does_not_reuse_pooled_input_after_timeout() {
+    let result = Err(MetalError::Execution(
+        "select_head_rows_f32 command buffer timed out after 1ms".to_owned(),
+    ));
+
+    assert!(!can_return_pooled_input_after_select_result(&result));
+}
+
+#[test]
+fn select_head_rows_f32_reuses_pooled_input_after_success() {
+    assert!(can_return_pooled_input_after_select_result(&Ok(())));
 }
 
 #[tokio::test]

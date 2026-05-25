@@ -6,6 +6,12 @@ use super::{
 use metal::MTLSize;
 use std::{ffi::c_void, sync::Arc};
 
+fn can_return_pooled_input_after_select_result(result: &Result<(), MetalError>) -> bool {
+    // A timeout is reported before command completion, so pooled input buffers
+    // supplied to the command are only recycled after known-successful results.
+    result.is_ok()
+}
+
 impl MetalDevice {
     pub async fn add_f32(
         &self,
@@ -1190,9 +1196,11 @@ impl MetalDevice {
                 output,
             )
             .await;
-        let F32Buffer { buffer, .. } = values_buffer;
-        if let Some(buffer) = buffer {
-            self.return_scratch_buffer(values_byte_len as u64, buffer);
+        if can_return_pooled_input_after_select_result(&result) {
+            let F32Buffer { buffer, .. } = values_buffer;
+            if let Some(buffer) = buffer {
+                self.return_scratch_buffer(values_byte_len as u64, buffer);
+            }
         }
         result
     }
