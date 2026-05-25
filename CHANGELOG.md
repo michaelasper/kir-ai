@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.3](https://github.com/michaelasper/kir-ai/compare/v1.57.2...v1.57.3) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-497:** harden bench probes and disk cache tests ([d7da284](https://github.com/michaelasper/kir-ai/commit/d7da28444d5794cef87bc1c997dd4db89f1838c2))
+
 ## [1.57.2](https://github.com/michaelasper/kir-ai/compare/v1.57.1...v1.57.2) (2026-05-25)
 
 ### Bug Fixes
