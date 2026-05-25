@@ -116,7 +116,41 @@ async fn public_inference_rate_limit_rejects_fast_repeated_invalid_chat_requests
 }
 
 #[tokio::test]
-async fn public_inference_rate_limit_uses_authorization_before_spoofable_forwarding_headers() {
+async fn public_inference_rate_limit_uses_socket_peer_when_authorization_rotates() {
+    let app = router_with_public_inference_rate_limit(1);
+
+    let first = app
+        .clone()
+        .oneshot(with_peer_addr(
+            with_header(
+                malformed_chat_request(),
+                "authorization",
+                "Bearer rotating-client-a",
+            ),
+            "198.51.100.10:5000",
+        ))
+        .await
+        .expect("first response");
+    assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+
+    let second = app
+        .oneshot(with_peer_addr(
+            with_header(
+                malformed_chat_request(),
+                "authorization",
+                "Bearer rotating-client-b",
+            ),
+            "198.51.100.10:5001",
+        ))
+        .await
+        .expect("second response");
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_json(second.into_body()).await;
+    assert_eq!(body["error"]["code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn public_inference_rate_limit_ignores_client_controlled_headers_without_peer() {
     let app = router_with_public_inference_rate_limit(1);
 
     let first = app
@@ -163,7 +197,9 @@ async fn public_inference_rate_limit_uses_authorization_before_spoofable_forward
         ))
         .await
         .expect("third response");
-    assert_eq!(third.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_json(third.into_body()).await;
+    assert_eq!(body["error"]["code"], "rate_limited");
 }
 
 #[tokio::test]
@@ -239,7 +275,7 @@ async fn public_inference_rate_limit_is_per_socket_peer_when_forwarding_headers_
 }
 
 #[tokio::test]
-async fn public_inference_rate_limit_is_per_authorization_header_when_ip_headers_are_absent() {
+async fn public_inference_rate_limit_uses_anonymous_fallback_when_peer_is_absent() {
     let app = router_with_public_inference_rate_limit(1);
 
     let first = app
@@ -254,7 +290,6 @@ async fn public_inference_rate_limit_is_per_authorization_header_when_ip_headers
     assert_eq!(first.status(), StatusCode::BAD_REQUEST);
 
     let second = app
-        .clone()
         .oneshot(with_header(
             malformed_chat_request(),
             "authorization",
@@ -262,18 +297,8 @@ async fn public_inference_rate_limit_is_per_authorization_header_when_ip_headers
         ))
         .await
         .expect("second response");
-    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
-
-    let third = app
-        .oneshot(with_header(
-            malformed_chat_request(),
-            "authorization",
-            "Bearer client-a",
-        ))
-        .await
-        .expect("third response");
-    assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
-    let body = body_json(third.into_body()).await;
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_json(second.into_body()).await;
     assert_eq!(body["error"]["code"], "rate_limited");
 }
 

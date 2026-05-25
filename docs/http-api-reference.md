@@ -731,7 +731,7 @@ Response shape:
 
 ## Error Shape
 
-Public inference endpoints (`/v1/chat/completions` and `/v1/completions`) use a per-client sliding-window rate limit. Client identity is selected from the `Authorization` header when present, otherwise from the socket peer IP address supplied by the server listener. Requests without either signal share an anonymous bucket. `X-Forwarded-For` and `X-Real-IP` are not trusted by default because direct clients can spoof them; deployments behind a reverse proxy should use authentication for stable per-client buckets until an explicit trusted-proxy policy exists. Rate-limited responses return `429`, include `Retry-After`, and do not parse or validate the request body. Public inference responses include `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and `x-ratelimit-reset-requests`.
+Public inference endpoints (`/v1/chat/completions` and `/v1/completions`) use a per-client sliding-window rate limit. Client identity is selected from the socket peer IP address supplied by the server listener. Requests without a socket peer address share an anonymous bucket. Client-controlled headers, including `Authorization`, `X-Forwarded-For`, and `X-Real-IP`, are not trusted by default because public inference does not authenticate them before rate limiting. Trusted proxy or authenticated identity policies are future extensions; reverse-proxy deployments without such a policy share the proxy peer IP bucket. Rate-limited responses return `429`, include `Retry-After`, and do not parse or validate the request body. Public inference responses include `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, and `x-ratelimit-reset-requests`.
 
 All engine errors use this body shape:
 

@@ -253,7 +253,7 @@ async fn enforce_public_inference_rate_limit(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connect_info| connect_info.0);
-    let client_key = public_inference_client_key(request.headers(), peer_addr);
+    let client_key = public_inference_client_key(peer_addr);
     match state.public_inference_rate_limiter.acquire(&client_key) {
         Ok(snapshot) => {
             let mut response = next.run(request).await;
@@ -264,27 +264,12 @@ async fn enforce_public_inference_rate_limit(
     }
 }
 
-fn public_inference_client_key(
-    headers: &HeaderMap,
-    peer_addr: Option<SocketAddr>,
-) -> PublicInferenceClientKey {
-    if let Some(authorization) = trimmed_header_value(headers, "authorization") {
-        return PublicInferenceClientKey::hashed("authorization", authorization);
-    }
-
+fn public_inference_client_key(peer_addr: Option<SocketAddr>) -> PublicInferenceClientKey {
     if let Some(peer_addr) = peer_addr {
         return PublicInferenceClientKey::new(format!("peer:{}", peer_addr.ip()));
     }
 
     PublicInferenceClientKey::anonymous()
-}
-
-fn trimmed_header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn rate_limited_response(rejection: RateLimitRejection) -> Response {

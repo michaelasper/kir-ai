@@ -1,8 +1,7 @@
 use super::config::PublicInferenceRateLimit;
 use crate::sync_ext::FailPoisonedMutex;
 use std::{
-    collections::{HashMap, VecDeque, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
+    collections::{HashMap, VecDeque},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -52,12 +51,6 @@ impl PublicInferenceClientKey {
         } else {
             Self(value)
         }
-    }
-
-    pub(super) fn hashed(prefix: &str, value: &str) -> Self {
-        let mut hasher = DefaultHasher::new();
-        value.hash(&mut hasher);
-        Self(format!("{prefix}:{:016x}", hasher.finish()))
     }
 
     pub(super) fn anonymous() -> Self {
