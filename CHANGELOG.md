@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.16](https://github.com/michaelasper/kir-ai/compare/v1.57.15...v1.57.16) (2026-05-25)
+
+### Bug Fixes
+
+* **COR-404:** prefilter top-p native sampling ([49f5e59](https://github.com/michaelasper/kir-ai/commit/49f5e59a22064aad7ab6e296cc51d8f0a231d46a))
+
 ## [1.57.15](https://github.com/michaelasper/kir-ai/compare/v1.57.14...v1.57.15) (2026-05-25)
 
 ### Bug Fixes
