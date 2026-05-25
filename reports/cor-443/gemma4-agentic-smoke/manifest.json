@@ -1,0 +1,18 @@
+{
+  "family": "gemma",
+  "kir_snapshot_view": "/private/tmp/kir-ai-cor-443/target/cor-443/gemma4-e2b-raw-view",
+  "lane": "gemma4-e2b-mlx-4bit",
+  "model_id": "local-gemma4-e2b",
+  "probes": [
+    "direct_chat_stream",
+    "direct_tool_required_stream",
+    "direct_stable_prefix_8k repeat=0",
+    "direct_stable_prefix_8k repeat=1"
+  ],
+  "quantization": "4bit",
+  "repo_root": "/private/tmp/kir-ai-cor-443",
+  "run_root": "/private/tmp/kir-ai-cor-443/target/cor-443/gemma4-agentic-smoke",
+  "sidecar": "mlx_vlm.server without --prompt-cache-size because installed server rejects that flag",
+  "snapshot": "/Users/michaelasper/source/kir-ai/.llm-models/huggingface/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd.gemma4-e2b-it-mlx-4bit",
+  "started_at": "2026-05-25T06:32:11Z"
+}

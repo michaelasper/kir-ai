@@ -1,0 +1,67 @@
+{
+  "finished_at": "2026-05-25T06:32:17Z",
+  "summary": {
+    "by_model": {
+      "local-gemma4-e2b": {
+        "agentic_quality": {
+          "command_syntax_invalid": 0,
+          "command_syntax_observed": 0,
+          "command_syntax_success_rate": null,
+          "command_syntax_valid": 0,
+          "direct_tool_call_success_rate": 0.0,
+          "direct_tool_expected": 3,
+          "direct_tool_success": 0,
+          "opencode_pass_rate": null,
+          "opencode_process_success": 0,
+          "opencode_process_success_rate": null,
+          "unittest_exit_zero": {
+            "failed": 0,
+            "passed": 0
+          }
+        },
+        "cache_status_counts": {
+          "miss": 1,
+          "unknown": 3
+        },
+        "direct": 4,
+        "failure_modes": {
+          "tool_use": 3
+        },
+        "failures": 3,
+        "first_semantic_delta_ms": {
+          "count": 1,
+          "max": 1934.641,
+          "p50": 1934.641,
+          "p95": 1934.641
+        },
+        "first_tool_delta_ms": {
+          "count": 0
+        },
+        "latency_ms": {
+          "count": 4,
+          "max": 2182.376,
+          "p50": 2000.126,
+          "p95": 2182.376
+        },
+        "model_identity": {
+          "family": "gemma",
+          "lane": "gemma4-e2b-mlx-4bit",
+          "max_context_k": 128,
+          "quantization": "4bit"
+        },
+        "opencode": 0,
+        "opencode_passed": 0,
+        "samples": 4,
+        "speed_quality": {
+          "classification": "fast_but_low_quality",
+          "median_latency_ms": 2000.126,
+          "quality_attempts": 3,
+          "quality_score": 0.0,
+          "throughput_quality_score": 0.0
+        }
+      }
+    },
+    "sample_count": 4,
+    "updated_at": "2026-05-25T06:32:17Z"
+  }
+}

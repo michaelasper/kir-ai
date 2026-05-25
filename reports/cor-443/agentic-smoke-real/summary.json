@@ -1,0 +1,64 @@
+{
+  "by_model": {
+    "local-qwen36-27b-mlx": {
+      "agentic_quality": {
+        "command_syntax_invalid": 0,
+        "command_syntax_observed": 0,
+        "command_syntax_success_rate": null,
+        "command_syntax_valid": 0,
+        "direct_tool_call_success_rate": 1.0,
+        "direct_tool_expected": 2,
+        "direct_tool_success": 2,
+        "opencode_pass_rate": null,
+        "opencode_process_success": 0,
+        "opencode_process_success_rate": null,
+        "unittest_exit_zero": {
+          "failed": 0,
+          "passed": 0
+        }
+      },
+      "cache_status_counts": {
+        "unknown": 3
+      },
+      "direct": 3,
+      "failure_modes": {},
+      "failures": 0,
+      "first_semantic_delta_ms": {
+        "count": 1,
+        "max": 4520.9,
+        "p50": 4520.9,
+        "p95": 4520.9
+      },
+      "first_tool_delta_ms": {
+        "count": 2,
+        "max": 38148.377,
+        "p50": 38148.377,
+        "p95": 38148.377
+      },
+      "latency_ms": {
+        "count": 3,
+        "max": 38207.231,
+        "p50": 6789.473,
+        "p95": 38207.231
+      },
+      "model_identity": {
+        "family": "qwen",
+        "lane": "qwen27-mlx-8bit",
+        "max_context_k": 256,
+        "quantization": "8bit"
+      },
+      "opencode": 0,
+      "opencode_passed": 0,
+      "samples": 3,
+      "speed_quality": {
+        "classification": "quality_viable",
+        "median_latency_ms": 6789.473,
+        "quality_attempts": 2,
+        "quality_score": 1.0,
+        "throughput_quality_score": 0.147287
+      }
+    }
+  },
+  "sample_count": 3,
+  "updated_at": "2026-05-25T06:23:17Z"
+}

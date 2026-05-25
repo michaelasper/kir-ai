@@ -1,0 +1,11 @@
+2026-05-25T06:06:34Z run root: target/cor-443/agentic-smoke-real
+2026-05-25T06:06:34Z selected lanes: qwen27-mlx-8bit, qwen35-mlx-4bit, gemma4-e2b-mlx-4bit
+2026-05-25T06:06:34Z building llm-engine binary
+2026-05-25T06:06:49Z launching sidecar qwen27-mlx-8bit: uvx --from mlx-lm mlx_lm.server --model /Users/michaelasper/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-MLX-8bit/snapshots/78067073d2bf9795e5aabcfcd647bd36cf43c0b5 --host 127.0.0.1 --port 51176 --chat-template-args {\"enable_thinking\":false} --max-tokens 2048 --prompt-cache-size 16 --prefill-step-size 2048
+2026-05-25T06:06:54Z launching kir qwen27-mlx-8bit: /private/tmp/kir-ai-cor-443/target/debug/llm-engine serve --addr 127.0.0.1:51177 --snapshot /Users/michaelasper/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-MLX-8bit/snapshots/78067073d2bf9795e5aabcfcd647bd36cf43c0b5 --loader mlx --family qwen --model-id local-qwen36-27b-mlx --mlx-endpoint http://127.0.0.1:51176/v1 --mlx-read-timeout 600 --mlx-request-timeout 3600 --canonical-tool-schemas --max-concurrent-requests 1
+2026-05-25T06:07:04Z starting direct probe direct_chat_stream repeat=0 model=local-qwen36-27b-mlx
+2026-05-25T06:07:11Z starting direct probe direct_tool_required_stream repeat=0 model=local-qwen36-27b-mlx
+2026-05-25T06:07:17Z starting direct probe direct_stable_prefix_8k repeat=0 model=local-qwen36-27b-mlx
+2026-05-25T06:07:55Z starting direct probe direct_stable_prefix_256k repeat=0 model=local-qwen36-27b-mlx
+2026-05-25T06:23:16Z stopping qwen27-mlx-8bit kir pid=82021
+2026-05-25T06:23:16Z stopping qwen27-mlx-8bit sidecar pid=81984

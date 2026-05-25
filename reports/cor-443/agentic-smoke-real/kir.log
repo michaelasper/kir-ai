@@ -1,0 +1,16 @@
+2026-05-25T06:07:00.886106Z  WARN llm_engine: no admin token configured; generated a temporary bearer token for loopback admin endpoints addr=127.0.0.1:51177
+WARNING: no --admin-token or LLM_ENGINE_ADMIN_TOKEN configured; generated a temporary admin token for this process.
+Admin requests must include: Authorization: Bearer b8c2717e61b5e5ea47c5d0c37e1c8e7d698cf7e2ee8ed27de67c71d63e4bdd04
+2026-05-25T06:07:00.892837Z  INFO llm_engine: llm-engine HTTP listening addr=127.0.0.1:51177
+2026-05-25T06:07:04.280032Z  INFO llm_server::http_access: http request completed request_id=req-1 method=GET path=/v1/models status=200 latency_ms=0
+2026-05-25T06:07:04.285787Z  INFO llm_server::http_access: http request completed request_id=req-2 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:04.291457Z  INFO llm_server::http_access: http request completed request_id=req-3 method=POST path=/v1/chat/completions status=200 latency_ms=1
+2026-05-25T06:07:11.079523Z  INFO llm_server::http_access: http request completed request_id=req-4 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:11.081328Z  INFO llm_server::http_access: http request completed request_id=req-5 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:11.082195Z  INFO llm_server::http_access: http request completed request_id=req-6 method=POST path=/v1/chat/completions status=200 latency_ms=0
+2026-05-25T06:07:17.207130Z  INFO llm_server::http_access: http request completed request_id=req-7 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:17.209007Z  INFO llm_server::http_access: http request completed request_id=req-8 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:17.212945Z  INFO llm_server::http_access: http request completed request_id=req-9 method=POST path=/v1/chat/completions status=200 latency_ms=2
+2026-05-25T06:07:55.418471Z  INFO llm_server::http_access: http request completed request_id=req-10 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:55.432712Z  INFO llm_server::http_access: http request completed request_id=req-11 method=GET path=/admin/metrics status=401 latency_ms=0
+2026-05-25T06:07:55.524810Z  INFO llm_server::http_access: http request completed request_id=req-12 method=POST path=/v1/chat/completions status=200 latency_ms=88

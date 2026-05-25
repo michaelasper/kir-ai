@@ -1,0 +1,40 @@
+{
+  "artifact_dir": "/private/tmp/kir-ai-cor-443/target/cor-443/gemma4-agentic-smoke/gemma4-e2b-mlx-4bit/002-direct_tool_required_stream-r0",
+  "completed_at": "2026-05-25T06:32:14Z",
+  "kind": "direct",
+  "model_id": "local-gemma4-e2b",
+  "probe": "direct_tool_required_stream",
+  "repeat": 0,
+  "result": {
+    "cache_status": "unknown",
+    "cached_tokens": null,
+    "chunks": 2,
+    "completion_tokens": null,
+    "errors": [],
+    "finish_reasons": [],
+    "first_semantic_delta_ms": null,
+    "first_tool_delta_ms": null,
+    "latency_ms": 535.419,
+    "prompt_tokens": null,
+    "request_id": "req-9",
+    "response_headers": {
+      "cache-control": "no-cache",
+      "content-type": "text/event-stream",
+      "date": "Mon, 25 May 2026 06:32:13 GMT",
+      "transfer-encoding": "chunked",
+      "x-request-id": "req-9"
+    },
+    "started_at": "2026-05-25T06:32:13Z",
+    "status": 200,
+    "text": "",
+    "tool_calls": {
+      "invalid_json_arguments": 0,
+      "names": [],
+      "observed": 0,
+      "valid_json_arguments": 0
+    },
+    "tool_fragments_count": 0,
+    "ttfb_ms": 1.398,
+    "usage": null
+  }
+}

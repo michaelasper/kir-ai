@@ -1,0 +1,32 @@
+{
+  "cache_status": "unknown",
+  "cached_tokens": null,
+  "chunks": 2,
+  "completion_tokens": null,
+  "errors": [],
+  "finish_reasons": [],
+  "first_semantic_delta_ms": null,
+  "first_tool_delta_ms": null,
+  "latency_ms": 1764.758,
+  "prompt_tokens": null,
+  "request_id": "req-15",
+  "response_headers": {
+    "cache-control": "no-cache",
+    "content-type": "text/event-stream",
+    "date": "Mon, 25 May 2026 06:32:16 GMT",
+    "transfer-encoding": "chunked",
+    "x-request-id": "req-15"
+  },
+  "started_at": "2026-05-25T06:32:16Z",
+  "status": 200,
+  "text": "",
+  "tool_calls": {
+    "invalid_json_arguments": 0,
+    "names": [],
+    "observed": 0,
+    "valid_json_arguments": 0
+  },
+  "tool_fragments_count": 0,
+  "ttfb_ms": 17.468,
+  "usage": null
+}

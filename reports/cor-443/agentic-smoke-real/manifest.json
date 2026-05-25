@@ -1,0 +1,139 @@
+{
+  "dry_run": false,
+  "hours": 1.0,
+  "hypotheses": [
+    "Qwen 27B may be the best throughput-adjusted agentic lane if it avoids malformed tool calls.",
+    "Qwen 35B should improve task quality but may lose wall-clock efficiency.",
+    "Gemma 4 should expose protocol/tool robustness differences and small-model recovery behavior.",
+    "Long-context latency should show size regimes; 135k is treated as one point, not the default answer.",
+    "Stable prefixes should show observable cached-token reuse in Kir admin metrics after warm repeats.",
+    "Opencode traces should reveal no-progress loops, command retries, and file-edit quality not visible in synthetic probes."
+  ],
+  "lanes": [
+    {
+      "family": "qwen",
+      "include_by_default": true,
+      "max_context_k": 256,
+      "model_id": "local-qwen36-27b-mlx",
+      "name": "qwen27-mlx-8bit",
+      "note": "Qwen 27B MLX 8-bit, local HF cache",
+      "quantization": "8bit",
+      "sidecar_extra": [
+        "--chat-template-args",
+        "{\"enable_thinking\":false}",
+        "--max-tokens",
+        "2048",
+        "--prompt-cache-size",
+        "16",
+        "--prefill-step-size",
+        "2048"
+      ],
+      "sidecar_kind": "lm",
+      "sidecar_module": "mlx_lm.server",
+      "sidecar_package": "mlx-lm",
+      "snapshot": "/Users/michaelasper/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-MLX-8bit/snapshots/78067073d2bf9795e5aabcfcd647bd36cf43c0b5",
+      "snapshot_env": "KIR_BENCH_QWEN27_SNAPSHOT",
+      "snapshot_exists": true
+    },
+    {
+      "family": "qwen",
+      "include_by_default": true,
+      "max_context_k": 256,
+      "model_id": "local-qwen36-35b-mlx",
+      "name": "qwen35-mlx-4bit",
+      "note": "Qwen 35B/A3B MLX 4-bit, local HF cache",
+      "quantization": "4bit",
+      "sidecar_extra": [
+        "--chat-template-args",
+        "{\"enable_thinking\":false}",
+        "--max-tokens",
+        "2048",
+        "--prompt-cache-size",
+        "16",
+        "--prefill-step-size",
+        "2048"
+      ],
+      "sidecar_kind": "lm",
+      "sidecar_module": "mlx_lm.server",
+      "sidecar_package": "mlx-lm",
+      "snapshot": "/Users/michaelasper/source/llm-server/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "snapshot_env": "KIR_BENCH_QWEN35_SNAPSHOT",
+      "snapshot_exists": true
+    },
+    {
+      "family": "gemma",
+      "include_by_default": true,
+      "max_context_k": 128,
+      "model_id": "local-gemma4-e2b",
+      "name": "gemma4-e2b-mlx-4bit",
+      "note": "Gemma 4 E2B MLX 4-bit, practical repeated-workload lane",
+      "quantization": "4bit",
+      "sidecar_extra": [
+        "--prompt-cache-size",
+        "16",
+        "--prefill-step-size",
+        "2048"
+      ],
+      "sidecar_kind": "vlm",
+      "sidecar_module": "mlx_vlm.server",
+      "sidecar_package": "mlx-vlm",
+      "snapshot": "/Users/michaelasper/source/kir-ai/.llm-models/huggingface/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd.gemma4-e2b-it-mlx-4bit",
+      "snapshot_env": "KIR_BENCH_GEMMA4_E2B_SNAPSHOT",
+      "snapshot_exists": true
+    }
+  ],
+  "opencode_bin": "/opt/homebrew/bin/opencode",
+  "repo_root": "/private/tmp/kir-ai-cor-443",
+  "run_root": "target/cor-443/agentic-smoke-real",
+  "seed": 264259,
+  "started_at": "2026-05-25T06:06:34Z",
+  "workloads": {
+    "default_context_sizes_k": [
+      8
+    ],
+    "per_lane": {
+      "gemma4-e2b-mlx-4bit": {
+        "context_sizes_k": [
+          8,
+          128
+        ],
+        "direct_probes": [
+          "direct_chat_stream",
+          "direct_tool_required_stream",
+          "direct_stable_prefix_8k",
+          "direct_stable_prefix_128k"
+        ],
+        "max_context_k": 128,
+        "opencode_tasks": []
+      },
+      "qwen27-mlx-8bit": {
+        "context_sizes_k": [
+          8,
+          256
+        ],
+        "direct_probes": [
+          "direct_chat_stream",
+          "direct_tool_required_stream",
+          "direct_stable_prefix_8k",
+          "direct_stable_prefix_256k"
+        ],
+        "max_context_k": 256,
+        "opencode_tasks": []
+      },
+      "qwen35-mlx-4bit": {
+        "context_sizes_k": [
+          8,
+          256
+        ],
+        "direct_probes": [
+          "direct_chat_stream",
+          "direct_tool_required_stream",
+          "direct_stable_prefix_8k",
+          "direct_stable_prefix_256k"
+        ],
+        "max_context_k": 256,
+        "opencode_tasks": []
+      }
+    }
+  }
+}

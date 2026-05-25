@@ -1,0 +1,19 @@
+{
+  "max_tokens": 512,
+  "messages": [
+    {
+      "content": "You are a fast benchmark canary. Keep responses short and concrete.",
+      "role": "system"
+    },
+    {
+      "content": "In exactly two sentences, name one likely agentic-engine bottleneck and one metric that detects it.",
+      "role": "user"
+    }
+  ],
+  "model": "local-gemma4-e2b",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "temperature": 0
+}

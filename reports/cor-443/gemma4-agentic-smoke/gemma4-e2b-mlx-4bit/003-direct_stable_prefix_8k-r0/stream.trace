@@ -1,0 +1,43 @@
+data: {"id":"chatcmpl-019e5dd5-824b-7903-a751-3101dc78822a","object":"chat.completion.chunk","created":1779690734,"model":"local-gemma4-e2b","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+: llm-engine-heartbeat
+
+data: {"error":{"message":"streaming response failed","code":"no_progress_missing_required_tool_call","phase":"response_validation","retryable":false,"type":"llm_engine_error"}}
+
+data: [DONE]
