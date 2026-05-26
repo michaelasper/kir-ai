@@ -2,11 +2,13 @@ use super::safetensors::TensorLoadError;
 
 #[cfg(test)]
 pub(crate) use llm_backend_contracts::BackendCacheContext;
+pub(super) use llm_backend_contracts::BackendError;
 #[cfg(test)]
 use llm_backend_contracts::BackendFailureClass;
-pub use llm_backend_contracts::{
-    BackendChatRole, BackendError, BackendFinishReason, BackendModelMetadata, BackendOutput,
-    BackendRequest, BackendToolChoice, BackendToolDefinition, ModelBackend,
+#[cfg(feature = "test-utils")]
+pub(super) use llm_backend_contracts::{
+    BackendChatRole, BackendFinishReason, BackendModelMetadata, BackendOutput, BackendRequest,
+    BackendToolChoice, BackendToolDefinition, ModelBackend,
 };
 
 impl From<TensorLoadError> for BackendError {
