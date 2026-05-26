@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.20](https://github.com/michaelasper/kir-ai/compare/v1.57.19...v1.57.20) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-477:** saturate f32 cache byte accounting ([921a9e0](https://github.com/michaelasper/kir-ai/commit/921a9e09868173b2f8938b57314dcdcc5d342346))
+
 ## [1.57.19](https://github.com/michaelasper/kir-ai/compare/v1.57.18...v1.57.19) (2026-05-26)
 
 ### Bug Fixes
