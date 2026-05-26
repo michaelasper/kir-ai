@@ -1,12 +1,13 @@
 use llm_backend::native::{
     CpuNativeMatvecBackend, InferenceScratchpad, MathError, NativeMatvecBackend, QwenLayerCache,
-    QwenMoeDims, QwenMoeRouterProbe, SafeTensorArchive, SafeTensorHeader, SafeTensorShardStore,
-    TensorLoadError, TopKWeight, qwen_decode_token_with_cache, qwen_layer_caches_for_spec,
-    qwen_layer_moe_forward, qwen_layer0_moe_router, qwen_prefill_sequence_with_cache,
+    QwenMoeDims, QwenMoeRouterProbe, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,
+    SafeTensorShardStore, TensorLoadError, TopKWeight, qwen_decode_token_with_cache,
+    qwen_layer_caches_for_spec, qwen_layer_moe_forward, qwen_layer0_moe_router,
+    qwen_prefill_sequence_with_cache,
 };
 use llm_models::{AttentionKind, ModelFamily, QwenModelSpec};
 use llm_test_support::safetensors::{
-    TinySafetensorsSnapshot, tiny_safetensors_bf16, tiny_safetensors_f32,
+    TinySafetensorsSnapshot, bf16_bits, tiny_safetensors_bf16, tiny_safetensors_f32,
 };
 use std::fmt;
 use std::sync::{
@@ -219,7 +220,7 @@ fn safetensors_header_rejects_non_integer_shape_dimension() {
 }
 
 #[test]
-fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
+fn safetensors_f32_range_cached_decodes_without_resident_cache() {
     let root = temp_snapshot_dir("f32-cache-trace");
     TinySafetensorsSnapshot::new()
         .with_bf16_tensor(
@@ -232,6 +233,7 @@ fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
         .expect("snapshot");
 
     let store = SafeTensorShardStore::open(&root).expect("store opens");
+    assert_eq!(store.cached_f32_count(), 0);
 
     let capture = TraceCapture::start();
     let first = store
@@ -243,24 +245,59 @@ fn safetensors_f32_range_cached_emits_cache_trace_metadata() {
     let events = capture.events();
 
     assert_eq!(first, second);
+    assert_eq!(store.cached_f32_count(), 0);
+    assert_eq!(store.cached_f32_bytes(), 0);
     assert!(
         events.iter().any(|event| {
-            event.has_field("operation", "safetensors_f32_cache_lookup")
+            event.has_field("operation", "safetensors_f32_cache_bypass")
                 && event.has_field("cache", "range")
-                && event.has_field("cache_hit", "false")
+                && event.has_field("cache_resident", "false")
                 && event.has_field("tensor", "embed.weight")
         }),
-        "first cached read should emit F32 cache miss metadata, got {events:?}"
+        "cached range read should emit F32 cache bypass metadata, got {events:?}"
     );
     assert!(
-        events.iter().any(|event| {
-            event.has_field("operation", "safetensors_f32_cache_lookup")
-                && event.has_field("cache", "range")
-                && event.has_field("cache_hit", "true")
-                && event.has_field("tensor", "embed.weight")
-        }),
-        "second cached read should emit F32 cache hit metadata, got {events:?}"
+        events
+            .iter()
+            .filter(|event| {
+                event.has_field("operation", "safetensors_f32_cache_bypass")
+                    && event.has_field("cache", "range")
+                    && event.has_field("tensor", "embed.weight")
+            })
+            .count()
+            >= 2,
+        "each cached range read should bypass permanent F32 cache, got {events:?}"
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn safetensors_full_f32_cached_arc_returns_transient_allocations() {
+    let root = temp_snapshot_dir("f32-cache-arc-transient");
+    TinySafetensorsSnapshot::new()
+        .with_bf16_tensor(
+            "model-00001-of-00001.safetensors",
+            "norm.weight",
+            [2],
+            [3.0, 4.0],
+        )
+        .write(&root)
+        .expect("snapshot");
+
+    let store = SafeTensorShardStore::open(&root).expect("store opens");
+
+    let first = store
+        .bf16_tensor_f32_cached_arc("norm.weight")
+        .expect("first full cached arc");
+    let second = store
+        .bf16_tensor_f32_cached_arc("norm.weight")
+        .expect("second full cached arc");
+
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert_eq!(first.as_ref(), &[3.0, 4.0]);
+    assert_eq!(second.as_ref(), &[3.0, 4.0]);
+    assert_eq!(store.cached_f32_count(), 0);
+    assert_eq!(store.cached_f32_bytes(), 0);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -286,6 +323,34 @@ fn safetensors_bf16_range_into_reuses_caller_decode_buffer() {
 
     assert_eq!(values, vec![2.0, 3.0, 4.0, 5.0]);
     assert_eq!(values.as_ptr(), original_ptr);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn safetensors_with_tensor_bytes_range_borrows_materialized_mmap_range() {
+    let root = temp_snapshot_dir("borrow-materialized-range");
+    std::fs::create_dir_all(&root).expect("snapshot dir");
+    let shard_path = root.join("model.safetensors");
+    std::fs::write(
+        &shard_path,
+        tiny_safetensors_bf16("embed.weight", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+    )
+    .expect("shard");
+    let file = SafeTensorFile::open(&shard_path).expect("open shard");
+    file.materialize().expect("materialized shard");
+
+    let first_ptr = file
+        .with_tensor_bytes_range("embed.weight", 2, 4, |bytes| {
+            let expected = tiny_safetensors_bf16_values(&[2.0, 3.0]);
+            assert_eq!(bytes, expected.as_slice());
+            Ok(bytes.as_ptr() as usize)
+        })
+        .expect("first borrowed range");
+    let second_ptr = file
+        .with_tensor_bytes_range("embed.weight", 2, 4, |bytes| Ok(bytes.as_ptr() as usize))
+        .expect("second borrowed range");
+
+    assert_eq!(first_ptr, second_ptr);
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -779,6 +844,14 @@ fn write_tiny_moe_forward_snapshot(root: &std::path::Path) {
 
 fn temp_snapshot_dir(label: &str) -> std::path::PathBuf {
     llm_test_support::safetensors::temp_snapshot_dir("llm-backend", label)
+}
+
+fn tiny_safetensors_bf16_values(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 2);
+    for value in values {
+        bytes.extend_from_slice(&bf16_bits(*value).to_le_bytes());
+    }
+    bytes
 }
 
 fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
