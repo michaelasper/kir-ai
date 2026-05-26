@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.58.1](https://github.com/michaelasper/kir-ai/compare/v1.58.0...v1.58.1) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-410:** keep Metal attention output on device ([3ef649c](https://github.com/michaelasper/kir-ai/commit/3ef649c00b41690bda086dac646ee277fb613b60))
+
 ## [1.58.0](https://github.com/michaelasper/kir-ai/compare/v1.57.36...v1.58.0) (2026-05-26)
 
 ### Features
