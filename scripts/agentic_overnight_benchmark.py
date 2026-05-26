@@ -28,7 +28,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +37,16 @@ DEFAULT_RUN_ROOT = REPO_ROOT / "target" / "agentic-bench-runs"
 DEFAULT_CONTEXT_SIZES_K = (8, 32, 64, 96, 135, 200, 256)
 DEFAULT_SEED = 264259
 STABLE_PREFIX_SECTIONS_PER_K = 20
+STABLE_PREFIX_MAX_TOKENS = 384
+STABLE_PREFIX_GUARD_PERCENT = 5
+STABLE_PREFIX_MIN_GUARD_TOKENS = 2048
+
+
+StablePrefixTokenCounter = Callable[[dict[str, Any]], int]
+
+
+class StablePrefixBudgetError(RuntimeError):
+    """Raised before sending a stable-prefix request that cannot fit its budget."""
 
 
 def env_path(name: str, fallback: pathlib.Path) -> pathlib.Path:
@@ -59,6 +69,23 @@ class ModelLane:
     include_by_default: bool = True
     snapshot_env: str = ""
     note: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class StablePrefixBudget:
+    context_window_tokens: int
+    response_tokens: int
+    guard_tokens: int
+    prompt_budget_tokens: int
+
+
+@dataclasses.dataclass(frozen=True)
+class PromptTokenCounter:
+    name: str
+    count: StablePrefixTokenCounter
+
+
+PROMPT_TOKEN_COUNTER_CACHE: dict[str, PromptTokenCounter | None] = {}
 
 
 LANES: list[ModelLane] = [
@@ -235,6 +262,128 @@ def direct_probe_names(context_sizes_k: tuple[int, ...]) -> tuple[str, ...]:
     return DIRECT_CANARY_PROBES + tuple(
         f"direct_stable_prefix_{size}k" for size in context_sizes_k
     )
+
+
+def stable_prefix_budget_for_lane(
+    body: dict[str, Any],
+    lane: ModelLane,
+    target_k: int | None = None,
+) -> StablePrefixBudget:
+    context_window_tokens = lane.max_context_k * 1024
+    if target_k is not None:
+        context_window_tokens = min(context_window_tokens, target_k * 1024)
+    response_tokens = int(body.get("max_tokens") or STABLE_PREFIX_MAX_TOKENS)
+    guard_tokens = max(
+        STABLE_PREFIX_MIN_GUARD_TOKENS,
+        context_window_tokens * STABLE_PREFIX_GUARD_PERCENT // 100,
+    )
+    prompt_budget_tokens = context_window_tokens - response_tokens - guard_tokens
+    if prompt_budget_tokens <= 0:
+        raise StablePrefixBudgetError(
+            f"stable-prefix context window {context_window_tokens} leaves no prompt budget "
+            f"after max_tokens={response_tokens} and guard={guard_tokens}"
+        )
+    return StablePrefixBudget(
+        context_window_tokens=context_window_tokens,
+        response_tokens=response_tokens,
+        guard_tokens=guard_tokens,
+        prompt_budget_tokens=prompt_budget_tokens,
+    )
+
+
+def stable_prefix_text_for_counting(body: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for message in body.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(role, str):
+            lines.append(f"<|{role}|>")
+        if isinstance(content, str):
+            lines.append(content)
+    tools = body.get("tools")
+    if tools:
+        lines.append(json.dumps(tools, sort_keys=True, separators=(",", ":")))
+    lines.append("<|assistant|>")
+    return "\n".join(lines)
+
+
+def try_transformers_token_counter(lane: ModelLane) -> PromptTokenCounter | None:
+    try:
+        from transformers import AutoTokenizer  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    tokenizer = AutoTokenizer.from_pretrained(str(lane.snapshot), trust_remote_code=True)
+
+    def count(body: dict[str, Any]) -> int:
+        messages = body.get("messages")
+        if isinstance(messages, list) and hasattr(tokenizer, "apply_chat_template"):
+            try:
+                token_ids = tokenizer.apply_chat_template(
+                    messages,
+                    tools=body.get("tools"),
+                    tokenize=True,
+                    add_generation_prompt=True,
+                )
+                return len(token_ids)
+            except Exception:  # noqa: BLE001
+                pass
+        return len(tokenizer.encode(stable_prefix_text_for_counting(body)))
+
+    return PromptTokenCounter(name="transformers", count=count)
+
+
+def try_tokenizers_token_counter(lane: ModelLane) -> PromptTokenCounter | None:
+    tokenizer_path = lane.snapshot / "tokenizer.json"
+    if not tokenizer_path.exists():
+        return None
+    try:
+        from tokenizers import Tokenizer  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+
+    def count(body: dict[str, Any]) -> int:
+        return len(tokenizer.encode(stable_prefix_text_for_counting(body)).ids)
+
+    return PromptTokenCounter(name="tokenizers", count=count)
+
+
+def prompt_token_counter_for_lane(
+    lane: ModelLane,
+    run_root: pathlib.Path | None = None,
+) -> PromptTokenCounter | None:
+    cache_key = str(lane.snapshot)
+    if cache_key in PROMPT_TOKEN_COUNTER_CACHE:
+        return PROMPT_TOKEN_COUNTER_CACHE[cache_key]
+    for loader in (try_transformers_token_counter, try_tokenizers_token_counter):
+        try:
+            counter = loader(lane)
+        except Exception as exc:  # noqa: BLE001
+            if run_root is not None:
+                log(
+                    run_root,
+                    f"{lane.name} tokenizer counter unavailable via "
+                    f"{loader.__name__}: {exc!r}",
+                )
+            continue
+        if counter is not None:
+            if run_root is not None:
+                log(
+                    run_root,
+                    f"{lane.name} stable-prefix budgeting uses "
+                    f"{counter.name} tokenizer counter",
+                )
+            PROMPT_TOKEN_COUNTER_CACHE[cache_key] = counter
+            return counter
+    if run_root is not None:
+        log(
+            run_root,
+            f"{lane.name} stable-prefix budgeting using static density; tokenizer unavailable",
+        )
+    PROMPT_TOKEN_COUNTER_CACHE[cache_key] = None
+    return None
 
 
 def find_free_port() -> int:
@@ -627,7 +776,7 @@ def tool_schema() -> list[dict[str, Any]]:
     ]
 
 
-def long_context_text(target_k: int, marker: str) -> str:
+def long_context_text(target_k: int, marker: str, sections: int | None = None) -> str:
     paragraphs: list[str] = [
         f"BEGIN_MARKER {marker}",
         "You are reading a synthetic repository investigation transcript.",
@@ -646,7 +795,7 @@ def long_context_text(target_k: int, marker: str) -> str:
     ]
     # The name is an approximate target in K prompt tokens. Keep the density
     # conservative so max-context lanes do not exceed model windows.
-    for i in range(target_k * STABLE_PREFIX_SECTIONS_PER_K):
+    for i in range(sections if sections is not None else target_k * STABLE_PREFIX_SECTIONS_PER_K):
         words = " ".join(seed[(i + j) % len(seed)] for j in range(9))
         paragraphs.append(
             f"section {i:05d}: {words}. Preserve the first marker and ignore distractor {i % 97}."
@@ -655,7 +804,94 @@ def long_context_text(target_k: int, marker: str) -> str:
     return "\n".join(paragraphs)
 
 
-def direct_body(model_id: str, probe: str, repeat: int = 0) -> dict[str, Any]:
+def stable_prefix_body(
+    model_id: str,
+    size_k: int,
+    repeat: int,
+    sections: int,
+) -> dict[str, Any]:
+    marker = f"stable-prefix-{size_k}k-run-{repeat}"
+    prefix_marker = f"stable-prefix-{size_k}k-shared-marker"
+    prompt = long_context_text(size_k, prefix_marker, sections=sections)
+    return {
+        "model": model_id,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "temperature": 0,
+        "max_tokens": STABLE_PREFIX_MAX_TOKENS,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are measuring long-context recall and cache behavior. "
+                    "Answer compactly."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    prompt
+                    + "\n\n"
+                    + f"Suffix run id: {marker}. Use the tool to report the shared "
+                    + "marker and one cache-sensitive optimization idea."
+                ),
+            },
+        ],
+        "tools": tool_schema(),
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "record_agentic_observation"},
+        },
+    }
+
+
+def tokenizer_sized_stable_prefix_body(
+    model_id: str,
+    size_k: int,
+    repeat: int,
+    lane: ModelLane,
+    token_counter: StablePrefixTokenCounter,
+) -> dict[str, Any]:
+    max_sections = size_k * STABLE_PREFIX_SECTIONS_PER_K
+    static_body = stable_prefix_body(model_id, size_k, repeat, max_sections)
+    budget = stable_prefix_budget_for_lane(static_body, lane, target_k=size_k)
+    if token_counter(static_body) <= budget.prompt_budget_tokens:
+        return static_body
+    best_body: dict[str, Any] | None = None
+    best_tokens: int | None = None
+    low = 0
+    high = max_sections
+    while low <= high:
+        midpoint = (low + high) // 2
+        candidate = stable_prefix_body(model_id, size_k, repeat, midpoint)
+        candidate_tokens = token_counter(candidate)
+        if candidate_tokens <= budget.prompt_budget_tokens:
+            best_body = candidate
+            best_tokens = candidate_tokens
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    if best_body is None:
+        zero_body = stable_prefix_body(model_id, size_k, repeat, 0)
+        zero_tokens = token_counter(zero_body)
+        raise StablePrefixBudgetError(
+            f"stable-prefix probe direct_stable_prefix_{size_k}k exceeds prompt budget: "
+            f"{zero_tokens} > {budget.prompt_budget_tokens} tokens before synthetic sections "
+            f"(context_window={budget.context_window_tokens}, max_tokens={budget.response_tokens}, "
+            f"guard={budget.guard_tokens})"
+        )
+    if best_tokens is None:
+        raise StablePrefixBudgetError("stable-prefix sizing failed to record token count")
+    return best_body
+
+
+def direct_body(
+    model_id: str,
+    probe: str,
+    repeat: int = 0,
+    lane: ModelLane | None = None,
+    token_counter: StablePrefixTokenCounter | None = None,
+) -> dict[str, Any]:
     common: dict[str, Any] = {
         "model": model_id,
         "stream": True,
@@ -698,32 +934,14 @@ def direct_body(model_id: str, probe: str, repeat: int = 0) -> dict[str, Any]:
         }
     if probe.startswith("direct_stable_prefix_"):
         size = int(probe.removeprefix("direct_stable_prefix_").removesuffix("k"))
-        marker = f"stable-prefix-{size}k-run-{repeat}"
-        prefix_marker = f"stable-prefix-{size}k-shared-marker"
-        prompt = long_context_text(size, prefix_marker)
-        return {
-            **common,
-            "max_tokens": 384,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are measuring long-context recall and cache behavior. Answer compactly.",
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        prompt
-                        + "\n\n"
-                        + f"Suffix run id: {marker}. Use the tool to report the shared marker and one cache-sensitive optimization idea."
-                    ),
-                },
-            ],
-            "tools": tool_schema(),
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "record_agentic_observation"},
-            },
-        }
+        if lane is not None and token_counter is not None:
+            return tokenizer_sized_stable_prefix_body(model_id, size, repeat, lane, token_counter)
+        return stable_prefix_body(
+            model_id,
+            size,
+            repeat,
+            sections=size * STABLE_PREFIX_SECTIONS_PER_K,
+        )
     raise ValueError(f"unknown direct probe {probe}")
 
 
@@ -1203,10 +1421,12 @@ def run_direct_probe(
     index: int,
     repeat: int,
     timeout_sec: int,
+    lane: ModelLane | None = None,
+    token_counter: StablePrefixTokenCounter | None = None,
 ) -> dict[str, Any]:
     task_dir = lane_dir / f"{index:03d}-{probe}-r{repeat}"
     task_dir.mkdir(parents=True, exist_ok=True)
-    body = direct_body(model_id, probe, repeat=repeat)
+    body = direct_body(model_id, probe, repeat=repeat, lane=lane, token_counter=token_counter)
     write_json(task_dir / "request.json", body)
     fetch_admin_metrics(base_url, task_dir / "admin-before.json")
     log(run_root, f"starting direct probe {probe} repeat={repeat} model={model_id}")
@@ -1599,6 +1819,10 @@ def run_lane(
     lane_manifest["lane"]["snapshot"] = str(lane.snapshot)
     write_json(lane_dir / "manifest.json", lane_manifest)
     try:
+        prompt_counter = (
+            prompt_token_counter_for_lane(lane, run_root) if not args.skip_direct else None
+        )
+        prompt_token_counter = prompt_counter.count if prompt_counter is not None else None
         sidecar, kir, base_url = start_lane(
             lane,
             lane_dir,
@@ -1626,6 +1850,8 @@ def run_lane(
                     index,
                     0,
                     args.direct_timeout,
+                    lane=lane,
+                    token_counter=prompt_token_counter,
                 )
                 summarize_run(run_root)
         if not args.skip_opencode and time.monotonic() < lane_deadline:
@@ -1663,6 +1889,8 @@ def run_lane(
                         index,
                         repeat,
                         min(args.long_direct_timeout, max(120, remaining)),
+                        lane=lane,
+                        token_counter=prompt_token_counter,
                     )
                     summarize_run(run_root)
                     remaining = int(lane_deadline - time.monotonic())

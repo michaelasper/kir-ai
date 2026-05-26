@@ -75,6 +75,114 @@ class AgenticOvernightBenchmarkTests(unittest.TestCase):
 
         self.assertLess(len(body["messages"][1]["content"]), 1_450_000)
 
+    def test_qwen_256k_stable_prefix_uses_tokenizer_budget_guard(self):
+        bench = load_module()
+        qwen = next(lane for lane in bench.LANES if lane.name == "qwen27-mlx-8bit")
+
+        def count_prompt_tokens(body):
+            content = body["messages"][1]["content"]
+            return 1_200 + content.count("\nsection ") * 72
+
+        static_body = bench.direct_body(qwen.model_id, "direct_stable_prefix_256k", lane=qwen)
+        budget = bench.stable_prefix_budget_for_lane(static_body, qwen)
+        self.assertGreater(count_prompt_tokens(static_body), budget.prompt_budget_tokens)
+
+        body = bench.direct_body(
+            qwen.model_id,
+            "direct_stable_prefix_256k",
+            lane=qwen,
+            token_counter=count_prompt_tokens,
+        )
+
+        prompt_tokens = count_prompt_tokens(body)
+        self.assertGreater(body["messages"][1]["content"].count("\nsection "), 0)
+        self.assertLess(
+            body["messages"][1]["content"].count("\nsection "),
+            static_body["messages"][1]["content"].count("\nsection "),
+        )
+        self.assertLessEqual(prompt_tokens, budget.prompt_budget_tokens)
+        self.assertLessEqual(
+            prompt_tokens + body["max_tokens"] + budget.guard_tokens,
+            budget.context_window_tokens,
+        )
+        self.assertGreaterEqual(budget.guard_tokens, 2048)
+
+    def test_gemma_128k_stable_prefix_uses_tokenizer_budget_guard(self):
+        bench = load_module()
+        gemma = next(lane for lane in bench.LANES if lane.name == "gemma4-e2b-mlx-4bit")
+
+        def count_prompt_tokens(body):
+            content = body["messages"][1]["content"]
+            return 900 + content.count("\nsection ") * 70
+
+        static_body = bench.direct_body(gemma.model_id, "direct_stable_prefix_128k", lane=gemma)
+        budget = bench.stable_prefix_budget_for_lane(static_body, gemma)
+        self.assertGreater(count_prompt_tokens(static_body), budget.prompt_budget_tokens)
+
+        body = bench.direct_body(
+            gemma.model_id,
+            "direct_stable_prefix_128k",
+            lane=gemma,
+            token_counter=count_prompt_tokens,
+        )
+
+        prompt_tokens = count_prompt_tokens(body)
+        self.assertGreater(body["messages"][1]["content"].count("\nsection "), 0)
+        self.assertLess(
+            body["messages"][1]["content"].count("\nsection "),
+            static_body["messages"][1]["content"].count("\nsection "),
+        )
+        self.assertLessEqual(prompt_tokens, budget.prompt_budget_tokens)
+        self.assertLessEqual(
+            prompt_tokens + body["max_tokens"] + budget.guard_tokens,
+            budget.context_window_tokens,
+        )
+        self.assertGreaterEqual(budget.guard_tokens, 2048)
+
+    def test_oversized_stable_prefix_fails_before_streaming_request(self):
+        bench = load_module()
+        qwen = next(lane for lane in bench.LANES if lane.name == "qwen27-mlx-8bit")
+
+        def oversized_prompt_tokens(_body):
+            return qwen.max_context_k * 1024
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = pathlib.Path(tmp)
+            lane_dir = run_root / qwen.name
+            calls = []
+
+            def record_admin_call(*_args, **_kwargs):
+                calls.append("admin")
+                return None
+
+            def record_stream_call(*_args, **_kwargs):
+                calls.append("stream")
+                return {}
+
+            original_fetch_admin = bench.fetch_admin_metrics
+            original_stream = bench.stream_chat_completion
+            bench.fetch_admin_metrics = record_admin_call
+            bench.stream_chat_completion = record_stream_call
+            try:
+                with self.assertRaisesRegex(bench.StablePrefixBudgetError, "exceeds"):
+                    bench.run_direct_probe(
+                        run_root,
+                        lane_dir,
+                        "http://127.0.0.1:9",
+                        qwen.model_id,
+                        "direct_stable_prefix_256k",
+                        1,
+                        0,
+                        1,
+                        lane=qwen,
+                        token_counter=oversized_prompt_tokens,
+                    )
+            finally:
+                bench.fetch_admin_metrics = original_fetch_admin
+                bench.stream_chat_completion = original_stream
+
+            self.assertEqual(calls, [])
+
     def test_tool_fragment_diagnostics_assembles_streamed_arguments(self):
         bench = load_module()
 

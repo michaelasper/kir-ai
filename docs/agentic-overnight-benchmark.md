@@ -18,6 +18,13 @@ The default eight-hour run covers:
   enhancement, seeded bug fixes, long-context rule discovery, and recovery
   debugging.
 
+Stable-prefix probes reserve each lane's requested context window for prompt
+tokens, response tokens, and a guard margin. When the host Python environment
+can load either `transformers` or `tokenizers` for the lane snapshot, the harness
+tokenizes candidate prompts and trims synthetic sections until Qwen 256k and
+Gemma 128k max-context probes fit below the guarded prompt budget. Dry runs do
+not load tokenizers; they keep writing a deterministic plan manifest only.
+
 Run a plan-only check first:
 
 ```sh
