@@ -69,6 +69,7 @@ fn build_router_with_paged_kv_metrics() -> Router {
     .expect("test router builds")
 }
 
+#[cfg(feature = "mlx")]
 fn assert_metric_incremented(before: &Value, after: &Value, path: &[&str], expected_delta: u64) {
     let before = metric_at_path(before, path);
     let after = metric_at_path(after, path);
@@ -78,6 +79,7 @@ fn assert_metric_incremented(before: &Value, after: &Value, path: &[&str], expec
     );
 }
 
+#[cfg(feature = "mlx")]
 fn assert_metric_unchanged(before: &Value, after: &Value, path: &[&str]) {
     let before = metric_at_path(before, path);
     let after = metric_at_path(after, path);
@@ -87,6 +89,7 @@ fn assert_metric_unchanged(before: &Value, after: &Value, path: &[&str]) {
     );
 }
 
+#[cfg(feature = "mlx")]
 fn metric_at_path(metrics: &Value, path: &[&str]) -> u64 {
     let mut value = metrics;
     for segment in path {
@@ -95,12 +98,14 @@ fn metric_at_path(metrics: &Value, path: &[&str]) -> u64 {
     value.as_u64().expect("metric is an integer")
 }
 
+#[cfg(feature = "mlx")]
 struct FakeMlxServer {
     endpoint: url::Url,
     snapshot: tempfile::TempDir,
     join: Option<thread::JoinHandle<()>>,
 }
 
+#[cfg(feature = "mlx")]
 impl FakeMlxServer {
     fn start(response_body: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake mlx server");
@@ -130,6 +135,7 @@ impl FakeMlxServer {
     }
 }
 
+#[cfg(feature = "mlx")]
 impl Drop for FakeMlxServer {
     fn drop(&mut self) {
         if let Some(join) = self.join.take() {
@@ -138,6 +144,7 @@ impl Drop for FakeMlxServer {
     }
 }
 
+#[cfg(feature = "mlx")]
 fn read_http_request(stream: &mut std::net::TcpStream) {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 1024];
@@ -167,6 +174,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) {
     }
 }
 
+#[cfg(feature = "mlx")]
 fn find_subsequence(bytes: &[u8], needle: &[u8]) -> Option<usize> {
     bytes
         .windows(needle.len())

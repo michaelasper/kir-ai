@@ -9,6 +9,7 @@ mod decode_phase;
 mod endpoint;
 #[path = "metrics/inference.rs"]
 mod inference;
+#[cfg(feature = "mlx")]
 #[path = "metrics/mlx_sidecar.rs"]
 mod mlx_sidecar;
 #[path = "metrics/model_store.rs"]
