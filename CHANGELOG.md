@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.26](https://github.com/michaelasper/kir-ai/compare/v1.57.25...v1.57.26) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-515:** size stable-prefix prompts by tokenizer budget ([be6424a](https://github.com/michaelasper/kir-ai/commit/be6424aa262128429cb5d9eac707ba1c8f7fb7c9))
+
 ## [1.57.25](https://github.com/michaelasper/kir-ai/compare/v1.57.24...v1.57.25) (2026-05-26)
 
 ### Bug Fixes
