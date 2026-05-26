@@ -3,7 +3,7 @@ use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
 use llm_tokenizer::HuggingFaceTokenizerIdentity;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -27,6 +27,7 @@ pub(crate) struct NativeTextPrefixCache<C: NativeTextPrefixCacheValue> {
 pub(crate) struct NativeTextPrefixCacheInner<C: NativeTextPrefixCacheValue> {
     pub(crate) entries:
         HashMap<NativeTextPrefixCacheNamespace, HashMap<Vec<usize>, NativeTextPrefixCacheEntry<C>>>,
+    pub(crate) indexes: HashMap<NativeTextPrefixCacheNamespace, NativeTextPrefixCacheTrie>,
     pub(crate) used_bytes: u64,
     pub(crate) next_access: u64,
 }
@@ -38,10 +39,22 @@ where
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            indexes: HashMap::new(),
             used_bytes: 0,
             next_access: 0,
         }
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NativeTextPrefixCacheTrie {
+    root: NativeTextPrefixCacheTrieNode,
+}
+
+#[derive(Debug, Default)]
+struct NativeTextPrefixCacheTrieNode {
+    terminal: bool,
+    children: BTreeMap<usize, NativeTextPrefixCacheTrieNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -207,36 +220,36 @@ where
     ) -> Option<NativeTextPrefixCacheHit<C>> {
         let (hit, entries_scanned, namespace_entries_scanned) = {
             let mut inner = self.inner.lock_or_panic("native text prefix cache");
+            let candidates = inner
+                .indexes
+                .get(namespace)
+                .map(|index| index.prefix_candidate_lengths(tokens))
+                .unwrap_or_default();
+            let mut entries_scanned = 0;
+            let mut namespace_entries_scanned = 0;
+            let mut hit = None;
             let NativeTextPrefixCacheInner {
                 entries,
                 next_access,
                 ..
             } = &mut *inner;
-            let mut best_len = 0;
-            let mut best_entry = None;
-            let mut entries_scanned = 0;
-            let mut namespace_entries_scanned = 0;
             if let Some(bucket) = entries.get_mut(namespace) {
-                namespace_entries_scanned = bucket.len() as u64;
-                for (entry_tokens, entry) in bucket.iter_mut() {
+                for token_count in candidates.iter().rev().copied() {
                     entries_scanned += 1;
-                    if entry_tokens.len() > best_len
-                        && tokens.starts_with(entry_tokens)
-                        && is_compatible(&entry.payload.states)
-                    {
-                        best_len = entry_tokens.len();
-                        best_entry = Some(entry);
+                    namespace_entries_scanned += 1;
+                    let entry_tokens = &tokens[..token_count];
+                    let Some(entry) = bucket.get_mut(entry_tokens) else {
+                        continue;
+                    };
+                    if is_compatible(&entry.payload.states) {
+                        let access = *next_access;
+                        *next_access = next_access.saturating_add(1);
+                        entry.last_used = access;
+                        hit = Some((token_count, entry.byte_len, Arc::clone(&entry.payload)));
+                        break;
                     }
                 }
             }
-            let hit = if let Some(entry) = best_entry {
-                let access = *next_access;
-                *next_access = next_access.saturating_add(1);
-                entry.last_used = access;
-                Some((best_len, entry.byte_len, Arc::clone(&entry.payload)))
-            } else {
-                None
-            };
             (hit, entries_scanned, namespace_entries_scanned)
         };
         metrics.record_lookup_scan(entries_scanned, namespace_entries_scanned);
@@ -303,14 +316,19 @@ where
                 removed_entries.push(evicted);
             }
             let access = inner.next_access();
-            inner.entries.entry(namespace).or_default().insert(
-                entry_tokens,
+            inner.entries.entry(namespace.clone()).or_default().insert(
+                entry_tokens.clone(),
                 NativeTextPrefixCacheEntry {
                     payload,
                     byte_len,
                     last_used: access,
                 },
             );
+            inner
+                .indexes
+                .entry(namespace)
+                .or_default()
+                .insert(&entry_tokens);
             inner.used_bytes = inner.used_bytes.saturating_add(byte_len);
             (inner.used_bytes, inner.entry_count())
         };
@@ -352,6 +370,15 @@ where
             let entry = bucket.remove(tokens);
             (entry, bucket.is_empty())
         };
+        if entry.is_some() {
+            let remove_index = self.indexes.get_mut(namespace).is_some_and(|index| {
+                index.remove(tokens);
+                index.is_empty()
+            });
+            if remove_index {
+                self.indexes.remove(namespace);
+            }
+        }
         if remove_bucket {
             self.entries.remove(namespace);
         }
@@ -370,6 +397,55 @@ where
             .min_by_key(|(_, _, entry)| entry.last_used)
             .map(|(namespace, tokens, _)| (namespace.clone(), tokens.clone()))?;
         self.remove_entry(&namespace, &tokens)
+    }
+}
+
+impl NativeTextPrefixCacheTrie {
+    fn insert(&mut self, tokens: &[usize]) {
+        let mut node = &mut self.root;
+        for token in tokens {
+            node = node.children.entry(*token).or_default();
+        }
+        node.terminal = true;
+    }
+
+    fn remove(&mut self, tokens: &[usize]) {
+        Self::remove_from(&mut self.root, tokens);
+    }
+
+    fn prefix_candidate_lengths(&self, tokens: &[usize]) -> Vec<usize> {
+        let mut candidates = Vec::new();
+        let mut node = &self.root;
+        for (index, token) in tokens.iter().enumerate() {
+            let Some(child) = node.children.get(token) else {
+                break;
+            };
+            node = child;
+            if node.terminal {
+                candidates.push(index + 1);
+            }
+        }
+        candidates
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.root.terminal && self.root.children.is_empty()
+    }
+
+    fn remove_from(node: &mut NativeTextPrefixCacheTrieNode, tokens: &[usize]) -> bool {
+        if let Some((token, remaining)) = tokens.split_first() {
+            let remove_child = node
+                .children
+                .get_mut(token)
+                .is_some_and(|child| Self::remove_from(child, remaining));
+            if remove_child {
+                node.children.remove(token);
+            }
+        } else {
+            node.terminal = false;
+        }
+
+        !node.terminal && node.children.is_empty()
     }
 }
 

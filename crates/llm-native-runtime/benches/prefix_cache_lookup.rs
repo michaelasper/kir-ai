@@ -1,10 +1,10 @@
-//! Prefix-cache lookup scan microbenchmarks.
+//! Prefix-cache lookup index microbenchmarks.
 //!
 //! These benches include the current prefix-cache implementation directly so
 //! they measure lookup behavior without opening model snapshots or running
 //! inference. Payloads are intentionally empty: the cold-miss and
-//! longest-prefix hit cases isolate namespace-bucket scan cost from cache
-//! payload clone cost.
+//! longest-prefix hit cases isolate trie traversal and candidate lookup cost
+//! from cache payload clone cost.
 
 use std::{
     hint::black_box,
@@ -54,10 +54,10 @@ struct LookupFixture {
 }
 
 fn main() {
-    println!("prefix_cache_lookup: scan-only benches; no snapshots or inference");
+    println!("prefix_cache_lookup: indexed benches; no snapshots or inference");
     println!(
-        "{:<44} {:>8} {:>10} {:>14} {:>12}",
-        "case", "entries", "iters", "total_ms", "ns/iter"
+        "{:<44} {:>8} {:>10} {:>14} {:>12} {:>12}",
+        "case", "entries", "iters", "total_ms", "ns/iter", "scans/iter"
     );
 
     for entries in ENTRY_COUNTS {
@@ -134,14 +134,17 @@ fn run_lookup_case(label: &str, entries: usize, fixture: &LookupFixture, iterati
         checksum ^= lookup_once(fixture);
     }
 
+    let scans_before = lookup_scan_count(&fixture.metrics);
     let started = Instant::now();
     for _ in 0..iterations {
         checksum = checksum.wrapping_add(lookup_once(fixture));
     }
     let elapsed = started.elapsed();
+    let scans_after = lookup_scan_count(&fixture.metrics);
+    let scans_per_iter = scans_after.saturating_sub(scans_before) as f64 / iterations as f64;
 
     black_box(checksum);
-    print_result(label, entries, iterations, elapsed);
+    print_result(label, entries, iterations, elapsed, scans_per_iter);
 }
 
 fn lookup_once(fixture: &LookupFixture) -> usize {
@@ -162,16 +165,27 @@ fn lookup_iterations(entries: usize) -> usize {
     }
 }
 
-fn print_result(label: &str, entries: usize, iterations: usize, elapsed: Duration) {
+fn lookup_scan_count(metrics: &NativeTextPrefixCacheMetrics) -> u64 {
+    metrics.snapshot()["entries_scanned"].as_u64().unwrap_or(0)
+}
+
+fn print_result(
+    label: &str,
+    entries: usize,
+    iterations: usize,
+    elapsed: Duration,
+    scans_per_iter: f64,
+) {
     let total_ms = elapsed.as_secs_f64() * 1_000.0;
     let ns_per_iter = elapsed.as_secs_f64() * 1_000_000_000.0 / iterations as f64;
     println!(
-        "{:<44} {:>8} {:>10} {:>14.3} {:>12.1}",
+        "{:<44} {:>8} {:>10} {:>14.3} {:>12.1} {:>12.1}",
         format!("prefix_cache_lookup/{label}"),
         entries,
         iterations,
         total_ms,
-        ns_per_iter
+        ns_per_iter,
+        scans_per_iter
     );
 }
 

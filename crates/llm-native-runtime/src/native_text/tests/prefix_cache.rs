@@ -91,6 +91,92 @@ fn prefix_cache_lookup_skips_capacity_incompatible_entries() {
 }
 
 #[test]
+fn prefix_cache_reuses_longest_compatible_prefix_across_branching_trie_paths() {
+    let cache = NativeTextPrefixCache::new(2048);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let namespace = namespace("branching");
+    let hidden = [0.5, 1.5];
+
+    cache.store(
+        namespace.clone(),
+        &[1, 2],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 2,
+        }],
+        &metrics,
+    );
+    cache.store(
+        namespace.clone(),
+        &[1, 2, 3],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 3,
+        }],
+        &metrics,
+    );
+    cache.store(
+        namespace.clone(),
+        &[1, 4, 5],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 45,
+        }],
+        &metrics,
+    );
+
+    let fallback = cache
+        .lookup_compatible(&namespace, &[1, 2, 3, 9], &metrics, |caches| {
+            caches.iter().all(|cache| cache.marker != 3)
+        })
+        .expect("shorter compatible prefix is reused when longest branch is incompatible");
+    assert_eq!(fallback.token_count, 2);
+    assert_eq!(fallback.caches[0].marker, 2);
+
+    let branch_hit = cache
+        .lookup(&namespace, &[1, 4, 5, 6], &metrics)
+        .expect("lookup follows the requested branch");
+    assert_eq!(branch_hit.token_count, 3);
+    assert_eq!(branch_hit.caches[0].marker, 45);
+}
+
+#[test]
+fn prefix_cache_lookup_metrics_count_indexed_candidates_not_full_namespace() {
+    let cache = NativeTextPrefixCache::new(1_000_000);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let namespace = namespace("indexed-metrics");
+    let hidden = [1.0];
+    let caches = [TestCache {
+        bytes: 1,
+        marker: 1,
+    }];
+
+    cache.store(namespace.clone(), &[1, 2, 3], &hidden, &caches, &metrics);
+    for index in 0..128 {
+        let tokens = [10_000 + index];
+        cache.store(namespace.clone(), &tokens, &hidden, &caches, &metrics);
+    }
+
+    let hit = cache
+        .lookup(&namespace, &[1, 2, 3, 4], &metrics)
+        .expect("matching prompt reuses indexed prefix");
+    assert_eq!(hit.token_count, 3);
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot["entries_scanned"], 1,
+        "lookup should inspect only the terminal candidate on the query path"
+    );
+    assert_eq!(
+        snapshot["namespace_entries_scanned"], 1,
+        "lookup should not scan all unrelated namespace entries"
+    );
+}
+
+#[test]
 fn prefix_cache_stores_entries_in_namespace_buckets() {
     let cache = NativeTextPrefixCache::new(1024);
     let metrics = NativeTextPrefixCacheMetrics::default();
@@ -257,10 +343,10 @@ fn prefix_cache_metrics_record_lookup_scans_and_hit_clone_bytes() {
 
     let snapshot = metrics.snapshot();
     assert_eq!(
-        snapshot["entries_scanned"], 4,
-        "lookups only scan entries in the matching namespace bucket"
+        snapshot["entries_scanned"], 1,
+        "lookups only scan terminal candidates on the matching trie path"
     );
-    assert_eq!(snapshot["namespace_entries_scanned"], 4);
+    assert_eq!(snapshot["namespace_entries_scanned"], 1);
     assert_eq!(
         snapshot["hit_clone_bytes"],
         std::mem::size_of_val(&hidden) as u64 + 7
