@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.25](https://github.com/michaelasper/kir-ai/compare/v1.57.24...v1.57.25) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-500:** harden native worker concurrency and mlx metrics ([498ac18](https://github.com/michaelasper/kir-ai/commit/498ac18fd4f24ce376cbc18495decebb7c636553))
+
 ## [1.57.24](https://github.com/michaelasper/kir-ai/compare/v1.57.23...v1.57.24) (2026-05-26)
 
 ### Bug Fixes
