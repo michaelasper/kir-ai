@@ -298,6 +298,97 @@ fn cloned_block_pool_coordinates_concurrent_allocation_and_release() {
 }
 
 #[test]
+fn cloned_block_pool_coordinates_concurrent_session_allocation_and_release() {
+    const WORKERS: usize = 8;
+    const BLOCKS_PER_SESSION: usize = 4;
+    const ITERATIONS: usize = 32;
+
+    let pool = BlockPool::new(WORKERS * BLOCKS_PER_SESSION, 2, 2).expect("pool shape is valid");
+    let active_blocks = Arc::new(Mutex::new(HashSet::<BlockId>::new()));
+    let start = Arc::new(Barrier::new(WORKERS));
+    let mut handles = Vec::with_capacity(WORKERS);
+
+    for _ in 0..WORKERS {
+        let pool = pool.clone();
+        let active_blocks = Arc::clone(&active_blocks);
+        let start = Arc::clone(&start);
+        handles.push(thread::spawn(move || {
+            start.wait();
+            for _ in 0..ITERATIONS {
+                let session = pool
+                    .create_session()
+                    .expect("concurrent session ids remain available");
+                let mut session_blocks = Vec::with_capacity(BLOCKS_PER_SESSION);
+
+                for index in 0..BLOCKS_PER_SESSION {
+                    let block = loop {
+                        if let Some(block) = pool.allocate_for_session(session) {
+                            break block;
+                        }
+                        thread::yield_now();
+                    };
+
+                    assert_eq!(
+                        pool.read_session_block(session, index),
+                        Some(block),
+                        "session table should expose the block allocated at this index"
+                    );
+                    {
+                        let mut active_blocks = active_blocks
+                            .lock()
+                            .expect("active block set lock is not poisoned");
+                        assert!(
+                            active_blocks.insert(block),
+                            "block {block} was allocated concurrently more than once"
+                        );
+                    }
+                    session_blocks.push(block);
+                }
+
+                assert_eq!(
+                    pool.session(session)
+                        .expect("session remains live")
+                        .owned_block_count(),
+                    BLOCKS_PER_SESSION
+                );
+
+                {
+                    let mut active_blocks = active_blocks
+                        .lock()
+                        .expect("active block set lock is not poisoned");
+                    for block in &session_blocks {
+                        assert!(
+                            active_blocks.remove(block),
+                            "session block {block} should be active before release"
+                        );
+                    }
+                }
+
+                assert!(
+                    pool.release_session(session),
+                    "concurrent session release should succeed"
+                );
+                assert!(pool.session(session).is_none());
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("session worker should not panic");
+    }
+
+    assert!(
+        active_blocks
+            .lock()
+            .expect("active block set lock is not poisoned")
+            .is_empty()
+    );
+    assert_eq!(pool.session_count(), 0);
+    assert_eq!(pool.allocated_blocks(), 0);
+    assert_eq!(pool.free_blocks(), WORKERS * BLOCKS_PER_SESSION);
+}
+
+#[test]
 fn block_pool_maintains_lru_access_order_for_allocated_blocks() {
     let pool = BlockPool::new(3, 2, 2).expect("pool shape is valid");
     let first = pool.allocate().expect("first block is available");

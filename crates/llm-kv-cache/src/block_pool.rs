@@ -30,6 +30,10 @@ struct PrefixBlockSnapshot {
     content_hash: CacheBlockHash,
 }
 
+/// Shared paged-KV block allocator.
+///
+/// Cloned handles coordinate through one mutex-protected allocator while session
+/// block tables remain owned by the pool and are exposed only as snapshots.
 #[derive(Debug, Clone)]
 pub struct BlockPool {
     inner: Arc<Mutex<BlockPoolInner>>,
