@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.31](https://github.com/michaelasper/kir-ai/compare/v1.57.30...v1.57.31) (2026-05-26)
+
+### Performance Improvements
+
+* **COR-499:** index native prefix cache lookup ([e84bf61](https://github.com/michaelasper/kir-ai/commit/e84bf61b03c9f3863636ca2dfffe4e56ad47b5c0))
+
 ## [1.57.30](https://github.com/michaelasper/kir-ai/compare/v1.57.29...v1.57.30) (2026-05-26)
 
 ### Bug Fixes
