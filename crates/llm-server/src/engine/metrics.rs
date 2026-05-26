@@ -396,7 +396,7 @@ pub(super) fn record_success_metrics(
         .prompt_tokens_details
         .as_ref()
         .map(|details| details.cached_tokens);
-    state.metrics.lock_or_panic("metrics").record_success(
+    state.metrics.record_success(
         TokenCounters::new(usage.prompt_tokens, usage.completion_tokens)
             .with_prompt_cached_tokens(prompt_cached_tokens),
         streamed,
@@ -437,66 +437,47 @@ fn set_once(target: &mut Option<u64>, value: u64) {
 }
 
 pub(super) fn record_failure_metrics(state: &AppState) {
-    state.metrics.lock_or_panic("metrics").record_failure();
+    state.metrics.record_failure();
 }
 
 pub(super) fn record_runtime_error_metrics(state: &AppState, err: &RuntimeError) {
-    let mut metrics = state.metrics.lock_or_panic("metrics");
     if matches!(err, RuntimeError::NoProgress(_)) {
-        metrics.record_no_progress_failure();
+        state.metrics.record_no_progress_failure();
     }
-    metrics.record_failure();
+    state.metrics.record_failure();
 }
 
 pub(super) fn record_cancellation_metrics(state: &AppState) {
-    state.metrics.lock_or_panic("metrics").record_cancellation();
+    state.metrics.record_cancellation();
 }
 
 pub(super) fn record_stream_client_disconnect_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_stream_client_disconnect();
+    state.metrics.record_stream_client_disconnect();
 }
 
 pub(super) fn record_stream_stall_metrics(state: &AppState) {
-    state.metrics.lock_or_panic("metrics").record_stream_stall();
+    state.metrics.record_stream_stall();
 }
 
 pub(super) fn record_model_pull_success_metrics(state: &AppState, bytes: u64) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_model_pull_success(bytes);
+    state.metrics.record_model_pull_success(bytes);
 }
 
 pub(super) fn record_model_pull_failure_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_model_pull_failure();
+    state.metrics.record_model_pull_failure();
 }
 
 pub(super) fn record_artifact_verification_failure_metrics(state: &AppState) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_artifact_verification_failure();
+    state.metrics.record_artifact_verification_failure();
 }
 
 pub(super) fn record_time_to_first_token_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_time_to_first_token(latency);
+    state.metrics.record_time_to_first_token(latency);
 }
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_first_tool_delta_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_first_tool_delta(latency);
+    state.metrics.record_first_tool_delta(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -504,10 +485,7 @@ pub(super) fn record_first_tool_delta_metrics(_state: &AppState, _latency: Durat
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_first_tool_delta_after_ttft_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_first_tool_delta_after_ttft(latency);
+    state.metrics.record_first_tool_delta_after_ttft(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -515,10 +493,7 @@ pub(super) fn record_first_tool_delta_after_ttft_metrics(_state: &AppState, _lat
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_argument_assembly_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_tool_argument_assembly(latency);
+    state.metrics.record_tool_argument_assembly(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -526,10 +501,7 @@ pub(super) fn record_tool_argument_assembly_metrics(_state: &AppState, _latency:
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_intent_fill_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_tool_intent_fill(latency);
+    state.metrics.record_tool_intent_fill(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -537,10 +509,7 @@ pub(super) fn record_tool_intent_fill_metrics(_state: &AppState, _latency: Durat
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_schema_validation_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_tool_schema_validation(latency);
+    state.metrics.record_tool_schema_validation(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -548,10 +517,7 @@ pub(super) fn record_tool_schema_validation_metrics(_state: &AppState, _latency:
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_tool_finish_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_tool_finish(latency);
+    state.metrics.record_tool_finish(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]
@@ -559,10 +525,7 @@ pub(super) fn record_tool_finish_metrics(_state: &AppState, _latency: Duration) 
 
 #[cfg(feature = "tool-calls")]
 pub(super) fn record_validated_tool_call_metrics(state: &AppState, latency: Duration) {
-    state
-        .metrics
-        .lock_or_panic("metrics")
-        .record_validated_tool_call(latency);
+    state.metrics.record_validated_tool_call(latency);
 }
 
 #[cfg(not(feature = "tool-calls"))]

@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenCounters {
@@ -56,6 +59,37 @@ impl TokenCounters {
     }
 }
 
+#[derive(Debug, Default)]
+struct AtomicTokenCounters {
+    prompt_tokens: AtomicU64,
+    completion_tokens: AtomicU64,
+    prompt_cached_tokens: AtomicU64,
+    prompt_cached_tokens_reported: AtomicBool,
+}
+
+impl AtomicTokenCounters {
+    fn record(&self, tokens: TokenCounters) {
+        atomic_saturating_add(&self.prompt_tokens, tokens.prompt_tokens());
+        atomic_saturating_add(&self.completion_tokens, tokens.completion_tokens());
+        if let Some(cached_tokens) = tokens.prompt_cached_tokens() {
+            atomic_saturating_add(&self.prompt_cached_tokens, cached_tokens);
+            self.prompt_cached_tokens_reported
+                .store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> TokenCounters {
+        TokenCounters {
+            prompt_tokens: self.prompt_tokens.load(Ordering::Relaxed),
+            completion_tokens: self.completion_tokens.load(Ordering::Relaxed),
+            prompt_cached_tokens: self
+                .prompt_cached_tokens_reported
+                .load(Ordering::Relaxed)
+                .then(|| self.prompt_cached_tokens.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LatencyMetrics {
     count: u64,
@@ -98,6 +132,59 @@ impl LatencyMetrics {
     }
 }
 
+#[derive(Debug)]
+pub struct AtomicLatencyMetrics {
+    count: AtomicU64,
+    total_nanos: AtomicU64,
+    min_nanos: AtomicU64,
+    max_nanos: AtomicU64,
+}
+
+impl Default for AtomicLatencyMetrics {
+    fn default() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            total_nanos: AtomicU64::new(0),
+            min_nanos: AtomicU64::new(u64::MAX),
+            max_nanos: AtomicU64::new(0),
+        }
+    }
+}
+
+impl AtomicLatencyMetrics {
+    pub fn record(&self, duration: Duration) {
+        let nanos = duration_nanos_u64(duration);
+        atomic_saturating_add(&self.total_nanos, nanos);
+        self.min_nanos.fetch_min(nanos, Ordering::Relaxed);
+        self.max_nanos.fetch_max(nanos, Ordering::Relaxed);
+        atomic_saturating_add(&self.count, 1);
+    }
+
+    pub fn snapshot(&self) -> LatencyMetrics {
+        let count = self.count.load(Ordering::Relaxed);
+        if count == 0 {
+            return LatencyMetrics::default();
+        }
+        let min_nanos = self.min_nanos.load(Ordering::Relaxed);
+        LatencyMetrics {
+            count,
+            total_nanos: u128::from(self.total_nanos.load(Ordering::Relaxed)),
+            min_nanos: Some(u128::from(min_nanos)),
+            max_nanos: u128::from(self.max_nanos.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+fn duration_nanos_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn atomic_saturating_add(counter: &AtomicU64, value: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
 fn nanos_to_ms(nanos: u128) -> f64 {
     nanos as f64 / 1_000_000.0
 }
@@ -133,259 +220,257 @@ impl RequestMetrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct ServerMetrics {
-    requests_total: u64,
-    successful_requests: u64,
-    failed_requests: u64,
-    streamed_requests: u64,
-    stream_client_disconnected_requests: u64,
-    stream_stalled_requests: u64,
-    cancelled_requests: u64,
-    no_progress_failures: u64,
-    model_pull_operations: u64,
-    model_pull_successes: u64,
-    model_pull_failures: u64,
-    model_pull_bytes: u64,
-    artifact_verification_failures: u64,
-    request_latency: LatencyMetrics,
-    non_streamed_request_latency: LatencyMetrics,
-    streamed_request_latency: LatencyMetrics,
-    time_to_first_token: LatencyMetrics,
+    requests_total: AtomicU64,
+    successful_requests: AtomicU64,
+    failed_requests: AtomicU64,
+    streamed_requests: AtomicU64,
+    stream_client_disconnected_requests: AtomicU64,
+    stream_stalled_requests: AtomicU64,
+    cancelled_requests: AtomicU64,
+    no_progress_failures: AtomicU64,
+    model_pull_operations: AtomicU64,
+    model_pull_successes: AtomicU64,
+    model_pull_failures: AtomicU64,
+    model_pull_bytes: AtomicU64,
+    artifact_verification_failures: AtomicU64,
+    request_latency: AtomicLatencyMetrics,
+    non_streamed_request_latency: AtomicLatencyMetrics,
+    streamed_request_latency: AtomicLatencyMetrics,
+    time_to_first_token: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    first_tool_delta: LatencyMetrics,
+    first_tool_delta: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    first_tool_delta_after_ttft: LatencyMetrics,
+    first_tool_delta_after_ttft: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    tool_argument_assembly: LatencyMetrics,
+    tool_argument_assembly: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    tool_intent_fill: LatencyMetrics,
+    tool_intent_fill: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    tool_schema_validation: LatencyMetrics,
+    tool_schema_validation: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    tool_finish: LatencyMetrics,
+    tool_finish: AtomicLatencyMetrics,
     #[cfg(feature = "tool-calls")]
-    validated_tool_call: LatencyMetrics,
-    tokens: TokenCounters,
+    validated_tool_call: AtomicLatencyMetrics,
+    tokens: AtomicTokenCounters,
 }
 
 impl ServerMetrics {
-    pub fn record_success(&mut self, tokens: TokenCounters, streamed: bool, latency: Duration) {
-        self.requests_total += 1;
-        self.successful_requests += 1;
+    pub fn record_success(&self, tokens: TokenCounters, streamed: bool, latency: Duration) {
+        atomic_saturating_add(&self.requests_total, 1);
+        atomic_saturating_add(&self.successful_requests, 1);
         if streamed {
-            self.streamed_requests += 1;
+            atomic_saturating_add(&self.streamed_requests, 1);
             self.streamed_request_latency.record(latency);
         } else {
             self.non_streamed_request_latency.record(latency);
         }
         self.request_latency.record(latency);
-        self.tokens.record_prompt_tokens(tokens.prompt_tokens());
-        self.tokens
-            .record_completion_tokens(tokens.completion_tokens());
-        self.tokens
-            .record_prompt_cached_tokens(tokens.prompt_cached_tokens());
+        self.tokens.record(tokens);
     }
 
-    pub fn record_failure(&mut self) {
-        self.requests_total += 1;
-        self.failed_requests += 1;
+    pub fn record_failure(&self) {
+        atomic_saturating_add(&self.requests_total, 1);
+        atomic_saturating_add(&self.failed_requests, 1);
     }
 
-    pub fn record_stream_client_disconnect(&mut self) {
-        self.requests_total += 1;
-        self.failed_requests += 1;
-        self.stream_client_disconnected_requests += 1;
+    pub fn record_stream_client_disconnect(&self) {
+        atomic_saturating_add(&self.requests_total, 1);
+        atomic_saturating_add(&self.failed_requests, 1);
+        atomic_saturating_add(&self.stream_client_disconnected_requests, 1);
     }
 
-    pub fn record_stream_stall(&mut self) {
-        self.requests_total += 1;
-        self.failed_requests += 1;
-        self.stream_stalled_requests += 1;
+    pub fn record_stream_stall(&self) {
+        atomic_saturating_add(&self.requests_total, 1);
+        atomic_saturating_add(&self.failed_requests, 1);
+        atomic_saturating_add(&self.stream_stalled_requests, 1);
     }
 
-    pub fn record_cancellation(&mut self) {
-        self.cancelled_requests += 1;
+    pub fn record_cancellation(&self) {
+        atomic_saturating_add(&self.cancelled_requests, 1);
     }
 
-    pub fn record_no_progress_failure(&mut self) {
-        self.no_progress_failures += 1;
+    pub fn record_no_progress_failure(&self) {
+        atomic_saturating_add(&self.no_progress_failures, 1);
     }
 
-    pub fn record_model_pull_success(&mut self, bytes: u64) {
-        self.model_pull_operations += 1;
-        self.model_pull_successes += 1;
-        self.model_pull_bytes += bytes;
+    pub fn record_model_pull_success(&self, bytes: u64) {
+        atomic_saturating_add(&self.model_pull_operations, 1);
+        atomic_saturating_add(&self.model_pull_successes, 1);
+        atomic_saturating_add(&self.model_pull_bytes, bytes);
     }
 
-    pub fn record_model_pull_failure(&mut self) {
-        self.model_pull_operations += 1;
-        self.model_pull_failures += 1;
+    pub fn record_model_pull_failure(&self) {
+        atomic_saturating_add(&self.model_pull_operations, 1);
+        atomic_saturating_add(&self.model_pull_failures, 1);
     }
 
-    pub fn record_artifact_verification_failure(&mut self) {
-        self.artifact_verification_failures += 1;
+    pub fn record_artifact_verification_failure(&self) {
+        atomic_saturating_add(&self.artifact_verification_failures, 1);
     }
 
-    pub fn record_time_to_first_token(&mut self, latency: Duration) {
+    pub fn record_time_to_first_token(&self, latency: Duration) {
         self.time_to_first_token.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_first_tool_delta(&mut self, latency: Duration) {
+    pub fn record_first_tool_delta(&self, latency: Duration) {
         self.first_tool_delta.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_first_tool_delta_after_ttft(&mut self, latency: Duration) {
+    pub fn record_first_tool_delta_after_ttft(&self, latency: Duration) {
         self.first_tool_delta_after_ttft.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_tool_argument_assembly(&mut self, latency: Duration) {
+    pub fn record_tool_argument_assembly(&self, latency: Duration) {
         self.tool_argument_assembly.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_tool_intent_fill(&mut self, latency: Duration) {
+    pub fn record_tool_intent_fill(&self, latency: Duration) {
         self.tool_intent_fill.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_tool_schema_validation(&mut self, latency: Duration) {
+    pub fn record_tool_schema_validation(&self, latency: Duration) {
         self.tool_schema_validation.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_tool_finish(&mut self, latency: Duration) {
+    pub fn record_tool_finish(&self, latency: Duration) {
         self.tool_finish.record(latency);
     }
 
     #[cfg(feature = "tool-calls")]
-    pub fn record_validated_tool_call(&mut self, latency: Duration) {
+    pub fn record_validated_tool_call(&self, latency: Duration) {
         self.validated_tool_call.record(latency);
     }
 
     pub fn requests_total(&self) -> u64 {
-        self.requests_total
+        self.requests_total.load(Ordering::Relaxed)
     }
 
     pub fn successful_requests(&self) -> u64 {
-        self.successful_requests
+        self.successful_requests.load(Ordering::Relaxed)
     }
 
     pub fn failed_requests(&self) -> u64 {
-        self.failed_requests
+        self.failed_requests.load(Ordering::Relaxed)
     }
 
     pub fn streamed_requests(&self) -> u64 {
-        self.streamed_requests
+        self.streamed_requests.load(Ordering::Relaxed)
     }
 
     pub fn stream_client_disconnected_requests(&self) -> u64 {
         self.stream_client_disconnected_requests
+            .load(Ordering::Relaxed)
     }
 
     pub fn stream_stalled_requests(&self) -> u64 {
-        self.stream_stalled_requests
+        self.stream_stalled_requests.load(Ordering::Relaxed)
     }
 
     pub fn cancelled_requests(&self) -> u64 {
-        self.cancelled_requests
+        self.cancelled_requests.load(Ordering::Relaxed)
     }
 
     pub fn no_progress_failures(&self) -> u64 {
-        self.no_progress_failures
+        self.no_progress_failures.load(Ordering::Relaxed)
     }
 
     pub fn model_pull_operations(&self) -> u64 {
-        self.model_pull_operations
+        self.model_pull_operations.load(Ordering::Relaxed)
     }
 
     pub fn model_pull_successes(&self) -> u64 {
-        self.model_pull_successes
+        self.model_pull_successes.load(Ordering::Relaxed)
     }
 
     pub fn model_pull_failures(&self) -> u64 {
-        self.model_pull_failures
+        self.model_pull_failures.load(Ordering::Relaxed)
     }
 
     pub fn model_pull_bytes(&self) -> u64 {
-        self.model_pull_bytes
+        self.model_pull_bytes.load(Ordering::Relaxed)
     }
 
     pub fn artifact_verification_failures(&self) -> u64 {
-        self.artifact_verification_failures
+        self.artifact_verification_failures.load(Ordering::Relaxed)
     }
 
     pub fn request_latency(&self) -> LatencyMetrics {
-        self.request_latency
+        self.request_latency.snapshot()
     }
 
     pub fn non_streamed_request_latency(&self) -> LatencyMetrics {
-        self.non_streamed_request_latency
+        self.non_streamed_request_latency.snapshot()
     }
 
     pub fn streamed_request_latency(&self) -> LatencyMetrics {
-        self.streamed_request_latency
+        self.streamed_request_latency.snapshot()
     }
 
     pub fn time_to_first_token(&self) -> LatencyMetrics {
-        self.time_to_first_token
+        self.time_to_first_token.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn first_tool_delta(&self) -> LatencyMetrics {
-        self.first_tool_delta
+        self.first_tool_delta.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn first_tool_delta_after_ttft(&self) -> LatencyMetrics {
-        self.first_tool_delta_after_ttft
+        self.first_tool_delta_after_ttft.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn tool_argument_assembly(&self) -> LatencyMetrics {
-        self.tool_argument_assembly
+        self.tool_argument_assembly.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn tool_intent_fill(&self) -> LatencyMetrics {
-        self.tool_intent_fill
+        self.tool_intent_fill.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn tool_schema_validation(&self) -> LatencyMetrics {
-        self.tool_schema_validation
+        self.tool_schema_validation.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn tool_finish(&self) -> LatencyMetrics {
-        self.tool_finish
+        self.tool_finish.snapshot()
     }
 
     #[cfg(feature = "tool-calls")]
     pub fn validated_tool_call(&self) -> LatencyMetrics {
-        self.validated_tool_call
+        self.validated_tool_call.snapshot()
     }
 
     pub fn tokens_per_second(&self) -> f64 {
-        let seconds = self.request_latency.total_seconds();
+        let seconds = self.request_latency().total_seconds();
         if seconds == 0.0 {
             0.0
         } else {
-            self.tokens.total_tokens() as f64 / seconds
+            self.tokens().total_tokens() as f64 / seconds
         }
     }
 
     pub fn tokens(&self) -> TokenCounters {
-        self.tokens
+        self.tokens.snapshot()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::Arc, thread};
 
     #[test]
     fn token_counters_report_totals() {
@@ -443,7 +528,7 @@ mod tests {
 
     #[test]
     fn server_metrics_tracks_success_failure_streams_and_tokens() {
-        let mut metrics = ServerMetrics::default();
+        let metrics = ServerMetrics::default();
 
         metrics.record_success(
             TokenCounters::new(4, 1).with_prompt_cached_tokens(Some(6)),
@@ -533,11 +618,47 @@ mod tests {
 
     #[test]
     fn server_metrics_leave_cached_prompt_tokens_absent_when_not_reported() {
-        let mut metrics = ServerMetrics::default();
+        let metrics = ServerMetrics::default();
 
         metrics.record_success(TokenCounters::new(4, 1), false, Duration::from_millis(10));
         metrics.record_success(TokenCounters::new(8, 2), true, Duration::from_millis(30));
 
         assert_eq!(metrics.tokens().prompt_cached_tokens(), None);
+    }
+
+    #[test]
+    fn server_metrics_record_hot_paths_concurrently_without_external_lock() {
+        let metrics = Arc::new(ServerMetrics::default());
+
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                let metrics = Arc::clone(&metrics);
+                scope.spawn(move || {
+                    for _ in 0..64 {
+                        metrics.record_success(
+                            TokenCounters::new(4, 2).with_prompt_cached_tokens(Some(1)),
+                            true,
+                            Duration::from_millis(5),
+                        );
+                        metrics.record_time_to_first_token(Duration::from_millis(2));
+                        #[cfg(feature = "tool-calls")]
+                        metrics.record_first_tool_delta(Duration::from_millis(3));
+                    }
+                });
+            }
+        });
+
+        assert_eq!(metrics.requests_total(), 512);
+        assert_eq!(metrics.successful_requests(), 512);
+        assert_eq!(metrics.streamed_requests(), 512);
+        assert_eq!(
+            metrics.tokens(),
+            TokenCounters::new(2048, 1024).with_prompt_cached_tokens(Some(512))
+        );
+        assert_eq!(metrics.request_latency().count(), 512);
+        assert_eq!(metrics.streamed_request_latency().count(), 512);
+        assert_eq!(metrics.time_to_first_token().count(), 512);
+        #[cfg(feature = "tool-calls")]
+        assert_eq!(metrics.first_tool_delta().count(), 512);
     }
 }

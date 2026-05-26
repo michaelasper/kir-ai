@@ -371,7 +371,7 @@ pub(super) async fn admin_kv_cache(
 }
 
 async fn admin_metrics_response(state: &AppState) -> Result<AdminMetricsResponse, EngineError> {
-    let metrics = *state.metrics.lock_or_panic("metrics");
+    let metrics = &state.metrics;
     let tokens = metrics.tokens();
     let request_latency = metrics.request_latency();
     let non_streamed_request_latency = metrics.non_streamed_request_latency();

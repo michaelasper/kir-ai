@@ -23,7 +23,7 @@ pub(super) type EngineRuntime = Runtime<Box<dyn ModelBackend>>;
 #[derive(Clone)]
 pub(super) struct AppState {
     pub(super) runtime: Arc<EngineRuntime>,
-    pub(super) metrics: Arc<Mutex<ServerMetrics>>,
+    pub(super) metrics: Arc<ServerMetrics>,
     pub(super) request_cache: Arc<Mutex<RequestCacheObservations>>,
     pub(super) tool_stream: Arc<Mutex<ToolStreamObservations>>,
     pub(super) generation_phases: Arc<GenerationPhaseMetrics>,

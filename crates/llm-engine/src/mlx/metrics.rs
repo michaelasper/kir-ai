@@ -1,6 +1,6 @@
 use super::protocol::{MlxUpstreamProtocol, mlx_effective_chat_template_kwargs};
 use llm_backend_contracts::{BackendModelMetadata, BackendRequest, BackendToolChoice};
-use llm_telemetry::LatencyMetrics;
+use llm_telemetry::AtomicLatencyMetrics;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,7 +14,7 @@ use std::{
 #[derive(Debug, Default)]
 pub(super) struct MlxBackendMetrics {
     counters: MlxBackendMetricCounters,
-    latencies: Mutex<MlxBackendLatencyMetrics>,
+    latencies: MlxBackendLatencyMetrics,
     observations: Mutex<MlxBackendObservations>,
 }
 
@@ -38,16 +38,16 @@ struct MlxBackendMetricCounters {
     zero_output_successes: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 struct MlxBackendLatencyMetrics {
-    upstream_request_latency: LatencyMetrics,
-    blocking_upstream_request_latency: LatencyMetrics,
-    streaming_upstream_request_latency: LatencyMetrics,
-    stream_response_headers_latency: LatencyMetrics,
-    stream_first_upstream_byte_latency: LatencyMetrics,
-    stream_first_parsed_chunk_latency: LatencyMetrics,
-    stream_first_tool_delta_latency: LatencyMetrics,
-    stream_upstream_complete_latency: LatencyMetrics,
+    upstream_request_latency: AtomicLatencyMetrics,
+    blocking_upstream_request_latency: AtomicLatencyMetrics,
+    streaming_upstream_request_latency: AtomicLatencyMetrics,
+    stream_response_headers_latency: AtomicLatencyMetrics,
+    stream_first_upstream_byte_latency: AtomicLatencyMetrics,
+    stream_first_parsed_chunk_latency: AtomicLatencyMetrics,
+    stream_first_tool_delta_latency: AtomicLatencyMetrics,
+    stream_upstream_complete_latency: AtomicLatencyMetrics,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,7 +117,6 @@ impl MlxBackendMetrics {
     }
 
     pub(super) fn snapshot(&self) -> Value {
-        let latencies = *self.lock_latencies();
         let observations = self.lock_observations().clone();
         json!({
             "requests_total": self.load_counter(&self.counters.requests_total),
@@ -135,28 +134,30 @@ impl MlxBackendMetrics {
             "stall_failures": self.load_counter(&self.counters.stall_failures),
             "cancelled_requests": self.load_counter(&self.counters.cancelled_requests),
             "dropped_requests": self.load_counter(&self.counters.dropped_requests),
-            "request_latency_ms": latency_summary(latencies.upstream_request_latency),
-            "upstream_request_latency_ms": latency_summary(latencies.upstream_request_latency),
+            "request_latency_ms": latency_summary(&self.latencies.upstream_request_latency),
+            "upstream_request_latency_ms": latency_summary(
+                &self.latencies.upstream_request_latency,
+            ),
             "blocking_upstream_request_latency_ms": latency_summary(
-                latencies.blocking_upstream_request_latency,
+                &self.latencies.blocking_upstream_request_latency,
             ),
             "streaming_upstream_request_latency_ms": latency_summary(
-                latencies.streaming_upstream_request_latency,
+                &self.latencies.streaming_upstream_request_latency,
             ),
             "stream_response_headers_ms": latency_summary(
-                latencies.stream_response_headers_latency,
+                &self.latencies.stream_response_headers_latency,
             ),
             "stream_first_upstream_byte_ms": latency_summary(
-                latencies.stream_first_upstream_byte_latency,
+                &self.latencies.stream_first_upstream_byte_latency,
             ),
             "stream_first_parsed_chunk_ms": latency_summary(
-                latencies.stream_first_parsed_chunk_latency,
+                &self.latencies.stream_first_parsed_chunk_latency,
             ),
             "stream_first_tool_delta_ms": latency_summary(
-                latencies.stream_first_tool_delta_latency,
+                &self.latencies.stream_first_tool_delta_latency,
             ),
             "stream_upstream_complete_ms": latency_summary(
-                latencies.stream_upstream_complete_latency,
+                &self.latencies.stream_upstream_complete_latency,
             ),
             "last_request_fingerprint": observations.last_request_fingerprint,
             "zero_output_successes": self.load_counter(&self.counters.zero_output_successes),
@@ -180,8 +181,7 @@ impl MlxBackendMetrics {
         self.counters
             .successful_requests
             .fetch_add(1, Ordering::Relaxed);
-        let mut latencies = self.lock_latencies();
-        record_upstream_latency(&mut latencies, kind, latency);
+        record_upstream_latency(&self.latencies, kind, latency);
     }
 
     fn record_request_fingerprint(&self, fingerprint: Value) {
@@ -196,31 +196,31 @@ impl MlxBackendMetrics {
     }
 
     fn record_stream_response_headers(&self, latency: Duration) {
-        self.lock_latencies()
+        self.latencies
             .stream_response_headers_latency
             .record(latency);
     }
 
     fn record_stream_first_upstream_byte(&self, latency: Duration) {
-        self.lock_latencies()
+        self.latencies
             .stream_first_upstream_byte_latency
             .record(latency);
     }
 
     fn record_stream_first_parsed_chunk(&self, latency: Duration) {
-        self.lock_latencies()
+        self.latencies
             .stream_first_parsed_chunk_latency
             .record(latency);
     }
 
     fn record_stream_first_tool_delta(&self, latency: Duration) {
-        self.lock_latencies()
+        self.latencies
             .stream_first_tool_delta_latency
             .record(latency);
     }
 
     fn record_stream_upstream_complete(&self, latency: Duration) {
-        self.lock_latencies()
+        self.latencies
             .stream_upstream_complete_latency
             .record(latency);
     }
@@ -234,8 +234,7 @@ impl MlxBackendMetrics {
         self.counters
             .failed_requests
             .fetch_add(1, Ordering::Relaxed);
-        let mut latencies = self.lock_latencies();
-        record_upstream_latency(&mut latencies, request_kind, latency);
+        record_upstream_latency(&self.latencies, request_kind, latency);
         match failure_kind {
             MlxBackendFailureKind::HttpStatus => &self.counters.http_error_responses,
             MlxBackendFailureKind::Transport => &self.counters.transport_failures,
@@ -255,12 +254,7 @@ impl MlxBackendMetrics {
         self.counters
             .dropped_requests
             .fetch_add(1, Ordering::Relaxed);
-        let mut latencies = self.lock_latencies();
-        record_upstream_latency(&mut latencies, kind, latency);
-    }
-
-    fn lock_latencies(&self) -> MutexGuard<'_, MlxBackendLatencyMetrics> {
-        recover_metrics_lock(&self.latencies, "MLX backend latency metrics")
+        record_upstream_latency(&self.latencies, kind, latency);
     }
 
     fn lock_observations(&self) -> MutexGuard<'_, MlxBackendObservations> {
@@ -273,7 +267,7 @@ impl MlxBackendMetrics {
 }
 
 fn record_upstream_latency(
-    latencies: &mut MlxBackendLatencyMetrics,
+    latencies: &MlxBackendLatencyMetrics,
     kind: MlxBackendRequestKind,
     latency: Duration,
 ) {
@@ -471,7 +465,8 @@ fn hash_bytes(bytes: &[u8]) -> String {
     format!("{digest:x}")
 }
 
-fn latency_summary(metrics: LatencyMetrics) -> Value {
+fn latency_summary(metrics: &AtomicLatencyMetrics) -> Value {
+    let metrics = metrics.snapshot();
     json!({
         "count": metrics.count(),
         "min": metrics.min_ms(),
@@ -486,6 +481,7 @@ mod tests {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
         sync::Mutex,
+        thread,
     };
 
     #[test]
@@ -529,12 +525,55 @@ mod tests {
     }
 
     #[test]
-    fn metrics_recover_poisoned_latency_and_observation_locks() {
+    fn metrics_record_stream_latency_milestones_concurrently() {
+        let metrics = Arc::new(MlxBackendMetrics::default());
+
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                let metrics = Arc::clone(&metrics);
+                scope.spawn(move || {
+                    for _ in 0..64 {
+                        let mut request = metrics.start_request(
+                            MlxUpstreamProtocol::ChatCompletions,
+                            MlxBackendRequestKind::Streaming,
+                        );
+                        request.record_stream_response_headers();
+                        request.record_first_upstream_byte();
+                        request.record_first_parsed_chunk();
+                        request.record_first_tool_delta();
+                        request.record_stream_complete();
+                        request.finish_success();
+                    }
+                });
+            }
+        });
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["requests_total"], json!(512));
+        assert_eq!(snapshot["successful_requests"], json!(512));
+        assert_eq!(snapshot["chat_completion_requests"], json!(512));
+        assert_eq!(
+            snapshot["streaming_upstream_request_latency_ms"]["count"],
+            json!(512)
+        );
+        assert_eq!(snapshot["stream_response_headers_ms"]["count"], json!(512));
+        assert_eq!(
+            snapshot["stream_first_upstream_byte_ms"]["count"],
+            json!(512)
+        );
+        assert_eq!(
+            snapshot["stream_first_parsed_chunk_ms"]["count"],
+            json!(512)
+        );
+        assert_eq!(snapshot["stream_first_tool_delta_ms"]["count"], json!(512));
+        assert_eq!(snapshot["stream_upstream_complete_ms"]["count"], json!(512));
+    }
+
+    #[test]
+    fn metrics_recover_poisoned_observation_lock() {
         let metrics = MlxBackendMetrics::default();
 
-        poison_lock(&metrics.latencies);
         metrics.record_success(MlxBackendRequestKind::Blocking, Duration::from_millis(5));
-        assert!(!metrics.latencies.is_poisoned());
 
         poison_lock(&metrics.observations);
         metrics.record_request_fingerprint(json!({"recovered": true}));
