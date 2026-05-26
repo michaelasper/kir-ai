@@ -369,6 +369,103 @@ fn rejects_tool_schema_depth_before_serialized_byte_limit() {
 }
 
 #[test]
+fn accepts_tool_schema_enum_at_default_size_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            tool_schema_with_enum(MAX_TOOL_SCHEMA_ENUM_VALUES),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("schema enum at the default size limit remains valid");
+}
+
+#[test]
+fn rejects_tool_schema_enum_over_default_size_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            tool_schema_with_enum(MAX_TOOL_SCHEMA_ENUM_VALUES + 1),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("tool schema enum values must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("enum"));
+    assert!(
+        err.message()
+            .contains(&format!("maximum {MAX_TOOL_SCHEMA_ENUM_VALUES}"))
+    );
+}
+
+#[test]
+fn rejects_nested_tool_schema_enum_over_default_size_limit() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            nested_items_enum_tool_schema(MAX_TOOL_SCHEMA_ENUM_VALUES + 1),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate()
+        .expect_err("nested tool schema enum values must be capped");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("properties.tags.items.enum"));
+    assert!(
+        err.message()
+            .contains(&format!("maximum {MAX_TOOL_SCHEMA_ENUM_VALUES}"))
+    );
+}
+
+#[test]
+fn custom_request_limits_reject_lower_tool_schema_enum_size() {
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function(
+            "lookup",
+            "lookup docs",
+            tool_schema_with_enum(3),
+        )],
+        ..ChatCompletionRequest::default()
+    };
+
+    request
+        .validate()
+        .expect("default tool schema enum size accepts this schema");
+
+    let err = request
+        .validate_with_limits(RequestLimits {
+            tool_schema_enum_values: 2,
+            ..RequestLimits::default()
+        })
+        .expect_err("custom lower enum size rejects the same request");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("enum"));
+    assert!(err.message().contains("maximum 2"));
+}
+
+#[test]
 fn accepts_supported_tool_schema_types_and_unions() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),
@@ -564,6 +661,37 @@ fn nested_items_tool_schema(depth: usize) -> serde_json::Value {
         });
     }
     schema
+}
+
+fn tool_schema_with_enum(count: usize) -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": enum_strings(count),
+            },
+        },
+    })
+}
+
+fn nested_items_enum_tool_schema(count: usize) -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": enum_strings(count),
+                },
+            },
+        },
+    })
+}
+
+fn enum_strings(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("value_{index}")).collect()
 }
 
 #[test]

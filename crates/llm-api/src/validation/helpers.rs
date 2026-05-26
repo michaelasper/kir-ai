@@ -257,6 +257,7 @@ pub(super) fn validate_tools(
             &format!("tools[{index}].function.parameters"),
             &tool.function.parameters,
             limits.tool_schema_depth,
+            limits.tool_schema_enum_values,
         )?;
         validate_json_bytes_at_most(
             &format!("tools[{index}].function.parameters"),
@@ -321,13 +322,14 @@ fn validate_tool_schema_shape(
     label: &str,
     value: &Value,
     max_depth: usize,
+    max_enum_values: usize,
 ) -> Result<(), ApiError> {
     let Some(schema) = value.as_object() else {
         return Err(ApiError::invalid_request(format!(
             "{label} must be a JSON object"
         )));
     };
-    validate_schema_object(label, schema, 0, max_depth)
+    validate_schema_object(label, schema, 0, max_depth, max_enum_values)
 }
 
 fn validate_schema_object(
@@ -335,6 +337,7 @@ fn validate_schema_object(
     schema: &Map<String, Value>,
     depth: usize,
     max_depth: usize,
+    max_enum_values: usize,
 ) -> Result<(), ApiError> {
     if depth > max_depth {
         return Err(ApiError::invalid_request(format!(
@@ -356,12 +359,18 @@ fn validate_schema_object(
             )));
         }
     }
-    if let Some(enum_values) = schema.get("enum")
-        && !enum_values.is_array()
-    {
-        return Err(ApiError::invalid_request(format!(
-            "{label}.enum must be an array"
-        )));
+    if let Some(enum_values) = schema.get("enum") {
+        let Some(enum_values) = enum_values.as_array() else {
+            return Err(ApiError::invalid_request(format!(
+                "{label}.enum must be an array"
+            )));
+        };
+        if enum_values.len() > max_enum_values {
+            return Err(ApiError::invalid_request(format!(
+                "{label}.enum size {} exceeds maximum {max_enum_values}",
+                enum_values.len()
+            )));
+        }
     }
     if let Some(properties) = schema.get("properties") {
         let Some(properties) = properties.as_object() else {
@@ -375,6 +384,7 @@ fn validate_schema_object(
                 property_schema,
                 depth.saturating_add(1),
                 max_depth,
+                max_enum_values,
             )?;
         }
     }
@@ -384,6 +394,7 @@ fn validate_schema_object(
             items,
             depth.saturating_add(1),
             max_depth,
+            max_enum_values,
         )?;
     }
     Ok(())
@@ -429,13 +440,14 @@ fn validate_nested_schema_object(
     value: &Value,
     depth: usize,
     max_depth: usize,
+    max_enum_values: usize,
 ) -> Result<(), ApiError> {
     let Some(schema) = value.as_object() else {
         return Err(ApiError::invalid_request(format!(
             "{label} must be a JSON object"
         )));
     };
-    validate_schema_object(label, schema, depth, max_depth)
+    validate_schema_object(label, schema, depth, max_depth, max_enum_values)
 }
 
 struct JsonByteCounter {

@@ -265,6 +265,33 @@ async fn chat_completions_rejects_tool_schema_over_depth_limit() {
 }
 
 #[tokio::test]
+async fn chat_completions_rejects_tool_schema_enum_over_limit() {
+    let body = chat_validation_error(json!({
+        "model": llm_engine::DEFAULT_MODEL_ID,
+        "messages": [{"role": "user", "content": "lookup rust"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": tool_schema_with_enum(llm_api::MAX_TOOL_SCHEMA_ENUM_VALUES + 1)
+            }
+        }],
+        "tool_choice": "required"
+    }))
+    .await;
+
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("enum"),
+        "large schema enum should report the enum limit: {body}"
+    );
+    assert!(
+        message.contains(&format!("maximum {}", llm_api::MAX_TOOL_SCHEMA_ENUM_VALUES)),
+        "large schema enum should report the configured maximum: {body}"
+    );
+}
+
+#[tokio::test]
 async fn chat_completions_rejects_body_above_json_body_limit() {
     let request_limits = llm_api::RequestLimits {
         json_body_bytes: 512,
@@ -629,4 +656,20 @@ fn nested_properties_tool_schema(depth: usize) -> Value {
         });
     }
     schema
+}
+
+fn tool_schema_with_enum(count: usize) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": enum_strings(count),
+            },
+        },
+    })
+}
+
+fn enum_strings(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("value_{index}")).collect()
 }

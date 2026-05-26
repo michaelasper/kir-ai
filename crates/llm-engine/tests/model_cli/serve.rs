@@ -96,6 +96,10 @@ fn serve_help_prints_without_backend_validation() {
         "serve help should document configurable tool schema depth limits: {stdout}"
     );
     assert!(
+        stdout.contains("--max-tool-schema-enum-values <n>"),
+        "serve help should document configurable tool schema enum limits: {stdout}"
+    );
+    assert!(
         stdout.contains("--max-public-inference-requests-per-second <n>"),
         "serve help should document configurable public inference rate limits: {stdout}"
     );

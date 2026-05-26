@@ -1,4 +1,4 @@
-use llm_api::{MAX_TOOL_SCHEMA_DEPTH, RequestLimits};
+use llm_api::{MAX_TOOL_SCHEMA_DEPTH, MAX_TOOL_SCHEMA_ENUM_VALUES, RequestLimits};
 use llm_engine::{
     DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit,
     SnapshotBackendLoader, SnapshotBackendOptions, cli, open_snapshot_backend,
@@ -444,6 +444,7 @@ Options:
   --max-message-content-bytes <bytes>        Maximum bytes per chat message content [default: 8388608]
   --max-completion-prompt-bytes <bytes>      Maximum bytes per text completion prompt [default: 8388608]
   --max-tool-schema-depth <depth>            Maximum nested JSON Schema object depth below a tool parameters root [default: {}]
+  --max-tool-schema-enum-values <n>          Maximum values in one tool JSON Schema enum array [default: {}]
   --max-public-inference-requests-per-second <n>
                                              Public chat/completion requests per second [default: 60]
   --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
@@ -466,7 +467,7 @@ Options:
   --eager-materialize-shards                 Materialize indexed safetensor shards at startup
   --canonical-tool-schemas                   Canonicalize tool schemas before runtime prompt/cache use [env: LLM_ENGINE_CANONICAL_TOOL_SCHEMAS=1]
   -h, --help                                 Print help",
-        DEFAULT_MODEL_ID, MAX_TOOL_SCHEMA_DEPTH
+        DEFAULT_MODEL_ID, MAX_TOOL_SCHEMA_DEPTH, MAX_TOOL_SCHEMA_ENUM_VALUES
     );
 }
 
@@ -551,6 +552,11 @@ fn request_limits_from_args(args: &[String]) -> anyhow::Result<RequestLimits> {
             args,
             "--max-tool-schema-depth",
             defaults.tool_schema_depth,
+        )?,
+        tool_schema_enum_values: parse_positive_usize_flag(
+            args,
+            "--max-tool-schema-enum-values",
+            defaults.tool_schema_enum_values,
         )?,
     })
 }
@@ -982,6 +988,29 @@ mod serve_arg_tests {
             .expect_err("zero tool schema depth fails");
         assert!(
             zero.to_string().contains("--max-tool-schema-depth"),
+            "error: {zero}"
+        );
+    }
+
+    #[test]
+    fn request_limits_parse_tool_schema_enum_values() {
+        assert_eq!(
+            request_limits_from_args(&args(&[]))
+                .expect("default request limits parse")
+                .tool_schema_enum_values,
+            MAX_TOOL_SCHEMA_ENUM_VALUES
+        );
+        assert_eq!(
+            request_limits_from_args(&args(&["--max-tool-schema-enum-values", "7"]))
+                .expect("custom tool schema enum size parses")
+                .tool_schema_enum_values,
+            7
+        );
+
+        let zero = request_limits_from_args(&args(&["--max-tool-schema-enum-values", "0"]))
+            .expect_err("zero tool schema enum size fails");
+        assert!(
+            zero.to_string().contains("--max-tool-schema-enum-values"),
             "error: {zero}"
         );
     }
