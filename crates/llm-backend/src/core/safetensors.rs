@@ -24,6 +24,54 @@ use thiserror::Error;
 
 const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 
+#[cfg(test)]
+mod mmap_materialization_test_hook {
+    use std::{
+        path::Path,
+        sync::{Arc, Mutex, OnceLock},
+    };
+
+    type Hook = Arc<dyn Fn(Option<&Path>) + Send + Sync + 'static>;
+
+    static HOOK: OnceLock<Mutex<Option<Hook>>> = OnceLock::new();
+
+    pub(super) struct HookGuard;
+
+    pub(super) fn set(hook: Hook) -> HookGuard {
+        let mut slot = hook_slot()
+            .lock()
+            .expect("mmap materialization test hook lock");
+        assert!(
+            slot.replace(hook).is_none(),
+            "mmap materialization test hook already installed"
+        );
+        HookGuard
+    }
+
+    pub(super) fn notify(source_path: Option<&Path>) {
+        let hook = hook_slot()
+            .lock()
+            .expect("mmap materialization test hook lock")
+            .as_ref()
+            .map(Arc::clone);
+        if let Some(hook) = hook {
+            hook(source_path);
+        }
+    }
+
+    fn hook_slot() -> &'static Mutex<Option<Hook>> {
+        HOOK.get_or_init(|| Mutex::new(None))
+    }
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            *hook_slot()
+                .lock()
+                .expect("mmap materialization test hook lock") = None;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SafeTensorArchive {
     bytes: Box<[u8]>,
@@ -394,13 +442,18 @@ impl SafeTensorFile {
     }
 
     fn materialized_file(&self) -> Result<Arc<Mmap>, TensorLoadError> {
-        if let Some(mapped) = self.materialized_file_if_present()? {
-            return Ok(mapped);
+        let mut cached = self.mapped.lock().map_err(|err| {
+            TensorLoadError::integrity(format!("mmap cache lock poisoned: {err}"))
+        })?;
+        if let Some(mapped) = cached.as_ref() {
+            return Ok(Arc::clone(mapped));
         }
         let expected_len = usize_from_u64(
             self.header.file_len(),
             "safetensors file length does not fit in usize for mmap",
         )?;
+        #[cfg(test)]
+        mmap_materialization_test_hook::notify(self.header.source_path());
         // SAFETY: promoted safetensors snapshots are treated as immutable by the
         // store. This read-only mapping is used only after header/range validation,
         // and callers borrow or copy validated byte ranges before decoding.
@@ -415,16 +468,8 @@ impl SafeTensorFile {
                 mapped.len()
             )));
         }
-        let mut cached = self.mapped.lock().map_err(|err| {
-            TensorLoadError::integrity(format!("mmap cache lock poisoned: {err}"))
-        })?;
-        if cached.is_none() {
-            *cached = Some(Arc::clone(&mapped));
-        }
-        cached
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(|| TensorLoadError::integrity("mmap cache was not populated"))
+        *cached = Some(Arc::clone(&mapped));
+        Ok(mapped)
     }
 
     fn materialized_file_if_present(&self) -> Result<Option<Arc<Mmap>>, TensorLoadError> {
@@ -1339,8 +1384,17 @@ fn f32_slice_bytes(len: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SafeTensorArchive, f32_slice_bytes};
+    use super::{
+        SafeTensorArchive, SafeTensorFile, f32_slice_bytes, mmap_materialization_test_hook,
+    };
     use llm_test_support::safetensors::tiny_safetensors_f32;
+    use std::{
+        sync::{
+            Arc, Barrier, Condvar, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     #[test]
     fn archive_from_owned_bytes_reuses_boxed_slice_storage() {
@@ -1385,6 +1439,60 @@ mod tests {
 
         assert_eq!(err.code(), "model_integrity_failed");
         assert!(err.message().contains("invalid safetensors"));
+    }
+
+    #[test]
+    fn concurrent_first_materialize_maps_file_once() {
+        let path = std::env::temp_dir().join(format!(
+            "llm-backend-concurrent-materialize-{}.safetensors",
+            std::process::id()
+        ));
+        std::fs::write(&path, tiny_safetensors_f32("linear.weight", &[1], &[1.0]))
+            .expect("write fixture");
+        let file = Arc::new(SafeTensorFile::open(&path).expect("open tensor file"));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new((Mutex::new(0_usize), Condvar::new()));
+        let hook_path = path.clone();
+        let hook_attempts = Arc::clone(&attempts);
+        let hook_entered = Arc::clone(&entered);
+        let _hook_guard = mmap_materialization_test_hook::set(Arc::new(move |source_path| {
+            if source_path != Some(hook_path.as_path()) {
+                return;
+            }
+            hook_attempts.fetch_add(1, Ordering::SeqCst);
+            let (lock, condvar) = &*hook_entered;
+            let mut count = lock.lock().expect("hook count lock");
+            *count += 1;
+            condvar.notify_all();
+            if *count == 1 {
+                let (_count, _timeout) = condvar
+                    .wait_timeout_while(count, Duration::from_millis(500), |count| *count < 2)
+                    .expect("hook count condvar");
+            }
+        }));
+        let start = Arc::new(Barrier::new(3));
+        let handles = (0..2)
+            .map(|_| {
+                let file = Arc::clone(&file);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    file.materialize().expect("materialize tensor file");
+                })
+            })
+            .collect::<Vec<_>>();
+
+        start.wait();
+        for handle in handles {
+            handle.join().expect("materialize thread joins");
+        }
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "concurrent first access must perform exactly one mmap materialization"
+        );
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
