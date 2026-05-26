@@ -1,6 +1,8 @@
 use std::time::Duration;
 use url::Url;
 
+use super::request::MlxUpstreamRequest;
+
 pub(super) fn mlx_endpoint_url(base: &Url, suffix: &str) -> Url {
     let mut url = base.clone();
     let path = format!("{}/{}", base.path().trim_end_matches('/'), suffix);
@@ -34,12 +36,62 @@ impl Default for MlxTimeouts {
     }
 }
 
-pub(super) fn build_http_client(timeouts: MlxTimeouts) -> reqwest::Client {
+fn build_http_client(timeouts: MlxTimeouts) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(timeouts.connect)
         .timeout(timeouts.request)
         .build()
         .expect("MLX HTTP client builds")
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum MlxTransport {
+    Http(MlxHttpTransport),
+}
+
+impl MlxTransport {
+    pub(super) fn http(endpoint: Url, timeouts: MlxTimeouts) -> Self {
+        Self::Http(MlxHttpTransport::new(endpoint, timeouts))
+    }
+
+    pub(super) fn request(&self, request: MlxUpstreamRequest) -> reqwest::RequestBuilder {
+        match self {
+            Self::Http(transport) => transport.request(request),
+        }
+    }
+
+    pub(super) fn models_request(&self) -> reqwest::RequestBuilder {
+        match self {
+            Self::Http(transport) => transport.models_request(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MlxHttpTransport {
+    endpoint: Url,
+    client: reqwest::Client,
+}
+
+impl MlxHttpTransport {
+    fn new(endpoint: Url, timeouts: MlxTimeouts) -> Self {
+        Self {
+            endpoint,
+            client: build_http_client(timeouts),
+        }
+    }
+
+    fn request(&self, request: MlxUpstreamRequest) -> reqwest::RequestBuilder {
+        let upstream_url = mlx_endpoint_url(&self.endpoint, request.protocol().endpoint_suffix());
+        self.client
+            .post(upstream_url)
+            .header(reqwest::header::CONTENT_TYPE, request.content_type())
+            .body(request.into_body())
+    }
+
+    fn models_request(&self) -> reqwest::RequestBuilder {
+        self.client.get(mlx_endpoint_url(&self.endpoint, "models"))
+    }
 }
 
 pub const MLX_STALL_PREFIX: &str = "MLX_STALL:";

@@ -21,7 +21,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::{MLX_STALL_PREFIX, build_http_client, format_duration, is_loopback_endpoint};
+use client::{MLX_STALL_PREFIX, MlxTransport, format_duration, is_loopback_endpoint};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{
@@ -76,10 +76,9 @@ pub struct MlxBackend {
     model_id: String,
     metadata: BackendModelMetadata,
     upstream_model: String,
-    endpoint: Url,
     control_stop_tokens: &'static [&'static str],
     tool_markup: protocol::MlxToolMarkup,
-    client: reqwest::Client,
+    transport: MlxTransport,
     timeouts: MlxTimeouts,
     include_stream_usage: bool,
     metrics: Arc<MlxBackendMetrics>,
@@ -136,17 +135,16 @@ impl MlxBackend {
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata)?;
         let tool_markup =
             mlx_tool_markup_for_metadata(&metadata, Some(snapshot_path), options.tool_parser)?;
-        let client = build_http_client(options.timeouts);
         let timeouts = options.timeouts;
+        let transport = MlxTransport::http(options.endpoint, timeouts);
         let include_stream_usage = options.include_stream_usage;
         Ok(Self {
             model_id: model_id.clone(),
             metadata,
             upstream_model,
-            endpoint: options.endpoint,
             control_stop_tokens,
             tool_markup,
-            client,
+            transport,
             timeouts,
             include_stream_usage,
             metrics: mlx_backend_metrics(),
@@ -172,15 +170,15 @@ impl MlxBackend {
             return Err(BackendError::cancelled());
         }
         self.validate_model(&request)?;
-        let (upstream_protocol, upstream_request) = build_upstream_request(
-            &self.client,
-            &self.endpoint,
+        let upstream_request = build_upstream_request(
             &self.upstream_model,
             &self.metadata,
             &request,
             false,
             self.include_stream_usage,
         )?;
+        let upstream_protocol = upstream_request.protocol();
+        let upstream_request = self.transport.request(upstream_request);
         let mut request_metrics = self
             .metrics
             .start_request(upstream_protocol, MlxBackendRequestKind::Blocking);
@@ -315,15 +313,15 @@ impl MlxBackend {
                 Err(BackendError::cancelled())?;
             }
             self.validate_model(&request)?;
-            let (upstream_protocol, upstream_request) = build_upstream_request(
-                &self.client,
-                &self.endpoint,
+            let upstream_request = build_upstream_request(
                 &self.upstream_model,
                 &self.metadata,
                 &request,
                 true,
                 self.include_stream_usage,
             )?;
+            let upstream_protocol = upstream_request.protocol();
+            let upstream_request = self.transport.request(upstream_request);
             let mut request_metrics = self
                 .metrics
                 .start_request(upstream_protocol, MlxBackendRequestKind::Streaming);
@@ -697,8 +695,8 @@ impl ModelBackend for MlxBackend {
 
     async fn health(&self) -> BackendHealth {
         let response = self
-            .client
-            .get(client::mlx_endpoint_url(&self.endpoint, "models"))
+            .transport
+            .models_request()
             .timeout(self.timeouts.connect)
             .send()
             .await;
