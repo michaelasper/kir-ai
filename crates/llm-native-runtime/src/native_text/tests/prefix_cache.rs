@@ -91,7 +91,7 @@ fn prefix_cache_lookup_skips_capacity_incompatible_entries() {
 }
 
 #[test]
-fn prefix_cache_reuses_longest_compatible_prefix_across_branching_trie_paths() {
+fn prefix_cache_reuses_longest_compatible_prefix_across_branching_index_paths() {
     let cache = NativeTextPrefixCache::new(2048);
     let metrics = NativeTextPrefixCacheMetrics::default();
     let namespace = namespace("branching");
@@ -173,6 +173,148 @@ fn prefix_cache_lookup_metrics_count_indexed_candidates_not_full_namespace() {
     assert_eq!(
         snapshot["namespace_entries_scanned"], 1,
         "lookup should not scan all unrelated namespace entries"
+    );
+}
+
+#[test]
+fn prefix_cache_lookup_skips_same_length_nonmatching_entries() {
+    let cache = NativeTextPrefixCache::new(1_000_000);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let namespace = namespace("same-length-indexed");
+    let hidden = [1.0];
+    let caches = [TestCache {
+        bytes: 1,
+        marker: 7,
+    }];
+
+    cache.store(namespace.clone(), &[1, 2, 3], &hidden, &caches, &metrics);
+    for index in 0..128 {
+        let tokens = [10_000 + index, 2, 3];
+        cache.store(namespace.clone(), &tokens, &hidden, &caches, &metrics);
+    }
+
+    let mut compatibility_checks = 0;
+    let hit = cache
+        .lookup_compatible(&namespace, &[1, 2, 3, 4], &metrics, |caches| {
+            compatibility_checks += 1;
+            caches.iter().all(|cache| cache.marker == 7)
+        })
+        .expect("matching prefix is reused");
+
+    assert_eq!(hit.token_count, 3);
+    assert_eq!(
+        compatibility_checks, 1,
+        "lookup should not inspect unrelated entries with the same token length"
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot["entries_scanned"], 1,
+        "lookup should only scan the exact candidate prefix"
+    );
+    assert_eq!(snapshot["namespace_entries_scanned"], 1);
+}
+
+#[test]
+fn prefix_cache_replacement_keeps_lookup_index_single_candidate() {
+    let cache = NativeTextPrefixCache::new(1024);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let namespace = namespace("replace-index");
+    let hidden = [1.0];
+
+    cache.store(
+        namespace.clone(),
+        &[1, 2],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 1,
+        }],
+        &metrics,
+    );
+    cache.store(
+        namespace.clone(),
+        &[1, 2],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 2,
+        }],
+        &metrics,
+    );
+
+    let hit = cache
+        .lookup(&namespace, &[1, 2, 3], &metrics)
+        .expect("replacement entry is reusable");
+    assert_eq!(hit.caches[0].marker, 2);
+
+    let mut compatibility_checks = 0;
+    assert!(
+        cache
+            .lookup_compatible(&namespace, &[1, 2, 3], &metrics, |_| {
+                compatibility_checks += 1;
+                false
+            })
+            .is_none(),
+        "incompatible replacement entry should miss"
+    );
+    assert_eq!(
+        compatibility_checks, 1,
+        "replacement should not leave duplicate lookup index candidates"
+    );
+}
+
+#[test]
+fn prefix_cache_eviction_removes_lookup_index_candidate() {
+    let cache = NativeTextPrefixCache::new(32);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let namespace = namespace("evict-index");
+    let hidden = vec![1.0; 4];
+
+    cache.store(
+        namespace.clone(),
+        &[1, 2],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 12,
+        }],
+        &metrics,
+    );
+    cache.store(
+        namespace.clone(),
+        &[9],
+        &hidden,
+        &[TestCache {
+            bytes: 8,
+            marker: 9,
+        }],
+        &metrics,
+    );
+
+    let before = metrics.snapshot();
+    let mut compatibility_checks = 0;
+    assert!(
+        cache
+            .lookup_compatible(&namespace, &[1, 2, 3], &metrics, |_| {
+                compatibility_checks += 1;
+                true
+            })
+            .is_none(),
+        "evicted prefix should not be reusable"
+    );
+    let after = metrics.snapshot();
+    assert_eq!(
+        compatibility_checks, 0,
+        "eviction should remove stale lookup index candidates"
+    );
+    assert_eq!(
+        after["entries_scanned"].as_u64().unwrap_or(0)
+            - before["entries_scanned"].as_u64().unwrap_or(0),
+        0
+    );
+    assert!(
+        cache.lookup(&namespace, &[9], &metrics).is_some(),
+        "non-evicted entry remains indexed"
     );
 }
 
@@ -344,7 +486,7 @@ fn prefix_cache_metrics_record_lookup_scans_and_hit_clone_bytes() {
     let snapshot = metrics.snapshot();
     assert_eq!(
         snapshot["entries_scanned"], 1,
-        "lookups only scan terminal candidates on the matching trie path"
+        "lookups only scan terminal candidates on the matching index path"
     );
     assert_eq!(snapshot["namespace_entries_scanned"], 1);
     assert_eq!(

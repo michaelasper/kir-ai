@@ -3,7 +3,7 @@ use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
 use llm_tokenizer::HuggingFaceTokenizerIdentity;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, hash_map::Entry},
     sync::{Arc, Mutex},
 };
 
@@ -27,7 +27,7 @@ pub(crate) struct NativeTextPrefixCache<C: NativeTextPrefixCacheValue> {
 pub(crate) struct NativeTextPrefixCacheInner<C: NativeTextPrefixCacheValue> {
     pub(crate) entries:
         HashMap<NativeTextPrefixCacheNamespace, HashMap<Vec<usize>, NativeTextPrefixCacheEntry<C>>>,
-    pub(crate) indexes: HashMap<NativeTextPrefixCacheNamespace, NativeTextPrefixCacheTrie>,
+    pub(crate) indexes: HashMap<NativeTextPrefixCacheNamespace, NativeTextPrefixCacheLengthIndex>,
     pub(crate) used_bytes: u64,
     pub(crate) next_access: u64,
 }
@@ -47,14 +47,9 @@ where
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct NativeTextPrefixCacheTrie {
-    root: NativeTextPrefixCacheTrieNode,
-}
-
-#[derive(Debug, Default)]
-struct NativeTextPrefixCacheTrieNode {
-    terminal: bool,
-    children: BTreeMap<usize, NativeTextPrefixCacheTrieNode>,
+pub(crate) struct NativeTextPrefixCacheLengthIndex {
+    lengths: Vec<usize>,
+    length_counts: HashMap<usize, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -223,7 +218,7 @@ where
             let candidates = inner
                 .indexes
                 .get(namespace)
-                .map(|index| index.prefix_candidate_lengths(tokens))
+                .map(|index| index.prefix_candidate_lengths(tokens.len()))
                 .unwrap_or_default();
             let mut entries_scanned = 0;
             let mut namespace_entries_scanned = 0;
@@ -234,13 +229,13 @@ where
                 ..
             } = &mut *inner;
             if let Some(bucket) = entries.get_mut(namespace) {
-                for token_count in candidates.iter().rev().copied() {
-                    entries_scanned += 1;
-                    namespace_entries_scanned += 1;
+                for token_count in candidates {
                     let entry_tokens = &tokens[..token_count];
                     let Some(entry) = bucket.get_mut(entry_tokens) else {
                         continue;
                     };
+                    entries_scanned += 1;
+                    namespace_entries_scanned += 1;
                     if is_compatible(&entry.payload.states) {
                         let access = *next_access;
                         *next_access = next_access.saturating_add(1);
@@ -400,52 +395,41 @@ where
     }
 }
 
-impl NativeTextPrefixCacheTrie {
+impl NativeTextPrefixCacheLengthIndex {
     fn insert(&mut self, tokens: &[usize]) {
-        let mut node = &mut self.root;
-        for token in tokens {
-            node = node.children.entry(*token).or_default();
+        let token_count = tokens.len();
+        let count = self.length_counts.entry(token_count).or_insert(0);
+        if *count == 0 {
+            let index = self.lengths.partition_point(|length| *length < token_count);
+            self.lengths.insert(index, token_count);
         }
-        node.terminal = true;
+        *count += 1;
     }
 
     fn remove(&mut self, tokens: &[usize]) {
-        Self::remove_from(&mut self.root, tokens);
+        let token_count = tokens.len();
+        let Entry::Occupied(mut count) = self.length_counts.entry(token_count) else {
+            return;
+        };
+        if *count.get() > 1 {
+            *count.get_mut() -= 1;
+            return;
+        }
+        count.remove();
+        if let Ok(index) = self.lengths.binary_search(&token_count) {
+            self.lengths.remove(index);
+        }
     }
 
-    fn prefix_candidate_lengths(&self, tokens: &[usize]) -> Vec<usize> {
-        let mut candidates = Vec::new();
-        let mut node = &self.root;
-        for (index, token) in tokens.iter().enumerate() {
-            let Some(child) = node.children.get(token) else {
-                break;
-            };
-            node = child;
-            if node.terminal {
-                candidates.push(index + 1);
-            }
-        }
-        candidates
+    fn prefix_candidate_lengths(&self, max_token_count: usize) -> Vec<usize> {
+        let upper_bound = self
+            .lengths
+            .partition_point(|token_count| *token_count <= max_token_count);
+        self.lengths[..upper_bound].iter().rev().copied().collect()
     }
 
     fn is_empty(&self) -> bool {
-        !self.root.terminal && self.root.children.is_empty()
-    }
-
-    fn remove_from(node: &mut NativeTextPrefixCacheTrieNode, tokens: &[usize]) -> bool {
-        if let Some((token, remaining)) = tokens.split_first() {
-            let remove_child = node
-                .children
-                .get_mut(token)
-                .is_some_and(|child| Self::remove_from(child, remaining));
-            if remove_child {
-                node.children.remove(token);
-            }
-        } else {
-            node.terminal = false;
-        }
-
-        !node.terminal && node.children.is_empty()
+        self.length_counts.is_empty()
     }
 }
 

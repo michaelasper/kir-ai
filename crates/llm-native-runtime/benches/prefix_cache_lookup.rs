@@ -3,7 +3,7 @@
 //! These benches include the current prefix-cache implementation directly so
 //! they measure lookup behavior without opening model snapshots or running
 //! inference. Payloads are intentionally empty: the cold-miss and
-//! longest-prefix hit cases isolate trie traversal and candidate lookup cost
+//! longest-prefix hit cases isolate length-index and candidate lookup cost
 //! from cache payload clone cost.
 
 use std::{
