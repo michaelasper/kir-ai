@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.32](https://github.com/michaelasper/kir-ai/compare/v1.57.31...v1.57.32) (2026-05-26)
+
+### Performance Improvements
+
+* **COR-476:** avoid temporary cache rebuild vectors ([917110c](https://github.com/michaelasper/kir-ai/commit/917110cb108b5d59b7e0c10614647bce06ad42e9))
+
 ## [1.57.31](https://github.com/michaelasper/kir-ai/compare/v1.57.30...v1.57.31) (2026-05-26)
 
 ### Performance Improvements
