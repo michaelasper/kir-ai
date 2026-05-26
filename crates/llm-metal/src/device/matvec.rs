@@ -3,6 +3,19 @@ use super::{Bf16MatrixBuffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
+fn bf16_matrix_byte_len(matrix: &[u16], rows: usize, cols: usize) -> Result<usize, MetalError> {
+    let expected_matrix_len = rows
+        .checked_mul(cols)
+        .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
+    if matrix.len() != expected_matrix_len {
+        return Err(MetalError::InvalidShape(format!(
+            "matrix length {} does not match rows {rows} * cols {cols}",
+            matrix.len()
+        )));
+    }
+    Ok(std::mem::size_of_val(matrix))
+}
+
 impl MetalDevice {
     pub async fn matvec_f32(
         &self,
@@ -112,9 +125,21 @@ impl MetalDevice {
         vector: &[f32],
         output: &mut [f32],
     ) -> Result<(), MetalError> {
-        let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.matvec_bf16_f32_buffered(&matrix_buffer, vector, output)
-            .await
+        let byte_len = bf16_matrix_byte_len(matrix, rows, cols)?;
+        let mut matrix_buffer = Bf16MatrixBuffer {
+            buffer: (byte_len != 0).then(|| self.take_scratch_bf16_buffer(matrix)),
+            rows,
+            columns: cols,
+            byte_len,
+        };
+
+        let result = self
+            .matvec_bf16_f32_buffered(&matrix_buffer, vector, output)
+            .await;
+        if let Some(buffer) = matrix_buffer.buffer.take() {
+            self.return_scratch_buffer(byte_len as u64, buffer);
+        }
+        result
     }
 
     pub fn new_bf16_matrix_buffer(
@@ -123,16 +148,7 @@ impl MetalDevice {
         rows: usize,
         cols: usize,
     ) -> Result<Bf16MatrixBuffer, MetalError> {
-        let expected_matrix_len = rows
-            .checked_mul(cols)
-            .ok_or_else(|| MetalError::InvalidShape("matrix shape overflows usize".to_owned()))?;
-        if matrix.len() != expected_matrix_len {
-            return Err(MetalError::InvalidShape(format!(
-                "matrix length {} does not match rows {rows} * cols {cols}",
-                matrix.len()
-            )));
-        }
-        let byte_len = std::mem::size_of_val(matrix);
+        let byte_len = bf16_matrix_byte_len(matrix, rows, cols)?;
         let buffer = if byte_len == 0 {
             None
         } else {
@@ -252,9 +268,21 @@ impl MetalDevice {
         vector_count: usize,
         output: &mut [f32],
     ) -> Result<(), MetalError> {
-        let matrix_buffer = self.new_bf16_matrix_buffer(matrix, rows, cols)?;
-        self.batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count, output)
-            .await
+        let byte_len = bf16_matrix_byte_len(matrix, rows, cols)?;
+        let mut matrix_buffer = Bf16MatrixBuffer {
+            buffer: (byte_len != 0).then(|| self.take_scratch_bf16_buffer(matrix)),
+            rows,
+            columns: cols,
+            byte_len,
+        };
+
+        let result = self
+            .batched_matvec_bf16_f32_buffered(&matrix_buffer, vectors, vector_count, output)
+            .await;
+        if let Some(buffer) = matrix_buffer.buffer.take() {
+            self.return_scratch_buffer(byte_len as u64, buffer);
+        }
+        result
     }
 
     pub async fn batched_matvec_bf16_f32_buffered(

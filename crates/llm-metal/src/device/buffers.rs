@@ -233,6 +233,31 @@ impl MetalDevice {
         buffer
     }
 
+    pub(crate) fn take_scratch_bf16_buffer(&self, values: &[u16]) -> Buffer {
+        let byte_len = std::mem::size_of_val(values) as u64;
+        let buffer = self
+            .scratch_buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take(byte_len)
+            .unwrap_or_else(|| {
+                self.device
+                    .new_buffer(byte_len, MTLResourceOptions::StorageModeShared)
+            });
+        if !values.is_empty() {
+            // SAFETY: buffer has exactly byte_len bytes, and byte_len was
+            // computed from values.len() * size_of::<u16>().
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    values.as_ptr(),
+                    buffer.contents().cast::<u16>(),
+                    values.len(),
+                );
+            }
+        }
+        buffer
+    }
+
     pub(crate) fn take_scratch_buffer(&self, byte_len: u64) -> Buffer {
         self.scratch_buffers
             .lock()
@@ -935,6 +960,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn matvec_bf16_f32_reuses_transient_matrix_scratch_buffer() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let matrix = [
+            1.0, 2.0, 3.0, 4.0, -1.0, 0.5, -0.5, 1.5, 2.0, 0.25, -2.0, 1.0, 3.5, -1.5, 0.75,
+        ]
+        .map(f32_to_bf16_bits);
+        let vector = [0.5, -2.0, 4.0];
+        let mut output = vec![0.0; 5];
+
+        device
+            .matvec_bf16_f32(&matrix, 5, 3, &vector, &mut output)
+            .await
+            .expect("first BF16 matvec succeeds");
+        device
+            .matvec_bf16_f32(&matrix, 5, 3, &vector, &mut output)
+            .await
+            .expect("second BF16 matvec succeeds");
+
+        assert_eq!(
+            device.scratch_buffer_count_for_test(15 * std::mem::size_of::<u16>() as u64),
+            1
+        );
+        assert_eq!(
+            device.scratch_buffer_count_for_test(3 * std::mem::size_of::<f32>() as u64),
+            1
+        );
+        assert_eq!(
+            device.scratch_buffer_count_for_test(5 * std::mem::size_of::<f32>() as u64),
+            1
+        );
+        assert!((output[0] - 8.5).abs() < 1e-6);
+        assert!((output[1] - 6.0).abs() < 1e-6);
+        assert!((output[2] - 4.75).abs() < 1e-6);
+        assert!((output[3] - 8.125).abs() < 1e-6);
+        assert!((output[4] - 7.75).abs() < 1e-6);
+    }
+
+    #[tokio::test]
     async fn batched_matvec_bf16_f32_buffered_reuses_transient_scratch_buffers() {
         let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
         else {
@@ -970,6 +1038,54 @@ mod tests {
         assert!((output[1] - 6.0).abs() < 1e-6);
         assert!((output[2] + 2.0).abs() < 1e-6);
         assert!((output[3] - 3.5).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn batched_matvec_bf16_f32_reuses_transient_matrix_scratch_buffer() {
+        let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping smoke test");
+            return;
+        };
+
+        let matrix = [
+            1.0, 2.0, 3.0, 4.0, -1.0, 0.5, -0.5, 1.5, 2.0, 0.25, -2.0, 1.0, 3.5, -1.5, 0.75,
+        ]
+        .map(f32_to_bf16_bits);
+        let vectors = [0.5, -2.0, 4.0, 1.0, 0.0, -1.0];
+        let mut output = vec![0.0; 10];
+
+        device
+            .batched_matvec_bf16_f32(&matrix, 5, 3, &vectors, 2, &mut output)
+            .await
+            .expect("first batched BF16 matvec succeeds");
+        device
+            .batched_matvec_bf16_f32(&matrix, 5, 3, &vectors, 2, &mut output)
+            .await
+            .expect("second batched BF16 matvec succeeds");
+
+        assert_eq!(
+            device.scratch_buffer_count_for_test(15 * std::mem::size_of::<u16>() as u64),
+            1
+        );
+        assert_eq!(
+            device.scratch_buffer_count_for_test(6 * std::mem::size_of::<f32>() as u64),
+            1
+        );
+        assert_eq!(
+            device.scratch_buffer_count_for_test(10 * std::mem::size_of::<f32>() as u64),
+            1
+        );
+        assert!((output[0] - 8.5).abs() < 1e-6);
+        assert!((output[1] - 6.0).abs() < 1e-6);
+        assert!((output[2] - 4.75).abs() < 1e-6);
+        assert!((output[3] - 8.125).abs() < 1e-6);
+        assert!((output[4] - 7.75).abs() < 1e-6);
+        assert!((output[5] + 2.0).abs() < 1e-6);
+        assert!((output[6] - 3.5).abs() < 1e-6);
+        assert!((output[7] + 2.5).abs() < 1e-6);
+        assert!((output[8] + 0.75).abs() < 1e-6);
+        assert!((output[9] - 2.75).abs() < 1e-6);
     }
 
     #[tokio::test]
