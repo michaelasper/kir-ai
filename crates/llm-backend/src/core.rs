@@ -14,6 +14,7 @@ mod native_text;
 #[cfg(feature = "test-utils")]
 // Security: gated behind non-default feature to prevent production exposure (GH#139).
 mod protocol_test;
+mod quantized;
 mod qwen;
 mod safetensors;
 
@@ -38,6 +39,7 @@ pub use native_text::{
 };
 #[cfg(feature = "test-utils")]
 pub use protocol_test::ProtocolTestBackend;
+pub use quantized::{Q8_0_BLOCK_BYTE_LEN, Q8_0_BLOCK_SIZE, Q8RowMajorMatrix};
 pub use qwen::{
     QWEN_EMBED_TOKENS_WEIGHT, QWEN_FINAL_NORM_WEIGHT, QWEN_LAYER0_INPUT_NORM_WEIGHT,
     QwenEmbeddingProbe, QwenLayerCache, QwenLayerCachePrefixState, QwenLayerCacheSnapshot,
