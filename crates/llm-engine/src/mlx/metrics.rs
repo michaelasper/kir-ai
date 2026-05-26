@@ -118,6 +118,27 @@ impl MlxBackendMetrics {
 
     pub(super) fn snapshot(&self) -> Value {
         let observations = self.lock_observations().clone();
+        let request_latency_ms = latency_summary(&self.latencies.upstream_request_latency);
+        self.snapshot_with_captured_request_latency(observations, request_latency_ms)
+    }
+
+    #[cfg(test)]
+    fn snapshot_with_request_latency_alias_hook(
+        &self,
+        before_upstream_request_latency_alias: impl FnOnce(),
+    ) -> Value {
+        let observations = self.lock_observations().clone();
+        let request_latency_ms = latency_summary(&self.latencies.upstream_request_latency);
+        before_upstream_request_latency_alias();
+        self.snapshot_with_captured_request_latency(observations, request_latency_ms)
+    }
+
+    fn snapshot_with_captured_request_latency(
+        &self,
+        observations: MlxBackendObservations,
+        request_latency_ms: Value,
+    ) -> Value {
+        let upstream_request_latency_ms = request_latency_ms.clone();
         json!({
             "requests_total": self.load_counter(&self.counters.requests_total),
             "successful_requests": self.load_counter(&self.counters.successful_requests),
@@ -134,10 +155,8 @@ impl MlxBackendMetrics {
             "stall_failures": self.load_counter(&self.counters.stall_failures),
             "cancelled_requests": self.load_counter(&self.counters.cancelled_requests),
             "dropped_requests": self.load_counter(&self.counters.dropped_requests),
-            "request_latency_ms": latency_summary(&self.latencies.upstream_request_latency),
-            "upstream_request_latency_ms": latency_summary(
-                &self.latencies.upstream_request_latency,
-            ),
+            "request_latency_ms": request_latency_ms,
+            "upstream_request_latency_ms": upstream_request_latency_ms,
             "blocking_upstream_request_latency_ms": latency_summary(
                 &self.latencies.blocking_upstream_request_latency,
             ),
@@ -521,6 +540,21 @@ mod tests {
         assert_eq!(
             snapshot["last_request_fingerprint"]["prompt_hash"],
             "abc123"
+        );
+    }
+
+    #[test]
+    fn metrics_snapshot_reports_identical_request_latency_aliases_from_one_capture() {
+        let metrics = MlxBackendMetrics::default();
+
+        metrics.record_success(MlxBackendRequestKind::Blocking, Duration::from_millis(10));
+        let snapshot = metrics.snapshot_with_request_latency_alias_hook(|| {
+            metrics.record_success(MlxBackendRequestKind::Blocking, Duration::from_millis(30));
+        });
+
+        assert_eq!(
+            snapshot["request_latency_ms"],
+            snapshot["upstream_request_latency_ms"]
         );
     }
 

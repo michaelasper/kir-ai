@@ -140,6 +140,17 @@ pub struct AtomicLatencyMetrics {
     max_nanos: AtomicU64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AtomicLatencySnapshot {
+    count_before: u64,
+    count_after: u64,
+    total_nanos: u64,
+    min_nanos: u64,
+    max_nanos: u64,
+}
+
+const LATENCY_SNAPSHOT_ATTEMPTS: usize = 8;
+
 impl Default for AtomicLatencyMetrics {
     fn default() -> Self {
         Self {
@@ -157,20 +168,36 @@ impl AtomicLatencyMetrics {
         atomic_saturating_add(&self.total_nanos, nanos);
         self.min_nanos.fetch_min(nanos, Ordering::Relaxed);
         self.max_nanos.fetch_max(nanos, Ordering::Relaxed);
-        atomic_saturating_add(&self.count, 1);
+        atomic_saturating_add_with_ordering(&self.count, 1, Ordering::Release);
     }
 
     pub fn snapshot(&self) -> LatencyMetrics {
-        let count = self.count.load(Ordering::Relaxed);
-        if count == 0 {
-            return LatencyMetrics::default();
+        let mut snapshot = self.load_snapshot();
+        for _ in 0..LATENCY_SNAPSHOT_ATTEMPTS {
+            if snapshot.count_before == snapshot.count_after
+                && let Some(metrics) = latency_metrics_from_snapshot(snapshot)
+            {
+                return metrics;
+            }
+            std::hint::spin_loop();
+            snapshot = self.load_snapshot();
         }
+
+        bounded_latency_metrics_from_snapshot(snapshot)
+    }
+
+    fn load_snapshot(&self) -> AtomicLatencySnapshot {
+        let count_before = self.count.load(Ordering::Acquire);
+        let total_nanos = self.total_nanos.load(Ordering::Relaxed);
         let min_nanos = self.min_nanos.load(Ordering::Relaxed);
-        LatencyMetrics {
-            count,
-            total_nanos: u128::from(self.total_nanos.load(Ordering::Relaxed)),
-            min_nanos: Some(u128::from(min_nanos)),
-            max_nanos: u128::from(self.max_nanos.load(Ordering::Relaxed)),
+        let max_nanos = self.max_nanos.load(Ordering::Relaxed);
+        let count_after = self.count.load(Ordering::Acquire);
+        AtomicLatencySnapshot {
+            count_before,
+            count_after,
+            total_nanos,
+            min_nanos,
+            max_nanos,
         }
     }
 }
@@ -180,9 +207,61 @@ fn duration_nanos_u64(duration: Duration) -> u64 {
 }
 
 fn atomic_saturating_add(counter: &AtomicU64, value: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    atomic_saturating_add_with_ordering(counter, value, Ordering::Relaxed);
+}
+
+fn atomic_saturating_add_with_ordering(counter: &AtomicU64, value: u64, success: Ordering) {
+    let _ = counter.fetch_update(success, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
+}
+
+fn latency_metrics_from_snapshot(snapshot: AtomicLatencySnapshot) -> Option<LatencyMetrics> {
+    let count = snapshot.count_after;
+    if count == 0 {
+        return Some(LatencyMetrics::default());
+    }
+    if snapshot.min_nanos == u64::MAX || snapshot.min_nanos > snapshot.max_nanos {
+        return None;
+    }
+
+    let total_nanos = u128::from(snapshot.total_nanos);
+    let min_total_nanos = u128::from(snapshot.min_nanos) * u128::from(count);
+    let max_total_nanos = u128::from(snapshot.max_nanos) * u128::from(count);
+    if total_nanos < min_total_nanos || total_nanos > max_total_nanos {
+        return None;
+    }
+
+    Some(LatencyMetrics {
+        count,
+        total_nanos,
+        min_nanos: Some(u128::from(snapshot.min_nanos)),
+        max_nanos: u128::from(snapshot.max_nanos),
+    })
+}
+
+fn bounded_latency_metrics_from_snapshot(snapshot: AtomicLatencySnapshot) -> LatencyMetrics {
+    let count = snapshot.count_after;
+    if count == 0 {
+        return LatencyMetrics::default();
+    }
+
+    let min_nanos = if snapshot.min_nanos == u64::MAX {
+        snapshot.max_nanos
+    } else {
+        snapshot.min_nanos
+    };
+    let max_nanos = snapshot.max_nanos.max(min_nanos);
+    let min_total_nanos = u128::from(min_nanos) * u128::from(count);
+    let max_total_nanos = u128::from(max_nanos) * u128::from(count);
+    let total_nanos = u128::from(snapshot.total_nanos).clamp(min_total_nanos, max_total_nanos);
+
+    LatencyMetrics {
+        count,
+        total_nanos,
+        min_nanos: Some(u128::from(min_nanos)),
+        max_nanos: u128::from(max_nanos),
+    }
 }
 
 fn nanos_to_ms(nanos: u128) -> f64 {
@@ -470,7 +549,10 @@ impl ServerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::Arc, thread};
+    use std::{
+        sync::{Arc, atomic::AtomicU64},
+        thread,
+    };
 
     #[test]
     fn token_counters_report_totals() {
@@ -524,6 +606,30 @@ mod tests {
 
         assert_eq!(metrics.model(), "local-qwen36");
         assert_eq!(metrics.tokens(), TokenCounters::new(4, 1));
+    }
+
+    #[test]
+    fn atomic_latency_snapshot_preserves_invariants_when_total_races_ahead_of_count() {
+        let metrics = AtomicLatencyMetrics {
+            count: AtomicU64::new(1),
+            total_nanos: AtomicU64::new(200_000_000),
+            min_nanos: AtomicU64::new(100_000_000),
+            max_nanos: AtomicU64::new(100_000_000),
+        };
+
+        assert_latency_summary_invariants(metrics.snapshot());
+    }
+
+    #[test]
+    fn atomic_latency_snapshot_preserves_invariants_when_count_races_ahead_of_total() {
+        let metrics = AtomicLatencyMetrics {
+            count: AtomicU64::new(2),
+            total_nanos: AtomicU64::new(100_000_000),
+            min_nanos: AtomicU64::new(100_000_000),
+            max_nanos: AtomicU64::new(100_000_000),
+        };
+
+        assert_latency_summary_invariants(metrics.snapshot());
     }
 
     #[test]
@@ -660,5 +766,21 @@ mod tests {
         assert_eq!(metrics.time_to_first_token().count(), 512);
         #[cfg(feature = "tool-calls")]
         assert_eq!(metrics.first_tool_delta().count(), 512);
+    }
+
+    fn assert_latency_summary_invariants(metrics: LatencyMetrics) {
+        assert!(metrics.count() > 0);
+        assert!(
+            metrics.min_ms() <= metrics.avg_ms(),
+            "min {} must be <= avg {}",
+            metrics.min_ms(),
+            metrics.avg_ms()
+        );
+        assert!(
+            metrics.avg_ms() <= metrics.max_ms(),
+            "avg {} must be <= max {}",
+            metrics.avg_ms(),
+            metrics.max_ms()
+        );
     }
 }
