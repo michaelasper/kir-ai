@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.35](https://github.com/michaelasper/kir-ai/compare/v1.57.34...v1.57.35) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-453:** pool transient bf16 matvec buffers ([2ae0e06](https://github.com/michaelasper/kir-ai/commit/2ae0e06657f94b09b4036510753e42859486179c))
+
 ## [1.57.34](https://github.com/michaelasper/kir-ai/compare/v1.57.33...v1.57.34) (2026-05-26)
 
 ### Bug Fixes
