@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.29](https://github.com/michaelasper/kir-ai/compare/v1.57.28...v1.57.29) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-520:** gate llm-backend backend imports ([4968510](https://github.com/michaelasper/kir-ai/commit/4968510b443c38346ba48bc6d1d3960b00ec3677))
+
 ## [1.57.28](https://github.com/michaelasper/kir-ai/compare/v1.57.27...v1.57.28) (2026-05-26)
 
 ### Bug Fixes
