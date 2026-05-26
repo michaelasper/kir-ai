@@ -29,75 +29,29 @@ pub struct SafeTensorArchive {
     bytes: Box<[u8]>,
 }
 
-/// Byte sources accepted by [`SafeTensorArchive::from_bytes`].
-///
-/// Owned buffers are moved into the archive after validation. Borrowed buffers
-/// keep the historical behavior and are copied into archive-owned storage.
-pub trait IntoSafeTensorArchiveBytes: AsRef<[u8]> {
-    fn into_boxed_slice(self) -> Box<[u8]>;
-}
-
-impl IntoSafeTensorArchiveBytes for Vec<u8> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.into_boxed_slice()
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for Box<[u8]> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for &[u8] {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.into()
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for &mut [u8] {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.into()
-    }
-}
-
-impl<const N: usize> IntoSafeTensorArchiveBytes for &[u8; N] {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.as_slice().into()
-    }
-}
-
-impl<const N: usize> IntoSafeTensorArchiveBytes for &mut [u8; N] {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.as_slice().into()
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for &Vec<u8> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.as_slice().into()
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for &mut Vec<u8> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.as_slice().into()
-    }
-}
-
-impl IntoSafeTensorArchiveBytes for &Box<[u8]> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
-        self.as_ref().into()
-    }
-}
-
 impl SafeTensorArchive {
-    pub fn from_bytes(bytes: impl IntoSafeTensorArchiveBytes) -> Result<Self, TensorLoadError> {
-        SafeTensors::deserialize(bytes.as_ref())
-            .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))?;
+    /// Builds an archive from borrowed safetensors bytes.
+    ///
+    /// The input is validated before being copied into archive-owned storage.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, TensorLoadError> {
+        Self::validate_bytes(bytes)?;
         Ok(Self {
-            bytes: bytes.into_boxed_slice(),
+            bytes: bytes.into(),
         })
+    }
+
+    /// Builds an archive from owned boxed safetensors bytes without copying.
+    ///
+    /// The owned input is validated before the same boxed byte slice is stored.
+    pub fn from_owned_bytes(bytes: Box<[u8]>) -> Result<Self, TensorLoadError> {
+        Self::validate_bytes(bytes.as_ref())?;
+        Ok(Self { bytes })
+    }
+
+    fn validate_bytes(bytes: &[u8]) -> Result<(), TensorLoadError> {
+        SafeTensors::deserialize(bytes)
+            .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))?;
+        Ok(())
     }
 
     pub fn tensor_metadata(&self, name: &str) -> Result<TensorMetadata, TensorLoadError> {
@@ -1389,15 +1343,12 @@ mod tests {
     use llm_test_support::safetensors::tiny_safetensors_f32;
 
     #[test]
-    fn archive_from_bytes_reuses_owned_exact_fit_vec_storage() {
-        let bytes = tiny_safetensors_f32("linear.weight", &[1], &[1.0])
-            .into_boxed_slice()
-            .into_vec();
+    fn archive_from_owned_bytes_reuses_boxed_slice_storage() {
+        let bytes = tiny_safetensors_f32("linear.weight", &[1], &[1.0]).into_boxed_slice();
         let ptr = bytes.as_ptr();
         let len = bytes.len();
-        assert_eq!(bytes.capacity(), len);
 
-        let archive = SafeTensorArchive::from_bytes(bytes).expect("archive loads");
+        let archive = SafeTensorArchive::from_owned_bytes(bytes).expect("archive loads");
 
         assert_eq!(archive.bytes.as_ref().as_ptr(), ptr);
         assert_eq!(archive.bytes.len(), len);
@@ -1407,6 +1358,33 @@ mod tests {
                 .expect("tensor still decodes"),
             vec![1.0]
         );
+    }
+
+    #[test]
+    fn archive_from_bytes_copies_borrowed_storage_and_decodes() {
+        let bytes = tiny_safetensors_f32("linear.weight", &[1], &[1.0]);
+        let ptr = bytes.as_ptr();
+        let len = bytes.len();
+
+        let archive = SafeTensorArchive::from_bytes(bytes.as_slice()).expect("archive loads");
+
+        assert_ne!(archive.bytes.as_ref().as_ptr(), ptr);
+        assert_eq!(archive.bytes.len(), len);
+        assert_eq!(
+            archive
+                .f32_tensor("linear.weight")
+                .expect("tensor still decodes"),
+            vec![1.0]
+        );
+    }
+
+    #[test]
+    fn archive_from_owned_bytes_rejects_invalid_safetensors() {
+        let err = SafeTensorArchive::from_owned_bytes(Box::from(*b"not-safetensors"))
+            .expect_err("invalid safetensors are rejected");
+
+        assert_eq!(err.code(), "model_integrity_failed");
+        assert!(err.message().contains("invalid safetensors"));
     }
 
     #[test]

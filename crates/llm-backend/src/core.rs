@@ -50,8 +50,8 @@ pub use qwen::{
     qwen_static_f32_tensors_for_spec,
 };
 pub use safetensors::{
-    F32TensorCacheWarmup, IntoSafeTensorArchiveBytes, SafeTensorArchive, SafeTensorFile,
-    SafeTensorHeader, SafeTensorShardStore, TensorLoadError, TensorMetadata,
+    F32TensorCacheWarmup, SafeTensorArchive, SafeTensorFile, SafeTensorHeader,
+    SafeTensorShardStore, TensorLoadError, TensorMetadata,
 };
 
 #[cfg(test)]
