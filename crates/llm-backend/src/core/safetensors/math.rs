@@ -1,6 +1,13 @@
 use super::super::math::bf16_bits_to_f32;
 use super::TensorLoadError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Bf16DotKernel {
+    Scalar,
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    Neon,
+}
+
 pub(super) fn bf16_row_byte_len(columns: usize, context: &str) -> Result<usize, TensorLoadError> {
     columns
         .checked_mul(2)
@@ -35,11 +42,94 @@ pub(super) fn bf16_dot_f32(row_bytes: &[u8], input: &[f32]) -> Result<f32, Tenso
             row_bytes.len()
         )));
     }
-    Ok(row_bytes
+    Ok(match bf16_dot_f32_kernel() {
+        Bf16DotKernel::Scalar => bf16_dot_f32_scalar(row_bytes, input),
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        Bf16DotKernel::Neon => {
+            // SAFETY: kernel selection only returns Neon when the target supports NEON,
+            // and the byte/input lengths were validated above.
+            unsafe { bf16_dot_f32_neon(row_bytes, input) }
+        }
+    })
+}
+
+fn bf16_dot_f32_kernel() -> Bf16DotKernel {
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    {
+        if aarch64_neon_available() {
+            return Bf16DotKernel::Neon;
+        }
+    }
+    Bf16DotKernel::Scalar
+}
+
+fn bf16_dot_f32_scalar(row_bytes: &[u8], input: &[f32]) -> f32 {
+    row_bytes
         .chunks_exact(2)
         .zip(input)
         .map(|(chunk, value)| bf16_bits_to_f32(u16::from_le_bytes([chunk[0], chunk[1]])) * value)
-        .sum())
+        .sum()
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn aarch64_neon_available() -> bool {
+    #[cfg(target_feature = "neon")]
+    {
+        true
+    }
+    #[cfg(not(target_feature = "neon"))]
+    {
+        std::arch::is_aarch64_feature_detected!("neon")
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[target_feature(enable = "neon")]
+unsafe fn bf16_dot_f32_neon(row_bytes: &[u8], input: &[f32]) -> f32 {
+    use std::arch::aarch64::{
+        vaddvq_f32, vdupq_n_f32, vfmaq_f32, vld1_u8, vld1q_f32, vmovl_u16, vreinterpret_u16_u8,
+        vreinterpretq_f32_u32, vshlq_n_u32,
+    };
+
+    let vector_len = input.len() / 4 * 4;
+    let mut index = 0;
+    let mut acc = vdupq_n_f32(0.0);
+
+    while index < vector_len {
+        // SAFETY: `bf16_dot_f32` validates that `row_bytes` contains exactly
+        // two bytes per input element. This loop only reads full 4-element
+        // chunks, so the 8-byte BF16 load and 4-lane F32 load are in bounds.
+        let (weights, values) = unsafe {
+            // Loading as bytes avoids imposing a `u16` alignment requirement
+            // on safetensors row storage.
+            let bytes = vld1_u8(row_bytes.as_ptr().add(index * 2));
+            let bf16_lanes = vreinterpret_u16_u8(bytes);
+            let f32_bits = vshlq_n_u32(vmovl_u16(bf16_lanes), 16);
+            (
+                vreinterpretq_f32_u32(f32_bits),
+                vld1q_f32(input.as_ptr().add(index)),
+            )
+        };
+        acc = vfmaq_f32(acc, weights, values);
+        index += 4;
+    }
+
+    let mut sum = vaddvq_f32(acc);
+    while index < input.len() {
+        let byte_index = index * 2;
+        // SAFETY: the caller validated two bytes per input element, and this
+        // loop is bounded by `input.len()`.
+        let product = unsafe {
+            let bits = u16::from_le_bytes([
+                *row_bytes.get_unchecked(byte_index),
+                *row_bytes.get_unchecked(byte_index + 1),
+            ]);
+            bf16_bits_to_f32(bits) * *input.get_unchecked(index)
+        };
+        sum += product;
+        index += 1;
+    }
+    sum
 }
 
 pub(super) fn bf16_bytes_to_f32_into(
@@ -105,6 +195,28 @@ mod tests {
     }
 
     #[test]
+    fn bf16_dot_f32_matches_scalar_kernel_across_tail_lengths() {
+        for len in [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 33] {
+            let weights = patterned_values(len, 0.25);
+            let input = patterned_values(len, -0.5);
+            let bytes = bf16_bytes(&weights);
+
+            let dot = bf16_dot_f32(&bytes, &input).expect("dot computes");
+            let scalar = bf16_dot_f32_scalar(&bytes, &input);
+
+            assert_close(dot, scalar, len);
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[test]
+    fn bf16_dot_f32_selects_neon_kernel_when_available() {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            assert_eq!(bf16_dot_f32_kernel(), Bf16DotKernel::Neon);
+        }
+    }
+
+    #[test]
     fn bf16_dot_f32_rejects_input_width_mismatch() {
         let bytes = bf16_bytes(&[1.0, 2.0]);
 
@@ -144,5 +256,23 @@ mod tests {
 
     fn f32_to_bf16_bits(value: f32) -> u16 {
         (value.to_bits() >> 16) as u16
+    }
+
+    fn patterned_values(len: usize, offset: f32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let signed = (index as i32 % 9) - 4;
+                (signed as f32 * 0.375) + offset
+            })
+            .collect()
+    }
+
+    fn assert_close(actual: f32, expected: f32, len: usize) {
+        let delta = (actual - expected).abs();
+        let tolerance = 1e-4_f32.max(expected.abs() * 1e-5);
+        assert!(
+            delta <= tolerance,
+            "length {len}: actual {actual} expected {expected} delta {delta} tolerance {tolerance}"
+        );
     }
 }
