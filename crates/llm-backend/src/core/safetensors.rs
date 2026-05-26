@@ -26,15 +26,77 @@ const BF16_MATVEC_CHUNK_ROWS: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct SafeTensorArchive {
-    bytes: Vec<u8>,
+    bytes: Box<[u8]>,
+}
+
+/// Byte sources accepted by [`SafeTensorArchive::from_bytes`].
+///
+/// Owned buffers are moved into the archive after validation. Borrowed buffers
+/// keep the historical behavior and are copied into archive-owned storage.
+pub trait IntoSafeTensorArchiveBytes: AsRef<[u8]> {
+    fn into_boxed_slice(self) -> Box<[u8]>;
+}
+
+impl IntoSafeTensorArchiveBytes for Vec<u8> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.into_boxed_slice()
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for Box<[u8]> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for &[u8] {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.into()
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for &mut [u8] {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.into()
+    }
+}
+
+impl<const N: usize> IntoSafeTensorArchiveBytes for &[u8; N] {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.as_slice().into()
+    }
+}
+
+impl<const N: usize> IntoSafeTensorArchiveBytes for &mut [u8; N] {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.as_slice().into()
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for &Vec<u8> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.as_slice().into()
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for &mut Vec<u8> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.as_slice().into()
+    }
+}
+
+impl IntoSafeTensorArchiveBytes for &Box<[u8]> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        self.as_ref().into()
+    }
 }
 
 impl SafeTensorArchive {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, TensorLoadError> {
-        SafeTensors::deserialize(bytes)
+    pub fn from_bytes(bytes: impl IntoSafeTensorArchiveBytes) -> Result<Self, TensorLoadError> {
+        SafeTensors::deserialize(bytes.as_ref())
             .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))?;
         Ok(Self {
-            bytes: bytes.to_vec(),
+            bytes: bytes.into_boxed_slice(),
         })
     }
 
@@ -79,7 +141,7 @@ impl SafeTensorArchive {
     }
 
     fn tensors(&self) -> Result<SafeTensors<'_>, TensorLoadError> {
-        SafeTensors::deserialize(&self.bytes)
+        SafeTensors::deserialize(self.bytes.as_ref())
             .map_err(|err| TensorLoadError::integrity(format!("invalid safetensors: {err}")))
     }
 }
@@ -1323,7 +1385,29 @@ fn f32_slice_bytes(len: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::f32_slice_bytes;
+    use super::{SafeTensorArchive, f32_slice_bytes};
+    use llm_test_support::safetensors::tiny_safetensors_f32;
+
+    #[test]
+    fn archive_from_bytes_reuses_owned_exact_fit_vec_storage() {
+        let bytes = tiny_safetensors_f32("linear.weight", &[1], &[1.0])
+            .into_boxed_slice()
+            .into_vec();
+        let ptr = bytes.as_ptr();
+        let len = bytes.len();
+        assert_eq!(bytes.capacity(), len);
+
+        let archive = SafeTensorArchive::from_bytes(bytes).expect("archive loads");
+
+        assert_eq!(archive.bytes.as_ref().as_ptr(), ptr);
+        assert_eq!(archive.bytes.len(), len);
+        assert_eq!(
+            archive
+                .f32_tensor("linear.weight")
+                .expect("tensor still decodes"),
+            vec![1.0]
+        );
+    }
 
     #[test]
     fn f32_slice_bytes_saturates_after_widening_large_lengths() {
