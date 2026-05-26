@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.36](https://github.com/michaelasper/kir-ai/compare/v1.57.35...v1.57.36) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-452:** vectorize BF16 CPU dot on aarch64 ([2d2e0ea](https://github.com/michaelasper/kir-ai/commit/2d2e0ea270ead425eaa17ccce2c39d3299010e8e))
+
 ## [1.57.35](https://github.com/michaelasper/kir-ai/compare/v1.57.34...v1.57.35) (2026-05-26)
 
 ### Bug Fixes
