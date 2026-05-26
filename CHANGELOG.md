@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.19](https://github.com/michaelasper/kir-ai/compare/v1.57.18...v1.57.19) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-465:** limit tool schema enum size ([db36613](https://github.com/michaelasper/kir-ai/commit/db36613356cf8597ae1de9a691fac2eae31a873c))
+
 ## [1.57.18](https://github.com/michaelasper/kir-ai/compare/v1.57.17...v1.57.18) (2026-05-26)
 
 ### Bug Fixes
