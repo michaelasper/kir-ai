@@ -394,8 +394,14 @@ async fn runtime_injects_qwen_tool_instructions_without_mutating_chat_context() 
         "Tools are available. Return tool invocations inside <tool_call> JSON blocks.\n"
     ));
     assert!(prompt.contains("\"name\":\"lookup\""));
+    let user_system_text_position = prompt
+        .find("You are Kir.")
+        .expect("prompt should contain user-provided system text");
+    let tool_guidance_position = prompt
+        .find("Tools are available.")
+        .expect("prompt should contain runtime-planned qwen tool guidance");
     assert!(
-        prompt.find("You are Kir.") < prompt.find("Tools are available."),
+        user_system_text_position < tool_guidance_position,
         "user system content should precede runtime-planned qwen tool guidance: {prompt}"
     );
     assert_eq!(
