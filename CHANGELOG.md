@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.34](https://github.com/michaelasper/kir-ai/compare/v1.57.33...v1.57.34) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-454:** remove resident F32 weight cache ([1803276](https://github.com/michaelasper/kir-ai/commit/18032761747f91c21220848ce5ec88a92d04ab01))
+
 ## [1.57.33](https://github.com/michaelasper/kir-ai/compare/v1.57.32...v1.57.33) (2026-05-26)
 
 ### Bug Fixes
