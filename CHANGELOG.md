@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.27](https://github.com/michaelasper/kir-ai/compare/v1.57.26...v1.57.27) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-428:** gate MLX metrics tests behind feature ([409fab8](https://github.com/michaelasper/kir-ai/commit/409fab800bc97af1bba54f8618ea641e9c823bf1))
+
 ## [1.57.26](https://github.com/michaelasper/kir-ai/compare/v1.57.25...v1.57.26) (2026-05-26)
 
 ### Bug Fixes
