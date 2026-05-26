@@ -192,13 +192,48 @@ impl Drop for ServerProcess {
     }
 }
 
+// Process-level serve tests pass a closed listener address to a child process.
+// Keep those tests serialized until each child has exited and released the port.
 #[cfg(feature = "test-utils")]
-fn reserve_loopback_addr() -> String {
+static PROCESS_LEVEL_SERVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(feature = "test-utils")]
+struct ReservedLoopbackAddr {
+    addr: String,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(feature = "test-utils")]
+impl std::ops::Deref for ReservedLoopbackAddr {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.addr
+    }
+}
+
+#[cfg(feature = "test-utils")]
+impl std::fmt::Display for ReservedLoopbackAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.addr.fmt(f)
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn reserve_loopback_addr() -> ReservedLoopbackAddr {
+    let guard = PROCESS_LEVEL_SERVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
-    listener
+    let addr = listener
         .local_addr()
         .expect("reserved loopback addr")
-        .to_string()
+        .to_string();
+
+    ReservedLoopbackAddr {
+        addr,
+        _guard: guard,
+    }
 }
 
 #[cfg(feature = "test-utils")]

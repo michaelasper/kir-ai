@@ -320,6 +320,42 @@ async fn serve_tls_cert_requires_tls_key_before_backend_validation() {
 
 #[test]
 #[cfg(feature = "test-utils")]
+fn reserve_loopback_addr_serializes_process_level_server_tests() {
+    let reserved = reserve_loopback_addr();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+
+    let waiter = std::thread::spawn(move || {
+        started_sender
+            .send(())
+            .expect("signal second reservation start");
+        let second = reserve_loopback_addr();
+        sender
+            .send(second.to_string())
+            .expect("send second reserved address");
+    });
+
+    started_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second reservation thread started");
+    assert!(
+        receiver.recv_timeout(Duration::from_millis(100)).is_err(),
+        "second loopback reservation should wait until the first server test releases its guard"
+    );
+
+    drop(reserved);
+    let second_addr = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second loopback reservation after guard release");
+    assert!(
+        second_addr.starts_with("127.0.0.1:"),
+        "second reserved loopback address should remain loopback: {second_addr}"
+    );
+    waiter.join().expect("join loopback reservation waiter");
+}
+
+#[test]
+#[cfg(feature = "test-utils")]
 fn serve_loopback_without_admin_token_rejects_unauthenticated_admin_requests() {
     let addr = reserve_loopback_addr();
     let mut server = spawn_protocol_test_server(&addr, None);
