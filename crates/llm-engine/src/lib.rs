@@ -13,8 +13,6 @@ mod mlx;
 pub mod model_cli;
 mod server;
 mod snapshot_backend;
-#[cfg(any(feature = "mlx", feature = "native-qwen", feature = "native-gemma"))]
-mod sync_ext;
 
 /// Default public model alias used by the server and contract tests.
 pub use llm_util::defaults::DEFAULT_MODEL_ID;

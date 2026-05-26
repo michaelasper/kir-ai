@@ -1,6 +1,14 @@
-use futures::stream::{BoxStream, StreamExt};
+use futures::{
+    Stream,
+    stream::{BoxStream, StreamExt},
+};
 use llm_backend_contracts::{BackendError, BackendStreamChunk};
 use llm_tokenizer::{HuggingFaceDecodeStream, HuggingFaceTokenizer};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio_util::sync::CancellationToken;
 
 pub(crate) trait NativeTextStreamDecoder {
     fn step(&mut self, token_id: u32) -> Result<Option<String>, BackendError>;
@@ -118,6 +126,19 @@ pub(crate) fn native_text_worker_stream(
     label: &'static str,
     rx: tokio::sync::mpsc::Receiver<Result<BackendStreamChunk, BackendError>>,
     worker: tokio::task::JoinHandle<()>,
+    cancellation: CancellationToken,
+) -> BoxStream<'static, Result<BackendStreamChunk, BackendError>> {
+    CancelOnDropStream::new(
+        native_text_worker_stream_inner(label, rx, worker),
+        cancellation,
+    )
+    .boxed()
+}
+
+fn native_text_worker_stream_inner(
+    label: &'static str,
+    rx: tokio::sync::mpsc::Receiver<Result<BackendStreamChunk, BackendError>>,
+    worker: tokio::task::JoinHandle<()>,
 ) -> BoxStream<'static, Result<BackendStreamChunk, BackendError>> {
     async_stream::stream! {
         let mut rx = rx;
@@ -162,4 +183,64 @@ pub(crate) fn native_text_worker_stream(
         }
     }
     .boxed()
+}
+
+struct CancelOnDropStream {
+    inner: BoxStream<'static, Result<BackendStreamChunk, BackendError>>,
+    cancel_on_drop: CancelOnDrop,
+}
+
+impl CancelOnDropStream {
+    fn new(
+        inner: BoxStream<'static, Result<BackendStreamChunk, BackendError>>,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            inner,
+            cancel_on_drop: CancelOnDrop::new(cancellation),
+        }
+    }
+}
+
+impl Unpin for CancelOnDropStream {}
+
+impl Stream for CancelOnDropStream {
+    type Item = Result<BackendStreamChunk, BackendError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let stream = self.get_mut();
+        match stream.inner.as_mut().poll_next(cx) {
+            Poll::Ready(None) => {
+                stream.cancel_on_drop.disarm();
+                Poll::Ready(None)
+            }
+            item => item,
+        }
+    }
+}
+
+pub(crate) struct CancelOnDrop {
+    cancellation: CancellationToken,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    pub(crate) fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
 }

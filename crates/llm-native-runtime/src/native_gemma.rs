@@ -239,15 +239,13 @@ impl NativeGemmaBackend {
         cancellation: &CancellationToken,
     ) -> Result<NativeGemmaDecodeSession, BackendError> {
         let driver = &self.driver;
-        tokio::task::block_in_place(|| {
-            driver.block_on_worker(driver.start_decode_session(
-                context_tokens,
-                max_new_tokens,
-                request,
-                cancellation,
-                &mut InferenceScratchpad::new(),
-            ))?
-        })
+        driver.block_on_worker(driver.start_decode_session(
+            context_tokens,
+            max_new_tokens,
+            request,
+            cancellation,
+            &mut InferenceScratchpad::new(),
+        ))?
     }
 
     #[cfg(test)]
@@ -262,15 +260,13 @@ impl NativeGemmaBackend {
             let mut sampling_rng = crate::native_text::NativeTextSamplingRng::from_entropy();
             Some(sampling_rng.draw_f32())
         };
-        tokio::task::block_in_place(|| {
-            self.driver
-                .block_on_worker(self.driver.adapter.next_token_from_hidden(
-                    hidden,
-                    sampling,
-                    sampling_draw,
-                    &mut llm_sampler::TopPSamplerScratch::new(),
-                ))?
-        })
+        self.driver
+            .block_on_worker(self.driver.adapter.next_token_from_hidden(
+                hidden,
+                sampling,
+                sampling_draw,
+                &mut llm_sampler::TopPSamplerScratch::new(),
+            ))?
     }
 }
 

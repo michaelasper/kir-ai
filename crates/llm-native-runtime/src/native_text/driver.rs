@@ -1,5 +1,5 @@
 use super::{
-    NativeTextDiskCache, NativeTextDiskCacheStoreStatus, NativeTextDiskCacheValue,
+    CancelOnDrop, NativeTextDiskCache, NativeTextDiskCacheStoreStatus, NativeTextDiskCacheValue,
     NativeTextPrefixCache, NativeTextPrefixCacheMetrics, NativeTextPrefixCacheNamespace,
     NativeTextPrefixCacheValue, NativeTextSamplingRng, NativeTextStreamDecoder,
     NativeTokenizerStreamDecoder, native_text_cache_namespace_token_bucket,
@@ -363,9 +363,7 @@ where
         request: BackendRequest,
         cancellation: CancellationToken,
     ) -> Result<BackendOutput, BackendError> {
-        tokio::task::block_in_place(|| {
-            self.block_on_worker(self.generate_async(request, cancellation))?
-        })
+        self.block_on_worker(self.generate_async(request, cancellation))?
     }
 
     #[cfg(test)]
@@ -375,9 +373,7 @@ where
         tx: tokio::sync::mpsc::Sender<Result<BackendStreamChunk, BackendError>>,
         cancellation: CancellationToken,
     ) -> Result<(), BackendError> {
-        tokio::task::block_in_place(|| {
-            self.block_on_worker(self.generate_stream_async(request, tx, cancellation))?
-        })
+        self.block_on_worker(self.generate_stream_async(request, tx, cancellation))?
     }
 
     #[cfg(test)]
@@ -1023,11 +1019,12 @@ where
         let driver = self.clone();
         let label = driver.adapter.worker_label();
         let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let worker_cancellation = cancellation.clone();
         let worker = tokio::task::spawn_blocking(move || {
             let runtime_error_tx = tx.clone();
             if let Err(err) = block_on_native_text_worker(async move {
                 if let Err(err) = driver
-                    .generate_stream_async(request, tx.clone(), cancellation)
+                    .generate_stream_async(request, tx.clone(), worker_cancellation)
                     .await
                 {
                     let _ = tx.send(Err(err)).await;
@@ -1036,33 +1033,7 @@ where
                 let _ = runtime_error_tx.blocking_send(Err(err));
             }
         });
-        native_text_worker_stream(label, rx, worker)
-    }
-}
-
-struct CancelOnDrop {
-    cancellation: CancellationToken,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    fn new(cancellation: CancellationToken) -> Self {
-        Self {
-            cancellation,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            self.cancellation.cancel();
-        }
+        native_text_worker_stream(label, rx, worker, cancellation)
     }
 }
 

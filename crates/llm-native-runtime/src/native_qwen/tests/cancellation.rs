@@ -74,7 +74,7 @@ async fn native_qwen_stream_with_cancel_observes_pre_cancelled_token() {
 async fn native_qwen_worker_stream_reports_join_failure_after_channel_close() {
     let (_tx, rx) = tokio::sync::mpsc::channel(1);
     let worker = tokio::task::spawn_blocking(|| panic!("stream worker panic"));
-    let mut stream = native_text_worker_stream("native Qwen", rx, worker);
+    let mut stream = native_text_worker_stream("native Qwen", rx, worker, CancellationToken::new());
 
     let err = stream
         .next()

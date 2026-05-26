@@ -94,6 +94,37 @@ async fn driver_generate_with_cancel_cancels_worker_when_future_is_dropped() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn driver_stream_with_cancel_cancels_worker_when_stream_is_dropped() {
+    let adapter = TestAdapter::new([1_usize]).with_next_token_delay(Duration::from_millis(750));
+    let next_token_calls = adapter.next_token_calls();
+    let driver = driver_for_test(adapter);
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+
+    let stream = driver.generate_stream_with_cancel(driver_test_request(1), worker_cancellation);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    while next_token_calls.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(next_token_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        !cancellation.is_cancelled(),
+        "active stream should not be cancelled before the client drops it"
+    );
+
+    drop(stream);
+
+    tokio::time::timeout(Duration::from_millis(200), async {
+        while !cancellation.is_cancelled() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropping the stream should signal the blocking native worker");
+}
+
 #[test]
 fn prefill_context_returns_last_hidden_from_last_chunk() {
     let cancellation = CancellationToken::new();

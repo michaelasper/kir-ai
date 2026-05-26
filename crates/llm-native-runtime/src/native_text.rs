@@ -63,7 +63,7 @@ pub(crate) use prefix_cache::{
 #[cfg(test)]
 pub(crate) use streaming::NativeStreamTextDeltas;
 pub(crate) use streaming::{
-    NativeTextStreamDecoder, NativeTokenizerStreamDecoder, native_text_worker_stream,
+    CancelOnDrop, NativeTextStreamDecoder, NativeTokenizerStreamDecoder, native_text_worker_stream,
 };
 
 pub const DEFAULT_NATIVE_TEXT_MAX_NEW_TOKENS: u32 = 256;
