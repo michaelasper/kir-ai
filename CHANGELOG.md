@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.18](https://github.com/michaelasper/kir-ai/compare/v1.57.17...v1.57.18) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-464:** guard schema depth before byte counting ([f14e36f](https://github.com/michaelasper/kir-ai/commit/f14e36fd598d83d9bb6ad01a1ea5a2d68ba5b16b))
+* **COR-464:** limit tool schema recursion depth ([be91dce](https://github.com/michaelasper/kir-ai/commit/be91dce614b07ad16b50829d07c89eba0714f03b))
+
 ## [1.57.17](https://github.com/michaelasper/kir-ai/compare/v1.57.16...v1.57.17) (2026-05-25)
 
 ### Bug Fixes
