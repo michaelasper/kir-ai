@@ -115,6 +115,9 @@ fn qwen_layer_cache_for_kind(
         }
         AttentionKind::FullAttention => {
             let dims = QwenFullAttentionDims::from_spec(spec);
+            let max_tokens = spec
+                .sliding_window
+                .map_or(max_tokens, |window| max_tokens.min(window as usize).max(1));
             LayerKvCache::new(max_tokens, dims.num_key_value_heads, dims.head_dim)
                 .map(QwenLayerCache::Full)
                 .map_err(|err| {

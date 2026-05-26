@@ -69,6 +69,7 @@ fn native_qwen_cache_capacity_preserves_prompt_and_generation_budget() {
         moe_intermediate_size: 1,
         shared_expert_intermediate_size: 1,
         max_position_embeddings: 32,
+        sliding_window: None,
         vocab_size: 16,
         layer_kinds: vec![llm_models::AttentionKind::FullAttention],
     };

@@ -33,6 +33,73 @@ fn parses_official_qwen3_dense_config_as_full_attention_swiglu() {
 }
 
 #[test]
+fn parses_qwen3_dense_sliding_window_config() {
+    let spec = QwenModelSpec::from_config_json(include_str!(
+        "../../../fixtures/qwen3-dense-sliding-window/config.json"
+    ))
+    .expect("Qwen3 dense sliding-window config parses");
+
+    assert_eq!(spec.architecture, "Qwen3ForCausalLM");
+    assert_eq!(spec.model_type, "qwen3");
+    assert_eq!(spec.layer_kinds, vec![AttentionKind::FullAttention; 2]);
+    assert_eq!(spec.max_position_embeddings, 40960);
+    assert_eq!(spec.sliding_window, Some(2048));
+}
+
+#[test]
+fn qwen3_dense_ignores_sliding_window_value_when_disabled() {
+    let spec = QwenModelSpec::from_config_json(
+        r#"{
+          "architectures": ["Qwen3ForCausalLM"],
+          "model_type": "qwen3",
+          "hidden_size": 1024,
+          "intermediate_size": 3072,
+          "max_position_embeddings": 40960,
+          "num_attention_heads": 16,
+          "num_hidden_layers": 2,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "rms_norm_eps": 1e-6,
+          "rope_theta": 1000000,
+          "sliding_window": 2048,
+          "tie_word_embeddings": true,
+          "use_sliding_window": false,
+          "vocab_size": 151936
+        }"#,
+    )
+    .expect("disabled Qwen3 dense sliding-window metadata parses");
+
+    assert_eq!(spec.sliding_window, None);
+    assert_eq!(spec.layer_kinds, vec![AttentionKind::FullAttention; 2]);
+}
+
+#[test]
+fn qwen3_dense_requires_window_when_sliding_window_enabled() {
+    let err = QwenModelSpec::from_config_json(
+        r#"{
+          "architectures": ["Qwen3ForCausalLM"],
+          "model_type": "qwen3",
+          "hidden_size": 1024,
+          "intermediate_size": 3072,
+          "max_position_embeddings": 40960,
+          "num_attention_heads": 16,
+          "num_hidden_layers": 2,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "rms_norm_eps": 1e-6,
+          "rope_theta": 1000000,
+          "tie_word_embeddings": true,
+          "use_sliding_window": true,
+          "vocab_size": 151936
+        }"#,
+    )
+    .expect_err("enabled Qwen3 dense sliding-window config requires a window");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.to_string().contains("sliding_window"));
+}
+
+#[test]
 fn qwen3_dense_index_accepts_model_namespace_and_tied_embeddings() {
     let spec = QwenModelSpec::from_config_json(
         r#"{
@@ -86,8 +153,6 @@ fn qwen3_dense_config_rejects_unsupported_runtime_options() {
     for (field, value) in [
         ("hidden_act", r#""gelu""#),
         ("attention_bias", "true"),
-        ("use_sliding_window", "true"),
-        ("sliding_window", "1024"),
         ("rope_scaling", r#"{"type":"linear","factor":2.0}"#),
     ] {
         let config = format!(

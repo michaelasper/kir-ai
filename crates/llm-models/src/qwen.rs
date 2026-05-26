@@ -62,6 +62,8 @@ pub struct QwenModelSpec {
     pub shared_expert_intermediate_size: u32,
     /// Maximum supported context length.
     pub max_position_embeddings: u32,
+    /// Sliding-window attention width for dense full-attention layers.
+    pub sliding_window: Option<u32>,
     /// Vocabulary size.
     pub vocab_size: u32,
     /// Attention kind for each decoder layer.
@@ -152,6 +154,7 @@ impl QwenModelSpec {
             moe_intermediate_size: text.moe_intermediate_size,
             shared_expert_intermediate_size: text.shared_expert_intermediate_size,
             max_position_embeddings: text.max_position_embeddings,
+            sliding_window: None,
             vocab_size: text.vocab_size,
             layer_kinds,
         })
@@ -169,6 +172,7 @@ impl QwenModelSpec {
             .head_dim
             .unwrap_or_else(|| hidden_size / num_attention_heads.max(1));
         let num_hidden_layers = required_root_u32(config.num_hidden_layers, "num_hidden_layers")?;
+        let sliding_window = qwen3_dense_sliding_window(&config)?;
         Ok(Self {
             family: ModelFamily::Qwen,
             architecture,
@@ -202,6 +206,7 @@ impl QwenModelSpec {
                 config.max_position_embeddings,
                 "max_position_embeddings",
             )?,
+            sliding_window,
             vocab_size: required_root_u32(config.vocab_size, "vocab_size")?,
             layer_kinds: vec![AttentionKind::FullAttention; num_hidden_layers as usize],
         })
@@ -354,22 +359,29 @@ fn validate_supported_qwen3_dense_options(config: &RawQwenConfig) -> Result<(), 
             "qwen3 dense attention_bias=true is unsupported",
         ));
     }
-    if config.use_sliding_window.unwrap_or(false) {
-        return Err(ModelSpecError::unsupported(
-            "qwen3 dense use_sliding_window=true is unsupported",
-        ));
-    }
-    if config.sliding_window.is_some() {
-        return Err(ModelSpecError::unsupported(
-            "qwen3 dense sliding_window is unsupported",
-        ));
-    }
     if config.rope_scaling.is_some() {
         return Err(ModelSpecError::unsupported(
             "qwen3 dense rope_scaling is unsupported",
         ));
     }
     Ok(())
+}
+
+fn qwen3_dense_sliding_window(config: &RawQwenConfig) -> Result<Option<u32>, ModelSpecError> {
+    if !config.use_sliding_window.unwrap_or(false) {
+        return Ok(None);
+    }
+    let sliding_window = config.sliding_window.ok_or_else(|| {
+        ModelSpecError::invalid_request(
+            "qwen3 dense use_sliding_window=true requires sliding_window",
+        )
+    })?;
+    if sliding_window == 0 {
+        return Err(ModelSpecError::invalid_request(
+            "qwen3 dense sliding_window must be greater than 0",
+        ));
+    }
+    Ok(Some(sliding_window))
 }
 
 #[derive(Debug, Deserialize)]

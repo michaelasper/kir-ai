@@ -633,6 +633,7 @@ mod tests {
             moe_intermediate_size: 1,
             shared_expert_intermediate_size: 1,
             max_position_embeddings: 1,
+            sliding_window: None,
             vocab_size,
             layer_kinds: Vec::new(),
         }

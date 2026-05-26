@@ -292,6 +292,49 @@ async fn native_qwen_backend_runs_qwen3_dense_single_file_prefill() {
 }
 
 #[tokio::test]
+async fn native_qwen_backend_runs_qwen3_dense_sliding_window_prefill() {
+    let snapshot = temp_snapshot_dir("qwen3-dense-sliding-window");
+    std::fs::remove_dir_all(&snapshot).ok();
+    std::fs::create_dir_all(&snapshot).expect("snapshot dir");
+    write_tiny_qwen3_dense_single_file_decoder_snapshot(&snapshot);
+    copy_fixture("tokenizer.json", snapshot.join("tokenizer.json"));
+    let config_path = snapshot.join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).expect("config reads"))
+            .expect("config json parses");
+    let config_object = config.as_object_mut().expect("config is an object");
+    config_object.insert("use_sliding_window".to_owned(), serde_json::json!(true));
+    config_object.insert("sliding_window".to_owned(), serde_json::json!(2));
+    std::fs::write(&config_path, config.to_string()).expect("config writes");
+
+    let mut backend = NativeQwenBackend::open("local-qwen3", &snapshot)
+        .await
+        .expect("backend opens sliding-window snapshot");
+    backend.driver.adapter.top_k = 2;
+    let decode = start_qwen_decode_session(
+        &backend,
+        &[0, 1, 0],
+        4,
+        &native_qwen_test_request("local-qwen3"),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("dense sliding-window prefill runs");
+
+    assert_eq!(backend.driver.adapter.spec.sliding_window, Some(2));
+    match &decode.caches[0] {
+        QwenLayerCache::Full(cache) => {
+            assert_eq!(cache.max_tokens(), 2);
+            assert_eq!(cache.token_count(), 2);
+            assert!(cache.key(1).is_some(), "latest prompt token must remain");
+        }
+        QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
+        other => panic!("unexpected Qwen cache variant: {other:?}"),
+    }
+    std::fs::remove_dir_all(snapshot).ok();
+}
+
+#[tokio::test]
 async fn native_qwen_full_attention_prefill_keeps_context_beyond_chunk_size() {
     let snapshot = temp_snapshot_dir("qwen3-dense-long-prefill");
     std::fs::remove_dir_all(&snapshot).ok();

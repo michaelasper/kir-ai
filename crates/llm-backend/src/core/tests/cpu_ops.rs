@@ -11,8 +11,8 @@ use super::super::qwen::ops::{
     QwenLinearAttentionSequenceParts, QwenLinearAttentionStepParts,
     qwen_full_attention_first_token_from_parts, qwen_full_attention_sequence_from_parts,
     qwen_full_attention_sequence_with_cache_from_parts,
-    qwen_full_attention_step_with_cache_from_parts, qwen_linear_attention_first_token_from_parts,
-    qwen_linear_attention_sequence_from_parts,
+    qwen_full_attention_step_with_cache_from_parts, qwen_layer_caches_for_spec,
+    qwen_linear_attention_first_token_from_parts, qwen_linear_attention_sequence_from_parts,
     qwen_linear_attention_sequence_with_cache_from_parts,
     qwen_linear_attention_step_with_cache_from_parts,
 };
@@ -21,6 +21,7 @@ use llm_kv_cache::{
     AsymmetricVqCacheConfig, KvCacheConfig, KvCacheFormat, KvCacheValueQuantizationBits,
     LayerKvCache, LinearAttentionCache,
 };
+use llm_models::QwenModelSpec;
 
 #[test]
 fn rms_norm_matches_reference_calculation() {
@@ -160,6 +161,26 @@ fn layer_cache_variant_snapshots_round_trip_for_qwen_and_gemma() {
             assert_eq!(actual.keys(), expected.keys());
             assert_eq!(actual.values(), expected.values());
         }
+    }
+}
+
+#[test]
+fn qwen_layer_caches_cap_dense_sliding_window_full_attention() {
+    let spec = QwenModelSpec::from_config_json(include_str!(
+        "../../../../../fixtures/qwen3-dense-sliding-window/config.json"
+    ))
+    .expect("Qwen3 dense sliding-window config parses");
+
+    let caches = qwen_layer_caches_for_spec(&spec, 4096).expect("Qwen caches allocate");
+
+    assert_eq!(caches.len(), 2);
+    match &caches[0] {
+        QwenLayerCache::Full(cache) => {
+            assert_eq!(cache.max_tokens(), 2048);
+            assert_eq!(cache.key_value_heads(), 8);
+            assert_eq!(cache.head_dim(), 128);
+        }
+        QwenLayerCache::Linear(_) => panic!("dense Qwen3 should use full attention cache"),
     }
 }
 

@@ -1020,6 +1020,7 @@ fn tiny_qwen_spec(kind: AttentionKind) -> QwenModelSpec {
         moe_intermediate_size: 1,
         shared_expert_intermediate_size: 1,
         max_position_embeddings: 128,
+        sliding_window: None,
         vocab_size: 8,
         layer_kinds: vec![kind],
     }
