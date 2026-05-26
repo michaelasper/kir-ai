@@ -1,4 +1,7 @@
-use llm_backend::native::{Q8_0_BLOCK_SIZE, Q8RowMajorMatrix};
+use llm_backend::native::{
+    CpuNativeMatvecBackend, NativeMatvecBackend, NativeRowMajorMatrix, Q8_0_BLOCK_SIZE,
+    Q8RowMajorMatrix,
+};
 
 #[test]
 fn q8_0_matvec_dequantizes_blocks_during_dot_product() {
@@ -79,6 +82,28 @@ fn q8_0_matvec_rejects_non_finite_block_scale() {
         .expect_err("infinite scale fails");
 
     assert_eq!(err.message(), "Q8_0 block scale must be finite");
+}
+
+#[tokio::test]
+async fn native_matvec_dispatch_executes_declared_q8_0_weights() {
+    let mut bytes = Vec::new();
+    push_q8_0_block(&mut bytes, 0x3c00, &[2, -1, 0, 3], 0);
+    push_q8_0_block(&mut bytes, 0x3800, &[-4, 0, 2, 1], 0);
+    let matrix = Q8RowMajorMatrix::from_blocks(2, Q8_0_BLOCK_SIZE, &bytes).expect("matrix");
+    let mut input = vec![0.0; Q8_0_BLOCK_SIZE];
+    input[..4].copy_from_slice(&[1.5, -2.0, 5.0, 0.5]);
+    let mut output = [0.0; 2];
+
+    CpuNativeMatvecBackend
+        .matvec_row_major_weights_f32_in_place(
+            &input,
+            NativeRowMajorMatrix::Q8_0(matrix),
+            &mut output,
+        )
+        .await
+        .expect("native Q8_0 matvec");
+
+    assert_eq!(output, [6.5, 2.25]);
 }
 
 fn push_q8_0_block(bytes: &mut Vec<u8>, scale_bits: u16, active_quants: &[i8], pad: i8) {

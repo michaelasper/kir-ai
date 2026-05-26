@@ -9,7 +9,9 @@ use super::math::{
     rms_norm_one_centered_f32_in_place, select_head_rows_f32_in_place, silu_f32,
     softmax_f32_in_place, softmax_top_k_f32, weighted_sum_f32_in_place,
 };
-use super::{LayerKvCache, LinearAttentionCache, SafeTensorShardStore, TensorLoadError};
+use super::{
+    LayerKvCache, LinearAttentionCache, Q8RowMajorMatrix, SafeTensorShardStore, TensorLoadError,
+};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +31,16 @@ pub struct NativeBatchedMatvecRows<'a> {
     values: &'a [f32],
     row_len: usize,
     next_row: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum NativeRowMajorMatrix<'a> {
+    F32 {
+        weights: &'a [f32],
+        rows: usize,
+        columns: usize,
+    },
+    Q8_0(Q8RowMajorMatrix<'a>),
 }
 
 impl<'a> NativeBatchedMatvecInputBuffer<'a> {
@@ -361,6 +373,37 @@ pub trait NativeMatvecBackend {
         columns: usize,
         output: &mut [f32],
     ) -> Result<(), MathError>;
+
+    async fn matvec_row_major_weights_f32_in_place(
+        &self,
+        input: &[f32],
+        weights: NativeRowMajorMatrix<'_>,
+        output: &mut [f32],
+    ) -> Result<(), MathError> {
+        match weights {
+            NativeRowMajorMatrix::F32 {
+                weights,
+                rows,
+                columns,
+            } => {
+                self.matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+                    .await
+            }
+            NativeRowMajorMatrix::Q8_0(matrix) => self
+                .q8_0_matvec_row_major_f32_in_place(matrix, input, output)
+                .await
+                .map_err(|err| MathError::InvalidShape(format!("Q8_0 matvec failed: {err}"))),
+        }
+    }
+
+    async fn q8_0_matvec_row_major_f32_in_place(
+        &self,
+        matrix: Q8RowMajorMatrix<'_>,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        matrix.matvec_f32_in_place(input, output)
+    }
 
     async fn rms_norm_f32(
         &self,
@@ -734,6 +777,15 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
         output: &mut [f32],
     ) -> Result<(), MathError> {
         matvec_row_major_f32_in_place(input, weights, rows, columns, output)
+    }
+
+    async fn q8_0_matvec_row_major_f32_in_place(
+        &self,
+        matrix: Q8RowMajorMatrix<'_>,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        matrix.matvec_f32_in_place(input, output)
     }
 
     async fn rms_norm_one_centered_f32_in_place(
