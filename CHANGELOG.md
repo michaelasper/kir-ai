@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.33](https://github.com/michaelasper/kir-ai/compare/v1.57.32...v1.57.33) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-455:** remove mirrored kv staging and cache active runs ([ba130af](https://github.com/michaelasper/kir-ai/commit/ba130af87055680616a22410b346e96cec2c486c))
+
 ## [1.57.32](https://github.com/michaelasper/kir-ai/compare/v1.57.31...v1.57.32) (2026-05-26)
 
 ### Performance Improvements
