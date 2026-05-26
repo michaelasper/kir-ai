@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.28](https://github.com/michaelasper/kir-ai/compare/v1.57.27...v1.57.28) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-519:** serialize process-level serve tests ([eda5db2](https://github.com/michaelasper/kir-ai/commit/eda5db2eb3f0716a9e9bfa8fccb187aa56488de3))
+
 ## [1.57.27](https://github.com/michaelasper/kir-ai/compare/v1.57.26...v1.57.27) (2026-05-26)
 
 ### Bug Fixes
