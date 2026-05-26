@@ -715,7 +715,7 @@ impl LayerKvCache {
         let physical_token_index = self.window_start;
         let token_index = self.max_tokens - 1;
         self.write_block_token(physical_token_index, key, value)?;
-        self.write_stage_token(physical_token_index, key, value);
+        self.write_stage_token(physical_token_index, key, value)?;
         self.window_start = (self.window_start + 1) % self.max_tokens;
         self.tokens_seen = tokens_seen;
         self.revision = self.revision.saturating_add(1);
@@ -790,7 +790,7 @@ impl LayerKvCache {
         let token_index = self.token_count;
         let physical_token_index = token_index;
         self.append_block_token(token_index, key, value)?;
-        self.write_stage_token(token_index, key, value);
+        self.write_stage_token(token_index, key, value)?;
         self.token_count += 1;
         self.tokens_seen = tokens_seen;
         self.revision = self.revision.saturating_add(1);
@@ -1119,43 +1119,118 @@ impl LayerKvCache {
         self.refresh_quantized_block(block_index)
     }
 
-    fn write_stage_token(&mut self, token_index: usize, key: &[f32], value: &[f32]) {
+    fn write_stage_token(
+        &mut self,
+        token_index: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvCacheError> {
         let vector_len = self.vector_len();
-        let start = token_index * vector_len;
-        let end = start + vector_len;
-        let mirror_start = (token_index + self.max_tokens) * vector_len;
-        let mirror_end = mirror_start + vector_len;
         let key_stage = Arc::make_mut(&mut self.key_stage);
-        key_stage[start..end].copy_from_slice(key);
-        key_stage[mirror_start..mirror_end].copy_from_slice(key);
         let value_stage = Arc::make_mut(&mut self.value_stage);
-        value_stage[start..end].copy_from_slice(value);
-        value_stage[mirror_start..mirror_end].copy_from_slice(value);
+        Self::copy_stage_token(
+            key_stage,
+            value_stage,
+            self.max_tokens,
+            vector_len,
+            token_index,
+            key,
+            value,
+        )
     }
 
     fn rebuild_stage_from_blocks(&mut self) -> Result<(), KvCacheError> {
         self.clear_stage_storage();
-        for logical_token_index in 0..self.token_count {
-            let physical_token_index = (self.window_start + logical_token_index) % self.max_tokens;
-            let (block_index, block_token_index) = self
-                .physical_block_position(physical_token_index)
-                .ok_or(KvCacheError::InvalidShape)?;
-            let block = self
-                .blocks
-                .get(block_index)
-                .ok_or(KvCacheError::InvalidShape)?;
-            let key = block
-                .key(block_token_index)
-                .ok_or(KvCacheError::InvalidShape)?
-                .to_vec();
-            let value = block
-                .value(block_token_index)
-                .ok_or(KvCacheError::InvalidShape)?
-                .to_vec();
-            self.write_stage_token(physical_token_index, &key, &value);
+        let vector_len = self.vector_len();
+        let max_tokens = self.max_tokens;
+        let token_count = self.token_count;
+        let window_start = self.window_start;
+        {
+            let key_stage = Arc::make_mut(&mut self.key_stage);
+            let value_stage = Arc::make_mut(&mut self.value_stage);
+            for logical_token_index in 0..token_count {
+                let physical_token_index = (window_start + logical_token_index) % max_tokens;
+                let block_index = physical_token_index / LAYER_KV_BLOCK_TOKENS;
+                let block_token_index = physical_token_index % LAYER_KV_BLOCK_TOKENS;
+                let block = self
+                    .blocks
+                    .get(block_index)
+                    .ok_or(KvCacheError::InvalidShape)?;
+                let key = block
+                    .key(block_token_index)
+                    .ok_or(KvCacheError::InvalidShape)?;
+                let value = block
+                    .value(block_token_index)
+                    .ok_or(KvCacheError::InvalidShape)?;
+                Self::copy_stage_token(
+                    key_stage,
+                    value_stage,
+                    max_tokens,
+                    vector_len,
+                    physical_token_index,
+                    key,
+                    value,
+                )?;
+            }
         }
         self.rebuild_int8_storage()?;
         self.rebuild_quantized_values()
+    }
+
+    fn copy_stage_token(
+        key_stage: &mut [f32],
+        value_stage: &mut [f32],
+        max_tokens: usize,
+        vector_len: usize,
+        token_index: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvCacheError> {
+        if key.len() != vector_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: vector_len,
+                actual: key.len(),
+            });
+        }
+        if value.len() != vector_len {
+            return Err(KvCacheError::ShapeMismatch {
+                expected: vector_len,
+                actual: value.len(),
+            });
+        }
+        let start = token_index
+            .checked_mul(vector_len)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let end = start
+            .checked_add(vector_len)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let mirror_token_index = token_index
+            .checked_add(max_tokens)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let mirror_start = mirror_token_index
+            .checked_mul(vector_len)
+            .ok_or(KvCacheError::InvalidShape)?;
+        let mirror_end = mirror_start
+            .checked_add(vector_len)
+            .ok_or(KvCacheError::InvalidShape)?;
+
+        key_stage
+            .get_mut(start..end)
+            .ok_or(KvCacheError::InvalidShape)?
+            .copy_from_slice(key);
+        key_stage
+            .get_mut(mirror_start..mirror_end)
+            .ok_or(KvCacheError::InvalidShape)?
+            .copy_from_slice(key);
+        value_stage
+            .get_mut(start..end)
+            .ok_or(KvCacheError::InvalidShape)?
+            .copy_from_slice(value);
+        value_stage
+            .get_mut(mirror_start..mirror_end)
+            .ok_or(KvCacheError::InvalidShape)?
+            .copy_from_slice(value);
+        Ok(())
     }
 
     fn rebuild_int8_storage(&mut self) -> Result<(), KvCacheError> {
@@ -1346,10 +1421,68 @@ enum Int8Tensor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
     use std::fmt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use tracing::field::{Field, Visit};
     use tracing::{Event, Id, Metadata, Subscriber, span};
+
+    struct CountingAllocator;
+
+    thread_local! {
+        static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    }
+
+    static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[global_allocator]
+    static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: this test allocator delegates to the system allocator with
+            // the layout supplied by Rust allocation machinery.
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                record_thread_allocation();
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: deallocation is forwarded to the same system allocator
+            // that produced `ptr`, with the original layout supplied by Rust.
+            unsafe { System.dealloc(ptr, layout) };
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: reallocation is forwarded to the system allocator with
+            // the pointer, old layout, and new size supplied by Rust.
+            let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
+            if !new_ptr.is_null() {
+                record_thread_allocation();
+            }
+            new_ptr
+        }
+    }
+
+    fn record_thread_allocation() {
+        COUNT_ALLOCATIONS.with(|enabled| {
+            if enabled.get() {
+                ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
+    fn allocations_during<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        ALLOCATION_COUNT.store(0, Ordering::Relaxed);
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+        let result = operation();
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        (result, ALLOCATION_COUNT.load(Ordering::Relaxed))
+    }
 
     #[test]
     fn layer_kv_cache_appends_and_reads_token_slices() {
@@ -1922,6 +2055,29 @@ mod tests {
         assert_eq!(cache.key(0), Some(&[1.0][..]));
         assert_eq!(hit_cache.key(0), Some(&[1.0][..]));
         assert_eq!(hit_cache.key(1), Some(&[2.0][..]));
+    }
+
+    #[test]
+    fn layer_kv_cache_prefix_restore_rebuilds_stage_without_per_token_allocations() {
+        let token_count = LAYER_KV_BLOCK_TOKENS + 1;
+        let mut cache = LayerKvCache::new(token_count, 1, 1).expect("cache shape is valid");
+        for token in 0..token_count {
+            let key = token as f32;
+            let value = 1000.0 + token as f32;
+            cache.append(&[key], &[value]).expect("prefix token fits");
+        }
+        let state = cache.prefix_cache_state();
+
+        let (restored, allocations) =
+            allocations_during(|| LayerKvCache::from_prefix_cache_state(&state));
+        let restored = restored.expect("prefix state restores");
+
+        assert_eq!(restored.keys(), cache.keys());
+        assert_eq!(restored.values(), cache.values());
+        assert!(
+            allocations <= 20,
+            "prefix restore should allocate fixed backing storage only, got {allocations}"
+        );
     }
 
     #[test]
