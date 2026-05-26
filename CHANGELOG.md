@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.30](https://github.com/michaelasper/kir-ai/compare/v1.57.29...v1.57.30) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-516:** bound native text prefill cancellation ([55293cc](https://github.com/michaelasper/kir-ai/commit/55293cc6533734d362754774c99830207cc3e22b))
+
 ## [1.57.29](https://github.com/michaelasper/kir-ai/compare/v1.57.28...v1.57.29) (2026-05-26)
 
 ### Bug Fixes
