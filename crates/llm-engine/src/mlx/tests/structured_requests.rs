@@ -114,8 +114,6 @@ async fn mlx_backend_posts_tool_schema_with_structured_chat_messages() {
 
 #[test]
 fn mlx_request_builder_does_not_parse_cache_tool_schema_as_request_tools() {
-    let client = reqwest::Client::new();
-    let endpoint = Url::parse("http://127.0.0.1:54321").expect("valid loopback endpoint");
     let metadata = BackendModelMetadata::new("local-mlx", "mlx").with_family("gemma");
     let request = BackendRequest::chat_completion(
         "local-mlx",
@@ -131,31 +129,22 @@ fn mlx_request_builder_does_not_parse_cache_tool_schema_as_request_tools() {
         ),
     );
 
-    let (protocol, builder) = super::request::build_upstream_request(
-        &client,
-        &endpoint,
-        "/tmp/local-mlx",
-        &metadata,
-        &request,
-        false,
-        false,
-    )
-    .expect("MLX request building does not parse cache compatibility identity");
+    let upstream_request =
+        super::request::build_upstream_request("/tmp/local-mlx", &metadata, &request, false, false)
+            .expect("MLX request building does not parse cache compatibility identity");
 
-    assert_eq!(protocol, MlxUpstreamProtocol::ChatCompletions);
-    let request = builder.build().expect("request builder serializes body");
-    let body = request
-        .body()
-        .and_then(reqwest::Body::as_bytes)
-        .expect("JSON body is buffered");
-    let request: Value = serde_json::from_slice(body).expect("request JSON parses");
+    assert_eq!(
+        upstream_request.protocol(),
+        MlxUpstreamProtocol::ChatCompletions
+    );
+    assert_eq!(upstream_request.content_type(), "application/json");
+    let request: Value =
+        serde_json::from_slice(upstream_request.body()).expect("request JSON parses");
     assert!(request.get("tools").is_none());
 }
 
 #[test]
 fn mlx_request_builder_rejects_gemma_required_tool_choice_with_attribution() {
-    let client = reqwest::Client::new();
-    let endpoint = Url::parse("http://127.0.0.1:54321").expect("valid loopback endpoint");
     let metadata = BackendModelMetadata::new("local-gemma4-e2b", "mlx").with_family("gemma");
     let request = BackendRequest::chat_completion(
         "local-gemma4-e2b",
@@ -181,8 +170,6 @@ fn mlx_request_builder_rejects_gemma_required_tool_choice_with_attribution() {
     );
 
     let err = super::request::build_upstream_request(
-        &client,
-        &endpoint,
         "/tmp/local-gemma4-e2b",
         &metadata,
         &request,

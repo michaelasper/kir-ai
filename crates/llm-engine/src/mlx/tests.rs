@@ -9,5 +9,7 @@ mod sse_qwen_parser;
 mod streaming_tools;
 #[path = "tests/structured_requests.rs"]
 mod structured_requests;
+#[path = "tests/transport_boundary.rs"]
+mod transport_boundary;
 #[path = "tests/validation_health.rs"]
 mod validation_health;

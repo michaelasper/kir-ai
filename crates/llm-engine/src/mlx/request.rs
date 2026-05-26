@@ -1,8 +1,5 @@
-use super::{
-    client::mlx_endpoint_url,
-    protocol::{
-        MlxUpstreamProtocol, mlx_effective_chat_template_kwargs, mlx_upstream_protocol_for_request,
-    },
+use super::protocol::{
+    MlxUpstreamProtocol, mlx_effective_chat_template_kwargs, mlx_upstream_protocol_for_request,
 };
 use llm_api::ChatMessage;
 use llm_backend_contracts::{
@@ -13,17 +10,51 @@ use llm_backend_contracts::{
 use llm_models::ModelFamily;
 use serde::Serialize;
 use serde_json::Value;
-use url::Url;
+
+#[derive(Debug, Clone)]
+pub(super) struct MlxUpstreamRequest {
+    protocol: MlxUpstreamProtocol,
+    body: Vec<u8>,
+    content_type: &'static str,
+}
+
+impl MlxUpstreamRequest {
+    fn json<T: Serialize>(protocol: MlxUpstreamProtocol, body: &T) -> Result<Self, BackendError> {
+        let body = serde_json::to_vec(body).map_err(|err| {
+            BackendError::other(format!("failed to serialize MLX JSON request: {err}"))
+        })?;
+        Ok(Self {
+            protocol,
+            body,
+            content_type: "application/json",
+        })
+    }
+
+    pub(super) fn protocol(&self) -> MlxUpstreamProtocol {
+        self.protocol
+    }
+
+    #[cfg(test)]
+    pub(super) fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub(super) fn content_type(&self) -> &'static str {
+        self.content_type
+    }
+
+    pub(super) fn into_body(self) -> Vec<u8> {
+        self.body
+    }
+}
 
 pub(super) fn build_upstream_request(
-    client: &reqwest::Client,
-    endpoint: &Url,
     upstream_model: &str,
     metadata: &BackendModelMetadata,
     request: &BackendRequest,
     stream: bool,
     include_stream_usage: bool,
-) -> Result<(MlxUpstreamProtocol, reqwest::RequestBuilder), BackendError> {
+) -> Result<MlxUpstreamRequest, BackendError> {
     let protocol = mlx_upstream_protocol_for_request(metadata, request)?;
     let (temperature, top_p) = match request.sampling {
         SamplingConfig::Greedy => (0.0, 1.0),
@@ -38,17 +69,19 @@ pub(super) fn build_upstream_request(
     let stream_options = (stream && include_stream_usage).then_some(MlxStreamOptions {
         include_usage: true,
     });
-    let upstream_url = mlx_endpoint_url(endpoint, protocol.endpoint_suffix());
     let request = match protocol {
-        MlxUpstreamProtocol::Completions => client.post(upstream_url).json(&MlxCompletionRequest {
-            model: upstream_model,
-            prompt: request.prompt(),
-            max_tokens: request.max_tokens,
-            temperature,
-            top_p,
-            stream,
-            stream_options,
-        }),
+        MlxUpstreamProtocol::Completions => MlxUpstreamRequest::json(
+            protocol,
+            &MlxCompletionRequest {
+                model: upstream_model,
+                prompt: request.prompt(),
+                max_tokens: request.max_tokens,
+                temperature,
+                top_p,
+                stream,
+                stream_options,
+            },
+        )?,
         MlxUpstreamProtocol::ChatCompletions => {
             validate_mlx_chat_tool_choice_support(metadata, request)?;
             let messages = mlx_chat_messages(request)?;
@@ -56,22 +89,25 @@ pub(super) fn build_upstream_request(
             let tool_choice = mlx_tool_choice(request)?;
             let response_format = mlx_response_format(request);
             let chat_template_kwargs = mlx_effective_chat_template_kwargs(metadata, request);
-            client.post(upstream_url).json(&MlxChatCompletionRequest {
-                model: upstream_model,
-                messages,
-                tools,
-                tool_choice,
-                response_format,
-                chat_template_kwargs,
-                max_tokens: request.max_tokens,
-                temperature,
-                top_p,
-                stream,
-                stream_options,
-            })
+            MlxUpstreamRequest::json(
+                protocol,
+                &MlxChatCompletionRequest {
+                    model: upstream_model,
+                    messages,
+                    tools,
+                    tool_choice,
+                    response_format,
+                    chat_template_kwargs,
+                    max_tokens: request.max_tokens,
+                    temperature,
+                    top_p,
+                    stream,
+                    stream_options,
+                },
+            )?
         }
     };
-    Ok((protocol, request))
+    Ok(request)
 }
 
 fn validate_mlx_chat_tool_choice_support(

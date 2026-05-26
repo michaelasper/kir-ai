@@ -21,7 +21,7 @@ mod protocol;
 mod request;
 mod sse;
 
-use client::{MLX_STALL_PREFIX, build_http_client, format_duration, is_loopback_endpoint};
+use client::{MlxTransport, MlxTransportRequestKind, is_loopback_endpoint};
 use metadata::mlx_metadata;
 pub(crate) use metrics::mlx_backend_metrics_snapshot;
 use metrics::{
@@ -76,11 +76,9 @@ pub struct MlxBackend {
     model_id: String,
     metadata: BackendModelMetadata,
     upstream_model: String,
-    endpoint: Url,
     control_stop_tokens: &'static [&'static str],
     tool_markup: protocol::MlxToolMarkup,
-    client: reqwest::Client,
-    timeouts: MlxTimeouts,
+    transport: MlxTransport,
     include_stream_usage: bool,
     metrics: Arc<MlxBackendMetrics>,
 }
@@ -136,18 +134,16 @@ impl MlxBackend {
         let control_stop_tokens = mlx_control_stop_tokens_for_metadata(&metadata)?;
         let tool_markup =
             mlx_tool_markup_for_metadata(&metadata, Some(snapshot_path), options.tool_parser)?;
-        let client = build_http_client(options.timeouts);
         let timeouts = options.timeouts;
+        let transport = MlxTransport::http(options.endpoint, timeouts);
         let include_stream_usage = options.include_stream_usage;
         Ok(Self {
             model_id: model_id.clone(),
             metadata,
             upstream_model,
-            endpoint: options.endpoint,
             control_stop_tokens,
             tool_markup,
-            client,
-            timeouts,
+            transport,
             include_stream_usage,
             metrics: mlx_backend_metrics(),
         })
@@ -172,15 +168,14 @@ impl MlxBackend {
             return Err(BackendError::cancelled());
         }
         self.validate_model(&request)?;
-        let (upstream_protocol, upstream_request) = build_upstream_request(
-            &self.client,
-            &self.endpoint,
+        let upstream_request = build_upstream_request(
             &self.upstream_model,
             &self.metadata,
             &request,
             false,
             self.include_stream_usage,
         )?;
+        let upstream_protocol = upstream_request.protocol();
         let mut request_metrics = self
             .metrics
             .start_request(upstream_protocol, MlxBackendRequestKind::Blocking);
@@ -190,79 +185,34 @@ impl MlxBackend {
             &self.metadata,
             &request,
         ));
-        let response = tokio::select! {
-            response = upstream_request.send() => response
-                .map_err(|err| mlx_request_error(err, self.timeouts.request)),
-            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-        };
+        let response = self
+            .transport
+            .execute(
+                upstream_request,
+                MlxTransportRequestKind::Blocking,
+                cancellation.clone(),
+            )
+            .await;
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                return Err(err);
+                request_metrics.finish_failure(err.failure_kind());
+                return Err(err.into_backend_error());
             }
         };
-        let status = response.status();
-        if !status.is_success() {
-            request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
-            let body = tokio::select! {
-                body = response.text() => body
-                    .map_err(|err| BackendError::other(format!("MLX response read failed: {err}"))),
-                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-            };
-            let body = match body {
-                Ok(body) => body,
-                Err(err) => {
-                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                    return Err(err);
-                }
-            };
-            return Err(BackendError::other(format!(
-                "MLX server returned HTTP {status}: {body}"
-            )));
-        }
-
-        let mut bytes = response.bytes_stream();
+        let mut bytes = response.into_byte_stream();
         let mut body = Vec::new();
-        let mut saw_first_byte = false;
         loop {
-            let item = if saw_first_byte {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                    result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                        result.map_err(|_| mlx_stream_stall_error(self.timeouts.read))
-                    }
+            let item = match bytes.next().await {
+                Some(Ok(item)) => item,
+                Some(Err(err)) => {
+                    request_metrics.finish_failure(err.failure_kind());
+                    return Err(err.into_backend_error());
                 }
-            } else {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                    item = bytes.next() => Ok(item),
-                }
+                None => break,
             };
-            let item = match item {
-                Ok(item) => item,
-                Err(err) => {
-                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                    return Err(err);
-                }
-            };
-            let Some(item) = item else {
-                break;
-            };
-            let bytes = match item {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
-                    return Err(BackendError::other(format!(
-                        "MLX response read failed: {err}"
-                    )));
-                }
-            };
-            saw_first_byte = true;
-            request_metrics.record_response_bytes(bytes.len());
-            body.extend_from_slice(&bytes);
+            request_metrics.record_response_bytes(item.len());
+            body.extend_from_slice(&item);
         }
         let body = match std::str::from_utf8(&body) {
             Ok(body) => body,
@@ -315,15 +265,14 @@ impl MlxBackend {
                 Err(BackendError::cancelled())?;
             }
             self.validate_model(&request)?;
-            let (upstream_protocol, upstream_request) = build_upstream_request(
-                &self.client,
-                &self.endpoint,
+            let upstream_request = build_upstream_request(
                 &self.upstream_model,
                 &self.metadata,
                 &request,
                 true,
                 self.include_stream_usage,
             )?;
+            let upstream_protocol = upstream_request.protocol();
             let mut request_metrics = self
                 .metrics
                 .start_request(upstream_protocol, MlxBackendRequestKind::Streaming);
@@ -333,162 +282,83 @@ impl MlxBackend {
                 &self.metadata,
                 &request,
             ));
-            let response = tokio::select! {
-                response = upstream_request.send() => response
-                    .map_err(|err| mlx_request_error(err, self.timeouts.request)),
-                _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-            };
+            let response = self
+                .transport
+                .execute(
+                    upstream_request,
+                    MlxTransportRequestKind::Streaming,
+                    cancellation.clone(),
+                )
+                .await;
             let response = match response {
                 Ok(response) => response,
                 Err(err) => {
-                    request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                    Err(err)?
+                    request_metrics.finish_failure(err.failure_kind());
+                    Err(err.into_backend_error())?
                 }
             };
-            let status = response.status();
-            if status.is_success() {
-                let latency = request_metrics.record_stream_response_headers();
-                yield mlx_timing_progress_chunk(
-                    BackendStreamTimingMilestone::ResponseHeaders,
-                    latency,
-                );
-                let mut bytes = response.bytes_stream();
-                let mut parser = MlxSseParser::new_streaming(
+            let latency = request_metrics.record_stream_response_headers();
+            yield mlx_timing_progress_chunk(
+                BackendStreamTimingMilestone::ResponseHeaders,
+                latency,
+            );
+            let mut bytes = response.into_byte_stream();
+            let mut parser = MlxSseParser::new_streaming(
+                request.prompt(),
+                self.control_stop_tokens,
+                self.tool_markup,
+            );
+            if matches!(self.tool_markup, protocol::MlxToolMarkup::QwenXml) {
+                let tools = request
+                    .as_chat()
+                    .map(|chat| chat.chat_context.tools.as_slice())
+                    .unwrap_or(&[]);
+                parser = MlxSseParser::new_streaming_with_tools(
                     request.prompt(),
                     self.control_stop_tokens,
                     self.tool_markup,
-                );
-                if matches!(self.tool_markup, protocol::MlxToolMarkup::QwenXml) {
-                    let tools = request
-                        .as_chat()
-                        .map(|chat| chat.chat_context.tools.as_slice())
-                        .unwrap_or(&[]);
-                    parser = MlxSseParser::new_streaming_with_tools(
-                        request.prompt(),
-                        self.control_stop_tokens,
-                        self.tool_markup,
-                        tools,
-                    )
-                    .inspect_err(|_| {
-                        request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
-                    })?;
-                }
-                let mut output_observation = MlxOutputObservation::default();
-                let mut saw_first_byte = false;
-                loop {
-                    let item = if saw_first_byte {
-                        tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                            result = tokio::time::timeout(self.timeouts.read, bytes.next()) => {
-                                result.map_err(|_| mlx_stream_stall_error(self.timeouts.read))
-                            }
-                        }
-                    } else {
-                        tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                            item = bytes.next() => Ok(item),
-                        }
-                    };
-                    let item = match item {
-                        Ok(item) => item,
-                        Err(err) => {
-                            request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                            Err(err)?
-                        }
-                    };
-                    let Some(item) = item else {
-                        break;
-                    };
-                    let bytes = match item {
-                        Ok(bytes) => bytes,
-                        Err(err) => {
-                            request_metrics.finish_failure(MlxBackendFailureKind::StreamRead);
-                            Err(BackendError::other(format!("MLX stream read failed: {err}")))?
-                        }
-                    };
-                    saw_first_byte = true;
-                    output_observation.response_bytes += bytes.len() as u64;
-                    if let Some(latency) = request_metrics.record_first_upstream_byte() {
-                        yield mlx_timing_progress_chunk(
-                            BackendStreamTimingMilestone::FirstUpstreamByte,
-                            latency,
-                        );
+                    tools,
+                )
+                .inspect_err(|_| {
+                    request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                })?;
+            }
+            let mut output_observation = MlxOutputObservation::default();
+            loop {
+                let item = match bytes.next().await {
+                    Some(Ok(item)) => item,
+                    Some(Err(err)) => {
+                        request_metrics.finish_failure(err.failure_kind());
+                        Err(err.into_backend_error())?
                     }
-                    request_metrics.record_response_bytes(bytes.len());
-                    let chunk = match std::str::from_utf8(&bytes) {
-                        Ok(chunk) => chunk,
-                        Err(err) => {
-                            request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
-                            Err(BackendError::other(format!("MLX stream was not UTF-8: {err}")))?
-                        }
-                    };
-                    let parsed_chunks = match parser.push_str(chunk) {
-                        Ok(chunks) => chunks,
-                        Err(err) => {
-                            request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
-                            Err(err)?
-                        }
-                    };
-                    output_observation.stream_chunks += parsed_chunks.len() as u64;
-                    request_metrics.record_stream_chunks(parsed_chunks.len());
-                    for parsed in parsed_chunks {
-                        output_observation.observe_chunk(&parsed);
-                        if let Some(latency) = request_metrics.record_first_parsed_chunk() {
-                            yield mlx_timing_progress_chunk(
-                                BackendStreamTimingMilestone::FirstParsedChunk,
-                                latency,
-                            );
-                        }
-                        if !parsed.tool_call_deltas.is_empty()
-                            && let Some(latency) = request_metrics.record_first_tool_delta()
-                        {
-                            yield mlx_timing_progress_chunk(
-                                BackendStreamTimingMilestone::FirstToolDelta,
-                                latency,
-                            );
-                        }
-                        if parsed.finish_reason.is_some() {
-                            request_metrics.record_finish_chunk();
-                            if let Some(latency) = request_metrics.record_stream_complete() {
-                                yield mlx_timing_progress_chunk(
-                                    BackendStreamTimingMilestone::UpstreamComplete,
-                                    latency,
-                                );
-                            }
-                        }
-                        yield parsed;
-                    }
-                }
-                if let Some(latency) = request_metrics.record_stream_complete() {
+                    None => break,
+                };
+                output_observation.response_bytes += item.len() as u64;
+                if let Some(latency) = request_metrics.record_first_upstream_byte() {
                     yield mlx_timing_progress_chunk(
-                        BackendStreamTimingMilestone::UpstreamComplete,
+                        BackendStreamTimingMilestone::FirstUpstreamByte,
                         latency,
                     );
                 }
-                let final_chunks = match parser.finish() {
+                request_metrics.record_response_bytes(item.len());
+                let chunk = match std::str::from_utf8(&item) {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        request_metrics.finish_failure(MlxBackendFailureKind::InvalidUtf8);
+                        Err(BackendError::other(format!("MLX stream was not UTF-8: {err}")))?
+                    }
+                };
+                let parsed_chunks = match parser.push_str(chunk) {
                     Ok(chunks) => chunks,
                     Err(err) => {
                         request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
                         Err(err)?
                     }
                 };
-                output_observation.stream_chunks += final_chunks.len() as u64;
-                request_metrics.record_stream_chunks(final_chunks.len());
-                for parsed in &final_chunks {
-                    output_observation.observe_chunk(parsed);
-                }
-                maybe_record_zero_output_success(
-                    &request_metrics,
-                    &self.metadata,
-                    &request.model,
-                    upstream_protocol,
-                    true,
-                    &output_observation,
-                );
-                request_metrics.finish_success();
-                for parsed in final_chunks {
+                output_observation.stream_chunks += parsed_chunks.len() as u64;
+                request_metrics.record_stream_chunks(parsed_chunks.len());
+                for parsed in parsed_chunks {
+                    output_observation.observe_chunk(&parsed);
                     if let Some(latency) = request_metrics.record_first_parsed_chunk() {
                         yield mlx_timing_progress_chunk(
                             BackendStreamTimingMilestone::FirstParsedChunk,
@@ -514,23 +384,59 @@ impl MlxBackend {
                     }
                     yield parsed;
                 }
-            } else {
-                request_metrics.finish_failure(MlxBackendFailureKind::HttpStatus);
-                let body = tokio::select! {
-                    body = response.text() => body
-                        .map_err(|err| BackendError::other(format!("MLX response read failed: {err}"))),
-                    _ = cancellation.cancelled() => Err(BackendError::cancelled()),
-                };
-                let body = match body {
-                    Ok(body) => body,
-                    Err(err) => {
-                        request_metrics.finish_failure(mlx_failure_kind_for_backend_error(&err));
-                        Err(err)?
+            }
+            if let Some(latency) = request_metrics.record_stream_complete() {
+                yield mlx_timing_progress_chunk(
+                    BackendStreamTimingMilestone::UpstreamComplete,
+                    latency,
+                );
+            }
+            let final_chunks = match parser.finish() {
+                Ok(chunks) => chunks,
+                Err(err) => {
+                    request_metrics.finish_failure(MlxBackendFailureKind::SseParse);
+                    Err(err)?
+                }
+            };
+            output_observation.stream_chunks += final_chunks.len() as u64;
+            request_metrics.record_stream_chunks(final_chunks.len());
+            for parsed in &final_chunks {
+                output_observation.observe_chunk(parsed);
+            }
+            maybe_record_zero_output_success(
+                &request_metrics,
+                &self.metadata,
+                &request.model,
+                upstream_protocol,
+                true,
+                &output_observation,
+            );
+            request_metrics.finish_success();
+            for parsed in final_chunks {
+                if let Some(latency) = request_metrics.record_first_parsed_chunk() {
+                    yield mlx_timing_progress_chunk(
+                        BackendStreamTimingMilestone::FirstParsedChunk,
+                        latency,
+                    );
+                }
+                if !parsed.tool_call_deltas.is_empty()
+                    && let Some(latency) = request_metrics.record_first_tool_delta()
+                {
+                    yield mlx_timing_progress_chunk(
+                        BackendStreamTimingMilestone::FirstToolDelta,
+                        latency,
+                    );
+                }
+                if parsed.finish_reason.is_some() {
+                    request_metrics.record_finish_chunk();
+                    if let Some(latency) = request_metrics.record_stream_complete() {
+                        yield mlx_timing_progress_chunk(
+                            BackendStreamTimingMilestone::UpstreamComplete,
+                            latency,
+                        );
                     }
-                };
-                Err(BackendError::other(format!(
-                    "MLX server returned HTTP {status}: {body}"
-                )))?;
+                }
+                yield parsed;
             }
         }
         .boxed()
@@ -637,38 +543,6 @@ fn maybe_record_zero_output_success(
     }));
 }
 
-fn mlx_stream_stall_error(read_timeout: std::time::Duration) -> BackendError {
-    BackendError::other(format!(
-        "{MLX_STALL_PREFIX} stream stalled for {} without data",
-        format_duration(read_timeout)
-    ))
-}
-
-fn mlx_failure_kind_for_backend_error(err: &BackendError) -> MlxBackendFailureKind {
-    if err.is_cancelled() {
-        MlxBackendFailureKind::Cancelled
-    } else if let Some(msg) = err.other_message() {
-        if msg.starts_with(MLX_STALL_PREFIX) {
-            MlxBackendFailureKind::Stall
-        } else {
-            MlxBackendFailureKind::Transport
-        }
-    } else {
-        MlxBackendFailureKind::Transport
-    }
-}
-
-fn mlx_request_error(err: reqwest::Error, request_timeout: std::time::Duration) -> BackendError {
-    if err.is_timeout() {
-        BackendError::other(format!(
-            "{MLX_STALL_PREFIX} request timed out after {}",
-            format_duration(request_timeout)
-        ))
-    } else {
-        BackendError::other(format!("MLX request failed: {err}"))
-    }
-}
-
 const DEFAULT_MLX_ENDPOINT: &str = "http://127.0.0.1:8080/v1";
 
 impl Default for MlxBackendOptions {
@@ -696,20 +570,7 @@ impl ModelBackend for MlxBackend {
     }
 
     async fn health(&self) -> BackendHealth {
-        let response = self
-            .client
-            .get(client::mlx_endpoint_url(&self.endpoint, "models"))
-            .timeout(self.timeouts.connect)
-            .send()
-            .await;
-        match response {
-            Ok(response) if response.status().is_success() => BackendHealth::ready(),
-            Ok(response) => BackendHealth::unavailable(format!(
-                "MLX model list returned HTTP {}",
-                response.status()
-            )),
-            Err(err) => BackendHealth::unavailable(format!("MLX health request failed: {err}")),
-        }
+        self.transport.health().await
     }
 
     async fn generate(&self, request: BackendRequest) -> Result<BackendOutput, BackendError> {
