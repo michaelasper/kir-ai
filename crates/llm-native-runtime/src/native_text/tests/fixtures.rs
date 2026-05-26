@@ -169,6 +169,7 @@ struct TestAdapter {
     cancel_on_prefill: Option<CancellationToken>,
     cancel_after_prefill_chunk: Option<(CancellationToken, usize)>,
     prefill_chunk_calls: Arc<AtomicUsize>,
+    blocking_prefill: Option<Arc<BlockingPrefill>>,
 }
 
 impl TestAdapter {
@@ -194,6 +195,7 @@ impl TestAdapter {
             cancel_on_prefill: None,
             cancel_after_prefill_chunk: None,
             prefill_chunk_calls: Arc::new(AtomicUsize::new(0)),
+            blocking_prefill: None,
         }
     }
 
@@ -278,6 +280,11 @@ impl TestAdapter {
     fn prefill_chunk_calls(&self) -> Arc<AtomicUsize> {
         Arc::clone(&self.prefill_chunk_calls)
     }
+
+    fn with_blocking_prefill(mut self, blocking_prefill: Arc<BlockingPrefill>) -> Self {
+        self.blocking_prefill = Some(blocking_prefill);
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -292,6 +299,56 @@ impl BlockingPrefillAdmission {
             release: Notify::new(),
             calls: AtomicUsize::new(0),
         }
+    }
+}
+
+#[derive(Debug)]
+struct BlockingPrefill {
+    release: Notify,
+    started: Notify,
+    dropped: Notify,
+    started_calls: AtomicUsize,
+    dropped_calls: AtomicUsize,
+}
+
+impl BlockingPrefill {
+    fn new() -> Self {
+        Self {
+            release: Notify::new(),
+            started: Notify::new(),
+            dropped: Notify::new(),
+            started_calls: AtomicUsize::new(0),
+            dropped_calls: AtomicUsize::new(0),
+        }
+    }
+
+    async fn wait_started(&self) {
+        while self.started_calls.load(Ordering::SeqCst) == 0 {
+            self.started.notified().await;
+        }
+    }
+
+    async fn wait_dropped(&self) {
+        while self.dropped_calls.load(Ordering::SeqCst) == 0 {
+            self.dropped.notified().await;
+        }
+    }
+
+    fn dropped_calls(&self) -> usize {
+        self.dropped_calls.load(Ordering::SeqCst)
+    }
+}
+
+struct BlockingPrefillGuard {
+    blocking_prefill: Arc<BlockingPrefill>,
+}
+
+impl Drop for BlockingPrefillGuard {
+    fn drop(&mut self) {
+        self.blocking_prefill
+            .dropped_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.blocking_prefill.dropped.notify_waiters();
     }
 }
 
@@ -460,6 +517,7 @@ impl NativeTextAdapter for TestAdapter {
         token_ids: &[usize],
         _caches: &mut [Self::LayerCache],
         _scratch: &mut InferenceScratchpad,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
         let chunk_call = self.prefill_chunk_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(cancellation) = &self.cancel_on_prefill {
@@ -477,6 +535,20 @@ impl NativeTextAdapter for TestAdapter {
             && chunk_call == chunk
         {
             return Err(BackendError::other("test prefill failed".to_owned()));
+        }
+        if let Some(blocking_prefill) = &self.blocking_prefill {
+            blocking_prefill
+                .started_calls
+                .fetch_add(1, Ordering::SeqCst);
+            blocking_prefill.started.notify_waiters();
+            let _guard = BlockingPrefillGuard {
+                blocking_prefill: Arc::clone(blocking_prefill),
+            };
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err(BackendError::cancelled()),
+                () = blocking_prefill.release.notified() => {}
+            }
         }
         Ok(token_ids.iter().map(|_| vec![0.0]).collect())
     }
@@ -643,9 +715,10 @@ impl NativeTextAdapter for ContextSensitiveTestAdapter {
         token_ids: &[usize],
         caches: &mut [Self::LayerCache],
         scratch: &mut InferenceScratchpad,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
         self.base
-            .prefill_chunk_with_cache(token_ids, caches, scratch)
+            .prefill_chunk_with_cache(token_ids, caches, scratch, cancellation)
             .await
     }
 

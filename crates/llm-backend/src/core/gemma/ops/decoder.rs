@@ -13,6 +13,7 @@ use super::norm::{
     gemma_norm_sequence_after_projection,
 };
 use llm_models::GemmaModelSpec;
+use tokio_util::sync::CancellationToken;
 
 pub async fn gemma_prefill_sequence_with_cache(
     store: &SafeTensorShardStore,
@@ -22,6 +23,40 @@ pub async fn gemma_prefill_sequence_with_cache(
     matvec: &impl NativeMatvecBackend,
     scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    gemma_prefill_sequence_with_cache_inner(store, spec, token_ids, caches, matvec, scratch, None)
+        .await
+}
+
+pub async fn gemma_prefill_sequence_with_cache_with_cancel(
+    store: &SafeTensorShardStore,
+    spec: &GemmaModelSpec,
+    token_ids: &[usize],
+    caches: &mut [GemmaLayerCache],
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    gemma_prefill_sequence_with_cache_inner(
+        store,
+        spec,
+        token_ids,
+        caches,
+        matvec,
+        scratch,
+        Some(cancellation),
+    )
+    .await
+}
+
+async fn gemma_prefill_sequence_with_cache_inner(
+    store: &SafeTensorShardStore,
+    spec: &GemmaModelSpec,
+    token_ids: &[usize],
+    caches: &mut [GemmaLayerCache],
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     ensure_supported_gemma_execution(spec)?;
     let expected_caches = gemma_concrete_cache_count(spec)?;
     if caches.len() != expected_caches {
@@ -30,7 +65,9 @@ pub async fn gemma_prefill_sequence_with_cache(
             caches.len()
         )));
     }
+    ensure_gemma_prefill_not_cancelled(cancellation)?;
     let input_embeddings = gemma_embedding_sequence_for_spec(store, spec, token_ids)?;
+    ensure_gemma_prefill_not_cancelled(cancellation)?;
     let per_layer_inputs = if spec.uses_per_layer_input() {
         Some(
             gemma_per_layer_inputs_sequence(
@@ -46,8 +83,10 @@ pub async fn gemma_prefill_sequence_with_cache(
     } else {
         None
     };
+    ensure_gemma_prefill_not_cancelled(cancellation)?;
     let mut hidden_states = input_embeddings;
     for layer_idx in 0..spec.num_hidden_layers as usize {
+        ensure_gemma_prefill_not_cancelled(cancellation)?;
         hidden_states = gemma_decoder_layer_sequence_with_cache(
             store,
             spec,
@@ -61,8 +100,18 @@ pub async fn gemma_prefill_sequence_with_cache(
             scratch,
         )
         .await?;
+        ensure_gemma_prefill_not_cancelled(cancellation)?;
     }
     Ok(hidden_states)
+}
+
+fn ensure_gemma_prefill_not_cancelled(
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), TensorLoadError> {
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(TensorLoadError::cancelled());
+    }
+    Ok(())
 }
 
 pub async fn gemma_decode_token_with_cache(

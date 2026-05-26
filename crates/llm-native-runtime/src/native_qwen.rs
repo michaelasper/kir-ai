@@ -20,7 +20,7 @@ use futures::stream::BoxStream;
 use llm_backend::native::{
     InferenceScratchpad, NativeMatvecBackend, NativeTextLayerCachesMut, QwenLayerCache,
     QwenLayerCachePrefixState, SafeTensorShardStore, native_decode_token_with_cache_for_spec_ref,
-    native_prefill_sequence_with_cache_for_spec_ref, qwen_layer_caches_for_spec,
+    native_prefill_sequence_with_cache_for_spec_ref_with_cancel, qwen_layer_caches_for_spec,
     qwen_static_f32_tensors_for_spec,
 };
 use llm_backend_contracts::{
@@ -349,14 +349,16 @@ impl NativeTextAdapter for NativeQwenAdapter {
         token_ids: &[usize],
         caches: &mut [QwenLayerCache],
         scratch: &mut InferenceScratchpad,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        native_prefill_sequence_with_cache_for_spec_ref(
+        native_prefill_sequence_with_cache_for_spec_ref_with_cancel(
             &self.store,
             (&self.spec).into(),
             token_ids,
             NativeTextLayerCachesMut::Qwen(caches),
             &self.matvec,
             scratch,
+            cancellation,
         )
         .await
         .map_err(BackendError::from)

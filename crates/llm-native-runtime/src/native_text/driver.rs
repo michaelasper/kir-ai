@@ -29,6 +29,8 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+const NATIVE_TEXT_CANCELLABLE_PREFILL_CHUNK_TOKENS: usize = 8;
+
 #[async_trait]
 pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
     type DecodeSession: Send + 'static;
@@ -95,6 +97,7 @@ pub(crate) trait NativeTextAdapter: Clone + Send + Sync + 'static {
         token_ids: &[usize],
         caches: &mut [Self::LayerCache],
         scratch: &mut InferenceScratchpad,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<f32>>, BackendError>;
     fn make_decode_session(
         &self,
@@ -788,7 +791,8 @@ where
                         .min(disk_cache.block_token_count())
                 },
             );
-            let prefill_chunk_tokens = prefill_chunk_tokens.max(1);
+            let prefill_chunk_tokens =
+                prefill_chunk_tokens.clamp(1, NATIVE_TEXT_CANCELLABLE_PREFILL_CHUNK_TOKENS);
             let uncached_prefill_tokens = context_tokens.len() - cached_prefix_len;
             let total_prefill_chunks = uncached_prefill_tokens.div_ceil(prefill_chunk_tokens);
             let mut completed_prefill_chunks = 0_usize;
@@ -798,11 +802,17 @@ where
                     cache_cleanup.cleanup(&caches);
                     return Err(BackendError::cancelled());
                 }
-                let hidden_states = match self
-                    .adapter
-                    .prefill_chunk_with_cache(chunk, &mut caches, scratch)
-                    .await
-                {
+                let prefill_result = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => Err(BackendError::cancelled()),
+                    result = self.adapter.prefill_chunk_with_cache(
+                        chunk,
+                        &mut caches,
+                        scratch,
+                        cancellation,
+                    ) => result,
+                };
+                let hidden_states = match prefill_result {
                     Ok(hs) => hs,
                     Err(err) => {
                         cache_cleanup.cleanup(&caches);

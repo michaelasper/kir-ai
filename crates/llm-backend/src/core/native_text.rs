@@ -6,11 +6,14 @@ use super::{
     GemmaLayerCache, InferenceScratchpad, NativeMatvecBackend, QwenLayerCache,
     SafeTensorShardStore, TensorLoadError, TopKLogit, gemma_decode_token_with_cache,
     gemma_final_norm_for_spec, gemma_layer_caches_for_spec, gemma_lm_head_logits_for_spec,
-    gemma_lm_head_top_k_for_spec, gemma_prefill_sequence_with_cache, qwen_decode_token_with_cache,
+    gemma_lm_head_top_k_for_spec, gemma_prefill_sequence_with_cache,
+    gemma_prefill_sequence_with_cache_with_cancel, qwen_decode_token_with_cache,
     qwen_final_norm_for_spec, qwen_layer_caches_for_spec, qwen_lm_head_logits_for_spec,
     qwen_lm_head_top_k_for_spec, qwen_prefill_sequence_with_cache,
+    qwen_prefill_sequence_with_cache_with_cancel,
 };
 use llm_models::{ModelFamily, ModelSpec};
+use tokio_util::sync::CancellationToken;
 
 pub use llm_models::NativeTextModelSpec;
 
@@ -137,13 +140,87 @@ pub async fn native_prefill_sequence_with_cache_for_spec_ref(
     matvec: &impl NativeMatvecBackend,
     scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    native_prefill_sequence_with_cache_for_spec_ref_inner(
+        store, spec, token_ids, caches, matvec, scratch, None,
+    )
+    .await
+}
+
+pub async fn native_prefill_sequence_with_cache_for_spec_ref_with_cancel(
+    store: &SafeTensorShardStore,
+    spec: NativeTextModelSpecRef<'_>,
+    token_ids: &[usize],
+    caches: NativeTextLayerCachesMut<'_>,
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    native_prefill_sequence_with_cache_for_spec_ref_inner(
+        store,
+        spec,
+        token_ids,
+        caches,
+        matvec,
+        scratch,
+        Some(cancellation),
+    )
+    .await
+}
+
+async fn native_prefill_sequence_with_cache_for_spec_ref_inner(
+    store: &SafeTensorShardStore,
+    spec: NativeTextModelSpecRef<'_>,
+    token_ids: &[usize],
+    caches: NativeTextLayerCachesMut<'_>,
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let cache_family = caches.family_slug();
     match (spec, caches) {
         (NativeTextModelSpecRef::Qwen(spec), NativeTextLayerCachesMut::Qwen(caches)) => {
-            qwen_prefill_sequence_with_cache(store, spec, token_ids, caches, matvec, scratch).await
+            match cancellation {
+                Some(cancellation) => {
+                    qwen_prefill_sequence_with_cache_with_cancel(
+                        store,
+                        spec,
+                        token_ids,
+                        caches,
+                        matvec,
+                        scratch,
+                        cancellation,
+                    )
+                    .await
+                }
+                None => {
+                    qwen_prefill_sequence_with_cache(
+                        store, spec, token_ids, caches, matvec, scratch,
+                    )
+                    .await
+                }
+            }
         }
         (NativeTextModelSpecRef::Gemma(spec), NativeTextLayerCachesMut::Gemma(caches)) => {
-            gemma_prefill_sequence_with_cache(store, spec, token_ids, caches, matvec, scratch).await
+            match cancellation {
+                Some(cancellation) => {
+                    gemma_prefill_sequence_with_cache_with_cancel(
+                        store,
+                        spec,
+                        token_ids,
+                        caches,
+                        matvec,
+                        scratch,
+                        cancellation,
+                    )
+                    .await
+                }
+                None => {
+                    gemma_prefill_sequence_with_cache(
+                        store, spec, token_ids, caches, matvec, scratch,
+                    )
+                    .await
+                }
+            }
         }
         (spec, _) => Err(cache_family_mismatch("prefill", spec, cache_family)),
     }

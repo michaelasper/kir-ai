@@ -39,6 +39,25 @@ fn driver_records_prefill_and_avoided_work_for_warm_prefix() {
 }
 
 #[test]
+fn driver_caps_large_prefill_chunks_for_bounded_cancellation() {
+    let adapter = TestAdapter::new([1_usize])
+        .with_encoded_prompt((0_u32..300).collect::<Vec<_>>())
+        .with_max_position_embeddings(512);
+    let metrics = Arc::clone(&adapter.prefix_cache_metrics);
+    let prefill_chunk_calls = adapter.prefill_chunk_calls();
+    let driver = driver_for_test(adapter).with_max_prefill_tokens(1024);
+
+    driver
+        .generate_blocking(driver_test_request(1), CancellationToken::new())
+        .expect("generation succeeds");
+
+    assert_eq!(prefill_chunk_calls.load(Ordering::SeqCst), 38);
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot["prefill_chunks"], 38);
+    assert_eq!(snapshot["prefill_tokens"], 300);
+}
+
+#[test]
 fn driver_records_shared_prefix_reuse_without_exposing_state() {
     let request = driver_test_request(1);
     let adapter = TestAdapter::new([1_usize]).with_encoded_prompt([10_u32, 11, 12, 13]);

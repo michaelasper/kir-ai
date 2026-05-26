@@ -1641,4 +1641,15 @@ impl TensorLoadError {
             message: message.into(),
         }
     }
+
+    pub(crate) fn cancelled() -> Self {
+        Self {
+            code: "request_cancelled",
+            message: "request cancelled".to_owned(),
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.code == "request_cancelled"
+    }
 }

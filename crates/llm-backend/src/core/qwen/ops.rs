@@ -39,6 +39,7 @@ pub use cache::{
 pub use decoder::{
     qwen_decode_token_with_cache, qwen_decoder_layer_first_token,
     qwen_linear_decoder_layer_first_token, qwen_prefill_sequence_with_cache,
+    qwen_prefill_sequence_with_cache_with_cancel,
 };
 pub use embedding::{QwenEmbeddingProbe, qwen_embedding_and_layer0_norm};
 #[cfg(test)]

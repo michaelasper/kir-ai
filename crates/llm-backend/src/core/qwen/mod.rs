@@ -12,5 +12,5 @@ pub use ops::{
     qwen_layer0_moe_forward, qwen_layer0_moe_router, qwen_layer0_post_attention_norm,
     qwen_linear_decoder_layer_first_token, qwen_lm_head_logits_for_spec, qwen_lm_head_top_k,
     qwen_lm_head_top_k_for_spec, qwen_prefill_sequence_with_cache,
-    qwen_static_f32_tensors_for_spec,
+    qwen_prefill_sequence_with_cache_with_cancel, qwen_static_f32_tensors_for_spec,
 };

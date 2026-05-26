@@ -95,6 +95,52 @@ async fn driver_generate_with_cancel_cancels_worker_when_future_is_dropped() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn driver_generate_with_cancel_stops_worker_when_dropped_during_prefill() {
+    let blocking_prefill = Arc::new(BlockingPrefill::new());
+    let adapter = TestAdapter::new([1_usize]).with_blocking_prefill(Arc::clone(&blocking_prefill));
+    let driver = driver_for_test(adapter);
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+
+    let generation = tokio::spawn(async move {
+        driver
+            .generate_with_cancel(driver_test_request(1), worker_cancellation)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_millis(500), blocking_prefill.wait_started())
+        .await
+        .expect("prefill starts");
+
+    generation.abort();
+    assert!(
+        generation
+            .await
+            .expect_err("generation task is aborted")
+            .is_cancelled()
+    );
+    assert!(
+        cancellation.is_cancelled(),
+        "dropping the async request future should signal the blocking native worker"
+    );
+
+    let dropped_before_release =
+        tokio::time::timeout(Duration::from_millis(200), blocking_prefill.wait_dropped())
+            .await
+            .is_ok();
+    blocking_prefill.release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(1), blocking_prefill.wait_dropped())
+        .await
+        .expect("blocking prefill future eventually drops after test release");
+
+    assert_eq!(blocking_prefill.dropped_calls(), 1);
+    assert!(
+        dropped_before_release,
+        "cancelled request futures must stop the in-flight prefill future before the chunk is released"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn driver_stream_with_cancel_cancels_worker_when_stream_is_dropped() {
     let adapter = TestAdapter::new([1_usize]).with_next_token_delay(Duration::from_millis(750));
     let next_token_calls = adapter.next_token_calls();

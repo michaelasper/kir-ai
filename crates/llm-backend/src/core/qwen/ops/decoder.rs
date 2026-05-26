@@ -21,6 +21,7 @@ use super::norm::{
     qwen_layer_post_attention_norm_sequence_for_spec,
 };
 use llm_models::{AttentionKind, QwenModelSpec};
+use tokio_util::sync::CancellationToken;
 
 pub async fn qwen_linear_decoder_layer_first_token(
     store: &SafeTensorShardStore,
@@ -452,6 +453,40 @@ pub async fn qwen_prefill_sequence_with_cache(
     matvec: &impl NativeMatvecBackend,
     scratch: &mut InferenceScratchpad,
 ) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_prefill_sequence_with_cache_inner(store, spec, token_ids, caches, matvec, scratch, None)
+        .await
+}
+
+pub async fn qwen_prefill_sequence_with_cache_with_cancel(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    token_ids: &[usize],
+    caches: &mut [QwenLayerCache],
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
+    qwen_prefill_sequence_with_cache_inner(
+        store,
+        spec,
+        token_ids,
+        caches,
+        matvec,
+        scratch,
+        Some(cancellation),
+    )
+    .await
+}
+
+async fn qwen_prefill_sequence_with_cache_inner(
+    store: &SafeTensorShardStore,
+    spec: &QwenModelSpec,
+    token_ids: &[usize],
+    caches: &mut [QwenLayerCache],
+    matvec: &impl NativeMatvecBackend,
+    scratch: &mut InferenceScratchpad,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Vec<f32>>, TensorLoadError> {
     let layer_count = spec.num_hidden_layers as usize;
     if caches.len() != layer_count {
         return Err(TensorLoadError::integrity(format!(
@@ -459,8 +494,11 @@ pub async fn qwen_prefill_sequence_with_cache(
             caches.len()
         )));
     }
+    ensure_qwen_prefill_not_cancelled(cancellation)?;
     let mut hidden_states = qwen_embedding_sequence_for_spec(store, spec, token_ids)?;
+    ensure_qwen_prefill_not_cancelled(cancellation)?;
     for (layer_idx, cache) in caches.iter_mut().enumerate().take(layer_count) {
+        ensure_qwen_prefill_not_cancelled(cancellation)?;
         hidden_states = qwen_decoder_layer_sequence_with_cache(
             store,
             spec,
@@ -471,8 +509,18 @@ pub async fn qwen_prefill_sequence_with_cache(
             scratch,
         )
         .await?;
+        ensure_qwen_prefill_not_cancelled(cancellation)?;
     }
     Ok(hidden_states)
+}
+
+fn ensure_qwen_prefill_not_cancelled(
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), TensorLoadError> {
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(TensorLoadError::cancelled());
+    }
+    Ok(())
 }
 
 pub async fn qwen_decode_token_with_cache(

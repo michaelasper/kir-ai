@@ -21,7 +21,8 @@ use llm_backend::native::{
     GemmaLayerCache, GemmaLayerCachePrefixState, InferenceScratchpad, NativeMatvecBackend,
     NativeTextLayerCachesMut, SafeTensorShardStore, gemma_cache_count_for_spec,
     gemma_layer_caches_for_spec, gemma_static_f32_tensors_for_spec,
-    native_decode_token_with_cache_for_spec_ref, native_prefill_sequence_with_cache_for_spec_ref,
+    native_decode_token_with_cache_for_spec_ref,
+    native_prefill_sequence_with_cache_for_spec_ref_with_cancel,
 };
 use llm_backend_contracts::{
     BackendError, BackendModelMetadata, BackendOutput, BackendRequest, BackendStreamChunk,
@@ -379,14 +380,16 @@ impl NativeTextAdapter for NativeGemmaAdapter {
         token_ids: &[usize],
         caches: &mut [GemmaLayerCache],
         scratch: &mut InferenceScratchpad,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<f32>>, BackendError> {
-        native_prefill_sequence_with_cache_for_spec_ref(
+        native_prefill_sequence_with_cache_for_spec_ref_with_cancel(
             &self.store,
             (&self.spec).into(),
             token_ids,
             NativeTextLayerCachesMut::Gemma(caches),
             &self.matvec,
             scratch,
+            cancellation,
         )
         .await
         .map_err(BackendError::from)

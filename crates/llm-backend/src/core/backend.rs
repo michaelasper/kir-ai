@@ -13,6 +13,9 @@ pub(super) use llm_backend_contracts::{
 
 impl From<TensorLoadError> for BackendError {
     fn from(value: TensorLoadError) -> Self {
+        if value.is_cancelled() {
+            return Self::cancelled();
+        }
         Self::tensor_load(value.code(), value.message())
     }
 }
@@ -32,5 +35,13 @@ mod tests {
         );
         assert_eq!(err.backend_failure_code(), Some("model_integrity_failed"));
         assert_eq!(err.other_message(), Some("bad tensor header"));
+    }
+
+    #[test]
+    fn tensor_load_cancellation_converts_to_backend_cancellation() {
+        let err = BackendError::from(TensorLoadError::cancelled());
+
+        assert!(err.is_cancelled());
+        assert_eq!(err.backend_failure_class(), None);
     }
 }
