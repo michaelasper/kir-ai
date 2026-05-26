@@ -653,6 +653,23 @@ pub trait NativeMatvecBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn full_attention_cache_mix_bf16_output_projection_f32_in_place(
+        &self,
+        _cache: &LayerKvCache,
+        _query: &[f32],
+        _row_count: usize,
+        _num_attention_heads: usize,
+        _num_key_value_heads: usize,
+        _head_dim: usize,
+        _score_scale: f32,
+        _store: &SafeTensorShardStore,
+        _tensor: &str,
+        _output: &mut [f32],
+    ) -> Result<bool, MathError> {
+        Ok(false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn linear_attention_recurrent_cache_update_f32(
         &self,
         cache: &LinearAttentionCache,

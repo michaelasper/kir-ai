@@ -1,5 +1,5 @@
 use super::command::finish_command_buffer_async;
-use super::{Bf16MatrixBuffer, MetalDevice, MetalError};
+use super::{Bf16MatrixBuffer, F32TransientBuffer, MetalDevice, MetalError};
 use metal::{MTLResourceOptions, MTLSize};
 use std::ffi::c_void;
 
@@ -255,6 +255,125 @@ impl MetalDevice {
             output[..rows].copy_from_slice(values);
         };
         self.return_scratch_buffer(vector_byte_len, vector_buffer);
+        self.return_scratch_buffer(output_byte_len, output_buffer);
+        Ok(())
+    }
+
+    pub async fn matvec_bf16_f32_buffered_transient_vector(
+        &self,
+        matrix: &Bf16MatrixBuffer,
+        vector: F32TransientBuffer,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        let rows = matrix.rows;
+        let cols = matrix.columns;
+        if vector.len() != cols {
+            let vector_len = vector.len();
+            self.recycle_f32_transient_buffer(vector);
+            return Err(MetalError::InvalidShape(format!(
+                "vector length {vector_len} does not match cols {cols}"
+            )));
+        }
+        if output.len() < rows {
+            self.recycle_f32_transient_buffer(vector);
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than rows {rows}",
+                output.len()
+            )));
+        }
+        if rows == 0 {
+            self.recycle_f32_transient_buffer(vector);
+            return Ok(());
+        }
+        if cols == 0 {
+            output[..rows].fill(0.0);
+            self.recycle_f32_transient_buffer(vector);
+            return Ok(());
+        }
+        let rows_u32 = match u32::try_from(rows) {
+            Ok(rows) => rows,
+            Err(err) => {
+                self.recycle_f32_transient_buffer(vector);
+                return Err(MetalError::InvalidShape(format!(
+                    "row count does not fit u32: {err}"
+                )));
+            }
+        };
+        let cols_u32 = match u32::try_from(cols) {
+            Ok(cols) => cols,
+            Err(err) => {
+                self.recycle_f32_transient_buffer(vector);
+                return Err(MetalError::InvalidShape(format!(
+                    "column count does not fit u32: {err}"
+                )));
+            }
+        };
+        let output_byte_len = match rows.checked_mul(std::mem::size_of::<f32>()) {
+            Some(byte_len) => byte_len as u64,
+            None => {
+                self.recycle_f32_transient_buffer(vector);
+                return Err(MetalError::InvalidShape(
+                    "output byte length overflow".to_owned(),
+                ));
+            }
+        };
+        let Some(matrix_buffer) = matrix.buffer.as_ref() else {
+            self.recycle_f32_transient_buffer(vector);
+            return Err(MetalError::InvalidShape(
+                "non-empty BF16 matvec requires a matrix buffer".to_owned(),
+            ));
+        };
+        let Some(vector_buffer) = vector.buffer.as_ref() else {
+            self.recycle_f32_transient_buffer(vector);
+            return Err(MetalError::InvalidShape(
+                "non-empty BF16 matvec requires a vector buffer".to_owned(),
+            ));
+        };
+        let output_buffer = self.take_scratch_buffer(output_byte_len);
+
+        let command_buffer = self.matvec_bf16_f32.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.matvec_bf16_f32.pipeline);
+        encoder.set_buffer(0, Some(matrix_buffer), 0);
+        encoder.set_buffer(1, Some(vector_buffer), 0);
+        encoder.set_bytes(
+            2,
+            std::mem::size_of_val(&rows_u32) as u64,
+            (&rows_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_bytes(
+            3,
+            std::mem::size_of_val(&cols_u32) as u64,
+            (&cols_u32 as *const u32).cast::<c_void>(),
+        );
+        encoder.set_buffer(4, Some(&output_buffer), 0);
+        let threads = MTLSize {
+            width: rows as u64,
+            height: 1,
+            depth: 1,
+        };
+        let group_width = self
+            .matvec_bf16_f32
+            .pipeline
+            .thread_execution_width()
+            .min(rows as u64);
+        let threads_per_group = MTLSize {
+            width: group_width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatch_threads(threads, threads_per_group);
+        encoder.end_encoding();
+        finish_command_buffer_async(&[&vector.hazard], command_buffer, "matvec_bf16_f32").await?;
+
+        // SAFETY: output_buffer is a completed StorageModeShared Metal buffer
+        // containing one f32 per requested matrix row.
+        unsafe {
+            let ptr = output_buffer.contents().cast::<f32>();
+            let values = std::slice::from_raw_parts(ptr, rows);
+            output[..rows].copy_from_slice(values);
+        };
+        self.recycle_f32_transient_buffer(vector);
         self.return_scratch_buffer(output_byte_len, output_buffer);
         Ok(())
     }

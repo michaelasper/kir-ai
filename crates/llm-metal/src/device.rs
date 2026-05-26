@@ -11,7 +11,7 @@ mod reductions;
 mod shaders;
 mod transformer;
 
-pub use buffers::{Bf16MatrixBuffer, F16Buffer, F32Buffer, I8Buffer};
+pub use buffers::{Bf16MatrixBuffer, F16Buffer, F32Buffer, F32TransientBuffer, I8Buffer};
 pub use error::MetalError;
 pub use reductions::{ArgmaxResult, TopKResult};
 

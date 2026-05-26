@@ -2,6 +2,10 @@ use super::super::shaders::METAL_SOURCE;
 use super::{MetalDevice, can_return_pooled_input_after_select_result};
 use crate::device::MetalError;
 
+fn f32_to_bf16_bits(value: f32) -> u16 {
+    (value.to_bits() >> 16) as u16
+}
+
 fn softmax_shader_source() -> &'static str {
     let start = METAL_SOURCE
         .find("kernel void softmax_f32")
@@ -61,6 +65,128 @@ async fn full_attention_cache_mix_matches_reference_values() {
         20.0 * head1_weight_0 + 40.0 * head1_weight_1,
     ];
     for (actual, expected) in output.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "expected {actual} to be close to {expected}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn full_attention_cache_mix_f32_buffer_can_feed_bf16_matvec() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let keys = device
+        .new_f32_buffer(&[1.0, 0.0, 0.0, 1.0, 0.5, 0.5])
+        .expect("key buffer");
+    let values = device
+        .new_f32_buffer(&[10.0, 20.0, 30.0, 40.0, -5.0, 2.0])
+        .expect("value buffer");
+    let query = [1.0, 0.0, 0.0, 1.0];
+    let projection = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5, 1.5, 1.0].map(f32_to_bf16_bits);
+    let projection = device
+        .new_bf16_matrix_buffer(&projection, 2, 4)
+        .expect("projection buffer");
+    let mut attention_cpu = vec![0.0; 4];
+    let mut expected = vec![0.0; 2];
+    let mut actual = vec![0.0; 2];
+
+    device
+        .full_attention_cache_mix_f32_buffered(
+            &keys,
+            &values,
+            &query,
+            3,
+            2,
+            1,
+            2,
+            1.0,
+            &mut attention_cpu,
+        )
+        .await
+        .expect("CPU attention readback succeeds");
+    device
+        .matvec_bf16_f32_buffered(&projection, &attention_cpu, &mut expected)
+        .await
+        .expect("baseline projection succeeds");
+
+    let attention_buffer = device
+        .full_attention_cache_mix_f32_buffered_to_buffer(&keys, &values, &query, 3, 2, 1, 2, 1.0)
+        .await
+        .expect("attention buffer succeeds");
+    device
+        .matvec_bf16_f32_buffered_transient_vector(&projection, attention_buffer, &mut actual)
+        .await
+        .expect("buffer projection succeeds");
+
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "expected {actual} to be close to {expected}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn full_attention_cache_mix_f16_buffer_can_feed_bf16_matvec() {
+    let Some(device) = MetalDevice::system_default_result().expect("Metal device initializes")
+    else {
+        eprintln!("no Metal device available; skipping smoke test");
+        return;
+    };
+
+    let keys = device
+        .new_f16_buffer_from_f32(&[99.0, 99.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.5])
+        .expect("key buffer");
+    let values = device
+        .new_f16_buffer_from_f32(&[99.0, 99.0, 10.0, 20.0, 30.0, 40.0, -5.0, 2.0])
+        .expect("value buffer");
+    let query = [1.0, 0.0, 0.0, 1.0];
+    let projection = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5, 1.5, 1.0].map(f32_to_bf16_bits);
+    let projection = device
+        .new_bf16_matrix_buffer(&projection, 2, 4)
+        .expect("projection buffer");
+    let mut attention_cpu = vec![0.0; 4];
+    let mut expected = vec![0.0; 2];
+    let mut actual = vec![0.0; 2];
+
+    device
+        .full_attention_cache_mix_f16_buffered_at(
+            &keys,
+            2,
+            &values,
+            2,
+            &query,
+            3,
+            2,
+            1,
+            2,
+            1.0,
+            &mut attention_cpu,
+        )
+        .await
+        .expect("CPU attention readback succeeds");
+    device
+        .matvec_bf16_f32_buffered(&projection, &attention_cpu, &mut expected)
+        .await
+        .expect("baseline projection succeeds");
+
+    let attention_buffer = device
+        .full_attention_cache_mix_f16_buffered_at_to_buffer(
+            &keys, 2, &values, 2, &query, 3, 2, 1, 2, 1.0,
+        )
+        .await
+        .expect("attention buffer succeeds");
+    device
+        .matvec_bf16_f32_buffered_transient_vector(&projection, attention_buffer, &mut actual)
+        .await
+        .expect("buffer projection succeeds");
+
+    for (actual, expected) in actual.iter().zip(expected) {
         assert!(
             (actual - expected).abs() < 1e-4,
             "expected {actual} to be close to {expected}"

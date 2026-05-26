@@ -222,31 +222,42 @@ pub(crate) async fn native_full_attention_sequence_from_cache_parts(
                 cache.token_count()
             )));
         }
-        let attended = native_full_attention_mix_from_cache(
+        let input = NativeFullAttentionMixInput {
+            query: parts.queries.row(token_idx),
+            gate: parts.gates.map(|gates| gates.row(token_idx)),
+            score_scale: parts.score_scale,
+        };
+        let source = NativeFullAttentionCacheSource {
+            cache,
+            count: source_count,
+        };
+        let mut projected = vec![0.0; dims.hidden_size];
+        if native_full_attention_bf16_projection_from_cache(
             dims,
             shape,
-            NativeFullAttentionMixInput {
-                query: parts.queries.row(token_idx),
-                gate: parts.gates.map(|gates| gates.row(token_idx)),
-                score_scale: parts.score_scale,
-            },
-            NativeFullAttentionCacheSource {
-                cache,
-                count: source_count,
-            },
+            input,
+            source,
+            parts.output_projection,
+            &mut projected,
             matvec,
         )
+        .await?
+        {
+            outputs.push(projected);
+            continue;
+        }
+        let attended =
+            native_full_attention_mix_from_cache(dims, shape, input, source, matvec).await?;
+        native_output_projection_in_place_unchecked(
+            matvec,
+            parts.output_projection,
+            &attended,
+            dims.hidden_size,
+            shape.attention_dim,
+            &mut projected,
+        )
         .await?;
-        outputs.push(
-            native_output_projection_unchecked(
-                matvec,
-                parts.output_projection,
-                &attended,
-                dims.hidden_size,
-                shape.attention_dim,
-            )
-            .await?,
-        );
+        outputs.push(projected);
     }
     Ok(outputs)
 }
@@ -295,6 +306,26 @@ pub(crate) async fn native_full_attention_step_with_cache_from_parts_in_place(
     matvec
         .append_kv_cache_sliding_f32(cache, parts.key, parts.value)
         .await?;
+    if native_full_attention_bf16_projection_from_cache(
+        dims,
+        shape,
+        NativeFullAttentionMixInput {
+            query: parts.query,
+            gate: parts.gate,
+            score_scale: parts.score_scale,
+        },
+        NativeFullAttentionCacheSource {
+            cache,
+            count: cache.token_count(),
+        },
+        parts.output_projection,
+        output,
+        matvec,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let attended = native_full_attention_mix_from_cache(
         dims,
         shape,
@@ -368,6 +399,11 @@ async fn native_full_attention_sequence_impl(
     for token_idx in 0..seq_len {
         let query = parts.queries.row(token_idx);
         let gate = parts.gates.map(|gates| gates.row(token_idx));
+        let input = NativeFullAttentionMixInput {
+            query,
+            gate,
+            score_scale: parts.score_scale,
+        };
         let attended = if let Some(cache) = cache.as_deref_mut() {
             matvec
                 .append_kv_cache_sliding_f32(
@@ -376,30 +412,31 @@ async fn native_full_attention_sequence_impl(
                     parts.values.row(token_idx),
                 )
                 .await?;
-            native_full_attention_mix_from_cache(
+            let source = NativeFullAttentionCacheSource {
+                cache,
+                count: cache.token_count(),
+            };
+            let mut projected = vec![0.0; dims.hidden_size];
+            if native_full_attention_bf16_projection_from_cache(
                 dims,
                 shape,
-                NativeFullAttentionMixInput {
-                    query,
-                    gate,
-                    score_scale: parts.score_scale,
-                },
-                NativeFullAttentionCacheSource {
-                    cache,
-                    count: cache.token_count(),
-                },
+                input,
+                source,
+                parts.output_projection,
+                &mut projected,
                 matvec,
             )
             .await?
+            {
+                outputs.push(projected);
+                continue;
+            }
+            native_full_attention_mix_from_cache(dims, shape, input, source, matvec).await?
         } else {
             native_full_attention_mix_from_inline(
                 dims,
                 shape,
-                NativeFullAttentionMixInput {
-                    query,
-                    gate,
-                    score_scale: parts.score_scale,
-                },
+                input,
                 NativeFullAttentionInlineSource {
                     keys: parts.keys,
                     values: parts.values,
@@ -409,19 +446,51 @@ async fn native_full_attention_sequence_impl(
             )
             .await?
         };
-        outputs.push(
-            native_output_projection_unchecked(
-                matvec,
-                parts.output_projection,
-                &attended,
-                dims.hidden_size,
-                shape.attention_dim,
-            )
-            .await?,
-        );
+        let mut projected = vec![0.0; dims.hidden_size];
+        native_output_projection_in_place_unchecked(
+            matvec,
+            parts.output_projection,
+            &attended,
+            dims.hidden_size,
+            shape.attention_dim,
+            &mut projected,
+        )
+        .await?;
+        outputs.push(projected);
     }
 
     Ok(outputs)
+}
+
+async fn native_full_attention_bf16_projection_from_cache(
+    dims: NativeFullAttentionDims,
+    _shape: NativeFullAttentionShape,
+    input: NativeFullAttentionMixInput<'_>,
+    source: NativeFullAttentionCacheSource<'_>,
+    projection: NativeOutputProjection<'_>,
+    output: &mut [f32],
+    matvec: &impl NativeMatvecBackend,
+) -> Result<bool, MathError> {
+    if input.gate.is_some() {
+        return Ok(false);
+    }
+    let NativeOutputProjection::Bf16Tensor { store, tensor } = projection else {
+        return Ok(false);
+    };
+    matvec
+        .full_attention_cache_mix_bf16_output_projection_f32_in_place(
+            source.cache,
+            input.query,
+            source.count,
+            dims.num_attention_heads,
+            dims.num_key_value_heads,
+            dims.head_dim,
+            input.score_scale,
+            store,
+            tensor,
+            output,
+        )
+        .await
 }
 
 pub(crate) async fn native_output_projection(
@@ -1238,7 +1307,9 @@ mod tests {
     #[derive(Debug, Default)]
     struct FusedCacheMixBackend {
         append_calls: AtomicUsize,
+        bf16_projection_calls: AtomicUsize,
         fused_calls: AtomicUsize,
+        fused_projection_calls: AtomicUsize,
         per_head_calls: AtomicUsize,
     }
 
@@ -1250,6 +1321,7 @@ mod tests {
             input: &[f32],
             output: &mut [f32],
         ) -> Result<(), TensorLoadError> {
+            self.bf16_projection_calls.fetch_add(1, Ordering::SeqCst);
             CpuNativeMatvecBackend
                 .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
                 .await
@@ -1411,6 +1483,29 @@ mod tests {
             output[..2].copy_from_slice(&[11.0, 22.0]);
             Ok(true)
         }
+
+        async fn full_attention_cache_mix_bf16_output_projection_f32_in_place(
+            &self,
+            _cache: &LayerKvCache,
+            _query: &[f32],
+            row_count: usize,
+            num_attention_heads: usize,
+            num_key_value_heads: usize,
+            head_dim: usize,
+            _score_scale: f32,
+            _store: &SafeTensorShardStore,
+            tensor: &str,
+            output: &mut [f32],
+        ) -> Result<bool, MathError> {
+            assert!(row_count > 0);
+            assert_eq!(num_attention_heads, 2);
+            assert_eq!(num_key_value_heads, 1);
+            assert_eq!(head_dim, 1);
+            assert_eq!(tensor, "o_proj.weight");
+            self.fused_projection_calls.fetch_add(1, Ordering::SeqCst);
+            output[..2].copy_from_slice(&[33.0, 44.0]);
+            Ok(true)
+        }
     }
 
     #[tokio::test]
@@ -1452,6 +1547,64 @@ mod tests {
         assert_eq!(backend.per_head_calls.load(Ordering::SeqCst), 0);
         assert_close(output[0][0], 11.0);
         assert_close(output[0][1], 22.0);
+    }
+
+    #[tokio::test]
+    async fn native_full_attention_cache_bf16_projection_uses_fused_projection_path() {
+        let root = std::env::temp_dir().join(format!(
+            "kir-ai-native-attn-bf16-fused-test-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("tempdir");
+        std::fs::write(
+            root.join("model.safetensors"),
+            tiny_safetensors_bf16("o_proj.weight", &[2, 2], &[1.0, 0.0, 0.0, 1.0]),
+        )
+        .expect("write projection tensor");
+        let store = SafeTensorShardStore::open(&root).expect("store opens");
+        let dims = NativeFullAttentionDims {
+            hidden_size: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            head_dim: 1,
+        };
+        let mut cache = LayerKvCache::new(8, 1, 1).expect("cache shape");
+        cache
+            .append_sliding(&[1.0], &[10.0])
+            .expect("first cache append");
+        cache
+            .append_sliding(&[2.0], &[20.0])
+            .expect("second cache append");
+        let queries = vec![vec![1.0, 2.0]];
+        let source_counts = vec![2];
+        let backend = FusedCacheMixBackend::default();
+
+        let output = native_full_attention_sequence_from_cache_parts(
+            dims,
+            &NativeFullAttentionCacheSequenceParts {
+                queries: NativeF32Rows::from_rows(&queries),
+                gates: None,
+                source_counts: &source_counts,
+                output_projection: NativeOutputProjection::Bf16Tensor {
+                    store: &store,
+                    tensor: "o_proj.weight",
+                },
+                score_scale: 1.0,
+            },
+            &cache,
+            &backend,
+        )
+        .await
+        .expect("cache-only attention succeeds");
+
+        assert_eq!(backend.fused_projection_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.fused_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.bf16_projection_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.per_head_calls.load(Ordering::SeqCst), 0);
+        assert_close(output[0][0], 33.0);
+        assert_close(output[0][1], 44.0);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[tokio::test]

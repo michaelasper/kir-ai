@@ -1409,6 +1409,40 @@ impl NativeTextMetalState {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn full_attention_cache_mix_buffer(
+        &self,
+        cache: &LayerKvCache,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+    ) -> Result<llm_metal::F32TransientBuffer, llm_metal::MetalError> {
+        if cache.format() == KvCacheFormat::Int8 {
+            return Err(llm_metal::MetalError::InvalidInput(
+                "Metal attention buffer output is not implemented for INT8 KV caches".to_owned(),
+            ));
+        }
+        let (keys, key_offset, values, value_offset) =
+            self.staged_kv_cache_rows(cache, row_count).await?;
+        self.device
+            .full_attention_cache_mix_f16_buffered_at_to_buffer(
+                &keys,
+                key_offset,
+                &values,
+                value_offset,
+                query,
+                row_count,
+                num_attention_heads,
+                num_key_value_heads,
+                head_dim,
+                score_scale,
+            )
+            .await
+    }
+
     async fn gather_kv_cache_rows(
         &self,
         cache: &LayerKvCache,
@@ -1955,6 +1989,77 @@ fn verify_direct_append_metadata(
 #[cfg(all(test, feature = "metal"))]
 mod kv_cache_sync_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn metal_full_attention_bf16_projection_uses_transient_attention_buffer() {
+        let Some(device) =
+            llm_metal::MetalDevice::system_default_result().expect("Metal device initializes")
+        else {
+            eprintln!("no Metal device available; skipping attention projection buffer test");
+            return;
+        };
+        let state = std::sync::Arc::new(NativeTextMetalState::new(device, 0));
+        let backend = NativeTextMatvecBackend::Metal(std::sync::Arc::clone(&state));
+        let snapshot = llm_test_support::safetensors::temp_snapshot_dir(
+            "llm-native-runtime",
+            "metal-attention-projection-buffer",
+        );
+        std::fs::remove_dir_all(&snapshot).ok();
+        llm_test_support::safetensors::TinySafetensorsSnapshot::new()
+            .with_bf16_tensor(
+                "model.safetensors",
+                "o_proj.weight",
+                vec![2, 2],
+                vec![1.0, 0.5, -1.0, 2.0],
+            )
+            .write(&snapshot)
+            .expect("write tiny projection snapshot");
+        let store = SafeTensorShardStore::open(&snapshot).expect("store opens");
+        let mut cache = LayerKvCache::new(8, 1, 2).expect("cache shape is valid");
+        cache
+            .append(&[1.0, 0.0], &[10.0, 20.0])
+            .expect("first token appends");
+        cache
+            .append(&[0.0, 1.0], &[30.0, 40.0])
+            .expect("second token appends");
+        let query = [1.0, 0.0];
+        let mut output = vec![0.0; 2];
+
+        let handled = backend
+            .full_attention_cache_mix_bf16_output_projection_f32_in_place(
+                &cache,
+                &query,
+                2,
+                1,
+                1,
+                2,
+                1.0,
+                &store,
+                "o_proj.weight",
+                &mut output,
+            )
+            .await
+            .expect("Metal attention projection succeeds");
+
+        assert!(handled, "Metal backend should handle the buffer projection");
+        let weight_0 = 1.0_f32.exp() / (1.0_f32.exp() + 0.0_f32.exp());
+        let weight_1 = 1.0 - weight_0;
+        let attended = [
+            10.0 * weight_0 + 30.0 * weight_1,
+            20.0 * weight_0 + 40.0 * weight_1,
+        ];
+        let expected = [
+            attended[0] + 0.5 * attended[1],
+            -attended[0] + 2.0 * attended[1],
+        ];
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-2,
+                "expected {actual} to be close to {expected}"
+            );
+        }
+        std::fs::remove_dir_all(snapshot).ok();
+    }
 
     #[tokio::test]
     async fn metal_block_mirror_attention_matches_cpu_reference_across_blocks() {
@@ -4307,6 +4412,83 @@ impl NativeMatvecBackend for NativeTextMatvecBackend {
                 Ok(handled)
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn full_attention_cache_mix_bf16_output_projection_f32_in_place(
+        &self,
+        cache: &LayerKvCache,
+        query: &[f32],
+        row_count: usize,
+        num_attention_heads: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+        score_scale: f32,
+        store: &SafeTensorShardStore,
+        tensor: &str,
+        output: &mut [f32],
+    ) -> Result<bool, MathError> {
+        let Self::Metal(metal) = self else {
+            return Ok(false);
+        };
+        if cache.format() == KvCacheFormat::Int8 {
+            return Ok(false);
+        }
+        let attention_dim = num_attention_heads.checked_mul(head_dim).ok_or_else(|| {
+            MathError::InvalidShape("attention output dimension overflow".to_owned())
+        })?;
+        let Some((rows, columns)) = Self::bf16_matrix_shape_for_tensor(store, tensor) else {
+            Self::record_metal_fallback(
+                "full_attention_cache_mix_f16_matvec_bf16_f32",
+                format!("tensor={tensor},input_len={attention_dim}"),
+                "unsupported BF16 output projection shape",
+            );
+            return Ok(false);
+        };
+        if columns != attention_dim || output.len() < rows {
+            Self::record_metal_fallback(
+                "full_attention_cache_mix_f16_matvec_bf16_f32",
+                format!("tensor={tensor},rows={rows},cols={columns},input_len={attention_dim}"),
+                "output projection shape does not match attention output",
+            );
+            return Ok(false);
+        }
+        let matrix = match metal.bf16_matrix_buffer(store, tensor, 0, rows, columns) {
+            Ok(matrix) => matrix,
+            Err(err) => {
+                Self::record_metal_fallback(
+                    "full_attention_cache_mix_f16_matvec_bf16_f32",
+                    format!("tensor={tensor},rows={rows},cols={columns}"),
+                    err,
+                );
+                return Ok(false);
+            }
+        };
+        Self::run_metal_math_in_place(
+            "full_attention_cache_mix_f16_matvec_bf16_f32",
+            format!(
+                "cache_id={},tensor={tensor},row_count={row_count},heads={num_attention_heads},kv_heads={num_key_value_heads},head_dim={head_dim},rows={rows}",
+                cache.id()
+            ),
+            || async {
+                let attention = metal
+                    .full_attention_cache_mix_buffer(
+                        cache,
+                        query,
+                        row_count,
+                        num_attention_heads,
+                        num_key_value_heads,
+                        head_dim,
+                        score_scale,
+                    )
+                    .await?;
+                metal
+                    .device
+                    .matvec_bf16_f32_buffered_transient_vector(&matrix, attention, output)
+                    .await
+            },
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -1,6 +1,7 @@
 use super::{
     MetalDevice, MetalError,
     command::{MetalBufferHazard, finish_command_buffer_async},
+    metal_buffer_byte_len,
 };
 use metal::{Buffer, MTLResourceOptions};
 use std::{collections::HashMap, ffi::c_void, sync::Arc};
@@ -73,6 +74,28 @@ impl F32Buffer {
     }
 
     pub fn byte_len(&self) -> usize {
+        self.byte_len
+    }
+}
+
+#[derive(Debug)]
+pub struct F32TransientBuffer {
+    pub(crate) buffer: Option<Buffer>,
+    pub(crate) hazard: Arc<MetalBufferHazard>,
+    pub(crate) len: usize,
+    pub(crate) byte_len: u64,
+}
+
+impl F32TransientBuffer {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn byte_len(&self) -> u64 {
         self.byte_len
     }
 }
@@ -274,6 +297,31 @@ impl MetalDevice {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .put(byte_len, buffer);
+    }
+
+    pub(crate) fn take_scratch_f32_transient_buffer_len(
+        &self,
+        len: usize,
+        context: &str,
+    ) -> Result<F32TransientBuffer, MetalError> {
+        let byte_len = metal_buffer_byte_len::<f32>(len, context)?;
+        let buffer = if byte_len == 0 {
+            None
+        } else {
+            Some(self.take_scratch_buffer(byte_len))
+        };
+        Ok(F32TransientBuffer {
+            buffer,
+            hazard: Arc::new(MetalBufferHazard::new()),
+            len,
+            byte_len,
+        })
+    }
+
+    pub fn recycle_f32_transient_buffer(&self, mut buffer: F32TransientBuffer) {
+        if let Some(metal_buffer) = buffer.buffer.take() {
+            self.return_scratch_buffer(buffer.byte_len, metal_buffer);
+        }
     }
 
     #[cfg(test)]
@@ -739,6 +787,15 @@ impl MetalDevice {
         self.read_f32_buffer_range(buffer, 0, buffer.len)
     }
 
+    pub fn read_f32_transient_buffer(
+        &self,
+        buffer: &F32TransientBuffer,
+    ) -> Result<Vec<f32>, MetalError> {
+        let mut output = vec![0.0; buffer.len];
+        self.read_f32_transient_buffer_in_place(buffer, &mut output)?;
+        Ok(output)
+    }
+
     pub fn read_f32_buffer_range(
         &self,
         buffer: &F32Buffer,
@@ -748,6 +805,59 @@ impl MetalDevice {
         let mut output = vec![0.0; len];
         self.read_f32_buffer_range_in_place(buffer, start, len, &mut output)?;
         Ok(output)
+    }
+
+    pub fn read_f32_transient_buffer_in_place(
+        &self,
+        buffer: &F32TransientBuffer,
+        output: &mut [f32],
+    ) -> Result<(), MetalError> {
+        if output.len() < buffer.len {
+            return Err(MetalError::InvalidShape(format!(
+                "output length {} is smaller than transient f32 buffer length {}",
+                output.len(),
+                buffer.len
+            )));
+        }
+        if buffer.len == 0 {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty transient f32 buffer read requires a Metal buffer".to_owned(),
+            ));
+        };
+        let _cpu_access = buffer.hazard.begin_cpu_access();
+        // SAFETY: metal_buffer was allocated with byte_len bytes for len f32
+        // values. The buffer hazard waits for in-flight GPU commands touching
+        // this transient buffer before exposing it to the CPU.
+        unsafe {
+            let ptr = metal_buffer.contents().cast::<f32>();
+            let values = std::slice::from_raw_parts(ptr, buffer.len);
+            output[..buffer.len].copy_from_slice(values);
+        };
+        Ok(())
+    }
+
+    pub(crate) fn zero_f32_transient_buffer(
+        &self,
+        buffer: &F32TransientBuffer,
+    ) -> Result<(), MetalError> {
+        if buffer.len == 0 {
+            return Ok(());
+        }
+        let Some(metal_buffer) = buffer.buffer.as_ref() else {
+            return Err(MetalError::InvalidShape(
+                "non-empty transient f32 buffer zero fill requires a Metal buffer".to_owned(),
+            ));
+        };
+        let _cpu_access = buffer.hazard.begin_cpu_access();
+        // SAFETY: metal_buffer was allocated with byte_len bytes for len f32
+        // values. Filling bytewise zero is valid for f32 zero.
+        unsafe {
+            std::ptr::write_bytes(metal_buffer.contents().cast::<f32>(), 0, buffer.len);
+        }
+        Ok(())
     }
 
     pub async fn copy_f32_buffer_range(
