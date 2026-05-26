@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.22](https://github.com/michaelasper/kir-ai/compare/v1.57.21...v1.57.22) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-480:** serialize safetensors mmap materialization ([09d4489](https://github.com/michaelasper/kir-ai/commit/09d4489a8d75a3dec02c86a33554f38e830be8eb))
+
 ## [1.57.21](https://github.com/michaelasper/kir-ai/compare/v1.57.20...v1.57.21) (2026-05-26)
 
 ### Bug Fixes
