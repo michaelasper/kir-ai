@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.58.0](https://github.com/michaelasper/kir-ai/compare/v1.57.36...v1.58.0) (2026-05-26)
+
+### Features
+
+* **COR-415:** add Q8_0 CPU matvec kernel ([3a77a4c](https://github.com/michaelasper/kir-ai/commit/3a77a4c05193dd8ca45a4b80b40ed1bf0906e0ef))
+
+### Bug Fixes
+
+* **COR-415:** wire Q8_0 native matvec dispatch ([35a4b1a](https://github.com/michaelasper/kir-ai/commit/35a4b1a8b9138d29003135dab04e895e9dc7b7b2))
+
 ## [1.57.36](https://github.com/michaelasper/kir-ai/compare/v1.57.35...v1.57.36) (2026-05-26)
 
 ### Bug Fixes
