@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.24](https://github.com/michaelasper/kir-ai/compare/v1.57.23...v1.57.24) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-494:** bound request body reception time ([898ba10](https://github.com/michaelasper/kir-ai/commit/898ba10c7bf84ce7138b95ad8f635ec6161eff04))
+
 ## [1.57.23](https://github.com/michaelasper/kir-ai/compare/v1.57.22...v1.57.23) (2026-05-26)
 
 ### Bug Fixes
