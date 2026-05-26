@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.21](https://github.com/michaelasper/kir-ai/compare/v1.57.20...v1.57.21) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-478:** avoid safetensor archive byte duplication ([136c166](https://github.com/michaelasper/kir-ai/commit/136c166c50357a86bdb9f62224b15e16086afa25))
+* **COR-478:** seal safetensor archive byte ownership ([1722e08](https://github.com/michaelasper/kir-ai/commit/1722e08f001d1abb00da603f2a3697cb3fdb7731))
+
 ## [1.57.20](https://github.com/michaelasper/kir-ai/compare/v1.57.19...v1.57.20) (2026-05-26)
 
 ### Bug Fixes
