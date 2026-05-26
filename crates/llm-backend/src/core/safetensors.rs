@@ -1318,7 +1318,32 @@ impl SafeTensorShardStore {
 }
 
 fn f32_slice_bytes(len: usize) -> u64 {
-    (len * std::mem::size_of::<f32>()) as u64
+    (len as u64).saturating_mul(std::mem::size_of::<f32>() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::f32_slice_bytes;
+
+    #[test]
+    fn f32_slice_bytes_saturates_after_widening_large_lengths() {
+        let f32_bytes = std::mem::size_of::<f32>() as u64;
+        let max_exact_len = usize::MAX / std::mem::size_of::<f32>();
+        let overflow_len = max_exact_len + 1;
+
+        assert_eq!(
+            f32_slice_bytes(max_exact_len),
+            (max_exact_len as u64).saturating_mul(f32_bytes)
+        );
+        assert_eq!(
+            f32_slice_bytes(overflow_len),
+            (overflow_len as u64).saturating_mul(f32_bytes)
+        );
+        assert_eq!(
+            f32_slice_bytes(usize::MAX),
+            (usize::MAX as u64).saturating_mul(f32_bytes)
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
