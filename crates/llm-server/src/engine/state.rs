@@ -39,5 +39,6 @@ pub(super) struct AppState {
     pub(super) hub_client: HubClient,
     pub(super) hf_token: Option<Arc<str>>,
     pub(super) stream_stall_timeout: Option<Duration>,
+    pub(super) request_body_timeout: Option<Duration>,
     pub(super) request_limits: RequestLimits,
 }

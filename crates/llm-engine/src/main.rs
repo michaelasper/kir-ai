@@ -1,8 +1,8 @@
 use llm_api::{MAX_TOOL_SCHEMA_DEPTH, MAX_TOOL_SCHEMA_ENUM_VALUES, RequestLimits};
 use llm_engine::{
-    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_MODEL_ID, EngineOptions, PublicInferenceRateLimit,
-    SnapshotBackendLoader, SnapshotBackendOptions, cli, open_snapshot_backend,
-    parse_snapshot_model_family, router_builder,
+    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_MODEL_ID, DEFAULT_REQUEST_BODY_TIMEOUT,
+    EngineOptions, PublicInferenceRateLimit, SnapshotBackendLoader, SnapshotBackendOptions, cli,
+    open_snapshot_backend, parse_snapshot_model_family, router_builder,
 };
 #[cfg(any(feature = "native-qwen", feature = "native-gemma"))]
 use llm_engine::{
@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
             let request_limits = request_limits_from_args(&serve_args)?;
             let public_inference_rate_limit = public_inference_rate_limit_from_args(&serve_args)?;
             let stream_stall_timeout = serve_stream_stall_timeout_from_args(&serve_args)?;
+            let request_body_timeout = serve_request_body_timeout_from_args(&serve_args)?;
             let tls_config = serve_tls_config_from_args(&serve_args)?;
             let admin_auth = admin_auth_config(configured_admin_token, addr)?;
             if admin_auth.generated {
@@ -93,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
                 public_inference_rate_limit,
                 request_limits,
                 stream_stall_timeout,
+                request_body_timeout,
                 ..EngineOptions::default()
             };
             let snapshot_alias = flag_value(&serve_args, "--snapshot-alias")
@@ -447,6 +449,7 @@ Options:
   --max-tool-schema-enum-values <n>          Maximum values in one tool JSON Schema enum array [default: {}]
   --max-public-inference-requests-per-second <n>
                                              Public chat/completion requests per second [default: 60]
+  --request-timeout-secs <secs>              Maximum time to receive a request body [default: 60]
   --stream-stall-timeout <secs>              Stream stall timeout after semantic output starts [default: 300]
   --admin-token <token>                      Bearer token for admin endpoints; loopback without one generates a temporary token
   --model-home <path>                        Model store root
@@ -667,6 +670,17 @@ fn serve_stream_stall_timeout_from_args(
     args: &[String],
 ) -> anyhow::Result<Option<std::time::Duration>> {
     let secs = parse_positive_u64_flag(args, "--stream-stall-timeout", 300)?;
+    Ok(Some(std::time::Duration::from_secs(secs)))
+}
+
+fn serve_request_body_timeout_from_args(
+    args: &[String],
+) -> anyhow::Result<Option<std::time::Duration>> {
+    let secs = parse_positive_u64_flag(
+        args,
+        "--request-timeout-secs",
+        DEFAULT_REQUEST_BODY_TIMEOUT.as_secs(),
+    )?;
     Ok(Some(std::time::Duration::from_secs(secs)))
 }
 
@@ -1135,6 +1149,38 @@ mod serve_arg_tests {
                 .expect_err("non-numeric timeout fails");
         assert!(
             non_numeric.to_string().contains("--stream-stall-timeout"),
+            "error: {non_numeric}"
+        );
+    }
+
+    #[test]
+    fn request_body_timeout_defaults_to_60_seconds() {
+        assert_eq!(
+            serve_request_body_timeout_from_args(&args(&[])).expect("default timeout parses"),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn request_body_timeout_parses_custom_seconds() {
+        assert_eq!(
+            serve_request_body_timeout_from_args(&args(&["--request-timeout-secs", "7"]))
+                .expect("custom timeout parses"),
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn request_body_timeout_rejects_zero_and_non_numeric_values() {
+        let zero = serve_request_body_timeout_from_args(&args(&["--request-timeout-secs", "0"]))
+            .expect_err("zero timeout fails");
+        assert!(zero.to_string().contains("greater than 0"), "error: {zero}");
+
+        let non_numeric =
+            serve_request_body_timeout_from_args(&args(&["--request-timeout-secs", "abc"]))
+                .expect_err("non-numeric timeout fails");
+        assert!(
+            non_numeric.to_string().contains("--request-timeout-secs"),
             "error: {non_numeric}"
         );
     }

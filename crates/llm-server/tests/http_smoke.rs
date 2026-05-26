@@ -221,6 +221,59 @@ async fn protocol_router_emits_structured_access_logs_with_request_id() {
     );
 }
 
+#[cfg(feature = "test-utils")]
+#[tokio::test]
+async fn request_body_timeout_returns_408_for_slow_body() {
+    use axum::{
+        body::{Body, Bytes, to_bytes},
+        http::{Request, StatusCode, header},
+    };
+    use futures::{StreamExt, stream};
+    use serde_json::Value;
+    use std::{convert::Infallible, time::Duration};
+    use tower::ServiceExt;
+
+    let slow_body = stream::iter([Ok::<_, Infallible>(Bytes::from_static(
+        br#"{"model":"local-qwen36","#,
+    ))])
+    .chain(stream::pending());
+    let router = llm_server::RouterBuilder::new(Box::new(llm_backend::ProtocolTestBackend::new(
+        llm_server::DEFAULT_MODEL_ID,
+        "unused",
+    )))
+    .with_options(llm_server::EngineOptions {
+        request_body_timeout: Some(Duration::from_millis(20)),
+        ..llm_server::EngineOptions::default()
+    })
+    .allow_unauthenticated_admin()
+    .build()
+    .expect("router with request body timeout builds");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        router.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(slow_body))
+                .expect("request builds"),
+        ),
+    )
+    .await
+    .expect("router request should finish through the body timeout")
+    .expect("router returns response");
+
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("error body reads");
+    let body: Value = serde_json::from_slice(&bytes).expect("error body is JSON");
+    assert_eq!(body["error"]["code"], "request_timeout");
+    assert_eq!(body["error"]["phase"], "request_body");
+    assert_eq!(body["error"]["retryable"], true);
+}
+
 #[tokio::test]
 async fn tls_serve_rejects_missing_certificate_file() {
     let temp = tempfile::tempdir().expect("tempdir");

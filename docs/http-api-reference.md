@@ -763,6 +763,7 @@ Known codes:
 | `unsupported_capability` | `400` | `request_validation` | `false` |
 | `model_not_found` | `404` | `model_resolution` | `false` |
 | `rate_limited` | `429` | `rate_limit` | `true` |
+| `request_timeout` | `408` | `request_body` | `true` |
 | `model_overloaded` | `429` | `scheduler` | `true` |
 | `backend_execution_failed` | `500` | `decode` | `true` |
 | `model_integrity_failed` | `422` | `model_artifact_verification` | `false` |

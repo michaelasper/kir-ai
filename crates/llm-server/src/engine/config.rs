@@ -3,6 +3,7 @@ use llm_hub::{HubClient, HubError};
 use std::{path::PathBuf, time::Duration};
 
 pub(super) const DEFAULT_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+pub const DEFAULT_REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_INFERENCE_CONCURRENCY_LIMIT: usize = 4;
 pub const DEFAULT_PUBLIC_INFERENCE_RATE_LIMIT_REQUESTS: usize = 60;
 pub const DEFAULT_PUBLIC_INFERENCE_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
@@ -34,6 +35,7 @@ pub struct EngineOptions {
     pub hub_endpoint: Option<String>,
     pub hf_token: Option<String>,
     pub stream_stall_timeout: Option<Duration>,
+    pub request_body_timeout: Option<Duration>,
     pub canonical_tool_schemas: bool,
     pub public_inference_rate_limit: PublicInferenceRateLimit,
     pub request_limits: RequestLimits,
@@ -52,6 +54,7 @@ impl Default for EngineOptions {
             hub_endpoint: None,
             hf_token: None,
             stream_stall_timeout: Some(DEFAULT_STREAM_STALL_TIMEOUT),
+            request_body_timeout: Some(DEFAULT_REQUEST_BODY_TIMEOUT),
             canonical_tool_schemas: false,
             public_inference_rate_limit: PublicInferenceRateLimit::default(),
             request_limits: RequestLimits::default(),

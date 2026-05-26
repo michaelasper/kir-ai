@@ -67,6 +67,7 @@ Mise tasks:
 | `--max-concurrent-requests` | `usize` | `4` | Maximum in-flight inference requests admitted by the scheduler. Startup rejects values outside `1..=256`. |
 | `--log-level` | `trace`, `debug`, `info`, `warn`, `error`, or `off` | `RUST_LOG` or `info` | Serve-specific log-level override. Takes precedence over `RUST_LOG`. |
 | `--max-public-inference-requests-per-second` | `usize` | `60` | Per-client sliding-window rate limit for `/v1/chat/completions` and `/v1/completions`. Values below `1` are rejected. |
+| `--request-timeout-secs` | `u64` | `60` | Maximum time to receive a complete HTTP request body. Slow bodies return `408 request_timeout` with phase `request_body`. Values below `1` are rejected. |
 | `--mlx-endpoint` | URL | `http://127.0.0.1:8080/v1` | Loopback MLX sidecar `/v1` endpoint for MLX snapshot manifests. Chat requests use `/v1/chat/completions` with lossless OpenAI message history; legacy text completions use a completions-capable sidecar endpoint when the selected family exposes one. Qwen, DeepSeek, and Llama use `mlx_lm.server`; Gemma 4 uses `mlx_vlm.server`. `MLX_LM_ENDPOINT` is used when this flag is omitted. |
 | `--native-prefix-cache-bytes` | `u64` | `536870912` | Per-backend Qwen/Gemma prefix-cache budget. Set `0` to reject stores while generation continues without prefix reuse. `LLM_ENGINE_PREFIX_CACHE_BYTES` is used when omitted. |
 | `--native-prefix-cache-ssd` | boolean | unset | Enables the opt-in native Qwen/Gemma SSD prefix-cache tier. `LLM_ENGINE_PREFIX_CACHE_SSD=1` enables the same setting. |

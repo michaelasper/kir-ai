@@ -32,7 +32,7 @@ pub mod route {
         build_router_with_backend_and_options,
         build_router_with_backend_and_options_allowing_unauthenticated_admin, router_builder,
     };
-    pub use llm_server::DEFAULT_INFERENCE_CONCURRENCY_LIMIT;
+    pub use llm_server::{DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_REQUEST_BODY_TIMEOUT};
 }
 
 /// Snapshot-backed backend selection API.
@@ -82,9 +82,9 @@ pub use route::EngineConfigError;
 pub use route::build_router_with_protocol_test_backend;
 #[allow(deprecated)]
 pub use route::{
-    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, EngineOptions, PublicInferenceRateLimit, build_router,
-    build_router_with_backend, build_router_with_backend_and_concurrency,
-    build_router_with_backend_and_options,
+    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_REQUEST_BODY_TIMEOUT, EngineOptions,
+    PublicInferenceRateLimit, build_router, build_router_with_backend,
+    build_router_with_backend_and_concurrency, build_router_with_backend_and_options,
     build_router_with_backend_and_options_allowing_unauthenticated_admin, configured_hub_client,
     router_builder,
 };

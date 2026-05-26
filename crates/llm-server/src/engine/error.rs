@@ -269,6 +269,9 @@ pub(super) enum EngineError {
     ModelStore(HubError),
     Overloaded(String),
     RateLimited,
+    RequestBodyTimeout {
+        timeout: std::time::Duration,
+    },
     RequestCancelled {
         phase: &'static str,
         message: &'static str,
@@ -328,6 +331,18 @@ impl IntoResponse for EngineError {
                     "public inference rate limit exceeded; retry later",
                     "rate_limited",
                     "rate_limit",
+                    true,
+                ),
+            ),
+            Self::RequestBodyTimeout { timeout } => (
+                StatusCode::REQUEST_TIMEOUT,
+                EngineErrorBody::new(
+                    format!(
+                        "request body was not received within {} ms",
+                        timeout.as_millis()
+                    ),
+                    "request_timeout",
+                    "request_body",
                     true,
                 ),
             ),
@@ -402,6 +417,7 @@ mod tests {
         "unsupported_capability",
         "model_not_found",
         "rate_limited",
+        "request_timeout",
         "model_overloaded",
         "backend_execution_failed",
         "model_integrity_failed",

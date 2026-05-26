@@ -11,6 +11,7 @@ mod metrics;
 mod protocol;
 mod rate_limit;
 mod request;
+mod request_body_timeout;
 mod requests;
 mod router;
 mod scheduler;
@@ -18,8 +19,8 @@ mod state;
 mod streaming;
 
 pub use config::{
-    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, EngineConfigError, EngineOptions,
-    PublicInferenceRateLimit, configured_hub_client,
+    DEFAULT_INFERENCE_CONCURRENCY_LIMIT, DEFAULT_REQUEST_BODY_TIMEOUT, EngineConfigError,
+    EngineOptions, PublicInferenceRateLimit, configured_hub_client,
 };
 #[cfg(feature = "test-utils")]
 pub use router::build_router_with_protocol_test_backend;

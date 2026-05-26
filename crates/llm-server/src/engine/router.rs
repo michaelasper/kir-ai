@@ -208,6 +208,7 @@ fn build_router_from_parts(
 
 fn router_for_state(state: AppState) -> Router {
     let request_id_state = state.clone();
+    let body_timeout_state = state.clone();
     let rate_limit_state = state.clone();
     let json_body_limit = state.request_limits.json_body_bytes;
     let inference_routes = Router::new()
@@ -239,9 +240,26 @@ fn router_for_state(state: AppState) -> Router {
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(json_body_limit))
         .layer(middleware::from_fn_with_state(
+            body_timeout_state,
+            enforce_request_body_timeout,
+        ))
+        .layer(middleware::from_fn_with_state(
             request_id_state,
             log_http_request,
         ))
+}
+
+async fn enforce_request_body_timeout(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(timeout) = state.request_body_timeout else {
+        return next.run(request).await;
+    };
+    let (parts, body) = request.into_parts();
+    let body = super::request_body_timeout::with_request_body_timeout(body, timeout);
+    next.run(Request::from_parts(parts, body)).await
 }
 
 async fn enforce_public_inference_rate_limit(
@@ -426,6 +444,7 @@ fn engine_state(
         hub_client,
         hf_token: options.hf_token.map(Arc::from),
         stream_stall_timeout: options.stream_stall_timeout,
+        request_body_timeout: options.request_body_timeout,
         request_limits: options.request_limits,
     }
 }
