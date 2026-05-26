@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.57.23](https://github.com/michaelasper/kir-ai/compare/v1.57.22...v1.57.23) (2026-05-26)
+
+### Bug Fixes
+
+* **COR-481:** load Qwen3 dense sliding-window configs ([4f499f3](https://github.com/michaelasper/kir-ai/commit/4f499f39e1835e25bc424271493648589b2b6b43))
+
 ## [1.57.22](https://github.com/michaelasper/kir-ai/compare/v1.57.21...v1.57.22) (2026-05-26)
 
 ### Bug Fixes
