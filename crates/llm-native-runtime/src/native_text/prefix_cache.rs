@@ -3,7 +3,7 @@ use llm_backend_contracts::{BackendModelMetadata, BackendRequest};
 use llm_tokenizer::HuggingFaceTokenizerIdentity;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeSet, HashMap, hash_map::Entry},
     sync::{Arc, Mutex},
 };
 
@@ -28,6 +28,7 @@ pub(crate) struct NativeTextPrefixCacheInner<C: NativeTextPrefixCacheValue> {
     pub(crate) entries:
         HashMap<NativeTextPrefixCacheNamespace, HashMap<Vec<usize>, NativeTextPrefixCacheEntry<C>>>,
     pub(crate) indexes: HashMap<NativeTextPrefixCacheNamespace, NativeTextPrefixCacheLengthIndex>,
+    pub(crate) lru: NativeTextPrefixCacheLruIndex,
     pub(crate) used_bytes: u64,
     pub(crate) next_access: u64,
 }
@@ -40,6 +41,7 @@ where
         Self {
             entries: HashMap::new(),
             indexes: HashMap::new(),
+            lru: NativeTextPrefixCacheLruIndex::default(),
             used_bytes: 0,
             next_access: 0,
         }
@@ -52,7 +54,7 @@ pub(crate) struct NativeTextPrefixCacheLengthIndex {
     length_counts: HashMap<usize, usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct NativeTextPrefixCacheNamespace {
     pub(crate) model_id: String,
     pub(crate) backend: String,
@@ -73,6 +75,18 @@ pub(crate) struct NativeTextPrefixCacheNamespace {
     pub(crate) cache_layout_version: u32,
     pub(crate) cache_tokens: usize,
     pub(crate) max_prefill_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeTextPrefixCacheLruKey {
+    access: u64,
+    namespace: NativeTextPrefixCacheNamespace,
+    tokens: Vec<usize>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NativeTextPrefixCacheLruIndex {
+    entries: BTreeSet<NativeTextPrefixCacheLruKey>,
 }
 
 pub(crate) struct NativeTextPrefixNamespaceContext<'a> {
@@ -225,6 +239,7 @@ where
             let mut hit = None;
             let NativeTextPrefixCacheInner {
                 entries,
+                lru,
                 next_access,
                 ..
             } = &mut *inner;
@@ -239,7 +254,9 @@ where
                     if is_compatible(&entry.payload.states) {
                         let access = *next_access;
                         *next_access = next_access.saturating_add(1);
+                        let previous_access = entry.last_used;
                         entry.last_used = access;
+                        lru.promote(namespace, entry_tokens, previous_access, access);
                         hit = Some((token_count, entry.byte_len, Arc::clone(&entry.payload)));
                         break;
                     }
@@ -319,6 +336,7 @@ where
                     last_used: access,
                 },
             );
+            inner.lru.insert(&namespace, &entry_tokens, access);
             inner
                 .indexes
                 .entry(namespace)
@@ -349,10 +367,7 @@ where
     }
 
     fn entry_count(&self) -> u64 {
-        self.entries
-            .values()
-            .map(|bucket| bucket.len() as u64)
-            .sum()
+        self.lru.len() as u64
     }
 
     fn remove_entry(
@@ -366,6 +381,9 @@ where
             (entry, bucket.is_empty())
         };
         if entry.is_some() {
+            if let Some(entry) = &entry {
+                self.lru.remove(namespace, tokens, entry.last_used);
+            }
             let remove_index = self.indexes.get_mut(namespace).is_some_and(|index| {
                 index.remove(tokens);
                 index.is_empty()
@@ -381,17 +399,102 @@ where
     }
 
     fn remove_lru_entry(&mut self) -> Option<NativeTextPrefixCacheEntry<C>> {
-        let (namespace, tokens) = self
-            .entries
+        let oldest = self.lru.oldest()?.clone();
+        self.remove_entry(&oldest.namespace, &oldest.tokens)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn assert_lru_index_consistent(&self) {
+        assert_eq!(
+            self.lru.len() as u64,
+            self.entries
+                .values()
+                .map(|bucket| bucket.len() as u64)
+                .sum::<u64>(),
+            "LRU index should contain one key per resident prefix cache entry"
+        );
+        for (namespace, bucket) in &self.entries {
+            for (tokens, entry) in bucket {
+                assert!(
+                    self.lru.contains(namespace, tokens, entry.last_used),
+                    "LRU index missing key for namespace {namespace:?} tokens {tokens:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lru_order(&self) -> Vec<(NativeTextPrefixCacheNamespace, Vec<usize>)> {
+        self.lru
             .iter()
-            .flat_map(|(namespace, bucket)| {
-                bucket
-                    .iter()
-                    .map(move |(tokens, entry)| (namespace, tokens, entry))
-            })
-            .min_by_key(|(_, _, entry)| entry.last_used)
-            .map(|(namespace, tokens, _)| (namespace.clone(), tokens.clone()))?;
-        self.remove_entry(&namespace, &tokens)
+            .map(|entry| (entry.namespace.clone(), entry.tokens.clone()))
+            .collect()
+    }
+}
+
+impl NativeTextPrefixCacheLruIndex {
+    fn insert(
+        &mut self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        access: u64,
+    ) {
+        self.entries.insert(NativeTextPrefixCacheLruKey {
+            access,
+            namespace: namespace.clone(),
+            tokens: tokens.to_vec(),
+        });
+    }
+
+    fn remove(
+        &mut self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        access: u64,
+    ) {
+        self.entries.remove(&NativeTextPrefixCacheLruKey {
+            access,
+            namespace: namespace.clone(),
+            tokens: tokens.to_vec(),
+        });
+    }
+
+    fn promote(
+        &mut self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        previous_access: u64,
+        next_access: u64,
+    ) {
+        self.remove(namespace, tokens, previous_access);
+        self.insert(namespace, tokens, next_access);
+    }
+
+    fn oldest(&self) -> Option<&NativeTextPrefixCacheLruKey> {
+        self.entries.iter().next()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn contains(
+        &self,
+        namespace: &NativeTextPrefixCacheNamespace,
+        tokens: &[usize],
+        access: u64,
+    ) -> bool {
+        self.entries.contains(&NativeTextPrefixCacheLruKey {
+            access,
+            namespace: namespace.clone(),
+            tokens: tokens.to_vec(),
+        })
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &NativeTextPrefixCacheLruKey> {
+        self.entries.iter()
     }
 }
 

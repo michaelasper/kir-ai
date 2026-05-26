@@ -414,6 +414,148 @@ fn prefix_cache_prefers_longest_prefix_over_recency_and_updates_lru() {
 }
 
 #[test]
+fn prefix_cache_lru_index_tracks_store_promotion_replacement_namespace_removal_and_multi_eviction()
+{
+    let cache = NativeTextPrefixCache::new(24);
+    let metrics = NativeTextPrefixCacheMetrics::default();
+    let base_namespace = namespace("lru-index-base");
+    let old_namespace = namespace("lru-index-old");
+    let resident_namespace = namespace("lru-index-resident");
+    let large_namespace = namespace("lru-index-large");
+    let hidden = [1.0];
+
+    assert!(cache.store(
+        base_namespace.clone(),
+        &[1],
+        &hidden,
+        &[TestCache {
+            bytes: 4,
+            marker: 1,
+        }],
+        &metrics,
+    ));
+    assert!(cache.store(
+        base_namespace.clone(),
+        &[2],
+        &hidden,
+        &[TestCache {
+            bytes: 4,
+            marker: 2,
+        }],
+        &metrics,
+    ));
+    assert!(cache.store(
+        old_namespace.clone(),
+        &[9],
+        &hidden,
+        &[TestCache {
+            bytes: 4,
+            marker: 9,
+        }],
+        &metrics,
+    ));
+    assert_lru_order(
+        &cache,
+        &[
+            (&base_namespace, &[1][..]),
+            (&base_namespace, &[2][..]),
+            (&old_namespace, &[9][..]),
+        ],
+    );
+
+    cache
+        .lookup(&base_namespace, &[1], &metrics)
+        .expect("lookup promotes the reused prefix");
+    assert_lru_order(
+        &cache,
+        &[
+            (&base_namespace, &[2][..]),
+            (&old_namespace, &[9][..]),
+            (&base_namespace, &[1][..]),
+        ],
+    );
+
+    assert!(cache.store(
+        base_namespace.clone(),
+        &[2],
+        &hidden,
+        &[TestCache {
+            bytes: 4,
+            marker: 20,
+        }],
+        &metrics,
+    ));
+    assert_lru_order(
+        &cache,
+        &[
+            (&old_namespace, &[9][..]),
+            (&base_namespace, &[1][..]),
+            (&base_namespace, &[2][..]),
+        ],
+    );
+    let replaced = cache
+        .lookup(&base_namespace, &[2], &metrics)
+        .expect("replacement remains indexed");
+    assert_eq!(replaced.caches[0].marker, 20);
+
+    assert!(cache.store(
+        resident_namespace.clone(),
+        &[7],
+        &hidden,
+        &[TestCache {
+            bytes: 4,
+            marker: 7,
+        }],
+        &metrics,
+    ));
+    assert!(cache.lookup(&old_namespace, &[9], &metrics).is_none());
+    {
+        let inner = cache
+            .inner
+            .lock()
+            .expect("prefix cache lock is not poisoned");
+        assert!(
+            !inner.entries.contains_key(&old_namespace),
+            "evicting a namespace's last entry should remove its bucket"
+        );
+        assert!(
+            !inner.indexes.contains_key(&old_namespace),
+            "evicting a namespace's last entry should remove its lookup index"
+        );
+    }
+    assert_lru_order(
+        &cache,
+        &[
+            (&base_namespace, &[1][..]),
+            (&base_namespace, &[2][..]),
+            (&resident_namespace, &[7][..]),
+        ],
+    );
+
+    assert!(cache.store(
+        large_namespace.clone(),
+        &[4],
+        &hidden,
+        &[TestCache {
+            bytes: 12,
+            marker: 4,
+        }],
+        &metrics,
+    ));
+    assert_lru_order(
+        &cache,
+        &[
+            (&resident_namespace, &[7][..]),
+            (&large_namespace, &[4][..]),
+        ],
+    );
+    assert!(cache.lookup(&base_namespace, &[1], &metrics).is_none());
+    assert!(cache.lookup(&base_namespace, &[2], &metrics).is_none());
+    assert!(cache.lookup(&resident_namespace, &[7], &metrics).is_some());
+    assert!(cache.lookup(&large_namespace, &[4], &metrics).is_some());
+}
+
+#[test]
 fn prefix_cache_clones_payloads_outside_global_lock() {
     let cache = Arc::new(NativeTextPrefixCache::new(1024));
     let metrics = NativeTextPrefixCacheMetrics::default();
@@ -528,4 +670,20 @@ fn prefix_cache_uses_value_sizing_for_eviction_budget() {
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot["evictions"], 1);
     assert_eq!(snapshot["resident_bytes"], 24);
+}
+
+fn assert_lru_order(
+    cache: &NativeTextPrefixCache<TestCache>,
+    expected: &[(&NativeTextPrefixCacheNamespace, &[usize])],
+) {
+    let inner = cache
+        .inner
+        .lock()
+        .expect("prefix cache lock is not poisoned");
+    inner.assert_lru_index_consistent();
+    let expected = expected
+        .iter()
+        .map(|(namespace, tokens)| ((*namespace).clone(), tokens.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(inner.lru_order(), expected);
 }
