@@ -346,6 +346,29 @@ fn custom_request_limits_reject_lower_tool_schema_depth() {
 }
 
 #[test]
+fn rejects_tool_schema_depth_before_serialized_byte_limit() {
+    let mut schema = nested_properties_tool_schema(2);
+    schema["description"] = json!("x".repeat(MAX_TOOL_SCHEMA_BYTES));
+    let request = ChatCompletionRequest {
+        model: "local-qwen36".to_owned(),
+        messages: vec![ChatMessage::user("use a tool")],
+        tools: vec![ToolDefinition::function("lookup", "lookup docs", schema)],
+        ..ChatCompletionRequest::default()
+    };
+
+    let err = request
+        .validate_with_limits(RequestLimits {
+            tool_schema_depth: 1,
+            ..RequestLimits::default()
+        })
+        .expect_err("schema depth must be checked before serialized byte size");
+
+    assert_eq!(err.code(), "invalid_request");
+    assert!(err.message().contains("schema depth"));
+    assert!(err.message().contains("maximum 1"));
+}
+
+#[test]
 fn accepts_supported_tool_schema_types_and_unions() {
     let request = ChatCompletionRequest {
         model: "local-qwen36".to_owned(),

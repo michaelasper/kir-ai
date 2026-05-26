@@ -4,10 +4,7 @@ use crate::{
     MAX_TOOL_SCHEMA_BYTES, RequestLimits, ToolDefinition,
 };
 use serde_json::{Map, Value};
-use std::{
-    collections::BTreeSet,
-    io::{self, Write},
-};
+use std::collections::BTreeSet;
 
 const SUPPORTED_JSON_SCHEMA_TYPES: &[&str] = &[
     "array", "boolean", "integer", "null", "number", "object", "string",
@@ -256,15 +253,15 @@ pub(super) fn validate_tools(
                 MAX_TOOL_DESCRIPTION_BYTES,
             )?;
         }
-        validate_json_bytes_at_most(
-            &format!("tools[{index}].function.parameters"),
-            &tool.function.parameters,
-            MAX_TOOL_SCHEMA_BYTES,
-        )?;
         validate_tool_schema_shape(
             &format!("tools[{index}].function.parameters"),
             &tool.function.parameters,
             limits.tool_schema_depth,
+        )?;
+        validate_json_bytes_at_most(
+            &format!("tools[{index}].function.parameters"),
+            &tool.function.parameters,
+            MAX_TOOL_SCHEMA_BYTES,
         )?;
     }
     Ok(())
@@ -312,13 +309,10 @@ pub(super) fn validate_non_empty_string(label: &str, value: &str) -> Result<(), 
 
 fn validate_json_bytes_at_most(label: &str, value: &Value, max: usize) -> Result<(), ApiError> {
     let mut counter = JsonByteCounter::new(max);
-    match serde_json::to_writer(&mut counter, value) {
+    match counter.count_value(value) {
         Ok(()) => Ok(()),
-        Err(_) if counter.exceeded() => Err(ApiError::invalid_request(format!(
+        Err(JsonByteLimitExceeded) => Err(ApiError::invalid_request(format!(
             "{label} must serialize to at most {max} bytes"
-        ))),
-        Err(err) => Err(ApiError::invalid_request(format!(
-            "{label} must serialize as JSON: {err}"
         ))),
     }
 }
@@ -457,21 +451,105 @@ impl JsonByteCounter {
     fn exceeded(&self) -> bool {
         self.written > self.max
     }
-}
 
-impl Write for JsonByteCounter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written = self.written.saturating_add(buf.len());
+    fn add(&mut self, bytes: usize) -> Result<(), JsonByteLimitExceeded> {
+        self.written = self.written.saturating_add(bytes);
         if self.exceeded() {
-            return Err(io::Error::other("JSON byte limit exceeded"));
+            return Err(JsonByteLimitExceeded);
         }
-        Ok(buf.len())
+        Ok(())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn count_value(&mut self, value: &Value) -> Result<(), JsonByteLimitExceeded> {
+        let mut stack = vec![JsonByteFrame::Value(value)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                JsonByteFrame::Value(Value::Null) => self.add(4)?,
+                JsonByteFrame::Value(Value::Bool(true)) => self.add(4)?,
+                JsonByteFrame::Value(Value::Bool(false)) => self.add(5)?,
+                JsonByteFrame::Value(Value::Number(number)) => {
+                    self.add(number.to_string().len())?
+                }
+                JsonByteFrame::Value(Value::String(value)) => self.add_json_string(value)?,
+                JsonByteFrame::Value(Value::Array(values)) => {
+                    self.add(1)?;
+                    if values.is_empty() {
+                        self.add(1)?;
+                    } else {
+                        stack.push(JsonByteFrame::Array {
+                            iter: values.iter(),
+                            first: true,
+                        });
+                    }
+                }
+                JsonByteFrame::Value(Value::Object(object)) => {
+                    self.add(1)?;
+                    if object.is_empty() {
+                        self.add(1)?;
+                    } else {
+                        stack.push(JsonByteFrame::Object {
+                            iter: object.iter(),
+                            first: true,
+                        });
+                    }
+                }
+                JsonByteFrame::Array { mut iter, first } => {
+                    if let Some(value) = iter.next() {
+                        if !first {
+                            self.add(1)?;
+                        }
+                        stack.push(JsonByteFrame::Array { iter, first: false });
+                        stack.push(JsonByteFrame::Value(value));
+                    } else {
+                        self.add(1)?;
+                    }
+                }
+                JsonByteFrame::Object { mut iter, first } => {
+                    if let Some((key, value)) = iter.next() {
+                        if !first {
+                            self.add(1)?;
+                        }
+                        self.add_json_string(key)?;
+                        self.add(1)?;
+                        stack.push(JsonByteFrame::Object { iter, first: false });
+                        stack.push(JsonByteFrame::Value(value));
+                    } else {
+                        self.add(1)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_json_string(&mut self, value: &str) -> Result<(), JsonByteLimitExceeded> {
+        self.add(2)?;
+        for ch in value.chars() {
+            let bytes = match ch {
+                '"' | '\\' | '\u{08}' | '\t' | '\n' | '\u{0c}' | '\r' => 2,
+                '\u{00}'..='\u{1f}' => 6,
+                _ => ch.len_utf8(),
+            };
+            self.add(bytes)?;
+        }
         Ok(())
     }
 }
+
+enum JsonByteFrame<'a> {
+    Value(&'a Value),
+    Array {
+        iter: std::slice::Iter<'a, Value>,
+        first: bool,
+    },
+    Object {
+        iter: serde_json::map::Iter<'a>,
+        first: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JsonByteLimitExceeded;
 
 pub(super) fn validate_choice_count(n: Option<u32>) -> Result<(), ApiError> {
     match n {
