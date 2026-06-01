@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.59.0](https://github.com/michaelasper/kir-ai/compare/v1.58.1...v1.59.0) (2026-06-01)
+
+### Features
+
+* **COR-529:** add Q4_0 native matvec path ([39226df](https://github.com/michaelasper/kir-ai/commit/39226df2196bb4f266c5aa3f2c762927d1f4a22f))
+
+### Bug Fixes
+
+* **COR-409:** move hot metrics paths to atomics ([95b3fd4](https://github.com/michaelasper/kir-ai/commit/95b3fd4545e2da02568b9d3dc68642b051385f4a))
+* **COR-409:** preserve metrics snapshot invariants ([cdb70b1](https://github.com/michaelasper/kir-ai/commit/cdb70b19e509b1ebc2b93d2c32e7fa80efb5b7de))
+
+### Performance Improvements
+
+* **COR-407:** index prefix cache lookups by token length ([aaf1d02](https://github.com/michaelasper/kir-ai/commit/aaf1d02c3b5067eb287f8f23c74f0152b20cd2a2))
+* **COR-408:** index prefix cache LRU eviction ([934b540](https://github.com/michaelasper/kir-ai/commit/934b540829d63970ee3db78587675e0aad54609c))
+
 ## [1.58.1](https://github.com/michaelasper/kir-ai/compare/v1.58.0...v1.58.1) (2026-05-26)
 
 ### Bug Fixes
