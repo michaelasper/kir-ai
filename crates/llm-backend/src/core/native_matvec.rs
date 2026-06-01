@@ -10,7 +10,8 @@ use super::math::{
     softmax_f32_in_place, softmax_top_k_f32, weighted_sum_f32_in_place,
 };
 use super::{
-    LayerKvCache, LinearAttentionCache, Q8RowMajorMatrix, SafeTensorShardStore, TensorLoadError,
+    LayerKvCache, LinearAttentionCache, Q4RowMajorMatrix, Q8RowMajorMatrix, SafeTensorShardStore,
+    TensorLoadError,
 };
 use std::borrow::Cow;
 
@@ -40,6 +41,7 @@ pub enum NativeRowMajorMatrix<'a> {
         rows: usize,
         columns: usize,
     },
+    Q4_0(Q4RowMajorMatrix<'a>),
     Q8_0(Q8RowMajorMatrix<'a>),
 }
 
@@ -389,11 +391,24 @@ pub trait NativeMatvecBackend {
                 self.matvec_row_major_f32_in_place(input, weights, rows, columns, output)
                     .await
             }
+            NativeRowMajorMatrix::Q4_0(matrix) => self
+                .q4_0_matvec_row_major_f32_in_place(matrix, input, output)
+                .await
+                .map_err(|err| MathError::InvalidShape(format!("Q4_0 matvec failed: {err}"))),
             NativeRowMajorMatrix::Q8_0(matrix) => self
                 .q8_0_matvec_row_major_f32_in_place(matrix, input, output)
                 .await
                 .map_err(|err| MathError::InvalidShape(format!("Q8_0 matvec failed: {err}"))),
         }
+    }
+
+    async fn q4_0_matvec_row_major_f32_in_place(
+        &self,
+        matrix: Q4RowMajorMatrix<'_>,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        matrix.matvec_f32_in_place(input, output)
     }
 
     async fn q8_0_matvec_row_major_f32_in_place(
@@ -799,6 +814,15 @@ impl NativeMatvecBackend for CpuNativeMatvecBackend {
     async fn q8_0_matvec_row_major_f32_in_place(
         &self,
         matrix: Q8RowMajorMatrix<'_>,
+        input: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), TensorLoadError> {
+        matrix.matvec_f32_in_place(input, output)
+    }
+
+    async fn q4_0_matvec_row_major_f32_in_place(
+        &self,
+        matrix: Q4RowMajorMatrix<'_>,
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(), TensorLoadError> {

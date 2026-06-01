@@ -5,7 +5,7 @@
 use super::math::{MathError, require_len, sigmoid_f32};
 use super::{
     LayerKvCache, NativeBatchedMatvecOutput, NativeKvCacheTensor, NativeMatvecBackend,
-    NativeRowMajorMatrix, Q8RowMajorMatrix, SafeTensorShardStore,
+    NativeRowMajorMatrix, Q4RowMajorMatrix, Q8RowMajorMatrix, SafeTensorShardStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +130,7 @@ pub(crate) enum NativeOutputProjection<'a> {
         store: &'a SafeTensorShardStore,
         tensor: &'a str,
     },
+    Q4_0(Q4RowMajorMatrix<'a>),
     Q8_0(Q8RowMajorMatrix<'a>),
 }
 
@@ -564,6 +565,14 @@ pub(crate) async fn native_output_projection_in_place_unchecked(
             .bf16_matvec_row_major_f32_in_place(store, tensor, input, output)
             .await
             .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}"))),
+        NativeOutputProjection::Q4_0(matrix) => matvec
+            .matvec_row_major_weights_f32_in_place(
+                input,
+                NativeRowMajorMatrix::Q4_0(matrix),
+                output,
+            )
+            .await
+            .map_err(|err| MathError::InvalidShape(format!("output projection failed: {err}"))),
         NativeOutputProjection::Q8_0(matrix) => matvec
             .matvec_row_major_weights_f32_in_place(
                 input,
@@ -602,6 +611,16 @@ pub(crate) fn require_native_output_projection_shape(
                 return Err(MathError::InvalidShape(format!(
                     "output projection failed: tensor `{tensor}` shape {:?} must be [{rows}, {columns}]",
                     metadata.shape
+                )));
+            }
+            Ok(())
+        }
+        NativeOutputProjection::Q4_0(matrix) => {
+            if matrix.rows() != rows || matrix.columns() != columns {
+                return Err(MathError::InvalidShape(format!(
+                    "output projection failed: Q4_0 matrix shape [{}, {}] must be [{rows}, {columns}]",
+                    matrix.rows(),
+                    matrix.columns()
                 )));
             }
             Ok(())
@@ -824,7 +843,8 @@ async fn scaled_full_attention_scores(
 #[cfg(test)]
 mod tests {
     use super::super::{
-        CpuNativeMatvecBackend, Q8_0_BLOCK_SIZE, Q8RowMajorMatrix, TensorLoadError,
+        CpuNativeMatvecBackend, Q4_0_BLOCK_SIZE, Q4RowMajorMatrix, Q8_0_BLOCK_SIZE,
+        Q8RowMajorMatrix, TensorLoadError,
     };
     use super::*;
     use std::{
@@ -883,6 +903,35 @@ mod tests {
         assert_eq!(output, [10.0, -4.5]);
     }
 
+    #[tokio::test]
+    async fn output_projection_accepts_q4_0_weights() {
+        let mut row0 = [0_i8; Q4_0_BLOCK_SIZE];
+        row0[..4].copy_from_slice(&[1, -2, 0, 4]);
+        let mut row1 = [0_i8; Q4_0_BLOCK_SIZE];
+        row1[..4].copy_from_slice(&[-4, 2, 1, 0]);
+        let mut bytes = Vec::new();
+        push_q4_0_block(&mut bytes, 0x3c00, &row0, 0);
+        push_q4_0_block(&mut bytes, 0x3800, &row1, 0);
+        let matrix =
+            Q4RowMajorMatrix::from_blocks(2, Q4_0_BLOCK_SIZE, &bytes).expect("Q4_0 matrix");
+        let mut input = vec![0.0; Q4_0_BLOCK_SIZE];
+        input[..4].copy_from_slice(&[2.0, -3.0, 5.0, 0.5]);
+        let mut output = [0.0; 2];
+
+        native_output_projection_in_place(
+            &CpuNativeMatvecBackend,
+            NativeOutputProjection::Q4_0(matrix),
+            &input,
+            2,
+            Q4_0_BLOCK_SIZE,
+            &mut output,
+        )
+        .await
+        .expect("Q4_0 output projection");
+
+        assert_eq!(output, [10.0, -4.5]);
+    }
+
     fn push_q8_0_block(bytes: &mut Vec<u8>, scale_bits: u16, active_quants: &[i8], pad: i8) {
         assert!(active_quants.len() <= Q8_0_BLOCK_SIZE);
         bytes.extend_from_slice(&scale_bits.to_le_bytes());
@@ -890,6 +939,26 @@ mod tests {
             let quant = active_quants.get(idx).copied().unwrap_or(pad);
             bytes.push(quant as u8);
         }
+    }
+
+    fn push_q4_0_block(bytes: &mut Vec<u8>, scale_bits: u16, active_quants: &[i8], pad: i8) {
+        assert!(active_quants.len() <= Q4_0_BLOCK_SIZE);
+        bytes.extend_from_slice(&scale_bits.to_le_bytes());
+        for idx in 0..Q4_0_BLOCK_SIZE / 2 {
+            let low = q4_0_nibble(active_quants.get(idx).copied().unwrap_or(pad));
+            let high = q4_0_nibble(
+                active_quants
+                    .get(idx + Q4_0_BLOCK_SIZE / 2)
+                    .copied()
+                    .unwrap_or(pad),
+            );
+            bytes.push(low | (high << 4));
+        }
+    }
+
+    fn q4_0_nibble(value: i8) -> u8 {
+        assert!((-8..=7).contains(&value));
+        (value + 8) as u8
     }
 
     #[derive(Debug)]
